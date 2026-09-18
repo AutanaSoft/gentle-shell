@@ -113,6 +113,11 @@ export function ensureRegistryEntry(
   const hash = projectHash(cwd);
   const data = readRegistry(root);
   if (data[hash] === cwd) return { hash, created: false };
+  // An earlier collision may have re-keyed THIS cwd to a long key.
+  // Return the existing mapping unchanged so collision assignments stay
+  // stable across calls instead of flipping the other occupant's key.
+  const existingKey = Object.keys(data).find((k) => data[k] === cwd);
+  if (existingKey !== undefined) return { hash: existingKey, created: false };
   if (data[hash] !== undefined) {
     // Collision: re-key the EXISTING occupant at 24 hash chars so both
     // identities coexist; the incoming cwd keeps the short hash — the
