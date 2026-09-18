@@ -368,8 +368,10 @@ export function drainProject(
 }
 
 /**
- * Drain the GLOBAL scope: the legacy global seed (newest single source)
- * plus every project dir's files, mtime-newest-first, deduped, capped.
+ * Drain the GLOBAL scope: every project dir's files, mtime-newest-first,
+ * deduped, capped — with the legacy global seed appended LAST (deliberate:
+ * it is the least specific, migrated source, so per-project entries win
+ * recency and keep-first dedup favors them).
  */
 export function drainGlobal(
   root: string,
