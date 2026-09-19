@@ -69,4 +69,4 @@ Fix GitHub issue #1176 so the fullscreen Status sidebar shows the profile that g
   absent; the remaining suite ran with the normal environment.
 - T3 type check: passed with 196 baseline diagnostics and no regressions.
 - T3 diff check: `git diff --check` — passed.
-- T3 merge commit: pending.
+- T3 merge commit: `e32c62ce` (`chore(branch): merge current main into effective profile fix`).
