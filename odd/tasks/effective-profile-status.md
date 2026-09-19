@@ -8,8 +8,11 @@ Fix GitHub issue #1176 so the fullscreen Status sidebar shows the profile that g
 
 - Upstream issue: https://github.com/Gentleman-Programming/gentle-shell/issues/1176
 - Starting point: `origin/main` at `1170dc84c2198b53807431f6e03d02bf8dcc3444`
+- Re-investigation baseline: `main` at `43269de359c5052d2cadb72ab4cf2d57ca0211b0`
 - Branch: `fix/effective-profile-status`
 - Pre-existing untracked `mise.toml` is outside this feature and must remain untouched.
+- Current main routes the profile through both the fullscreen Status card and live header; profile
+  resolution must stay outside `digest()` and `render()`.
 
 ## Scope
 
@@ -22,6 +25,9 @@ Fix GitHub issue #1176 so the fullscreen Status sidebar shows the profile that g
 ## Tasks
 
 - [x] T1 — Implement pin-aware Status profile resolution, focused tests, and documentation; run focused and repository checks; commit as one reviewable work unit.
+- [x] T2 — Rebase the design onto current main: refresh one cached effective-profile snapshot through
+  invalidation/watch events, use it in Status and the live header, and prove repeated renders perform
+  no profile filesystem or Git resolution.
 
 ## Acceptance criteria
 
@@ -29,7 +35,12 @@ Fix GitHub issue #1176 so the fullscreen Status sidebar shows the profile that g
 - Valid local or repository pin: `Profile <effective-name> (pinned)`.
 - Invalid, stale, missing, or unreadable pins fall back to the global active profile without `(pinned)`.
 - Local pin precedence over repository declaration remains owned by `resolveProfilePin()`.
-- Creating, changing, or removing a pin updates the fullscreen Status digest without restarting Pi.
+- Creating, changing, or removing a pin updates the fullscreen Status digest and live header without
+  restarting Pi.
+- Repeated Status/header `digest()` and `render()` calls perform no profile filesystem or Git
+  resolution.
+- External atomic replacements are observed through debounced parent-directory watchers, which are
+  disposed with the shell component.
 - The compact bottom bar remains unchanged.
 - Focused tests, typecheck/runtime checks, complete test suite, and `git diff --check` pass or any skipped/failed check is reported.
 
@@ -44,3 +55,9 @@ Fix GitHub issue #1176 so the fullscreen Status sidebar shows the profile that g
 - Diff check: `git diff --check` — passed.
 - Verification incident: `pnpm run typecheck` was discarded as a hermetic receipt because pnpm 12 dependency verification triggered install/postinstall side effects in ignored dependency areas. Read-only Git inspection confirmed no new tracked changes; final verification used direct Node commands only.
 - Native review: unavailable before lineage creation. Two committed-range START attempts against `1170dc84c2198b53807431f6e03d02bf8dcc3444` were rejected with `candidate-target-projection-drift`; both reported `lineage_created: false` and performed no mutation.
+- T2 focused tests: `node --experimental-strip-types --test tests/gentle-shell.test.ts tests/shell-bar.test.ts tests/shell-sidebar-layout.test.ts` — 82 passed, 0 failed.
+- T2 full tests: `node --experimental-strip-types --test tests/*.test.ts` — 2639 passed, 0 failed, 47 skipped.
+- T2 type check: `node scripts/check-types.mjs` — passed with 197 baseline diagnostics and no regressions.
+- T2 diff check: `git diff --check` — passed.
+- T2 independent verification: passed with no findings; confirmed cached Status/header parity, compact-bar stability, watcher debounce/disposal, atomic replacement handling, and no profile I/O from repeated digest/render calls.
+- T2 commit: pending explicit user authorization; no commit was created in this session.

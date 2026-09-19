@@ -1,11 +1,11 @@
 import { CustomEditor, keyHint, type ExtensionAPI, type ExtensionContext, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import type { EditorTheme, TUI } from "@earendil-works/pi-tui";
 import { execFile, spawnSync } from "node:child_process";
-import { statSync } from "node:fs";
+import { statSync, type FSWatcher, watch } from "node:fs";
 import { profilesFilePath, readProfilesFileResult } from "../lib/agent-profiles.ts";
 import { localProfilePinPath, repoProfileDeclarationPath, resolveProfilePin } from "../lib/agent-profile-pin.ts";
 import * as os from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { renderShellBar, renderShellSidebarBar, shellEnabled, type ShellBarModel, type ShellBarTheme, type ShellProfileState } from "../lib/shell-bar.ts";
 import { CHANGE_STATUS, renderChangesWidget, type ChangedFile, type ChangesModel, type GitRunner, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
@@ -63,9 +63,10 @@ export interface ShellDeps {
 	gitRunner(cwd: string): GitRunner;
 }
 
-// The rail digest runs every frame. Cache parsing by file identity and metadata,
-// not just mtime: profile and pin writes replace files atomically. Keep the cache
-// local to this shell instance and recheck on the next frame after panel edits.
+// Profile resolution is intentionally kept out of the rail digest and render path.
+// This reader caches one resolved value and is called by the shell snapshot only at
+// startup or after an explicit invalidation/watch event. File identity includes the
+// inode because profile and pin writes replace files atomically.
 export function createActiveProfileReader(
 	env: NodeJS.ProcessEnv = process.env,
 	resolveWorktree: WorktreeResolver = resolveSessionWorktree,
@@ -112,6 +113,141 @@ export function createActiveProfileReader(
 			fingerprint = next;
 		}
 		return profile;
+	};
+}
+
+const PROFILE_REFRESH_DEBOUNCE_MS = 100;
+
+interface EffectiveProfileSnapshot {
+	get(): ShellProfileState | undefined;
+	refresh(): boolean;
+	dispose(): void;
+}
+
+interface EffectiveProfileSnapshotOptions {
+	read: (cwd?: string) => ShellProfileState | undefined;
+	cwd(): string;
+	env: NodeJS.ProcessEnv;
+	resolveWorktree: WorktreeResolver;
+	onChange(): void;
+}
+
+function existingProfileWatchDirectory(path: string, floor: string): string | undefined {
+	let candidate = dirname(path);
+	while (true) {
+		try {
+			if (statSync(candidate).isDirectory()) return candidate;
+		} catch {
+			// Atomic profile writes can create a missing parent after startup. Watch the
+			// nearest existing ancestor, but never broaden a profile watch to the
+			// filesystem root or another unrelated repository.
+		}
+		if (candidate === floor) return undefined;
+		const parent = dirname(candidate);
+		if (parent === candidate) return undefined;
+		candidate = parent;
+	}
+}
+
+function effectiveProfileWatchDirectories(
+	cwd: string,
+	env: NodeJS.ProcessEnv,
+	resolveWorktree: WorktreeResolver,
+): string[] {
+	const configHome = env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai");
+	const paths: Array<{ path: string; floor: string }> = [
+		{ path: profilesFilePath(configHome), floor: dirname(configHome) },
+	];
+	try {
+		const identity = resolveWorktree(cwd, cwd);
+		paths.push(
+			{ path: localProfilePinPath(identity.commonDir), floor: identity.commonDir },
+			{ path: repoProfileDeclarationPath(identity.root), floor: identity.root },
+		);
+	} catch {
+		// The global profile remains observable even outside a Git worktree.
+	}
+	return [...new Set(paths.map(({ path, floor }) => existingProfileWatchDirectory(path, floor)).filter((path): path is string => path !== undefined))];
+}
+
+function copyProfileState(profile: ShellProfileState | undefined): ShellProfileState | undefined {
+	return profile === undefined ? undefined : { name: profile.name, pinned: profile.pinned };
+}
+
+function sameProfileState(left: ShellProfileState | undefined, right: ShellProfileState | undefined): boolean {
+	return left?.name === right?.name && left?.pinned === right?.pinned;
+}
+
+function createEffectiveProfileSnapshot(options: EffectiveProfileSnapshotOptions): EffectiveProfileSnapshot {
+	let disposed = false;
+	let observedCwd = options.cwd();
+	let profile = copyProfileState(options.read(observedCwd));
+	let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+	let watchers: FSWatcher[] = [];
+	let watchedDirectories: string[] = [];
+
+	const closeWatchers = () => {
+		for (const watcher of watchers) {
+			try {
+				watcher.close();
+			} catch {
+				// Best-effort cleanup; the shell component owns every watcher it creates.
+			}
+		}
+		watchers = [];
+		watchedDirectories = [];
+	};
+	const installWatchers = (cwd: string) => {
+		const directories = effectiveProfileWatchDirectories(cwd, options.env, options.resolveWorktree);
+		if (directories.length === watchedDirectories.length && directories.every((directory, index) => directory === watchedDirectories[index]) && watchers.length === directories.length) return;
+		closeWatchers();
+		watchedDirectories = directories;
+		for (const directory of directories) {
+			try {
+				const watcher = watch(directory, () => scheduleRefresh());
+				watcher.unref();
+				watchers.push(watcher);
+			} catch {
+				// Missing or unsupported watch roots are covered by the initial and
+				// in-process refresh seams; other roots remain best-effort.
+			}
+		}
+	};
+	const refresh = (): boolean => {
+		if (disposed) return false;
+		const cwd = options.cwd();
+		if (cwd !== observedCwd) observedCwd = cwd;
+		const next = copyProfileState(options.read(cwd));
+		// A parent watcher may have observed a directory being created. Recompute
+		// roots after reading so later atomic writes are watched at their nearest
+		// parent instead of remaining stranded on the old ancestor.
+		installWatchers(cwd);
+		if (sameProfileState(profile, next)) return false;
+		profile = next;
+		options.onChange();
+		return true;
+	};
+	const scheduleRefresh = () => {
+		if (disposed) return;
+		if (refreshTimer) clearTimeout(refreshTimer);
+		refreshTimer = setTimeout(() => {
+			refreshTimer = undefined;
+			refresh();
+		}, PROFILE_REFRESH_DEBOUNCE_MS);
+		refreshTimer.unref();
+	};
+	installWatchers(observedCwd);
+
+	return {
+		get: () => profile,
+		refresh,
+		dispose() {
+			if (disposed) return;
+			disposed = true;
+			if (refreshTimer) clearTimeout(refreshTimer);
+			refreshTimer = undefined;
+			closeWatchers();
+		},
 	};
 }
 
@@ -188,14 +324,20 @@ export function createShellBarComponent(
 	footerData: ShellFooterData,
 	dirty: () => number | undefined = () => undefined,
 	usage: () => ProviderUsage | undefined = () => undefined,
+	profileRefresh: () => boolean | void = () => false,
+	profile: () => ShellProfileState | undefined = () => undefined,
 ): ShellBarComponent {
 	const unsubscribe = footerData.onBranchChange(() => {
+		// A profile refresh that changed the effective state already invalidates and
+		// paints the shell through its change seam. Avoid asking the TUI for the same
+		// render a second time; branch-only changes still use the ordinary path.
+		if (profileRefresh() === true) return;
 		host.invalidateSidebar?.();
 		host.requestRender();
 	});
 	return {
 		render(width: number) {
-			return renderShellBar(buildShellBarModel(pi, ctx, footerData, { dirty: dirty(), usage: usage() }), theme, width);
+			return renderShellBar(buildShellBarModel(pi, ctx, footerData, { dirty: dirty(), usage: usage(), profile: profile() }), theme, width);
 		},
 		invalidate() {},
 		dispose() {
@@ -568,6 +710,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	let changes: SessionChanges | undefined;
 	let registry: SessionWorktreeRegistry | undefined;
 	let currentContext: ExtensionContext | undefined;
+	let profileSnapshot: EffectiveProfileSnapshot | undefined;
 	let shown = "";
 	const applyChanges = (ctx: ExtensionContext, model: ChangesModel) => {
 		const fingerprint = changesFingerprint(model);
@@ -612,13 +755,36 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		const tracker = changes;
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			renderHost = { requestRender: () => tui.requestRender(), invalidateSidebar: () => invalidateSidebar(tui) };
-			const bottom = createShellBarComponent(pi, ctx, renderHost, theme, footerData, () => tracker.model.files.length, () => usage.get(ctx.model?.provider ?? ""));
+			profileSnapshot?.dispose();
+			const snapshot = createEffectiveProfileSnapshot({
+				read: deps.activeProfile,
+				cwd: () => ctx.sessionManager.getCwd(),
+				env,
+				resolveWorktree: deps.resolveWorktree,
+				onChange: () => {
+					invalidateSidebar(tui);
+					tui.requestRender();
+				},
+			});
+			profileSnapshot = snapshot;
+			const bottom = createShellBarComponent(
+				pi,
+				ctx,
+				renderHost,
+				theme,
+				footerData,
+				() => tracker.model.files.length,
+				() => usage.get(ctx.model?.provider ?? ""),
+				() => snapshot.refresh(),
+				() => snapshot.get(),
+			);
 			// The Status card paints live session state that no event re-registers a
 			// part for: model, effort, context, cost, session name and extension
-			// statuses. The digest is what keeps the fullscreen memo honest, and it
-			// rebuilds the model exactly as the narrow bottom bar does every frame.
+			// statuses. Profile resolution happens only in the snapshot refresh seam;
+			// digest and render consume that in-memory value exactly like the other
+			// structured model fields.
 			const footerModel = (): ShellBarModel => ({
-				...buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: usage.get(ctx.model?.provider ?? ""), profile: deps.activeProfile(ctx.sessionManager.getCwd()) }),
+				...buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: usage.get(ctx.model?.provider ?? ""), profile: snapshot.get() }),
 				changes: { files: tracker.model.files.length, added: tracker.model.added, deleted: tracker.model.deleted, notice: tracker.model.notice },
 			});
 			const part = sidebarPart(tui, "footer", bottom, {
@@ -627,7 +793,15 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				invalidate() {},
 			});
 			const uninstall = installSidebar(tui, theme);
-			return { ...part, dispose() { uninstall(); part.dispose(); } };
+			return {
+				...part,
+				dispose() {
+					snapshot.dispose();
+					if (profileSnapshot === snapshot) profileSnapshot = undefined;
+					uninstall();
+					part.dispose();
+				},
+			};
 		});
 		void refreshUsage(ctx, true);
 		const ownsPrompt = installPrompt(ctx, (created) => {
@@ -657,6 +831,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		}
 		registry?.close();
 		registry = undefined;
+		profileSnapshot?.dispose();
+		profileSnapshot = undefined;
 		changes = undefined;
 		currentContext = undefined;
 		unsubscribeWorktrees();

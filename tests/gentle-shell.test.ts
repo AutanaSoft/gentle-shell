@@ -6,11 +6,12 @@ import { join } from "node:path";
 import test from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandInfo, type SourceInfo } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
-import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, fetchCodexUsage, loadFileDiff, shellGitRunner, openInExternalEditor, type GentlePromptEditor } from "../extensions/gentle-shell.ts";
+import installGentleShell, { buildShellBarModel, createActiveProfileReader, createShellBarComponent, changesShortcut, devBinaryCard, fetchCodexUsage, loadFileDiff, shellGitRunner, openInExternalEditor, type GentlePromptEditor } from "../extensions/gentle-shell.ts";
 import { CHANGE_STATUS } from "../lib/shell-changes.ts";
 import { sidebarState, type SidebarRail } from "../lib/shell-sidebar.ts";
-import type { ShellBarTheme } from "../lib/shell-bar.ts";
+import type { ShellBarTheme, ShellProfileState } from "../lib/shell-bar.ts";
 import { localProfilePinPath, repoProfileDeclarationPath, serializeProfilePin } from "../lib/agent-profile-pin.ts";
+import { profilesFilePath } from "../lib/agent-profiles.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
 // The Gentle Shell extension wires the pure bar renderer into pi's footer
@@ -237,6 +238,66 @@ test("buildShellBarModel shortens the home directory and hides effort for non-re
 	assert.equal(built.branch, null);
 });
 
+test("the live shell header consumes the structured profile snapshot without painting it in the compact bar", () => {
+	const { pi } = fakePi();
+	const { ctx } = fakeContext();
+	let reads = 0;
+	const component = createShellBarComponent(
+		pi,
+		ctx,
+		{ requestRender() {}, invalidateSidebar() {} },
+		plainTheme,
+		{ getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} },
+		() => undefined,
+		() => undefined,
+		() => false,
+		() => {
+			reads++;
+			return { name: "team", pinned: true };
+		},
+	);
+	assert.equal(reads, 0, "the in-memory profile is read by the header, not mounted from disk");
+	const [line] = component.render(160);
+	assert.equal(reads, 1);
+	assert.doesNotMatch(line, /team|pinned/, "the compact bar's visual contract remains unchanged");
+	component.dispose();
+});
+
+test("branch invalidation does not duplicate a render already requested by profile refresh", () => {
+	const { pi } = fakePi();
+	const { ctx } = fakeContext();
+	let branchChanged: (() => void) | undefined;
+	let requests = 0;
+	let invalidations = 0;
+	const component = createShellBarComponent(
+		pi,
+		ctx,
+		{ requestRender() { requests++; }, invalidateSidebar() { invalidations++; } },
+		plainTheme,
+		{
+			getGitBranch: () => "main",
+			getExtensionStatuses: () => new Map(),
+			getAvailableProviderCount: () => 1,
+			onBranchChange: (callback) => {
+				branchChanged = callback;
+				return () => { branchChanged = undefined; };
+			},
+		},
+		() => undefined,
+		() => undefined,
+		() => {
+			invalidations++;
+			requests++;
+			return true;
+		},
+		() => ({ name: "other", pinned: true }),
+	);
+	branchChanged!();
+	assert.equal(invalidations, 1);
+	assert.equal(requests, 1, "the profile refresh already requested the render");
+	component.dispose();
+});
+
 test("gentleShell installs the footer on session_start when a UI exists", () => {
 	const { pi, handlers } = fakePi();
 	gentleShell(pi, {});
@@ -264,7 +325,16 @@ test("the fullscreen Status rail carries a live digest so a model switch refresh
 	await fire(handlers, "session_start", ctx);
 
 	const statuses = new Map<string, string>();
-	const liveFooterData = { getGitBranch: () => "main", getExtensionStatuses: () => statuses, getAvailableProviderCount: () => 1, onBranchChange: () => () => {} };
+	let branchChanged: (() => void) | undefined;
+	const liveFooterData = {
+		getGitBranch: () => "main",
+		getExtensionStatuses: () => statuses,
+		getAvailableProviderCount: () => 1,
+		onBranchChange: (callback: () => void) => {
+			branchChanged = callback;
+			return () => { branchChanged = undefined; };
+		},
+	};
 	const tui = { terminal: { rows: 40, columns: 160 }, requestRender() {} };
 	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => { render(width: number): string[]; dispose(): void };
 	const component = factory(tui, plainTheme, liveFooterData);
@@ -277,9 +347,11 @@ test("the fullscreen Status rail carries a live digest so a model switch refresh
 		assert.match(rail.render(46).join("\n"), /Profile.*team/);
 		const beforeProfile = live();
 		profile = { name: "other", pinned: false };
+		branchChanged!();
 		assert.notEqual(live(), beforeProfile);
 		assert.match(rail.render(46).join("\n"), /Profile.*other/);
 		profile = undefined;
+		branchChanged!();
 		assert.doesNotMatch(rail.render(46).join("\n"), /Profile/);
 
 		const beforeModel = live();
@@ -328,19 +400,160 @@ test("fullscreen Status digest follows repository pin changes without restarting
 	const component = factory(tui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
 	try {
 		const rail = sidebarState(tui as unknown as TUI).parts.get("footer") as SidebarRail;
+		const waitForProfile = async (text: string) => {
+			for (let attempt = 0; attempt < 20; attempt++) {
+				if (rail.digest!().includes(text)) return;
+				await new Promise((resolve) => setTimeout(resolve, 20));
+			}
+			assert.fail(`timed out waiting for profile ${text}`);
+		};
 		assert.match(rail.render(46).join("\n"), /Profile.*team/);
 		const beforePin = rail.digest!();
 		writeFileSync(repoPin, serializeProfilePin("other"));
+		await waitForProfile('"name":"other"');
 		assert.notEqual(rail.digest!(), beforePin, "creating a pin must invalidate the Status digest");
 		assert.match(rail.render(46).join("\n"), /Profile.*other \(pinned\)/);
+		const replacement = join(root, "profile-replacement.json");
+		writeFileSync(replacement, serializeProfilePin("team"));
+		renameSync(replacement, repoPin);
+		await waitForProfile('"name":"team"');
+		assert.match(rail.render(46).join("\n"), /Profile.*team \(pinned\)/);
 		const beforeRemoval = rail.digest!();
 		rmSync(repoPin);
+		await waitForProfile('"pinned":false');
 		assert.notEqual(rail.digest!(), beforeRemoval, "removing a pin must invalidate the Status digest");
 		assert.match(rail.render(46).join("\n"), /Profile.*team/);
 		assert.doesNotMatch(rail.render(46).join("\n"), /\(pinned\)/);
 	} finally {
 		component.dispose();
 	}
+});
+
+test("fullscreen Status rebinds parent watchers when a profile store appears after startup", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "shell-profile-watch-root-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const configHome = join(root, "created", "gentle-ai");
+	const worktreeRoot = join(root, "repo");
+	const commonDir = join(root, "clone");
+	mkdirSync(worktreeRoot, { recursive: true });
+	mkdirSync(commonDir, { recursive: true });
+	mkdirSync(join(root, "created"), { recursive: true });
+	const profileFile = (active: string) => JSON.stringify({
+		kind: "gentle-pi.agent_model_profiles", version: 1, active, profiles: { team: {}, other: {} },
+	});
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, {
+		resolveWorktree: () => ({ root: worktreeRoot, commonDir }),
+	});
+	const { ctx, ui } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => { render(width: number): string[]; dispose(): void };
+	const tui = { terminal: { rows: 40, columns: 160 }, requestRender() {} };
+	const component = factory(tui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+	try {
+		const rail = sidebarState(tui as unknown as TUI).parts.get("footer") as SidebarRail;
+		const waitForDigest = async (text: string) => {
+			for (let attempt = 0; attempt < 30; attempt++) {
+				if (rail.digest!().includes(text)) return;
+				await new Promise((resolve) => setTimeout(resolve, 20));
+			}
+			assert.fail(`timed out waiting for profile ${text}`);
+		};
+		assert.doesNotMatch(rail.render(46).join("\n"), /Profile/);
+		mkdirSync(configHome, { recursive: true });
+		writeFileSync(profilesFilePath(configHome), profileFile("team"));
+		await waitForDigest('"name":"team"');
+		const replacement = join(root, "profile-replacement.json");
+		writeFileSync(replacement, profileFile("other"));
+		renameSync(replacement, profilesFilePath(configHome));
+		await waitForDigest('"name":"other"');
+		assert.match(rail.render(46).join("\n"), /Profile.*other/);
+	} finally {
+		component.dispose();
+	}
+});
+
+test("fullscreen Status keeps the effective profile in a snapshot between known invalidations", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "shell-profile-snapshot-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const worktreeRoot = join(root, "repo");
+	const commonDir = join(root, "clone");
+	mkdirSync(join(worktreeRoot, ".pi", "gentle-ai"), { recursive: true });
+	mkdirSync(join(commonDir, "gentle-ai"), { recursive: true });
+	let profile: ShellProfileState | undefined = { name: "team", pinned: false };
+	let reads = 0;
+	let branchChanged: (() => void) | undefined;
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: root, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, {
+		resolveWorktree: () => ({ root: worktreeRoot, commonDir }),
+		activeProfile: () => {
+			reads++;
+			return profile;
+		},
+	});
+	const { ctx, ui } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => { render(width: number): string[]; dispose(): void };
+	const tui = { terminal: { rows: 40, columns: 160 }, requestRender() {} };
+	const component = factory(tui, plainTheme, {
+		getGitBranch: () => "main",
+		getExtensionStatuses: () => new Map(),
+		getAvailableProviderCount: () => 1,
+		onBranchChange: (callback: () => void) => {
+			branchChanged = callback;
+			return () => { branchChanged = undefined; };
+		},
+	});
+	try {
+		const rail = sidebarState(tui as unknown as TUI).parts.get("footer") as SidebarRail;
+		assert.equal(reads, 1, "the initial footer mount resolves the effective profile once");
+		const before = rail.digest!();
+		for (let i = 0; i < 3; i++) {
+			rail.digest!();
+			rail.render(46);
+		}
+		assert.equal(reads, 1, "repeated Status digest/render calls use the in-memory snapshot");
+		profile = { name: "other", pinned: true };
+		branchChanged!();
+		assert.equal(reads, 2, "a known in-process invalidation refreshes the snapshot");
+		assert.notEqual(rail.digest!(), before);
+		assert.match(rail.render(46).join("\n"), /Profile.*other \(pinned\)/);
+	} finally {
+		component.dispose();
+	}
+});
+
+test("fullscreen Status disposes profile watchers and pending refreshes with the footer", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "shell-profile-watch-lifecycle-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const worktreeRoot = join(root, "repo");
+	const commonDir = join(root, "clone");
+	mkdirSync(join(worktreeRoot, ".pi", "gentle-ai"), { recursive: true });
+	mkdirSync(join(commonDir, "gentle-ai"), { recursive: true });
+	writeFileSync(profilesFilePath(root), JSON.stringify({
+		kind: "gentle-pi.agent_model_profiles", version: 1, active: "team", profiles: { team: {}, other: {} },
+	}));
+	let reads = 0;
+	const repoPin = repoProfileDeclarationPath(worktreeRoot);
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: root, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, {
+		resolveWorktree: () => ({ root: worktreeRoot, commonDir }),
+		activeProfile: () => {
+			reads++;
+			return { name: "team", pinned: false };
+		},
+	});
+	const { ctx, ui } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => { render(width: number): string[]; dispose(): void };
+	const tui = { terminal: { rows: 40, columns: 160 }, requestRender() {} };
+	const component = factory(tui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+	assert.equal(reads, 1);
+	component.dispose();
+	component.dispose();
+	writeFileSync(repoPin, serializeProfilePin("other"));
+	await new Promise((resolve) => setTimeout(resolve, 180));
+	assert.equal(reads, 1, "disposed Status components must close watchers and pending refresh timers");
 });
 
 test("profile reader follows store changes and rejects missing or invalid active markers", (t) => {

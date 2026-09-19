@@ -25,7 +25,7 @@ In fullscreen at 140 columns or wider, the right sidebar scrolls **✿ Gentle-Pi
 
 The rail reuses its last frame until something it paints changes, so silent frames stay cheap and live session state still lands on the next frame: a model switch, a new thinking level, context growth, session cost, session name and extension statuses all refresh the Status card without a redraw of the rest of the sidebar.
 
-The fullscreen sidebar Status card shows a single `Profile` field for the effective repository profile. It uses the same pin precedence as profile routing: a valid clone-local or repository declaration pin wins and appends `(pinned)`; otherwise it shows the globally active profile without a suffix. Invalid or stale pins fall back globally. It follows profile and pin changes on the next render, including pin creation, replacement, and removal. Missing, unreadable, or invalid stores leave the line hidden. The compact bottom bar remains unchanged and does not add a profile segment.
+The fullscreen sidebar Status card shows a single `Profile` field for the effective repository profile. It uses the same pin precedence as profile routing: a valid clone-local or repository declaration pin wins and appends `(pinned)`; otherwise it shows the globally active profile without a suffix. Invalid or stale pins fall back globally. The shell resolves this state initially, on known in-process invalidations, and through debounced parent-directory watchers, so atomic profile and pin replacements appear without per-frame filesystem or Git resolution. Missing, unreadable, or invalid stores leave the line hidden. The compact bottom bar remains unchanged and does not add a profile segment.
 
 The status bar replaces pi's three-line footer with a single line of segments:
 
