@@ -28,6 +28,8 @@ Fix GitHub issue #1176 so the fullscreen Status sidebar shows the profile that g
 - [x] T2 — Rebase the design onto current main: refresh one cached effective-profile snapshot through
   invalidation/watch events, use it in Status and the live header, and prove repeated renders perform
   no profile filesystem or Git resolution.
+- [x] T3 — Merge current `main` at `43269de3`, reconcile the feature with the live header and current
+  shell behavior, and verify the merged candidate.
 
 ## Acceptance criteria
 
@@ -60,4 +62,11 @@ Fix GitHub issue #1176 so the fullscreen Status sidebar shows the profile that g
 - T2 type check: `node scripts/check-types.mjs` — passed with 197 baseline diagnostics and no regressions.
 - T2 diff check: `git diff --check` — passed.
 - T2 independent verification: passed with no findings; confirmed cached Status/header parity, compact-bar stability, watcher debounce/disposal, atomic replacement handling, and no profile I/O from repeated digest/render calls.
-- T2 commit: pending explicit user authorization; no commit was created in this session.
+- T2 commit: `692d140b` (`fix(shell): refresh effective profile outside render path`).
+- T3 focused tests after merge: 160 passed, 0 failed.
+- T3 split full suite: 2894 total — 2847 passed, 0 failed, 47 skipped. The relay-routing file
+  used `GENTLE_PI_GENTLE_AI_DEV_BINARY=/usr/bin/true` because the package-local v3.4.0 runtime is
+  absent; the remaining suite ran with the normal environment.
+- T3 type check: passed with 196 baseline diagnostics and no regressions.
+- T3 diff check: `git diff --check` — passed.
+- T3 merge commit: pending.

@@ -15,19 +15,30 @@ The [v2.6.0 release](https://github.com/Gentleman-Programming/gentle-pi/releases
 - The Agents List and Details views preserve the orchestrator/session hierarchy and completion, abort, and lost-exit history. Parent-child queries and notifications have an explicit handoff path, while model, effort, and usage stay observable per task.
 - Named `/gentle:profiles` atomically route the orchestrator separately from packaged and review roles; see the [technical reference](readme-reference.md#agent-model-profiles) for the profile model.
 
-The source checkout currently prepares `gentle-pi` `3.2.0` with a package-local Gentle AI `v3.1.0` pin; this is not a claim that `3.2.0` is published.
+The source checkout currently prepares `gentle-pi` `3.3.0` with a package-local Gentle AI `v3.4.0` pin; this is not a claim that `3.3.0` is published.
 
 ## Shell interactions and runtime behavior
 
-Gentle Shell is the Pi workspace experience provided by the `gentle-pi` package. It follows the Gentle themes: one border language, champagne titles, rose for whatever is alive.
+Gentle Shell is the Pi workspace experience provided by the `gentle-pi` package. It follows the Gentle themes: one border language, rose for whatever is alive.
 
-In fullscreen at 140 columns or wider, the right sidebar scrolls **✿ Gentle-Pi ✿ → Status → Changes → Agents → TODO** together. The one-line heading is horizontally centered within the usable rail width, with pink flowers and normal white text in the Gentleman themes. Colors follow the active theme; no artwork scaling or custom fonts are used. Narrow/mobile terminals and regular mode retain bottom widgets without the sidebar heading. The original rose and text logo remain in the main chat startup intro.
+### Fullscreen layout
 
-The rail reuses its last frame until something it paints changes, so silent frames stay cheap and live session state still lands on the next frame: a model switch, a new thinking level, context growth, session cost, session name and extension statuses all refresh the Status card without a redraw of the rest of the sidebar.
+At 140 columns or wider, fullscreen splits into a live header row over a transcript-and-rail split, both driven by [`lib/shell-sidebar-layout.ts`](../lib/shell-sidebar-layout.ts):
+
+```text
+✿ Gentle Shell ⟡ ~/work/gentle-pi main ⟡ gpt-5.5 · medium · team              ctx ▰▰▰▰▱▱▱▱ 45% ⟡ $9.49 sub
+```
 
 The fullscreen sidebar Status card shows a single `Profile` field for the effective repository profile. It uses the same pin precedence as profile routing: a valid clone-local or repository declaration pin wins and appends `(pinned)`; otherwise it shows the globally active profile without a suffix. Invalid or stale pins fall back globally. The shell resolves this state initially, on known in-process invalidations, and through debounced parent-directory watchers, so atomic profile and pin replacements appear without per-frame filesystem or Git resolution. Missing, unreadable, or invalid stores leave the line hidden. The compact bottom bar remains unchanged and does not add a profile segment.
 
-The status bar replaces pi's three-line footer with a single line of segments:
+- The header is one row, always visible, and carries only what changes every frame: session identity on the left (brand, cwd, branch, dirty count, model · effort · profile) and the two live counters right-aligned (the context gauge and session cost). It never shows the working/thinking state or extension statuses — those stay in the prompt title and the compact bar. When the terminal is too narrow for everything, segments give way in a fixed order — profile, then effort, then the whole cwd/branch/dirty group — before the counters are touched; below that, only the brand survives, and below that the header renders nothing.
+- The right rail scrolls **Status → Changes → TODO**, each an event-driven card that only repaints when its own state changes: a model switch or a cost tick refreshes the header, not the rail. Every card (sidebar or not) paints the same rose frame — the rounded border in the theme's plain border role, the title in the accent role — the look every `CARD_TONE.INFO` card in Gentle Shell uses (warning/error/success cards keep their own tone colors).
+- The Status card carries only what an explicit event refreshes: Project (cwd, branch, session name, active profile), Changes, and Integrations (other extensions' statuses). Model, effort, context, cost, and the per-model usage table live in the header instead — the header ticks every frame, so duplicating them in a card would just make that card repaint every frame too.
+- Gentle Agents is not part of the rail in any mode: its one card stays above the editor, where it already lived, with fixed right-aligned columns for `model · effort`, tokens, cost, and elapsed, each sized to the widest value among the shown tasks — so the numbers line up vertically even when one row's values are much shorter than another's. A queued task fills only the elapsed column with the word `queued`, leaving the other columns blank rather than overwriting the row.
+- The sidebar reuses its last frame until something it paints changes, so silent frames stay cheap; a per-section cache means one card's changing digest (or the header's) never forces an unrelated card to redraw.
+- Narrow terminals and regular mode keep the compact bottom bar and the above-editor Agents widget, with no header row and no sidebar.
+
+Below 140 columns, or in regular mode, the compact bottom bar replaces pi's three-line footer with a single line of segments instead:
 
 ```text
 ✿ gentle shell ⟡ ~/work/gentle-pi main ⟡ gpt-5.5 · medium ⟡ ctx ▰▰▰▰▱▱▱▱ 45% ⟡ $9.49 sub ⟡ MCP: 3 servers enabled        Release notes
@@ -63,6 +74,8 @@ Changes shows **captured write/edit operations from this agent session and its o
 - Diffs compare the content observed before the agent's first captured operation with its latest captured result, not with HEAD. Consecutive agent edits combine; an agent revert removes its net change.
 - Edits from your editor or other sessions do not update these captured diffs. If an external or unobserved edit breaks continuity before the next agent operation on the same file, the file is marked **diff unavailable**, rather than mixing ownership.
 - Only worktrees in the coordinating session's Git clone are accepted. Child evidence is accepted only from an owned task with paired successful write/edit events and a matching target.
+- A changed file's worktree is resolved from its own directory upward (`git rev-parse --show-toplevel` starting there, never from an ancestor's cwd), so a repository nested inside another — a project scaffolded inside a personal workspace clone, say — is always attributed to its own, inner repository, never the outer one.
+- When changes span more than one worktree, each tree header shows that root's own branch name, `no commits yet` for an unborn branch, or `detached` only for a real detached HEAD. The label is read from Git's HEAD once per root while the overlay is open (`symbolic-ref` and `rev-parse --verify`); the overlay still never runs `status`, `diff` or a worktree scan on your behalf.
 - **Coverage is deliberately limited to write/edit tools.** Shell commands, custom mutation tools, failed/interrupted outcomes and children without the capture extension provide no attributed diff. A missing row does not mean the repository is clean or that no other changes occurred.
 
 ### Bounds and session lifetime
@@ -78,7 +91,7 @@ The separate `session_worktree_register` tool still registers canonical same-clo
 `/gentle:changes` or `alt+g` opens the two-pane viewer. Worktrees are accordion groups on the left; selecting a file displays its captured diff on the right.
 
 - `j`/`k` or arrows navigate. On a group, Enter, Space or Right expands it; Left returns to its parent or collapses it. `ctrl+j/k` or Page Up/Down scroll the diff; Escape or `q` closes.
-- Fullscreen left-click selects files; mouse wheels scroll the file list and diff independently. Hover does not open files.
+- Fullscreen left-click selects files; mouse wheels scroll the file list and diff independently. Hovering an unselected row (worktree or file, in either pane's list) paints it in the same shared hover role every clickable surface in the shell uses; it never opens or selects the file, and never overrides the already-selected row's own role.
 - Opening, pressing `r`, and the overlay's refresh cadence consult only the captured session model. They never rescan Git or load the current file contents. Same-line-count edits invalidate the diff preview by content revision.
 - On a file, `o` or Enter opens the actual current file in `$VISUAL` or `$EDITOR`, with its worktree as cwd. Edits made there are external and are not attributed to the agent.
 - `GENTLE_PI_SHELL_CHANGES_KEY` rebinds the shortcut; `off` disables it. `GENTLE_PI_SHELL_CHANGES_POLL_MS` controls only the open overlay's in-memory refresh. `GENTLE_PI_SHELL_CHANGES_WATCH_MS` no longer enables filesystem polling.
@@ -90,19 +103,29 @@ The separate `session_worktree_register` tool still registers canonical same-clo
 
 To use `ctrl+p` like OpenCode, rebind Pi's `app.model.cycleForward` in `~/.pi/agent/keybindings.json` (Pi reserves that action, so an extension cannot take `ctrl+p` while it holds it) and set `GENTLE_PI_COMMANDS_KEY=ctrl+p`.
 
-Subscription usage shows in the bar after the cost, and `/gentle:usage` opens a panel with every window per provider:
+Subscription usage shows in the bar after the cost, and `/gentle:usage` opens a panel with one row per window of every provider: the limit name, its meter, its percentage and, when that window reports one, its reset, all on one line. Codex, Claude and NaN all read the same way. In fullscreen mode, clicking the header's `usage` segment opens this same panel. The panel's own footer hints (`r refresh`, `esc close`) are clickable too, not just keyboard shortcuts, and hovering either one paints it in the shell's shared hover role while a refresh already in flight ignores a repeated click.
 
 ```text
 ✿ gentle shell ⟡ … ⟡ $9.49 sub ⟡ codex 5h ▰▰▰▰▰▱▱▱ 62% · week 31%
 ```
 
+The panel rows a provider reports its windows with:
+
+```text
+✿ nan · updated just now
+  deepseek-v4-flash ▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱  26% · resets in 12d 17h
+  glm5.3-flash      ▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱  11% · resets in 12d 17h
+```
+
 - For Codex, usage comes from the same account usage endpoint the Codex CLI reads, using the OAuth token pi already holds. It is fetched at session start, at most every 5 minutes after a turn, and on `r` in the panel. Rate-limit headers on SSE responses are picked up too.
 - For Claude Pro/Max, usage arrives in the rate-limit headers of every response, so the 5h and weekly windows appear after the first turn.
-- The bar names the subscription it shows (`codex`, `claude`) and always follows the active model. The panel puts the active provider first, marked with the petal, and says why it has no data when it does not: API-key providers have no subscription windows, Claude reports after the first response, Codex waits for a fetch.
+- For NaN Cloud, usage comes from the quota endpoint the official dashboard reads, with the same API key pi already holds. Each metered model reports one allowance for the billing period, and that window carries no label: the model id names it in the bar and the reset text says what it is in the panel. A model that also reports a rolling window shows that one labeled next to it (`4h`), which today's payload does not send; percentages are tokens used over the allowance, exactly as the dashboard draws them, and the allowance is the full-period cap (`fullCap`) whenever the model reports a positive one, because `cap` alone is the prorated allowance of the period in progress. It is fetched under the same 5-minute rule as Codex, counted per provider so a switch fetches the provider it switched to, refuses redirects so the bearer cannot be replayed to another origin, and keeps no cached copy. The endpoint sits outside NaN's published OpenAPI, so the parser reads it defensively: a model that reports no allowance is skipped, as the dashboard skips it, while a metered model whose usage cannot be read fails the whole read, so a partial payload never replaces a complete snapshot with a cheaper-looking one. A session that already has a snapshot keeps the last valid one through a malformed payload or a failed fetch, and the pending note appears only while there is nothing to draw.
+- The bar names the subscription it shows (`codex`, `claude`, a NaN model) and always follows the active model. A provider with per-model allowances draws the session model's own meter, falling back to its family and then to the account total, never to whichever model the payload happens to list first — and that holds for a payload that reports a single metered model too, because one allowance is still per-model data rather than a reason to echo the first entry. The panel puts the active provider first, marked with the petal, and says why it has no data when it does not: API-key providers have no subscription windows, Claude reports after the first response, Codex and NaN wait for a fetch. A provider without per-model allowances keeps its single aggregate line in the sidebar, unchanged.
+- A provider with per-model allowances is ordered by family on both surfaces: a family stays together, the family that consumes most comes first, and the models inside it follow the same rule, most used first. There are no `total` rows anywhere — an aggregate nobody can act on only costs space — so the account and family totals survive only as the bar's fallback name when the session model holds no allowance of its own (`nan total`). An allowance row leaves the window label empty and prints `name meter percent`, while a labeled sub-window (`4h`) keeps its column, and the reset a window reports rides that same line after a `·`; a window without one ends at its percentage, never on a dangling separator. The sidebar's Usage group prints those same rows in that same order, so the breakdown does not require opening the panel, and stops at the percentage: the reset dates stay in the panel. A row whose windows all round to `0%` is dropped from that group — an allowance nobody has touched yet tells the reader nothing the missing row does not — and the same rule retires the aggregate line of a provider without raw allowances once every window it shows sits at `0%`; the bar and the panel keep printing it, so a zeroed subscription is still verifiable there.
 - Only the plan name and the windows are kept; account details in the payload are discarded.
 - Gauges turn amber at 80% and red at 95%, like the context gauge.
 
-Gentle notices are drawn as cards: the same rounded frame as the prompt, with the left rail and the title in the tone of the notice and the rest of the frame in the theme's border color.
+Gentle notices are drawn as cards: the same rounded frame as the prompt. An informational card paints the rounded frame in the theme's plain border role and its title in the accent role — the rose look every sidebar card, the review preflight reminder, and a quiet Agents card share. A warning, error, or success card paints its frame and title in its own tone color instead.
 
 ```text
 ╭─ ✿ Gentle AI · review preflight ─────────────────────────────────────╮
@@ -125,10 +148,12 @@ Agent paths follow `GENTLE_PI_AGENT_HOME`, then `PI_CODING_AGENT_DIR`, then `~/.
 
 ```text
 ╭─ ❀ Agents · 1 active · 1 done ─────────────────────────────── 1m24s ╮
-│ ✓  sdd-explore  map footer data sources    gpt-5.6-terra · 34k · $0.27 · 25s │
-│ ◐  sdd-apply    write gentle-shell footer  gpt-5.6-terra · 12k · $0.09 · 41s │
-╰──────────────────────────────────────────────────────────────────────────────╯
+│ ✓  sdd-explore  map footer data sources     gpt-5.6-terra ·  34k ·  $0.27 · 25s │
+│ ◐  sdd-apply    write gentle-shell footer   gpt-5.6-terra · 120k · $12.50 · 41s │
+╰──────────────────────────────────────────────────────────────────────────────────╯
 ```
+
+The card is above the editor in every mode, including fullscreen — it is not one of the sidebar's cards. Each metadata field (`model · effort`, tokens, cost, elapsed) gets its own fixed, right-aligned column sized to the widest value among the shown tasks, so the numbers line up vertically even when one row's values are much shorter than another's; a queued task fills only the elapsed column with the word `queued`, leaving the rest of the row blank rather than overwriting it. When the card is too narrow for every column, it degrades one column at a time and the same way for every row: the task text goes first, then the `model · effort` label, then tokens, then cost; elapsed is the last column standing, since it is the one value the reader cannot rebuild from anything else on screen.
 
 Every subagent is its own `pi --mode rpc` child process, so the terminal never runs subagent work: the host reads JSON lines, applies each one as a small delta to a bounded per-task thread, and notifies only the listeners of that task. A task-mode child's question (`ctx.ui.select`, `confirm`, `input`, `editor`) reaches you as an ordinary pi dialog; a background child's question is dismissed. Subagents have no automatic total execution timeout: a long-running child remains live while it continues emitting RPC events. A silent child still times out through the configurable `stall_timeout_ms` watchdog (default four minutes). An announced tool call that is still running is live work, not silence, so it is bounded by `tool_stall_timeout_ms` instead (default 30 minutes, never below `stall_timeout_ms`). Closing pi stops the children that are still running.
 
@@ -143,10 +168,10 @@ Every subagent is its own `pi --mode rpc` child process, so the terminal never r
 - Mouse controls take priority over keyboard hints: **Follow** (`f`), **Open session** (`o`), **Stop** (`s`, legacy `c`, owned active tasks only), and **Scope** (`a`). A compact footer's `>` cycles through actions. Scope switches between this session's direct active children and all open orchestrators, including idle ones. Open writes a markdown transcript for `$EDITOR`, not a resumed child session. `j`/`k` move through lists or scroll an expanded thread; `ctrl+j`/`ctrl+k` and Page Down/Up page the thread. In Pi fullscreen mode, the wheel scrolls the viewport under the pointer; regular terminal mode does not capture mouse input. Below 12 columns or three rows, only a bounded Close cell remains; zero-sized terminals render nothing.
 - The thread displays all retained Text, Thinking, Note, and Tool content without an additional presentation cap; existing store limits and truncation markers still apply. Only the selected task is subscribed while the overlay is open.
 - Thread entries are presented as labeled Text, Thinking, Note, or Tool blocks; tool blocks show their status and nonempty output.
-- Current scope has no orchestrator wrapper and excludes every terminal task. All sessions discovers open Pi instances sharing the same agent profile, even across repositories; it does not infer open sessions from retained tasks. Directory headings support left/right and mouse expansion, and cannot stop or open a task. Peer children and their retained threads are read-only: no local stop, editor-open, or continuation routing, and no import into the local task store.
+- Current scope has no orchestrator wrapper. Its own session's finished subagents stay listed as history after the active ones — newest ended first — with their terminal glyph, elapsed frozen at completion, and their thread inspectable; a finished row is never cancellable. The header reads `N active · M finished`. History is capped at 200 finished tasks per session (oldest dropped); resuming a session (`session_start` with reason `resume`) restores that session's own finished tasks from disk automatically, a brand-new session starts empty, and All sessions discovers open Pi instances sharing the same agent profile, even across repositories — it does not infer open sessions from retained tasks and stays presence-only (no cross-session history browsing). Directory headings support left/right and mouse expansion, and cannot stop or open a task. Peer children and their retained threads are read-only: no local stop, editor-open, or continuation routing, and no import into the local task store.
 - Presence refresh is paged while the overlay is open. Graceful shutdown withdraws an instance; after abrupt closure its last heartbeat may remain visible for up to 15 seconds plus the time to complete the next directory refresh. A recent heartbeat is a heuristic, not proof that a process is alive. Same-profile, same-user processes share retained activity text; this is not an authorization channel.
 - `alt+s` confirms stopping the current active or queued subagents owned by the current process. `GENTLE_PI_AGENTS_STOP_KEY` rebinds it; `off` disables it.
-- Finished tasks are written to `~/.pi/agent/gentle-agents/tasks/` (one JSON per task, newest `history_max_tasks` kept, default 200) and come back on demand for `subagent_result` and `subagent_continue`, never as overlay history. Child sessions live under `~/.pi/agent/gentle-agents/sessions/`.
+- Finished tasks are written to `~/.pi/agent/gentle-agents/tasks/` (one JSON per task, newest `history_max_tasks` kept, default 200) and come back on demand for `subagent_result` and `subagent_continue`; an id looked up this way from an unrelated session never enters the overlay or becomes cancellable. Child sessions live under `~/.pi/agent/gentle-agents/sessions/`.
 - `ctrl+shift+a` collapses the card to its first row (`GENTLE_PI_AGENTS_KEY`), `GENTLE_PI_AGENTS_VIEW_KEY` rebinds the overlay, `GENTLE_PI_AGENTS_PI` overrides the pi command used for children, and `GENTLE_PI_AGENTS=0` disables the tools and the card.
 
 ### Gentle Todo
