@@ -2,7 +2,7 @@
 
 ## Objective
 
-Fix GitHub issue #1176 so the fullscreen Status sidebar shows the profile that governs subagent launches in the current repository. Append `(pinned)` only when a valid clone-local pin or repository declaration wins; otherwise show the globally active profile without a suffix.
+Fix GitHub issue #1176 so the fullscreen Status sidebar shows the profile that governs subagent launches in the current repository. Preserve the winning source returned by `resolveProfilePin()` and display `(local)` for a clone-local pin or `(repo)` for a repository declaration; otherwise show the globally active profile without a suffix.
 
 ## Context
 
@@ -17,10 +17,11 @@ Fix GitHub issue #1176 so the fullscreen Status sidebar shows the profile that g
 ## Scope
 
 - Resolve the effective profile through the existing repository-pin authority.
-- Keep profile state structured through the shell model and render `(pinned)` only for a valid winning pin.
+- Keep profile state structured through the shell model and render the valid winning pin source as `(local)` or `(repo)`.
 - Refresh the Status digest when the global profile or relevant pin state changes.
 - Preserve the compact bottom bar behavior: it does not show a profile.
 - Add focused regression coverage and update user-facing documentation if the documented semantics require clarification.
+- Keep this follow-up below 400 changed production/documentation lines and below 400 changed test lines.
 
 ## Tasks
 
@@ -30,12 +31,15 @@ Fix GitHub issue #1176 so the fullscreen Status sidebar shows the profile that g
   no profile filesystem or Git resolution.
 - [x] T3 — Merge current `main` at `43269de3`, reconcile the feature with the live header and current
   shell behavior, and verify the merged candidate.
+- [x] T4 — Replace the lossy `pinned` boolean with the effective source (`global`, `local`, or `repo`), render the winning pin scope, cover same-profile source transitions, update documentation, and verify within the user-specified line budgets. Route: delegated writer because the change spans multiple non-trivial files.
 
 ## Acceptance criteria
 
 - No valid pin: `Profile <global-active-name>`.
-- Valid local or repository pin: `Profile <effective-name> (pinned)`.
-- Invalid, stale, missing, or unreadable pins fall back to the global active profile without `(pinned)`.
+- Valid clone-local pin: `Profile <effective-name> (local)`.
+- Valid repository declaration: `Profile <effective-name> (repo)`.
+- Invalid, stale, missing, or unreadable pins fall back to the global active profile without a suffix.
+- A same-name transition between local and repository sources refreshes the displayed scope.
 - Local pin precedence over repository declaration remains owned by `resolveProfilePin()`.
 - Creating, changing, or removing a pin updates the fullscreen Status digest and live header without
   restarting Pi.
@@ -70,3 +74,10 @@ Fix GitHub issue #1176 so the fullscreen Status sidebar shows the profile that g
 - T3 type check: passed with 196 baseline diagnostics and no regressions.
 - T3 diff check: `git diff --check` — passed.
 - T3 merge commit: `e32c62ce` (`chore(branch): merge current main into effective profile fix`).
+- T4 TDD RED: focused tests observed 129 passed and 5 failed after expectations changed to exact global/local/repo sources, including missing local suffixes and old reader state.
+- T4 TDD GREEN: focused tests passed with 134 passed and 0 failed after replacing `pinned` with `source` and comparing source during snapshot refresh.
+- T4 focused verification: `node --experimental-strip-types --test tests/gentle-shell.test.ts tests/shell-bar.test.ts tests/shell-sidebar-layout.test.ts` — 160 passed, 0 failed.
+- T4 type check: `node scripts/check-types.mjs` — passed with 196 recorded diagnostics, no regressions, and 3 file/code pairs improved.
+- T4 full suite: the required command reported 2846 passed, 1 failed, and 47 skipped only in `tests/review-host-relay-routing.test.ts`; the mandated override passed 31 tests, and the remaining suite passed 2816 tests with 47 skipped.
+- T4 diff check: `git diff --check` — passed after removing one test trailing-whitespace line.
+- T4 line budgets: 19 changed production/documentation lines and 112 changed test lines (additions plus deletions; task-artifact bookkeeping excluded).

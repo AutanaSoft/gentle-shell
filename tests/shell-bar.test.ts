@@ -239,7 +239,7 @@ test("sidebar unifies project, captured changes and integrations in one frame", 
 test("sidebar profile wraps long names without changing the compact bar", () => {
 	const profile = "team-" + "x".repeat(59);
 	const base = model();
-	const active = model({ profile: { name: profile, pinned: false } });
+	const active = model({ profile: { name: profile, source: "global" } });
 	for (const width of [24, 46]) {
 		const lines = renderShellSidebarBar(active, plainTheme, width);
 		assert.ok(lines.every((line) => visibleWidth(line) <= width));
@@ -249,13 +249,13 @@ test("sidebar profile wraps long names without changing the compact bar", () => 
 	assert.deepEqual(renderShellBar(active, plainTheme, 120), renderShellBar(base, plainTheme, 120));
 });
 
-test("sidebar formats and sanitizes the pinned profile suffix", () => {
-	const pinned = model({ profile: { name: "other\x1b[31m", pinned: true } });
-	const sidebar = renderShellSidebarBar(pinned, plainTheme, 46).join("\n");
-	assert.match(sidebar, /Profile.*other \(pinned\)/);
+test("sidebar formats and sanitizes the effective pin source suffix", () => {
+	const local = model({ profile: { name: "other\x1b[31m", source: "local" } });
+	const sidebar = renderShellSidebarBar(local, plainTheme, 46).join("\n");
+	assert.match(sidebar, /Profile.*other \(local\)/);
 	assert.doesNotMatch(sidebar, /\x1b\[/);
-	const [compact] = renderShellBar(pinned, plainTheme, 120);
-	assert.doesNotMatch(compact, /other|pinned/);
+	const [compact] = renderShellBar(local, plainTheme, 120);
+	assert.doesNotMatch(compact, /other|local/);
 });
 
 test("sidebar Status card drops Model, Effort, Context, Cost and Usage, keeping Project, Changes and Integrations", () => {
@@ -265,7 +265,7 @@ test("sidebar Status card drops Model, Effort, Context, Cost and Usage, keeping 
 		fetchedAt: 0,
 		limits: [{ name: "codex", limitReached: false, windows: [{ label: "5h", usedPercent: 62, windowSeconds: 18_000, resetAt: null }] }],
 	};
-	const data = model({ profile: { name: "team", pinned: false }, sessionName: "session", usage, changes: { files: 1, added: 2, deleted: 1 }, statuses: ["MCP connected"] });
+	const data = model({ profile: { name: "team", source: "global" }, sessionName: "session", usage, changes: { files: 1, added: 2, deleted: 1 }, statuses: ["MCP connected"] });
 	const text = renderShellSidebarBar(data, plainTheme, 60).join("\n");
 	assert.doesNotMatch(text, /Usage/);
 	assert.doesNotMatch(text, /Model/);
@@ -286,14 +286,14 @@ test("sidebar Status card drops Model, Effort, Context, Cost and Usage, keeping 
 // statuses — those stay in the prompt and the Status card.
 
 test("buildShellHeaderModel keeps only the header's fields from the bar model", () => {
-	const header = buildShellHeaderModel(model({ profile: { name: "team", pinned: false }, statuses: ["MCP: 3 servers"] }));
+	const header = buildShellHeaderModel(model({ profile: { name: "team", source: "global" }, statuses: ["MCP: 3 servers"] }));
 	assert.deepEqual(header, {
 		cwd: "~/work/gentle-pi",
 		branch: "main",
 		dirty: undefined,
 		modelId: "gpt-5.5",
 		effort: "medium",
-		profile: { name: "team", pinned: false },
+		profile: { name: "team", source: "global" },
 		contextPercent: 45,
 		costTotal: 9.49,
 		subscription: true,
@@ -303,7 +303,7 @@ test("buildShellHeaderModel keeps only the header's fields from the bar model", 
 });
 
 test("renderShellHeaderBar draws the brand, identity, and right-aligned counters (plus the standing usage segment) in one line", () => {
-	const header = buildShellHeaderModel(model({ profile: { name: "team", pinned: false } }));
+	const header = buildShellHeaderModel(model({ profile: { name: "team", source: "global" } }));
 	const { text: line } = renderShellHeaderBar(header, plainTheme, 120);
 	const left = "✿ Gentle Shell ⟡ ~/work/gentle-pi main ⟡ gpt-5.5 · medium · team";
 	const right = "ctx ▰▰▰▰▱▱▱▱ 45% ⟡ $9.49 sub ⟡ usage";
@@ -326,7 +326,7 @@ test("renderShellHeaderBar colors the brand bold and by role", () => {
 });
 
 test("renderShellHeaderBar drops the profile, then the effort, then the whole location before the right group", () => {
-	const withProfile = buildShellHeaderModel(model({ profile: { name: "team", pinned: false } }));
+	const withProfile = buildShellHeaderModel(model({ profile: { name: "team", source: "global" } }));
 	const { text: wide } = renderShellHeaderBar(withProfile, plainTheme, 120);
 	assert.match(wide, /gpt-5\.5 · medium · team/);
 	assert.match(wide, /~\/work\/gentle-pi main/);

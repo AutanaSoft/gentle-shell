@@ -112,11 +112,11 @@ export function createActiveProfileReader(
 		if (next !== fingerprint) {
 			const resolution = resolveProfilePin({ cwd, configHome, resolveWorktree });
 			if (resolution) {
-				profile = { name: resolution.profile, pinned: true };
+				profile = { name: resolution.profile, source: resolution.source };
 			} else {
 				const result = readProfilesFileResult(profilesPath);
 				profile = result.status === "valid" && result.file.active
-					? { name: result.file.active, pinned: false }
+					? { name: result.file.active, source: "global" }
 					: undefined;
 			}
 			fingerprint = next;
@@ -180,11 +180,11 @@ function effectiveProfileWatchDirectories(
 }
 
 function copyProfileState(profile: ShellProfileState | undefined): ShellProfileState | undefined {
-	return profile === undefined ? undefined : { name: profile.name, pinned: profile.pinned };
+	return profile === undefined ? undefined : { name: profile.name, source: profile.source };
 }
 
 function sameProfileState(left: ShellProfileState | undefined, right: ShellProfileState | undefined): boolean {
-	return left?.name === right?.name && left?.pinned === right?.pinned;
+	return left?.name === right?.name && left?.source === right?.source;
 }
 
 function createEffectiveProfileSnapshot(options: EffectiveProfileSnapshotOptions): EffectiveProfileSnapshot {

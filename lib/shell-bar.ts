@@ -10,9 +10,11 @@ export { gaugeTone, renderGauge, type GaugeTone };
 // three-line footer. Everything here is pure so the bar can be rendered and
 // verified without a live TUI.
 
+export type ShellProfileSource = "global" | "local" | "repo";
+
 export interface ShellProfileState {
 	name: string;
-	pinned: boolean;
+	source: ShellProfileSource;
 }
 
 export interface ShellBarModel {
@@ -122,7 +124,8 @@ function sanitizeStatus(text: string): string {
 }
 
 function formatProfile(profile: ShellProfileState): string {
-	return sanitizeStatus(`${profile.name}${profile.pinned ? " (pinned)" : ""}`);
+	const suffix = profile.source === "global" ? "" : ` (${profile.source})`;
+	return sanitizeStatus(`${profile.name}${suffix}`);
 }
 
 // Shared by the compact bar, the sidebar Status card, and the fullscreen
