@@ -14,6 +14,8 @@ import {
 	missingPiMessage,
 	parseLauncherArgs,
 	parseLauncherConfig,
+	planSpawn,
+	quoteForCmdExe,
 	resolveHome,
 	resolvePiRuntime,
 	settingsDeclareGentlePi,
@@ -526,6 +528,64 @@ test("buildPiInvocation keeps the runtime's own args ahead of the injection and 
 	});
 	assert.equal(built.args[0], "/bundled/cli.js");
 	assert.equal(built.command, "/usr/bin/node");
+});
+
+// --- planSpawn / quoteForCmdExe ----------------------------------------------
+//
+// R3-001: on win32, `findOnPath` in bin/gentle-shell.mjs can resolve a PATHEXT
+// candidate such as a .CMD or .BAT shim (exactly how an npm-installed `pi`
+// lands on PATH). Node refuses to spawn a batch file directly without
+// `shell: true` (EINVAL), so both the version probe and the real launch must
+// route a batch shim through cmd.exe.
+
+test("planSpawn runs a win32 .CMD shim through the shell as a single quoted command line", () => {
+	const plan = planSpawn({
+		command: "C:\\Users\\x\\AppData\\Roaming\\npm\\pi.CMD",
+		args: [],
+		platform: "win32",
+	});
+	assert.equal(plan.shell, true);
+	assert.equal(plan.args.length, 0);
+	// No spaces in the path, so quoting is optional; only the exact text must be present.
+	assert.equal(plan.command, "C:\\Users\\x\\AppData\\Roaming\\npm\\pi.CMD");
+});
+
+test("planSpawn quotes a win32 .bat shim and its args that contain spaces", () => {
+	const plan = planSpawn({
+		command: "C:\\Program Files\\pi\\pi.bat",
+		args: ["--mode", "rpc", "hello world"],
+		platform: "win32",
+	});
+	assert.equal(plan.shell, true);
+	assert.deepEqual(plan.args, []);
+	assert.equal(plan.command, '"C:\\Program Files\\pi\\pi.bat" --mode rpc "hello world"');
+});
+
+test("planSpawn leaves a win32 .exe or extension-less command unchanged", () => {
+	const exe = planSpawn({ command: "C:\\pi\\pi.exe", args: ["--version"], platform: "win32" });
+	assert.deepEqual(exe, { command: "C:\\pi\\pi.exe", args: ["--version"], shell: false });
+
+	const bare = planSpawn({ command: "pi", args: ["--version"], platform: "win32" });
+	assert.deepEqual(bare, { command: "pi", args: ["--version"], shell: false });
+});
+
+test("planSpawn never enables the shell on posix, even for a .cmd-named command", () => {
+	for (const platform of ["darwin", "linux"] as const) {
+		const plan = planSpawn({ command: "/usr/local/bin/pi.cmd", args: ["--version"], platform });
+		assert.deepEqual(plan, { command: "/usr/local/bin/pi.cmd", args: ["--version"], shell: false });
+	}
+});
+
+test("quoteForCmdExe leaves a plain token untouched", () => {
+	assert.equal(quoteForCmdExe("pi"), "pi");
+});
+
+test("quoteForCmdExe quotes a token with a space and escapes an inner double quote", () => {
+	assert.equal(quoteForCmdExe('say "hi" now'), '"say \\"hi\\" now"');
+});
+
+test("quoteForCmdExe quotes an empty token", () => {
+	assert.equal(quoteForCmdExe(""), '""');
 });
 
 // --- describeVersion / helpText ----------------------------------------------

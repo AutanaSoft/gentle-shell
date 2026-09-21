@@ -350,6 +350,46 @@ export function buildPiInvocation(input: BuildPiInvocationInput): PiInvocation {
 	};
 }
 
+// --- spawn planning ------------------------------------------------------------
+
+// R3-001: `findOnPath` can resolve a PATHEXT candidate such as a .CMD or .BAT
+// shim on win32 (exactly how an npm-installed `pi` lands on PATH), and a
+// GENTLE_SHELL_PI override can point at one too. Current Node releases refuse
+// to spawn a batch file directly without `shell: true` (EINVAL), so both the
+// version probe and the real launch route a batch shim through cmd.exe as one
+// quoted command line instead of spawning it directly.
+const CMD_EXE_SPECIAL_CHARS = /[\s"&|<>^%()]/;
+
+// cmd.exe quoting is deliberately simple, not a full cmd.exe parser: wrap a
+// token in double quotes when it is empty or contains whitespace or any of
+// `"&|<>^%()`, and escape an inner `"` as `\"` — doubling inner quotes is not
+// reliable in cmd.exe, unlike the `\"` convention Node's own Windows spawn
+// helpers use.
+export function quoteForCmdExe(token: string): string {
+	if (token.length > 0 && !CMD_EXE_SPECIAL_CHARS.test(token)) return token;
+	return `"${token.replace(/"/g, '\\"')}"`;
+}
+
+export interface PlanSpawnInput {
+	command: string;
+	args: string[];
+	platform: NodeJS.Platform;
+}
+
+export interface SpawnPlan {
+	command: string;
+	args: string[];
+	shell: boolean;
+}
+
+export function planSpawn(input: PlanSpawnInput): SpawnPlan {
+	const { command, args, platform } = input;
+	if (platform === "win32" && /\.(cmd|bat)$/i.test(command)) {
+		return { command: [command, ...args].map(quoteForCmdExe).join(" "), args: [], shell: true };
+	}
+	return { command, args, shell: false };
+}
+
 // --- reporting ---------------------------------------------------------------
 
 export interface DescribeVersionInput {

@@ -19,6 +19,7 @@ import {
 	missingPiMessage,
 	parseLauncherArgs,
 	parseLauncherConfig,
+	planSpawn,
 	resolveHome,
 	resolvePiRuntime,
 	settingsDeclareGentlePi,
@@ -140,10 +141,12 @@ async function main() {
 	});
 	if (runtime === undefined) fail(missingPiMessage(), 1);
 
-	const versionProbe = spawnSync(runtime.command, [...runtime.args, "--version"], {
+	const versionProbePlan = planSpawn({ command: runtime.command, args: [...runtime.args, "--version"], platform: process.platform });
+	const versionProbe = spawnSync(versionProbePlan.command, versionProbePlan.args, {
 		stdio: ["ignore", "pipe", "pipe"],
 		timeout: 15000,
 		encoding: "utf8",
+		shell: versionProbePlan.shell,
 	});
 	if (versionProbe.error) fail(`Could not run the pi runtime at "${runtime.command}": ${versionProbe.error.message}`, 1);
 	const versionCheck = checkPiVersion(versionProbe.stdout ?? "");
@@ -177,7 +180,8 @@ async function main() {
 		baseEnv: process.env,
 	});
 
-	const child = spawn(invocation.command, invocation.args, { stdio: "inherit", env: invocation.env });
+	const launchPlan = planSpawn({ command: invocation.command, args: invocation.args, platform: process.platform });
+	const child = spawn(launchPlan.command, launchPlan.args, { stdio: "inherit", env: invocation.env, shell: launchPlan.shell });
 	for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
 		process.on(signal, () => child.kill(signal));
 	}
