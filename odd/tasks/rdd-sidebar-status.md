@@ -287,6 +287,13 @@ The task that owns a behavior runs its focused commands. Full-suite, runtime-mod
     - Perform interactive visual confirmation in fullscreen and compact layouts when a live Pi host is available; otherwise leave it explicitly pending for the user.
   - Completion evidence: focused suites passed (RDD reader 23/23, parity 22/22, renderer/layout 67/67, Shell lifecycle 99/99, risk assessment 64/64); typecheck passed with 196 baseline diagnostics and no regressions; full suite passed 2,939 tests with 38 skipped and only the pre-existing unchanged runtime-harness assertion failing; runtime-module parity and `git diff --check` passed. Live fullscreen/compact visual acceptance remains explicitly pending for an interactive Pi host.
 
+- [ ] **RSS-6 — Integrate current main and effective-profile downstream state**
+  - Merge `main` at `b6188bef` into the feature branch and verify the updated candidate.
+  - Push `feat/shell-rdd-status-v2` after successful verification and native review.
+  - Integrate the verified branch into `downstream/main`, combining effective-profile snapshots with RDD state in `extensions/gentle-shell.ts`.
+  - Preserve both lifecycle cleanup paths, independent invalidation, and structured profile/RDD model projection.
+  - Run focused Shell/RDD tests, typecheck, conflict-marker checks, and whitespace validation before publishing `downstream/main`.
+
 ## Acceptance criteria
 
 - Native `status.effective` is the only source for `ON` or `OFF`.
