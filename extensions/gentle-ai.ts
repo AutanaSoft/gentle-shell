@@ -6715,6 +6715,11 @@ async function executeReviewHostRelayCapture(
 	route: RetainedNativeCaptureRoute | undefined,
 	signal?: AbortSignal,
 	modelRegistry?: InProcessReviewerRegistry,
+	// The caller's live session id: forwarded into the relay request so an
+	// OpenCode-routed reviewer completion carries its x-opencode-session
+	// attribution header. Appended last so every existing positional call site
+	// keeps compiling unchanged.
+	reviewerSessionId?: string,
 ): Promise<Record<string, unknown>> {
 	try {
 		if (slot.submission === undefined) {
@@ -6738,6 +6743,7 @@ async function executeReviewHostRelayCapture(
 				submission: slot.submission,
 				...launch,
 				...(modelRegistry === undefined ? {} : { reviewerRegistry: modelRegistry }),
+				...(reviewerSessionId === undefined ? {} : { reviewerSessionId }),
 				...(signal === undefined ? {} : { signal }),
 			};
 		})());
@@ -7340,6 +7346,11 @@ async function executeReviewCaptureOperation(
 	// inserted) so every existing positional call site — none of which pass an
 	// eighth argument — keeps compiling unchanged.
 	modelRegistry?: InProcessReviewerRegistry,
+	// The caller's live session id, threaded into every relay request this
+	// capture launches so an OpenCode-routed reviewer model carries its
+	// x-opencode-session attribution header. Appended last for the same
+	// positional-call-site reason as modelRegistry above.
+	reviewerSessionId?: string,
 ): Promise<Record<string, unknown>> {
 	const parameters = parseReviewCaptureParameters(parametersValue);
 	if (nativeReviewCli === null || nativeReviewCli.targetStatus === undefined) {
@@ -7399,7 +7410,7 @@ async function executeReviewCaptureOperation(
 				mutation_outcome: "none",
 			};
 		}
-		return withCorrectionTarget(await executeReviewHostRelayCapture(hostRelaySlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry));
+		return withCorrectionTarget(await executeReviewHostRelayCapture(hostRelaySlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId));
 	}
 
 	// gentle-pi#311 P3: gentle-ai's v9 contract renders the refuter and
@@ -7425,7 +7436,7 @@ async function executeReviewCaptureOperation(
 				mutation_outcome: "none",
 			};
 		}
-		return withCorrectionTarget(await executeReviewHostRelayCapture(hostMediatedRoleSlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry));
+		return withCorrectionTarget(await executeReviewHostRelayCapture(hostMediatedRoleSlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId));
 	}
 
 	if (selected.input.captureOperation === "review.capture-correction-plan") {
@@ -7506,6 +7517,10 @@ async function executeReviewCaptureGroupOperation(
 	requireRegisteredRoute = false,
 	// gentle-pi#311 P2: see executeReviewCaptureOperation's matching parameter.
 	modelRegistry?: InProcessReviewerRegistry,
+	// The caller's live session id, set on every grouped relay request so an
+	// OpenCode-routed reviewer model carries its x-opencode-session attribution
+	// header. Appended last for the same positional-call-site reason as above.
+	reviewerSessionId?: string,
 ): Promise<Record<string, unknown>> {
 	const parameters = parseReviewCaptureGroupParameters(parametersValue);
 	if (nativeReviewCli === null || nativeReviewCli.targetStatus === undefined) return { ...captureGroupRejected("native target STATUS is unavailable"), outcome: "native-status-unsupported" };
@@ -7548,6 +7563,7 @@ async function executeReviewCaptureGroupOperation(
 		submission: slot.submission!,
 		...reviewHostRelaySelection(slot.lens, readModelConfig(cwd)),
 		...(modelRegistry === undefined ? {} : { reviewerRegistry: modelRegistry }),
+		...(reviewerSessionId === undefined ? {} : { reviewerSessionId }),
 		...(signal === undefined ? {} : { signal }),
 	}));
 	let prepared: readonly ReviewHostRelayPreparedResult[];
@@ -8826,6 +8842,10 @@ function createGentleAiExtensionForTesting(
 				((sessionKey: PendingReviewConsentSessionKey) => processRetainedNativeStatusSelections.get(sessionKey) ?? processRetainedNativeStatusSelections.set(sessionKey, new Map()).get(sessionKey)!)(pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey)),
 				true,
 				ctx.modelRegistry,
+				// The live session id rides into the reviewer side-call so an
+				// OpenCode-routed completion carries its attribution headers
+				// (pi adds those inside the main agent loop; this is not that loop).
+				reviewSessionManagerAndId(ctx)?.sessionId,
 			);
 			return { content: [{ type: "text", text: JSON.stringify(details) }], details };
 		},
@@ -8865,6 +8885,10 @@ function createGentleAiExtensionForTesting(
 				((sessionKey: PendingReviewConsentSessionKey) => processRetainedNativeStatusSelections.get(sessionKey) ?? processRetainedNativeStatusSelections.set(sessionKey, new Map()).get(sessionKey)!)(pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey)),
 				true,
 				ctx.modelRegistry,
+				// The live session id rides into the reviewer side-call so an
+				// OpenCode-routed completion carries its attribution headers
+				// (pi adds those inside the main agent loop; this is not that loop).
+				reviewSessionManagerAndId(ctx)?.sessionId,
 			);
 			return {
 				content: [{ type: "text", text: JSON.stringify(details) }],
