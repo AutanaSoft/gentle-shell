@@ -170,6 +170,13 @@ import {
 	type ReviewProjectionV1,
 } from "../lib/review-snapshot.ts";
 import { renderGentleAiLifecycleCall, renderGentleAiResult, type GentleAiRenderContext } from "../lib/gentle-ai-renderer.ts";
+import {
+	RDD_STATUS_MEMO_TTL_MS,
+	RDD_STATUS_TIMEOUT_MS,
+	clearRddStatusMemoForTesting,
+	isValidRddModeStatus,
+	readRddModeStatus,
+} from "../lib/rdd-mode-status.ts";
 import { sanitizeTerminalText, stripAnsi } from "../lib/terminal-theme.ts";
 import { BASE_REF_ACCEPTED_FORMS, CandidateViewError, CandidateViewRegistry, injectReviewCandidateView, readCandidateContextManifestPage, resolveCanonicalCandidateBase, type CandidateView } from "../lib/review-candidate-view.ts";
 import {
@@ -851,23 +858,6 @@ function renderBackgroundSubagentsStatusLine(
 	return `Background subagent policy: ${background.policy} (capability: ${background.capability})`;
 }
 
-/**
- * A `status` object is only trusted when `effective` is exactly `on`/`off`
- * and `source` is one of the exported `NATIVE_REVIEW_MODE_SOURCE` values.
- * `resolveRddModeStatus` only ever produces a value shaped like this, but
- * `renderRddStatusLine` validates at the render boundary anyway -- a
- * malformed or partial object (a bad decode upstream, a future field
- * change, a hand-built test fixture) must fail closed to the "unknown"
- * line, never render an unrecognized value verbatim.
- */
-function isValidRddModeStatus(
-	status: NativeReviewModeStatus | undefined,
-): status is NativeReviewModeStatus {
-	if (status === undefined || status === null || typeof status !== "object") return false;
-	if (status.effective !== "on" && status.effective !== "off") return false;
-	const validSources: readonly string[] = Object.values(NATIVE_REVIEW_MODE_SOURCE);
-	return typeof status.source === "string" && validSources.includes(status.source);
-}
 
 /**
  * Renders the receipt-driven-development status line rendered next to
@@ -886,27 +876,6 @@ function renderRddStatusLine(
 		: "Receipt-driven development: unknown (native status unavailable)";
 }
 
-// The primary-session prompt awaits this on every non-SDD, non-named agent
-// start, so an unbounded native read would stall session start behind a
-// hung `gentle-ai` child (gentle-pi#661 native-review escalation). The
-// production call site (before_agent_start) passes
-// `AbortSignal.timeout(RDD_STATUS_TIMEOUT_MS)`; resolveRddModeStatus also
-// races the call against that same signal itself (not just the CLI's own
-// signal handling) so an abort is honored even against a stub/mock
-// reviewMode that ignores its `signal` argument, as tests do.
-const RDD_STATUS_TIMEOUT_MS = 3000;
-// Repeated session/agent-start builds within this window reuse the last
-// resolved status instead of respawning the native binary. Deliberately
-// memoizes a failed/undefined resolution too (a sustained outage should not
-// retry every agent start), trading a slower recovery signal for far fewer
-// spawns; the one-shot notify below still surfaces a sustained outage.
-const RDD_STATUS_MEMO_TTL_MS = 30_000;
-const rddStatusMemo = new Map<string, { readonly status: NativeReviewModeStatus | undefined; readonly expiresAt: number }>();
-
-/** @internal test seam: clears the per-cwd RDD status memo. */
-function clearRddStatusMemoForTesting(): void {
-	rddStatusMemo.clear();
-}
 
 // gentle-pi#668 (corrected): last-known outcome for ONE candidate, keyed by
 // repository realpath AND targetIdentity -- never repository alone, or one
@@ -954,29 +923,12 @@ async function readCurrentTargetIdentityBestEffort(
 	}
 }
 
-function rddAbortRejection(signal: AbortSignal): Promise<never> {
-	return new Promise((_resolve, reject) => {
-		if (signal.aborted) {
-			reject(signal.reason ?? new Error("aborted"));
-			return;
-		}
-		signal.addEventListener("abort", () => reject(signal.reason ?? new Error("aborted")), { once: true });
-	});
-}
-
 async function readRddModeStatusOnce(
 	nativeReviewCli: Pick<NativeReviewCli, "reviewMode"> | null | undefined,
 	cwd: string,
 	signal?: AbortSignal,
 ): Promise<NativeReviewModeStatus | undefined> {
-	if (!nativeReviewCli?.reviewMode) return undefined;
-	try {
-		const call = nativeReviewCli.reviewMode({ cwd, operation: NATIVE_REVIEW_MODE_OPERATION.STATUS, signal });
-		const result = signal === undefined ? await call : await Promise.race([call, rddAbortRejection(signal)]);
-		return result.status;
-	} catch {
-		return undefined;
-	}
+	return (await readRddModeStatus(nativeReviewCli, cwd, signal)).status;
 }
 
 // gentle-pi#662: read-only combined native risk assessment plus the computed
@@ -1091,11 +1043,8 @@ async function resolveRddModeStatus(
 	now: () => number = Date.now,
 	ctx?: Pick<ExtensionContext, "hasUI" | "ui">,
 ): Promise<NativeReviewModeStatus | undefined> {
-	const nowMs = now();
-	const cached = rddStatusMemo.get(cwd);
-	if (cached !== undefined && cached.expiresAt > nowMs) return cached.status;
-	const status = await readRddModeStatusOnce(nativeReviewCli, cwd, signal);
-	rddStatusMemo.set(cwd, { status, expiresAt: nowMs + RDD_STATUS_MEMO_TTL_MS });
+	const resolved = await readRddModeStatus(nativeReviewCli, cwd, signal, now);
+	const status = resolved.status;
 	if (status === undefined && !rddStatusUnavailableWarned) {
 		rddStatusUnavailableWarned = true;
 		if (ctx?.hasUI) {
@@ -8671,6 +8620,7 @@ export const __testing = {
 	renderBackgroundSubagentsStatusLine,
 	renderRddStatusLine,
 	isValidRddModeStatus,
+	readRddModeStatus,
 	resolveRddModeStatus,
 	resolveRddStatusLine,
 	RDD_STATUS_TIMEOUT_MS,

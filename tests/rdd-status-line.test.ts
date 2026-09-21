@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { __testing } from "../extensions/gentle-ai.ts";
+import { clearRddStatusMemoForTesting as clearSharedRddStatusMemo, invalidateRddModeStatus, readRddModeStatus } from "../lib/rdd-mode-status.ts";
 import {
 	NATIVE_REVIEW_MODE_OPERATION,
 	NATIVE_REVIEW_MODE_SOURCE,
@@ -279,6 +280,119 @@ test("the prompt cache key distinguishes on, off, and unknown so each renders a 
 		getOrchestratorPrompt(cwd, undefined, "Receipt-driven development: on (decided by global)"),
 		on,
 	);
+});
+
+test("the shared RDD reader projects native authority and is not yet available before RSS-1", async () => {
+	const reader = (__testing as unknown as {
+		readRddModeStatus?: (cli: Pick<NativeReviewCli, "reviewMode"> | null | undefined, cwd: string, signal?: AbortSignal, now?: () => number) => Promise<{ mode: "on" | "off" | "unknown"; projectOverride: boolean; status?: NativeReviewModeStatus }>;
+	}).readRddModeStatus;
+	assert.equal(typeof reader, "function", "RSS-1 must expose the shared authoritative reader");
+	if (reader === undefined) return;
+
+	const on = await reader(fakeReviewMode(modeResult("on", NATIVE_REVIEW_MODE_SOURCE.GLOBAL)), "/repo-reader-on");
+	assert.deepEqual(on, { mode: "on", projectOverride: false, status: modeResult("on", NATIVE_REVIEW_MODE_SOURCE.GLOBAL).status });
+	const project = await reader(fakeReviewMode(modeResult("off", NATIVE_REVIEW_MODE_SOURCE.CLONE_LOCAL)), "/repo-reader-project");
+	assert.equal(project.mode, "off");
+	assert.equal(project.projectOverride, true);
+});
+
+test("shared reader fails closed, ignores scope, and calls only native STATUS", async () => {
+	clearSharedRddStatusMemo();
+	let request: NativeReviewModeRequest | undefined;
+	const cli: Pick<NativeReviewCli, "reviewMode"> = {
+		async reviewMode(input) {
+			request = input;
+			return { ...modeResult("on", NATIVE_REVIEW_MODE_SOURCE.GLOBAL), scope: "clone" };
+		},
+	};
+	assert.deepEqual(await readRddModeStatus(cli, "/repo-scope"), {
+		mode: "on", projectOverride: false, status: modeResult("on", NATIVE_REVIEW_MODE_SOURCE.GLOBAL).status,
+	});
+	assert.equal(request?.operation, NATIVE_REVIEW_MODE_OPERATION.STATUS);
+	const malformed = await readRddModeStatus(fakeReviewMode({ operation: NATIVE_REVIEW_MODE_OPERATION.STATUS, scope: "global", status: { effective: "on", source: "bad" } } as unknown as NativeReviewModeResult), "/repo-malformed");
+	assert.deepEqual(malformed, { mode: "unknown", projectOverride: false });
+	const partial = await readRddModeStatus(fakeReviewMode({ operation: NATIVE_REVIEW_MODE_OPERATION.STATUS, scope: "global", status: { effective: "on", source: NATIVE_REVIEW_MODE_SOURCE.GLOBAL } } as unknown as NativeReviewModeResult), "/repo-partial");
+	assert.deepEqual(partial, { mode: "unknown", projectOverride: false }, "missing native global and cloneLocal fields must fail closed");
+	assert.deepEqual(await readRddModeStatus(undefined, "/repo-absent"), { mode: "unknown", projectOverride: false });
+	assert.deepEqual(await readRddModeStatus(fakeReviewMode(() => { throw new Error("rejected"); }), "/repo-rejected"), { mode: "unknown", projectOverride: false });
+});
+
+test("shared reader handles cancellation and invalidation without stale cache revival", async () => {
+	clearSharedRddStatusMemo();
+	let calls = 0;
+	let release!: (result: NativeReviewModeResult) => void;
+	const delayed: Pick<NativeReviewCli, "reviewMode"> = {
+		reviewMode: async () => {
+			calls += 1;
+			if (calls > 1) return modeResult("off", NATIVE_REVIEW_MODE_SOURCE.GLOBAL);
+			return await new Promise<NativeReviewModeResult>((resolve) => { release = resolve; });
+		},
+	};
+	const pending = readRddModeStatus(delayed, "/repo-race");
+	invalidateRddModeStatus("/repo-race");
+	release(modeResult("on", NATIVE_REVIEW_MODE_SOURCE.GLOBAL));
+	assert.equal((await pending).mode, "on");
+	assert.equal((await readRddModeStatus(delayed, "/repo-race")).mode, "off", "an invalidated late result must not repopulate cache");
+	const controller = new AbortController();
+	controller.abort();
+	assert.deepEqual(await readRddModeStatus(delayed, "/repo-pre-abort", controller.signal), { mode: "unknown", projectOverride: false });
+	assert.equal(calls, 2, "a pre-aborted caller must not invoke native status");
+});
+
+test("late caller abort and full invalidation cannot restore an in-flight cache entry", async () => {
+	clearSharedRddStatusMemo();
+	let abortCalls = 0;
+	let releaseAbort!: (result: NativeReviewModeResult) => void;
+	const abortCli: Pick<NativeReviewCli, "reviewMode"> = {
+		reviewMode: async () => {
+			abortCalls += 1;
+			if (abortCalls > 1) return modeResult("off", NATIVE_REVIEW_MODE_SOURCE.GLOBAL);
+			return await new Promise<NativeReviewModeResult>((resolve) => { releaseAbort = resolve; });
+		},
+	};
+	const controller = new AbortController();
+	const aborted = readRddModeStatus(abortCli, "/repo-late-abort", controller.signal);
+	controller.abort();
+	assert.deepEqual(await aborted, { mode: "unknown", projectOverride: false });
+	releaseAbort(modeResult("on", NATIVE_REVIEW_MODE_SOURCE.GLOBAL));
+	assert.equal((await readRddModeStatus(abortCli, "/repo-late-abort")).mode, "off", "late aborted reads must not populate cache");
+
+	let fullCalls = 0;
+	let releaseFull!: (result: NativeReviewModeResult) => void;
+	const fullCli: Pick<NativeReviewCli, "reviewMode"> = {
+		reviewMode: async () => {
+			fullCalls += 1;
+			if (fullCalls > 1) return modeResult("off", NATIVE_REVIEW_MODE_SOURCE.GLOBAL);
+			return await new Promise<NativeReviewModeResult>((resolve) => { releaseFull = resolve; });
+		},
+	};
+	const inflight = readRddModeStatus(fullCli, "/repo-full-race");
+	invalidateRddModeStatus();
+	releaseFull(modeResult("on", NATIVE_REVIEW_MODE_SOURCE.GLOBAL));
+	await inflight;
+	assert.equal((await readRddModeStatus(fullCli, "/repo-full-race")).mode, "off", "full invalidation must suppress stale in-flight reads");
+	assert.equal(abortCalls + fullCalls, 4);
+});
+
+test("shared reader memoizes failures and supports selective and full invalidation", async () => {
+	clearSharedRddStatusMemo();
+	let calls = 0;
+	const failing: Pick<NativeReviewCli, "reviewMode"> = {
+		async reviewMode() {
+			calls += 1;
+			throw new Error("unavailable");
+		},
+	};
+	await readRddModeStatus(failing, "/repo-a");
+	await readRddModeStatus(failing, "/repo-a");
+	assert.equal(calls, 1, "failure observations are memoized");
+	invalidateRddModeStatus("/repo-a");
+	await readRddModeStatus(failing, "/repo-a");
+	assert.equal(calls, 2, "selective invalidation re-reads its cwd");
+	await readRddModeStatus(failing, "/repo-b");
+	invalidateRddModeStatus();
+	await readRddModeStatus(failing, "/repo-b");
+	assert.equal(calls, 4, "full invalidation clears every cwd");
 });
 
 test("the on and off renders are never longer than the unknown (worst-case) render", () => {
