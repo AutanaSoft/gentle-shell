@@ -32,6 +32,7 @@ Fix GitHub issue #1176 so the fullscreen Status sidebar shows the profile that g
 - [x] T3 — Merge current `main` at `43269de3`, reconcile the feature with the live header and current
   shell behavior, and verify the merged candidate.
 - [x] T4 — Replace the lossy `pinned` boolean with the effective source (`global`, `local`, or `repo`), render the winning pin scope, cover same-profile source transitions, update documentation, and verify within the user-specified line budgets. Route: delegated writer because the change spans multiple non-trivial files.
+- [x] T5 — Integrate current `main` at `cf1fdb65`, resolve the `extensions/gentle-shell.ts` import conflict while preserving both effective-profile state and the fullscreen header rule, run focused and repository verification, and commit the integration.
 
 ## Acceptance criteria
 
@@ -81,3 +82,8 @@ Fix GitHub issue #1176 so the fullscreen Status sidebar shows the profile that g
 - T4 full suite: the required command reported 2846 passed, 1 failed, and 47 skipped only in `tests/review-host-relay-routing.test.ts`; the mandated override passed 31 tests, and the remaining suite passed 2816 tests with 47 skipped.
 - T4 diff check: `git diff --check` — passed after removing one test trailing-whitespace line.
 - T4 line budgets: 19 changed production/documentation lines and 112 changed test lines (additions plus deletions; task-artifact bookkeeping excluded).
+- T5 conflict resolution: preserved `dirname`, `ShellProfileState`, and effective-profile snapshot behavior from the feature branch while retaining `renderShellHeaderRule` and the decorative-row mouse guard from `main`.
+- T5 focused tests: `node --experimental-strip-types --test tests/gentle-shell.test.ts tests/shell-bar.test.ts tests/shell-sidebar-layout.test.ts` — 166 passed, 0 failed.
+- T5 type check: `node scripts/check-types.mjs` — passed with 196 recorded diagnostics, no regressions, and 3 file/code pairs improved.
+- T5 full suite: the required command reported 2923 passed, 1 failed, and 47 skipped only in `tests/review-host-relay-routing.test.ts`; the established native-runtime override passed that file's 31 tests, and the remaining suite passed 2893 tests with 47 skipped.
+- T5 diff check: `git diff --check --cached` — passed.
