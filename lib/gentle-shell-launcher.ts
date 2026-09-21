@@ -67,13 +67,19 @@ export function parseLauncherArgs(argv: string[]): ParsedLauncherArgs {
 			continue;
 		}
 		if (arg.startsWith("--home=")) {
-			home = arg.slice("--home=".length);
+			const value = arg.slice("--home=".length);
+			if (value.length === 0) {
+				error = "--home requires a non-empty path argument";
+				continue;
+			}
+			home = value;
 			continue;
 		}
 		if (arg === "--home") {
 			const value = argv[i + 1];
-			if (value === undefined) {
-				error = "--home requires a path argument";
+			if (value === undefined || value.length === 0) {
+				error = "--home requires a non-empty path argument";
+				if (value !== undefined) i += 1;
 				continue;
 			}
 			home = value;
@@ -83,9 +89,14 @@ export function parseLauncherArgs(argv: string[]): ParsedLauncherArgs {
 		passthrough.push(arg);
 	}
 
-	if (error === undefined && link && (isolated || home !== undefined)) {
-		const other = isolated ? "--isolated" : "--home";
-		error = `--link cannot be combined with ${other}`;
+	if (error === undefined) {
+		if (link && isolated) {
+			error = "--link cannot be combined with --isolated";
+		} else if (link && home !== undefined) {
+			error = "--link cannot be combined with --home";
+		} else if (isolated && home !== undefined) {
+			error = "--isolated cannot be combined with --home";
+		}
 	}
 
 	return { link, isolated, home, help, version, command: undefined, commandArgs: [], passthrough, error };
@@ -102,9 +113,11 @@ export interface ResolvedHome {
 	source: HomeSource;
 }
 
-export interface LauncherConfig {
-	home: "link" | "isolated" | string;
-}
+// A discriminated union instead of a plain `home: string` field: `resolveHome`
+// switches on `mode` rather than re-parsing the raw on-disk string, and the
+// `path` case carries its `dir` explicitly so a "link"/"isolated" string can
+// never be mistaken for a filesystem path at the call site.
+export type LauncherConfig = { mode: "link" } | { mode: "isolated" } | { mode: "path"; dir: string };
 
 export interface ResolveHomeInput {
 	args: ParsedLauncherArgs;
@@ -131,9 +144,9 @@ export function resolveHome(input: ResolveHomeInput): ResolvedHome {
 	if (args.home !== undefined) return { mode: "path", dir: args.home, source: "flag" };
 
 	if (config !== undefined) {
-		if (config.home === "link") return { mode: "link", dir: linkDir(env, homedir), source: "config" };
-		if (config.home === "isolated") return { mode: "isolated", dir: isolatedDir(env, homedir), source: "config" };
-		return { mode: "path", dir: config.home, source: "config" };
+		if (config.mode === "link") return { mode: "link", dir: linkDir(env, homedir), source: "config" };
+		if (config.mode === "isolated") return { mode: "isolated", dir: isolatedDir(env, homedir), source: "config" };
+		return { mode: "path", dir: config.dir, source: "config" };
 	}
 
 	return { mode: "isolated", dir: isolatedDir(env, homedir), source: "default" };
@@ -145,6 +158,13 @@ export function launcherConfigPath(homedir: string): string {
 
 // Tolerant on purpose: a malformed or foreign config.json must never crash
 // the launcher, it just falls through to the default isolated home.
+//
+// The on-disk shape stays the flat `{ "home": "link" | "isolated" | "<path>" }`
+// documented in the feature scope; only the parsed, in-memory `LauncherConfig`
+// is a discriminated union. Any non-empty string other than the exact literals
+// "link" or "isolated" is treated as a path, including a near-miss like
+// "linked" — this is deliberate: there is no separate "unrecognised mode"
+// error, a typo just resolves to a (probably nonexistent) path instead.
 export function parseLauncherConfig(text: string): LauncherConfig | undefined {
 	let parsed: unknown;
 	try {
@@ -155,7 +175,9 @@ export function parseLauncherConfig(text: string): LauncherConfig | undefined {
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
 	const home = (parsed as Record<string, unknown>).home;
 	if (typeof home !== "string" || home.length === 0) return undefined;
-	return { home };
+	if (home === "link") return { mode: "link" };
+	if (home === "isolated") return { mode: "isolated" };
+	return { mode: "path", dir: home };
 }
 
 // --- pi runtime resolution ---------------------------------------------------
@@ -226,6 +248,38 @@ export function checkPiVersion(output: string, minimum: string = MIN_PI_VERSION)
 		return { ok: false, version, message: `pi version ${version} is older than the required minimum ${minimum}.` };
 	}
 	return { ok: true, version };
+}
+
+// --- packaging drift guard -----------------------------------------------------
+
+export interface PackageJsonPeerShape {
+	peerDependencies?: Record<string, string>;
+}
+
+export type PeerVersionPinCheck = { ok: true; pinned: string } | { ok: false; message: string };
+
+// Keeps the MIN_PI_VERSION drift-guard test's failure readable: a missing
+// peerDependencies block, a missing peer entry, or a malformed range must
+// fail with a clear assertion message, not a raw TypeError from indexing an
+// undefined value the way a direct `packageJson.peerDependencies[peerName]`
+// lookup would.
+export function checkPeerVersionPin(packageJson: PackageJsonPeerShape, peerName: string, minVersion: string): PeerVersionPinCheck {
+	const peerDependencies = packageJson.peerDependencies;
+	if (peerDependencies === undefined) {
+		return { ok: false, message: "package.json is missing a peerDependencies block" };
+	}
+	const pinned = peerDependencies[peerName];
+	if (typeof pinned !== "string") {
+		return { ok: false, message: `package.json peerDependencies is missing "${peerName}"` };
+	}
+	if (!/^>=\d+\.\d+\.\d+$/.test(pinned)) {
+		return { ok: false, message: `package.json peerDependencies["${peerName}"] ("${pinned}") is not a simple >=x.y.z range` };
+	}
+	const version = pinned.replace(/^>=/, "");
+	if (version !== minVersion) {
+		return { ok: false, message: `MIN_PI_VERSION ("${minVersion}") does not match the pinned peer range ("${pinned}")` };
+	}
+	return { ok: true, pinned };
 }
 
 // --- settings.json detection ---------------------------------------------------
