@@ -4,7 +4,7 @@
 - Repository: `gentle-pi`
 - Branch: `feat/shell-rdd-status-v2`
 - Base: `main` / `upstream/main` at `cf1fdb65c267d9fbdad2c48f6c9e008f3f91d7a3`
-- Status: implementation authorized; RSS-1 and RSS-2 complete, RSS-3 in progress
+- Status: implementation authorized; RSS-1 through RSS-3 complete, RSS-4 in progress
 - Source plan: `work-items/active/feat/938-shell-rdd-status/implementation-plan.md`
 - Related issue: `#938`
 - Route: delegated direct; each implementation task crosses the multi-file writer trigger
@@ -212,7 +212,7 @@ The task that owns a behavior runs its focused commands. Full-suite, runtime-mod
   - Work-unit commit proposal: `feat(rdd): publish review mode status invalidation`.
   - Completion evidence: RED proved missing invalidation/event publication and exposed the global-off no-op edge; GREEN parity 22/22 and shared-reader 23/23; typecheck passed with 196 baseline diagnostics and no regressions; independent verification found no blocker; native review approved and acknowledged; committed as `6d62903c`.
 
-- [ ] **RSS-3 — Render compact structured RDD status**
+- [x] **RSS-3 — Render compact structured RDD status**
   - Route: delegated writer; three non-trivial files trigger mandatory delegation.
   - Allowed surfaces:
     - `lib/shell-bar.ts`
@@ -239,7 +239,7 @@ The task that owns a behavior runs its focused commands. Full-suite, runtime-mod
     ```
 
   - Work-unit commit proposal: `feat(shell): render RDD status in sidebar and footer`.
-  - Completion evidence: RED observed because the pure RDD renderer was absent; GREEN focused renderer/layout suite 67/67; typecheck passed with no regressions and three improved diagnostic pairs; independent verification found no blocker. Work-unit commit pending native review.
+  - Completion evidence: RED observed because the pure RDD renderer was absent; GREEN focused renderer/layout suite 67/67; typecheck passed with no regressions and three improved diagnostic pairs; independent verification found no blocker; native review approved and acknowledged; committed as `77da142c`.
 
 - [ ] **RSS-4 — Refresh RDD across the Shell lifecycle**
   - Route: delegated writer; two non-trivial files trigger mandatory delegation.
@@ -271,7 +271,7 @@ The task that owns a behavior runs its focused commands. Full-suite, runtime-mod
     ```
 
   - Work-unit commit proposal: `feat(shell): refresh RDD status across session lifecycle`.
-  - Completion evidence: pending.
+  - Completion evidence: RED observed because injected authoritative reads never started; GREEN Shell lifecycle suite 99/99 and renderer/layout regression 67/67; typecheck passed with no regressions and three improved diagnostic pairs; independent verification found no blocker. Work-unit commit pending native review.
 
 - [ ] **RSS-5 — Close feature verification and visual acceptance**
   - Route: delegated verification when required by the RDD-aware verification plan; parent retains final reconciliation and one command spot check.
@@ -321,8 +321,8 @@ The task that owns a behavior runs its focused commands. Full-suite, runtime-mod
 | --- | --- | --- | --- | --- |
 | RSS-1 | Complete | RED and GREEN 23/23; parity 22/22; typecheck passed | `e1f94388` | Approved and acknowledged; three non-blocking readability suggestions recorded |
 | RSS-2 | Complete | RED/GREEN parity 22/22; reader 23/23; typecheck passed | `6d62903c` | Approved and acknowledged; two non-blocking readability suggestions recorded |
-| RSS-3 | Verified; review pending | RED/GREEN renderer and layout 67/67; typecheck passed | — | Pending |
-| RSS-4 | Awaiting approval | — | — | — |
+| RSS-3 | Complete | RED/GREEN renderer and layout 67/67; typecheck passed | `77da142c` | Approved and acknowledged |
+| RSS-4 | Verified; review pending | RED/GREEN lifecycle 99/99; renderer/layout 67/67; typecheck passed | — | Pending |
 | RSS-5 | Awaiting approval | — | — | — |
 
 ## Decisions and rationale

@@ -8,6 +8,7 @@ import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandI
 import type { TUI, TuiMouseEvent } from "@earendil-works/pi-tui";
 import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, type GentlePromptEditor } from "../extensions/gentle-shell.ts";
 import { CHANGE_STATUS } from "../lib/shell-changes.ts";
+import type { NativeReviewModeResult } from "../lib/native-review-cli.ts";
 import { sidebarState, type SidebarRail } from "../lib/shell-sidebar.ts";
 import type { ShellBarTheme } from "../lib/shell-bar.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
@@ -18,7 +19,7 @@ import { stripAnsi } from "../lib/terminal-theme.ts";
 initTheme("dark");
 
 const resolveWorktree = (path: string) => ({ root: path.startsWith("/repo") || path === "." ? "/repo" : path, commonDir: "/clone/git" });
-const gentleShell: typeof installGentleShell = (pi, env, deps) => installGentleShell(pi, env, { resolveWorktree, gitRunner: (cwd) => async (args) => pi.exec("git", ["-C", cwd, ...args], { timeout: 5000 }), ...deps });
+const gentleShell: typeof installGentleShell = (pi, env, deps) => installGentleShell(pi, env, { resolveWorktree, gitRunner: (cwd) => async (args) => pi.exec("git", ["-C", cwd, ...args], { timeout: 5000 }), rddModeReader: null, ...deps });
 
 const plainTheme = {
 	fg(_color: string, value: string) {
@@ -258,6 +259,139 @@ test("gentleShell installs the footer on session_start when a UI exists", () => 
 	assert.match(lines[0], /main ⟡ gpt-5\.5 · medium/);
 });
 
+test("RDD starts unknown and invokes the injected authoritative reader outside render", () => {
+	let reads = 0;
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { rddModeReader: { reviewMode: async () => {
+		reads += 1;
+		return { operation: "status", scope: "clone", status: { global: "", cloneLocal: "", effective: "on", source: "default" } };
+	} } } as never);
+	const { ctx, ui } = fakeContext();
+	for (const handler of handlers.get("session_start") ?? []) handler({}, ctx);
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => { render(width: number): string[] };
+	const component = factory(
+		{ requestRender() {} },
+		plainTheme,
+		{ getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} },
+	);
+	assert.match(component.render(120).join("\n"), /RDD: \?/, "the Shell must fail closed before a status result is available");
+	assert.equal(reads, 1, "session start must begin one authoritative read; rendering itself never does");
+});
+
+function deferred<T>() {
+	let resolve!: (value: T) => void;
+	let reject!: (reason?: unknown) => void;
+	const promise = new Promise<T>((resolvePromise, rejectPromise) => { resolve = resolvePromise; reject = rejectPromise; });
+	return { promise, resolve, reject };
+}
+
+function rddStatus(effective: "on" | "off", source: "default" | "global" | "clone_local" = "default"): NativeReviewModeResult {
+	return { operation: "status", scope: "clone", status: { global: "", cloneLocal: "", effective, source } };
+}
+
+async function settleRdd(): Promise<void> {
+	await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+function rddFooter(ui: FakeUi): string {
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => { render(width: number): string[] };
+	return factory(fakeTui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} }).render(160).join("\n");
+}
+
+test("RDD projects global and clone-local authority, ignores foreign events, and clears stale markers on failure", async () => {
+	const pending: Array<ReturnType<typeof deferred<NativeReviewModeResult>>> = [];
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { rddModeReader: { reviewMode: () => {
+		const result = deferred<NativeReviewModeResult>();
+		pending.push(result);
+		return result.promise;
+	} }, rddPollMs: 60_000 });
+	const { ctx, ui } = fakeContext();
+	(ctx as unknown as { cwd: string }).cwd = "/rdd-visible";
+	await fire(handlers, "session_start", ctx);
+	assert.match(rddFooter(ui), /RDD: \?/);
+	pending[0]!.resolve(rddStatus("on", "global"));
+	await settleRdd();
+	assert.match(rddFooter(ui), /RDD: ON/);
+	assert.doesNotMatch(rddFooter(ui), /RDD: ON · Project/);
+	pi.events.emit("gentle-pi:rdd-mode-status-changed", { cwd: "/foreign" });
+	assert.equal(pending.length, 1, "foreign-cwd mutations must not start a read");
+	pi.events.emit("gentle-pi:rdd-mode-status-changed", { cwd: "/rdd-visible" });
+	assert.equal(pending.length, 2);
+	pending[1]!.resolve(rddStatus("on", "clone_local"));
+	await settleRdd();
+	assert.doesNotMatch(rddFooter(ui), /RDD: ON · Project/, "the compact footer never shows an origin suffix");
+	const rail = sidebarState(fakeTui as unknown as TUI).parts.get("footer") as SidebarRail;
+	assert.match(rail.render(46).join("\n"), /RDD: ON · Project/, "a clone-local result adds the fullscreen project override even when mode is unchanged");
+	pi.events.emit("gentle-pi:rdd-mode-status-changed", { cwd: "/rdd-visible" });
+	pending[2]!.reject(new Error("capability unavailable"));
+	await settleRdd();
+	assert.match(rddFooter(ui), /RDD: \?/);
+	assert.doesNotMatch(rddFooter(ui), /RDD: \? · Project/, "unknown results must clear an old project marker");
+	await fire(handlers, "session_shutdown", ctx);
+});
+
+test("RDD polling is bounded and coalesced, and late aborted results cannot win", async (t) => {
+	const intervals: Array<() => void> = [];
+	t.mock.method(globalThis, "setInterval", (callback: () => void) => {
+		intervals.push(callback);
+		return { unref() {} } as unknown as NodeJS.Timeout;
+	});
+	const pending: Array<ReturnType<typeof deferred<NativeReviewModeResult>>> = [];
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { rddModeReader: { reviewMode: () => {
+		const result = deferred<NativeReviewModeResult>();
+		pending.push(result);
+		return result.promise;
+	} }, rddPollMs: 5 });
+	const { ctx, ui } = fakeContext();
+	(ctx as unknown as { cwd: string }).cwd = "/rdd-poll";
+	await fire(handlers, "session_start", ctx);
+	assert.equal(intervals.length, 1);
+	intervals[0]!();
+	assert.equal(pending.length, 1, "a polling tick must not overlap the initial read");
+	pending[0]!.resolve(rddStatus("off", "global"));
+	await settleRdd();
+	intervals[0]!();
+	assert.equal(pending.length, 2);
+	pi.events.emit("gentle-pi:rdd-mode-status-changed", { cwd: "/rdd-poll" });
+	assert.equal(pending.length, 3, "an active-cwd event replaces the pending poll read");
+	pending[2]!.resolve(rddStatus("on", "global"));
+	await settleRdd();
+	pending[1]!.resolve(rddStatus("off", "clone_local"));
+	await settleRdd();
+	assert.match(rddFooter(ui), /RDD: ON/, "the aborted polling result must not overwrite the newer event result");
+	await fire(handlers, "session_shutdown", ctx);
+	intervals[0]!();
+	assert.equal(pending.length, 3, "shutdown stops the polling timer");
+});
+
+test("RDD event handling survives a second session while old-session results remain inert", async () => {
+	const pending: Array<ReturnType<typeof deferred<NativeReviewModeResult>>> = [];
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { rddModeReader: { reviewMode: () => {
+		const result = deferred<NativeReviewModeResult>();
+		pending.push(result);
+		return result.promise;
+	} }, rddPollMs: 60_000 });
+	const first = fakeContext();
+	(first.ctx as unknown as { cwd: string }).cwd = "/same-rdd-cwd";
+	await fire(handlers, "session_start", first.ctx);
+	await fire(handlers, "session_shutdown", first.ctx);
+	const second = fakeContext();
+	(second.ctx as unknown as { cwd: string }).cwd = "/same-rdd-cwd";
+	(second.ctx.sessionManager as unknown as { getSessionId(): string }).getSessionId = () => "second-rdd-session";
+	await fire(handlers, "session_start", second.ctx);
+	pending[1]!.resolve(rddStatus("on", "default"));
+	await settleRdd();
+	pending[0]!.resolve(rddStatus("off", "clone_local"));
+	await settleRdd();
+	assert.match(rddFooter(second.ui), /RDD: ON/);
+	pi.events.emit("gentle-pi:rdd-mode-status-changed", { cwd: "/same-rdd-cwd" });
+	assert.equal(pending.length, 3, "the extension-lifetime subscription remains usable for the second session");
+	await fire(handlers, "session_shutdown", second.ctx);
+});
+
 test("the fullscreen Status rail carries a live digest so a profile switch refreshes it", async () => {
 	const { pi, handlers } = fakePi();
 	let profile: string | undefined = "team";
@@ -396,16 +530,22 @@ test("profile reader follows store changes and rejects missing or invalid active
 });
 
 test("gentleShell stays out of the way without a UI or when disabled", () => {
+	let reads = 0;
+	const reader = { reviewMode: async () => {
+		reads += 1;
+		return rddStatus("on");
+	} };
 	const disabled = fakePi();
-	gentleShell(disabled.pi, { GENTLE_PI_SHELL: "0" });
+	gentleShell(disabled.pi, { GENTLE_PI_SHELL: "0" }, { rddModeReader: reader } as never);
 	assert.equal(disabled.commands.size, 0);
 	assert.ok(disabled.handlers.has("tool_call"), "capture remains available to headless children");
 
 	const headless = fakePi();
-	gentleShell(headless.pi, {});
+	gentleShell(headless.pi, {}, { rddModeReader: reader } as never);
 	const { ctx, ui } = fakeContext({ hasUI: false });
 	for (const handler of headless.handlers.get("session_start") ?? []) handler({}, ctx);
 	assert.equal(ui.footerFactory, undefined);
+	assert.equal(reads, 0, "disabled Shell and excluded child contexts must not read RDD state");
 });
 
 const fakeTui = { terminal: { rows: 40, columns: 120 }, requestRender() {} };
