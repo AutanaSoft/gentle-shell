@@ -11,6 +11,7 @@ import {
 	type NativeReviewCli,
 	type NativeReviewAssessRequest,
 } from "../lib/native-review-cli.ts";
+import { clearRddStatusMemoForTesting, readRddModeStatus } from "../lib/rdd-mode-status.ts";
 import {
 	decodeReviewAssessmentV1,
 	isSmallWriterProfile,
@@ -352,7 +353,28 @@ function reviewControllerTool(nativeReviewCli: Partial<NativeReviewCli> | null):
 
 const ctx = { cwd: process.cwd() } as ExtensionContext;
 
-test("gentle_review assess: an older binary without the assess verb fails closed to high", async () => {
+function isolateSharedRddStatusMemo(t: { after: (fn: () => void) => void }): void {
+	clearRddStatusMemoForTesting();
+	t.after(() => clearRddStatusMemoForTesting());
+}
+
+test("clearRddStatusMemoForTesting selectively clears a cwd so a second reader observes its new value", async (t) => {
+	isolateSharedRddStatusMemo(t);
+	const cwd = "/review-risk-assessment-selective-clear";
+	const onReader: Pick<NativeReviewCli, "reviewMode"> = {
+		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: "on", cloneLocal: "", effective: "on", source: NATIVE_REVIEW_MODE_SOURCE.GLOBAL } }),
+	};
+	const offReader: Pick<NativeReviewCli, "reviewMode"> = {
+		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: "off", cloneLocal: "off", effective: "off", source: NATIVE_REVIEW_MODE_SOURCE.GLOBAL } }),
+	};
+
+	assert.equal((await readRddModeStatus(onReader, cwd)).mode, "on");
+	clearRddStatusMemoForTesting(cwd);
+	assert.equal((await readRddModeStatus(offReader, cwd)).mode, "off");
+});
+
+test("gentle_review assess: an older binary without the assess verb fails closed to high", async (t) => {
+	isolateSharedRddStatusMemo(t);
 	const nativeReviewCli: Partial<NativeReviewCli> = {
 		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: "off", cloneLocal: "off", effective: "off", source: NATIVE_REVIEW_MODE_SOURCE.GLOBAL } }),
 		// assess intentionally absent: pre-gentle-ai#4295 binary.
@@ -372,7 +394,8 @@ test("gentle_review assess: an older binary without the assess verb fails closed
 	assert.equal(JSON.parse(result.content[0].text).risk, VERIFICATION_TIER.UNASSESSABLE);
 });
 
-test("gentle_review assess: a rejected assess call fails closed to high, and RDD status read failure fails closed to unknown", async () => {
+test("gentle_review assess: a rejected assess call fails closed to high, and RDD status read failure fails closed to unknown", async (t) => {
+	isolateSharedRddStatusMemo(t);
 	const nativeReviewCli: Partial<NativeReviewCli> = {
 		reviewMode: async () => {
 			throw new Error("native review mode is unavailable");
@@ -391,7 +414,8 @@ test("gentle_review assess: a rejected assess call fails closed to high, and RDD
 	assert.equal(details.plan.independentVerifier, true);
 });
 
-test("gentle_review assess: a successful native assessment is reflected directly in the returned plan", async () => {
+test("gentle_review assess: a successful native assessment is reflected directly in the returned plan", async (t) => {
+	isolateSharedRddStatusMemo(t);
 	const nativeReviewCli: Partial<NativeReviewCli> = {
 		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: "on", cloneLocal: "", effective: "on", source: NATIVE_REVIEW_MODE_SOURCE.GLOBAL } }),
 		assess: async () => ({
@@ -419,7 +443,8 @@ test("gentle_review assess: baseRef without committedOnly is rejected", async ()
 	);
 });
 
-test("gentle_review assess: writerModelId/writerEffort in input select the writer profile, and an omitted profile fails closed to small", async () => {
+test("gentle_review assess: writerModelId/writerEffort in input select the writer profile, and an omitted profile fails closed to small", async (t) => {
+	isolateSharedRddStatusMemo(t);
 	const nativeReviewCli: Partial<NativeReviewCli> = {
 		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: "off", cloneLocal: "off", effective: "off", source: NATIVE_REVIEW_MODE_SOURCE.GLOBAL } }),
 		assess: async () => ({
@@ -460,7 +485,8 @@ test("gentle_review assess: writerModelId/writerEffort in input select the write
 	assert.equal((gemini.details as { plan: { independentVerifier: boolean } }).plan.independentVerifier, false);
 });
 
-test("gentle_review assess: an explicit nativeReviewOutcome:\"declined\" input falls back to the risk-gated plan even when RDD is on (gentle-pi#668)", async () => {
+test("gentle_review assess: an explicit nativeReviewOutcome:\"declined\" input falls back to the risk-gated plan even when RDD is on (gentle-pi#668)", async (t) => {
+	isolateSharedRddStatusMemo(t);
 	const nativeReviewCli: Partial<NativeReviewCli> = {
 		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: "on", cloneLocal: "", effective: "on", source: NATIVE_REVIEW_MODE_SOURCE.GLOBAL } }),
 		assess: async () => ({
@@ -502,6 +528,7 @@ function assessOnNativeCli(currentTargetIdentity: () => string): Partial<NativeR
 }
 
 test("gentle_review assess: derivation is bound to the exact candidate recorded, closed can only ever be passed explicitly (gentle-pi#668 correction)", async (t) => {
+	isolateSharedRddStatusMemo(t);
 	t.after(() => __testing.clearNativeReviewOutcomeMemoForTesting());
 	__testing.clearNativeReviewOutcomeMemoForTesting();
 	let current = "target-a";

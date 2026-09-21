@@ -4,7 +4,7 @@
 - Repository: `gentle-pi`
 - Branch: `feat/shell-rdd-status-v2`
 - Base: `main` / `upstream/main` at `cf1fdb65c267d9fbdad2c48f6c9e008f3f91d7a3`
-- Status: implementation authorized; RSS-1 through RSS-3 complete, RSS-4 in progress
+- Status: implementation and automated verification complete; live visual acceptance pending
 - Source plan: `work-items/active/feat/938-shell-rdd-status/implementation-plan.md`
 - Related issue: `#938`
 - Route: delegated direct; each implementation task crosses the multi-file writer trigger
@@ -122,6 +122,7 @@ These surfaces become active only after user approval of this ledger:
 - `tests/shell-bar.test.ts`
 - `tests/shell-sidebar-layout.test.ts`
 - `tests/gentle-shell.test.ts`
+- `tests/review-risk-assessment.test.ts` — RSS-5 test-isolation correction authorized after the full suite exposed shared per-`cwd` memo leakage across contradictory fake readers.
 
 Any additional production, generated, runtime, or test file requires a documented reason and renewed scope authorization before editing.
 
@@ -241,7 +242,7 @@ The task that owns a behavior runs its focused commands. Full-suite, runtime-mod
   - Work-unit commit proposal: `feat(shell): render RDD status in sidebar and footer`.
   - Completion evidence: RED observed because the pure RDD renderer was absent; GREEN focused renderer/layout suite 67/67; typecheck passed with no regressions and three improved diagnostic pairs; independent verification found no blocker; native review approved and acknowledged; committed as `77da142c`.
 
-- [ ] **RSS-4 — Refresh RDD across the Shell lifecycle**
+- [x] **RSS-4 — Refresh RDD across the Shell lifecycle**
   - Route: delegated writer; two non-trivial files trigger mandatory delegation.
   - Allowed surfaces:
     - `extensions/gentle-shell.ts`
@@ -271,19 +272,20 @@ The task that owns a behavior runs its focused commands. Full-suite, runtime-mod
     ```
 
   - Work-unit commit proposal: `feat(shell): refresh RDD status across session lifecycle`.
-  - Completion evidence: RED observed because injected authoritative reads never started; GREEN Shell lifecycle suite 99/99 and renderer/layout regression 67/67; typecheck passed with no regressions and three improved diagnostic pairs; independent verification found no blocker. Work-unit commit pending native review.
+  - Completion evidence: RED observed because injected authoritative reads never started; GREEN Shell lifecycle suite 99/99 and renderer/layout regression 67/67; typecheck passed with no regressions and three improved diagnostic pairs; independent verification found no blocker; native review approved and acknowledged; committed as `2c5fc150`.
 
-- [ ] **RSS-5 — Close feature verification and visual acceptance**
+- [x] **RSS-5 — Close feature verification and visual acceptance**
   - Route: delegated verification when required by the RDD-aware verification plan; parent retains final reconciliation and one command spot check.
   - Allowed surfaces:
     - `odd/tasks/rdd-sidebar-status.md`
+    - `tests/review-risk-assessment.test.ts` (authorized RSS-5 test-isolation correction only)
   - Verify:
     - Run all focused commands, configured full suite, runtime-module parity, runtime harness, and whitespace check serially.
     - Perform structural readback against this ledger and the source implementation plan.
     - Record every failed, unavailable, skipped, or pending check without inference.
     - Record authored changed-line count and resolve `ask-on-risk` delivery strategy before any delivery action if the branch exceeds approximately 400 lines.
     - Perform interactive visual confirmation in fullscreen and compact layouts when a live Pi host is available; otherwise leave it explicitly pending for the user.
-  - Completion evidence: pending.
+  - Completion evidence: focused suites passed (RDD reader 23/23, parity 22/22, renderer/layout 67/67, Shell lifecycle 99/99, risk assessment 64/64); typecheck passed with 196 baseline diagnostics and no regressions; full suite passed 2,939 tests with 38 skipped and only the pre-existing unchanged runtime-harness assertion failing; runtime-module parity and `git diff --check` passed. Live fullscreen/compact visual acceptance remains explicitly pending for an interactive Pi host.
 
 ## Acceptance criteria
 
@@ -322,8 +324,8 @@ The task that owns a behavior runs its focused commands. Full-suite, runtime-mod
 | RSS-1 | Complete | RED and GREEN 23/23; parity 22/22; typecheck passed | `e1f94388` | Approved and acknowledged; three non-blocking readability suggestions recorded |
 | RSS-2 | Complete | RED/GREEN parity 22/22; reader 23/23; typecheck passed | `6d62903c` | Approved and acknowledged; two non-blocking readability suggestions recorded |
 | RSS-3 | Complete | RED/GREEN renderer and layout 67/67; typecheck passed | `77da142c` | Approved and acknowledged |
-| RSS-4 | Verified; review pending | RED/GREEN lifecycle 99/99; renderer/layout 67/67; typecheck passed | — | Pending |
-| RSS-5 | Awaiting approval | — | — | — |
+| RSS-4 | Complete | RED/GREEN lifecycle 99/99; renderer/layout 67/67; typecheck passed | `2c5fc150` | Approved and acknowledged; six non-blocking advisory findings recorded |
+| RSS-5 | Complete with recorded exceptions | Focused and full verification recorded; pre-existing harness failure and live visual check pending | This closeout commit | Approved and acknowledged; one non-blocking readability suggestion recorded |
 
 ## Decisions and rationale
 
@@ -334,4 +336,4 @@ The task that owns a behavior runs its focused commands. Full-suite, runtime-mod
 
 ## Next step
 
-Complete RSS-1 through strict RED/GREEN/triangulation, record evidence, and continue task by task.
+Run live fullscreen and compact visual acceptance in an interactive Pi host when available. No push, PR, merge, or release is authorized.
