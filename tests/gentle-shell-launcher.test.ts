@@ -6,6 +6,7 @@ import test from "node:test";
 import {
 	MIN_PI_VERSION,
 	buildPiInvocation,
+	checkPeerVersionPin,
 	checkPiVersion,
 	describeVersion,
 	helpText,
@@ -13,9 +14,12 @@ import {
 	missingPiMessage,
 	parseLauncherArgs,
 	parseLauncherConfig,
+	planSpawn,
+	quoteForCmdExe,
 	resolveHome,
 	resolvePiRuntime,
 	settingsDeclareGentlePi,
+	type PackageJsonPeerShape,
 	type ParsedLauncherArgs,
 	type ResolvedHome,
 } from "../lib/gentle-shell-launcher.ts";
@@ -57,6 +61,18 @@ test("parseLauncherArgs captures a --home=<path> value", () => {
 
 test("parseLauncherArgs reports an error when --home has no value", () => {
 	const parsed = parseLauncherArgs(["--home"]);
+	assert.equal(parsed.home, undefined);
+	assert.match(parsed.error ?? "", /--home/);
+});
+
+test("parseLauncherArgs reports an error when --home=<empty> has no value", () => {
+	const parsed = parseLauncherArgs(["--home="]);
+	assert.equal(parsed.home, undefined);
+	assert.match(parsed.error ?? "", /--home/);
+});
+
+test("parseLauncherArgs reports an error when a bare --home value is empty", () => {
+	const parsed = parseLauncherArgs(["--home", ""]);
 	assert.equal(parsed.home, undefined);
 	assert.match(parsed.error ?? "", /--home/);
 });
@@ -119,6 +135,18 @@ test("parseLauncherArgs errors when --home is combined with --link regardless of
 	assert.match(parsed.error ?? "", /--link/);
 });
 
+test("parseLauncherArgs errors when --isolated is combined with --home", () => {
+	const parsed = parseLauncherArgs(["--isolated", "--home", "/custom"]);
+	assert.match(parsed.error ?? "", /--isolated/);
+	assert.match(parsed.error ?? "", /--home/);
+});
+
+test("parseLauncherArgs errors when --home is combined with --isolated regardless of order", () => {
+	const parsed = parseLauncherArgs(["--home", "/custom", "--isolated"]);
+	assert.match(parsed.error ?? "", /--isolated/);
+	assert.match(parsed.error ?? "", /--home/);
+});
+
 // --- resolveHome ---------------------------------------------------------
 
 function args(overrides: Partial<ParsedLauncherArgs> = {}): ParsedLauncherArgs {
@@ -172,17 +200,17 @@ test("resolveHome uses the --home value verbatim", () => {
 });
 
 test("resolveHome falls back to a persisted link config", () => {
-	const resolved = resolveHome({ args: args(), env: {}, homedir: "/home/alan", config: { home: "link" } });
+	const resolved = resolveHome({ args: args(), env: {}, homedir: "/home/alan", config: { mode: "link" } });
 	assert.deepEqual(resolved, { mode: "link", dir: join("/home/alan", ".pi", "agent"), source: "config" });
 });
 
 test("resolveHome falls back to a persisted isolated config", () => {
-	const resolved = resolveHome({ args: args(), env: {}, homedir: "/home/alan", config: { home: "isolated" } });
+	const resolved = resolveHome({ args: args(), env: {}, homedir: "/home/alan", config: { mode: "isolated" } });
 	assert.deepEqual(resolved, { mode: "isolated", dir: join("/home/alan", ".gentle-shell", "agent"), source: "config" });
 });
 
 test("resolveHome falls back to a persisted path config", () => {
-	const resolved = resolveHome({ args: args(), env: {}, homedir: "/home/alan", config: { home: "/persisted/path" } });
+	const resolved = resolveHome({ args: args(), env: {}, homedir: "/home/alan", config: { mode: "path", dir: "/persisted/path" } });
 	assert.deepEqual(resolved, { mode: "path", dir: "/persisted/path", source: "config" });
 });
 
@@ -192,7 +220,7 @@ test("resolveHome defaults to isolated when neither a flag nor a config is prese
 });
 
 test("resolveHome lets a flag override a persisted config", () => {
-	const resolved = resolveHome({ args: args({ link: true }), env: {}, homedir: "/home/alan", config: { home: "isolated" } });
+	const resolved = resolveHome({ args: args({ link: true }), env: {}, homedir: "/home/alan", config: { mode: "isolated" } });
 	assert.equal(resolved.mode, "link");
 	assert.equal(resolved.source, "flag");
 });
@@ -204,15 +232,19 @@ test("launcherConfigPath points at <homedir>/.gentle-shell/config.json", () => {
 });
 
 test("parseLauncherConfig accepts a link config", () => {
-	assert.deepEqual(parseLauncherConfig('{"home":"link"}'), { home: "link" });
+	assert.deepEqual(parseLauncherConfig('{"home":"link"}'), { mode: "link" });
 });
 
 test("parseLauncherConfig accepts an isolated config", () => {
-	assert.deepEqual(parseLauncherConfig('{"home":"isolated"}'), { home: "isolated" });
+	assert.deepEqual(parseLauncherConfig('{"home":"isolated"}'), { mode: "isolated" });
 });
 
 test("parseLauncherConfig accepts a path config", () => {
-	assert.deepEqual(parseLauncherConfig('{"home":"/custom/path"}'), { home: "/custom/path" });
+	assert.deepEqual(parseLauncherConfig('{"home":"/custom/path"}'), { mode: "path", dir: "/custom/path" });
+});
+
+test("parseLauncherConfig treats any non-link/isolated string as a path, including a near-miss like 'linked'", () => {
+	assert.deepEqual(parseLauncherConfig('{"home":"linked"}'), { mode: "path", dir: "linked" });
 });
 
 test("parseLauncherConfig tolerates invalid JSON", () => {
@@ -298,12 +330,59 @@ test("missingPiMessage names the three resolution options", () => {
 // --- checkPiVersion ---------------------------------------------------------
 
 test("MIN_PI_VERSION matches the pinned peer dependency, so the two cannot drift", () => {
-	const packageJson = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")) as {
-		peerDependencies: Record<string, string>;
-	};
-	const pinned = packageJson.peerDependencies["@earendil-works/pi-coding-agent"];
-	assert.match(pinned, /^>=\d+\.\d+\.\d+$/, "expected a simple >=x.y.z peer range");
-	assert.equal(MIN_PI_VERSION, pinned.replace(/^>=/, ""));
+	const packageJson = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")) as PackageJsonPeerShape;
+	const result = checkPeerVersionPin(packageJson, "@earendil-works/pi-coding-agent", MIN_PI_VERSION);
+	if (result.ok) return;
+	assert.equal(result.ok, false);
+	assert.fail(result.message);
+});
+
+// --- checkPeerVersionPin ------------------------------------------------------
+// The drift-guard test above must fail with a clear assertion message, not a
+// raw TypeError from indexing an undefined peerDependencies block or entry.
+// These tests exercise that failure path directly against synthetic input,
+// since a real, well-formed package.json cannot exercise it.
+
+test("checkPeerVersionPin reports a missing peerDependencies block clearly", () => {
+	const result = checkPeerVersionPin({}, "@earendil-works/pi-coding-agent", MIN_PI_VERSION);
+	assert.equal(result.ok, false);
+	if (result.ok) throw new Error("expected a failing result");
+	assert.match(result.message, /peerDependencies/);
+});
+
+test("checkPeerVersionPin reports a missing peer entry clearly", () => {
+	const result = checkPeerVersionPin({ peerDependencies: {} }, "@earendil-works/pi-coding-agent", MIN_PI_VERSION);
+	assert.equal(result.ok, false);
+	if (result.ok) throw new Error("expected a failing result");
+	assert.match(result.message, /@earendil-works\/pi-coding-agent/);
+});
+
+test("checkPeerVersionPin reports a malformed peer range clearly", () => {
+	const result = checkPeerVersionPin(
+		{ peerDependencies: { "@earendil-works/pi-coding-agent": "^0.85.1" } },
+		"@earendil-works/pi-coding-agent",
+		MIN_PI_VERSION,
+	);
+	assert.equal(result.ok, false);
+	if (result.ok) throw new Error("expected a failing result");
+	assert.match(result.message, />=x\.y\.z/);
+});
+
+test("checkPeerVersionPin reports a mismatched minimum clearly", () => {
+	const result = checkPeerVersionPin(
+		{ peerDependencies: { "@earendil-works/pi-coding-agent": ">=0.80.0" } },
+		"@earendil-works/pi-coding-agent",
+		MIN_PI_VERSION,
+	);
+	assert.equal(result.ok, false);
+	if (result.ok) throw new Error("expected a failing result");
+	assert.match(result.message, /0\.80\.0/);
+	assert.match(result.message, new RegExp(MIN_PI_VERSION.replace(/\./g, "\\.")));
+});
+
+test("checkPeerVersionPin passes for a matching pin", () => {
+	const result = checkPeerVersionPin({ peerDependencies: { "@earendil-works/pi-coding-agent": ">=0.85.1" } }, "@earendil-works/pi-coding-agent", "0.85.1");
+	assert.deepEqual(result, { ok: true, pinned: ">=0.85.1" });
 });
 
 test("checkPiVersion accepts a version equal to the minimum", () => {
@@ -449,6 +528,64 @@ test("buildPiInvocation keeps the runtime's own args ahead of the injection and 
 	});
 	assert.equal(built.args[0], "/bundled/cli.js");
 	assert.equal(built.command, "/usr/bin/node");
+});
+
+// --- planSpawn / quoteForCmdExe ----------------------------------------------
+//
+// R3-001: on win32, `findOnPath` in bin/gentle-shell.mjs can resolve a PATHEXT
+// candidate such as a .CMD or .BAT shim (exactly how an npm-installed `pi`
+// lands on PATH). Node refuses to spawn a batch file directly without
+// `shell: true` (EINVAL), so both the version probe and the real launch must
+// route a batch shim through cmd.exe.
+
+test("planSpawn runs a win32 .CMD shim through the shell as a single quoted command line", () => {
+	const plan = planSpawn({
+		command: "C:\\Users\\x\\AppData\\Roaming\\npm\\pi.CMD",
+		args: [],
+		platform: "win32",
+	});
+	assert.equal(plan.shell, true);
+	assert.equal(plan.args.length, 0);
+	// No spaces in the path, so quoting is optional; only the exact text must be present.
+	assert.equal(plan.command, "C:\\Users\\x\\AppData\\Roaming\\npm\\pi.CMD");
+});
+
+test("planSpawn quotes a win32 .bat shim and its args that contain spaces", () => {
+	const plan = planSpawn({
+		command: "C:\\Program Files\\pi\\pi.bat",
+		args: ["--mode", "rpc", "hello world"],
+		platform: "win32",
+	});
+	assert.equal(plan.shell, true);
+	assert.deepEqual(plan.args, []);
+	assert.equal(plan.command, '"C:\\Program Files\\pi\\pi.bat" --mode rpc "hello world"');
+});
+
+test("planSpawn leaves a win32 .exe or extension-less command unchanged", () => {
+	const exe = planSpawn({ command: "C:\\pi\\pi.exe", args: ["--version"], platform: "win32" });
+	assert.deepEqual(exe, { command: "C:\\pi\\pi.exe", args: ["--version"], shell: false });
+
+	const bare = planSpawn({ command: "pi", args: ["--version"], platform: "win32" });
+	assert.deepEqual(bare, { command: "pi", args: ["--version"], shell: false });
+});
+
+test("planSpawn never enables the shell on posix, even for a .cmd-named command", () => {
+	for (const platform of ["darwin", "linux"] as const) {
+		const plan = planSpawn({ command: "/usr/local/bin/pi.cmd", args: ["--version"], platform });
+		assert.deepEqual(plan, { command: "/usr/local/bin/pi.cmd", args: ["--version"], shell: false });
+	}
+});
+
+test("quoteForCmdExe leaves a plain token untouched", () => {
+	assert.equal(quoteForCmdExe("pi"), "pi");
+});
+
+test("quoteForCmdExe quotes a token with a space and escapes an inner double quote", () => {
+	assert.equal(quoteForCmdExe('say "hi" now'), '"say \\"hi\\" now"');
+});
+
+test("quoteForCmdExe quotes an empty token", () => {
+	assert.equal(quoteForCmdExe(""), '""');
 });
 
 // --- describeVersion / helpText ----------------------------------------------
