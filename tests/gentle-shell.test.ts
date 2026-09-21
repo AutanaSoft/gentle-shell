@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandInfo, type SourceInfo } from "@earendil-works/pi-coding-agent";
 import type { TUI, TuiMouseEvent } from "@earendil-works/pi-tui";
-import installGentleShell, { buildShellBarModel, createActiveProfileReader, createShellBarComponent, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, type GentlePromptEditor } from "../extensions/gentle-shell.ts";
+import installGentleShell, { buildShellBarModel, createActiveProfileReader, createEffectiveProfileSnapshot, createShellBarComponent, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, type GentlePromptEditor } from "../extensions/gentle-shell.ts";
 import { CHANGE_STATUS } from "../lib/shell-changes.ts";
 import { sidebarState, type SidebarRail } from "../lib/shell-sidebar.ts";
 import type { ShellBarTheme, ShellProfileState } from "../lib/shell-bar.ts";
@@ -621,6 +621,28 @@ test("fullscreen Status disposes profile watchers and pending refreshes with the
 	writeFileSync(repoPin, serializeProfilePin("other"));
 	await new Promise((resolve) => setTimeout(resolve, 180));
 	assert.equal(reads, 1, "disposed Status components must close watchers and pending refresh timers");
+});
+
+test("profile watcher errors close the failed watcher without retrying it", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "shell-profile-watch-error-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const errors: Array<(error: Error) => void> = [];
+	let closed = 0;
+	let created = 0;
+	const snapshot = createEffectiveProfileSnapshot({
+		cwd: () => root, env: { GENTLE_PI_CONFIG_HOME: root }, resolveWorktree: () => ({ root, commonDir: root }), onChange() {}, read: () => undefined,
+		watch: () => {
+			created++;
+			return { on(event: string, callback: (error: Error) => void) { if (event === "error") errors.push(callback); }, unref() {}, close() { closed++; } } as never;
+		},
+	});
+	assert.doesNotThrow(() => errors[0]!(new Error("watched directory vanished")));
+	assert.equal(closed, 1, "the failed watcher is closed immediately");
+	await new Promise((resolve) => setTimeout(resolve, 130));
+	assert.equal(created, 1, "a persistent watcher failure does not create a retry loop");
+	snapshot.dispose();
+	assert.equal(closed, 1, "disposal does not close an already failed watcher again");
+	assert.doesNotThrow(() => errors[0]!(new Error("late error after disposal")));
 });
 
 test("profile reader follows store changes and rejects missing or invalid active markers", (t) => {

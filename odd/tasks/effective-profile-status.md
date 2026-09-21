@@ -33,6 +33,7 @@ Fix GitHub issue #1176 so the fullscreen Status sidebar shows the profile that g
   shell behavior, and verify the merged candidate.
 - [x] T4 — Replace the lossy `pinned` boolean with the effective source (`global`, `local`, or `repo`), render the winning pin scope, cover same-profile source transitions, update documentation, and verify within the user-specified line budgets. Route: delegated writer because the change spans multiple non-trivial files.
 - [x] T5 — Integrate current `main` at `cf1fdb65`, resolve the `extensions/gentle-shell.ts` import conflict while preserving both effective-profile state and the fullscreen header rule, run focused and repository verification, and commit the integration.
+- [x] T6 — Correct review finding `R4-watch-runtime-error`: handle asynchronous `FSWatcher` errors without terminating the Pi host, add focused regression coverage, validate within the native correction budget, and commit the fix.
 
 ## Acceptance criteria
 
@@ -88,3 +89,8 @@ Fix GitHub issue #1176 so the fullscreen Status sidebar shows the profile that g
 - T5 full suite: the required command reported 2923 passed, 1 failed, and 47 skipped only in `tests/review-host-relay-routing.test.ts`; the established native-runtime override passed that file's 31 tests, and the remaining suite passed 2893 tests with 47 skipped.
 - T5 diff check: `git diff --check --cached` — passed.
 - T5 merge commit: `c1bd0148` (`chore(branch): merge current main into effective profile fix`).
+- T6 correction: asynchronous watcher errors close and retire the failed watcher, suppress retry loops, and remain safe after disposal; focused regression coverage exercises the error lifecycle.
+- T6 correction size: 44 diff lines across production and test code, within the authorized 80-line plan.
+- T6 focused tests: `node --experimental-strip-types --test tests/gentle-shell.test.ts tests/shell-bar.test.ts tests/shell-sidebar-layout.test.ts` — 167 passed, 0 failed.
+- T6 type check: `node scripts/check-types.mjs` — passed with 196 recorded diagnostics, no regressions, and 3 file/code pairs improved.
+- T6 diff check: `git diff --check` — passed.

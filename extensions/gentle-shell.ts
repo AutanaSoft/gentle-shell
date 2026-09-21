@@ -139,6 +139,7 @@ interface EffectiveProfileSnapshotOptions {
 	env: NodeJS.ProcessEnv;
 	resolveWorktree: WorktreeResolver;
 	onChange(): void;
+	watch?: typeof watch;
 }
 
 function existingProfileWatchDirectory(path: string, floor: string): string | undefined {
@@ -187,13 +188,14 @@ function sameProfileState(left: ShellProfileState | undefined, right: ShellProfi
 	return left?.name === right?.name && left?.source === right?.source;
 }
 
-function createEffectiveProfileSnapshot(options: EffectiveProfileSnapshotOptions): EffectiveProfileSnapshot {
+export function createEffectiveProfileSnapshot(options: EffectiveProfileSnapshotOptions): EffectiveProfileSnapshot {
 	let disposed = false;
 	let observedCwd = options.cwd();
 	let profile = copyProfileState(options.read(observedCwd));
 	let refreshTimer: ReturnType<typeof setTimeout> | undefined;
 	let watchers: FSWatcher[] = [];
 	let watchedDirectories: string[] = [];
+	const failedWatchDirectories = new Set<string>();
 
 	const closeWatchers = () => {
 		for (const watcher of watchers) {
@@ -207,13 +209,25 @@ function createEffectiveProfileSnapshot(options: EffectiveProfileSnapshotOptions
 		watchedDirectories = [];
 	};
 	const installWatchers = (cwd: string) => {
-		const directories = effectiveProfileWatchDirectories(cwd, options.env, options.resolveWorktree);
+		const availableDirectories = effectiveProfileWatchDirectories(cwd, options.env, options.resolveWorktree);
+		for (const directory of failedWatchDirectories) if (!availableDirectories.includes(directory)) failedWatchDirectories.delete(directory);
+		const directories = availableDirectories.filter((directory) => !failedWatchDirectories.has(directory));
 		if (directories.length === watchedDirectories.length && directories.every((directory, index) => directory === watchedDirectories[index]) && watchers.length === directories.length) return;
 		closeWatchers();
 		watchedDirectories = directories;
 		for (const directory of directories) {
 			try {
-				const watcher = watch(directory, () => scheduleRefresh());
+				const watcher = (options.watch ?? watch)(directory, () => scheduleRefresh());
+				watcher.on("error", () => {
+					if (disposed) return;
+					failedWatchDirectories.add(directory);
+					const index = watchers.indexOf(watcher);
+					if (index >= 0) watchers.splice(index, 1);
+					const directoryIndex = watchedDirectories.indexOf(directory);
+					if (directoryIndex >= 0) watchedDirectories.splice(directoryIndex, 1);
+					try { watcher.close(); } catch { /* Best-effort cleanup after an asynchronous watch failure. */ }
+					scheduleRefresh();
+				});
 				watcher.unref();
 				watchers.push(watcher);
 			} catch {
