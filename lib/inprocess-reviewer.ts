@@ -9,7 +9,11 @@
 // the caller's "provider/id" selection through pi's live model registry,
 // authenticates through the registry's own resolver, and completes exactly
 // one frozen prompt as a single user message — no systemPrompt, no tools, no
-// session, no extension hooks.
+// session, and none of pi's tool/skill/prompt extension hooks. Extension
+// *providers* are the opposite: they are explicitly in scope. Reading the
+// earlier "no extension hooks" wording as "no extension providers" is what
+// produced gentle-shell#1304, where every extension-registered model was
+// unreachable, so the distinction is stated here rather than implied.
 //
 // Every I/O seam is injected (`registry`, `complete`, `now`), so this module
 // runs under tests with no network and no pi process. gentle-pi#311 P2 wires
@@ -22,11 +26,21 @@ import { SAFE_MODEL_ID_PATTERN } from "./model-routing-authority.ts";
 
 // ---------------------------------------------------------------------------
 // Registry seam — a structural subset of pi's live ModelRegistry
-// (@earendil-works/pi-coding-agent core/model-registry.ts). Only `find` and
-// `getApiKeyAndHeaders` are needed here; the real registry's resolved auth
-// carries extra optional fields (`baseUrl`, `env`) that this narrower shape
-// simply ignores.
+// (@earendil-works/pi-coding-agent core/model-registry.ts). `find`,
+// `getApiKeyAndHeaders` and `getProvider` are all needed here; the real
+// registry's resolved auth carries extra optional fields (`baseUrl`, `env`)
+// that this narrower shape simply ignores. `getProvider` is optional so a
+// test double with no composition layer still satisfies the seam.
 // ---------------------------------------------------------------------------
+
+/**
+ * The single method this module needs from a resolved provider. pi's
+ * `Provider.streamSimple` returns an `AssistantMessageEventStream`; only its
+ * `result()` is consumed here, so the seam asks for nothing more.
+ */
+export interface InProcessReviewerProvider {
+	streamSimple(model: Model<Api>, context: Context, options?: SimpleStreamOptions): { result(): Promise<AssistantMessage> };
+}
 
 export interface InProcessReviewerRegistry {
 	find(provider: string, modelId: string): Model<Api> | undefined;
@@ -34,6 +48,7 @@ export interface InProcessReviewerRegistry {
 		| { readonly ok: true; readonly apiKey?: string; readonly headers?: ProviderHeaders }
 		| { readonly ok: false; readonly error: string }
 	>;
+	getProvider?(provider: string): InProcessReviewerProvider | undefined;
 }
 
 export const INPROCESS_REVIEWER_FAILURE = {
@@ -180,6 +195,23 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 		);
 	}
 
+	// pi's composed provider is the only layer that honors extension-registered
+	// providers (core/provider-composer.ts: `extension.streamSimple` when
+	// `model.api === extension.api`). pi-ai's `completeSimple` resolves against
+	// its own builtin-only registry and throws for any extension api, so a seam
+	// that carries `getProvider` is always preferred; a seam without it at all
+	// (a test double with no composition layer) still uses `deps.complete`.
+	// A registry that has `getProvider` yet owns no provider for a model its
+	// own `find` just resolved is incoherent: refuse, never route past it.
+	const provider = deps.registry.getProvider?.(model.provider);
+	if (deps.registry.getProvider !== undefined && provider === undefined) {
+		return refuse(
+			INPROCESS_REVIEWER_FAILURE.MODEL_NOT_FOUND,
+			`The model registry resolved ${JSON.stringify(request.selection)} for ${request.routingKey} but owns no provider for ${JSON.stringify(model.provider)}; reassign ${request.routingKey} to a model whose provider the interactive pi can actually dispatch.`,
+			{ provider: model.provider, api: model.api },
+		);
+	}
+
 	const auth = await deps.registry.getApiKeyAndHeaders(model);
 	// Negation narrowing (`!auth.ok`) does not eliminate the `ok: true` arm of
 	// this discriminated union under this project's `strict: false` tsconfig;
@@ -245,9 +277,12 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 		return undefined;
 	};
 
+	// `SimpleStreamOptions` is identical on both paths; only the return shape
+	// differs (an event stream versus a promise), hence `.result()` — which is
+	// exactly what pi-ai's own compat layer does with the same stream.
 	let assistant: AssistantMessage;
 	try {
-		assistant = await deps.complete(model, context, options);
+		assistant = provider === undefined ? await deps.complete(model, context, options) : await provider.streamSimple(model, context, options).result();
 	} catch (error) {
 		return abortRefusal() ?? refuse(INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED, `Reviewer completion failed for ${request.routingKey}: ${sanitizeErrorExcerpt(error)}`);
 	}

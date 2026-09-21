@@ -125,6 +125,24 @@ const unreachableComplete: typeof completeSimple = (async () => {
 	throw new Error("complete must not be called for this refusal");
 }) as typeof completeSimple;
 
+/**
+ * A `getProvider` fake standing in for pi's composed provider: it records
+ * every dispatch and returns a stream whose `result()` settles the
+ * completion, which is exactly the shape pi-ai's own compat layer consumes.
+ * The registry it is spread onto keeps `fakeRegistry`'s default shape, so the
+ * no-`getProvider` seam the other tests use stays untouched.
+ */
+function capturingProvider(assistant: AssistantMessage) {
+	const calls: Array<{ provider: string; model: Model<Api>; context: Context; options: SimpleStreamOptions | undefined }> = [];
+	const getProvider = (provider: string) => ({
+		streamSimple: (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => {
+			calls.push({ provider, model, context, options });
+			return { result: async () => assistant };
+		},
+	});
+	return { getProvider, calls };
+}
+
 function expectRefused(outcome: InProcessReviewerOutcome): Extract<InProcessReviewerOutcome, { kind: "refused" }> {
 	assert.equal(outcome.kind, "refused", outcome.kind === "text" ? `expected a refusal, got text: ${outcome.text}` : undefined);
 	return outcome as Extract<InProcessReviewerOutcome, { kind: "refused" }>;
@@ -457,4 +475,58 @@ test("concatenates only text parts, ignoring thinking parts, in order", async ()
 	const text = expectText(outcome);
 	assert.equal(text.text, "Part A Part B");
 	assert.equal(text.reviewerModel, "openai/gpt-5");
+});
+
+// ---------------------------------------------------------------------------
+// Composed-provider routing (gentle-shell#1304)
+//
+// pi-ai's `completeSimple` resolves against pi-ai's own builtin-only
+// `apiProviderRegistry`, so an extension-registered provider is unreachable
+// through it ("No API provider registered for api: <api>"). A registry that
+// exposes `getProvider` carries pi's composed provider, which does honor
+// extensions, and must be used instead of `deps.complete`.
+// ---------------------------------------------------------------------------
+
+test("dispatches through the composed provider's streamSimple when the registry exposes getProvider", async () => {
+	const extensionModel = fakeModel({ provider: "claude-bridge", id: "claude-opus-5", api: "claude-bridge", baseUrl: "https://bridge.invalid" });
+	const { getProvider, calls } = capturingProvider(assistantText("bridged review"));
+	const outcome = await runInProcessReviewer(baseRequest({ selection: "claude-bridge/claude-opus-5" }), {
+		// `unreachableComplete` is the canary: reaching pi-ai's compat path at
+		// all is the defect, so any call to it fails this test.
+		registry: { ...fakeRegistry([extensionModel]), getProvider },
+		complete: unreachableComplete,
+	});
+	const text = expectText(outcome);
+	assert.equal(text.text, "bridged review");
+	assert.equal(text.reviewerModel, "claude-bridge/claude-opus-5");
+	assert.equal(calls.length, 1, "the composed provider must receive exactly one dispatch");
+	assert.equal(calls[0]!.provider, "claude-bridge", "the provider is resolved by the model's own provider id");
+	assert.equal(calls[0]!.model.api, "claude-bridge", "the extension api must reach the composed provider unchanged");
+});
+
+test("forwards the same context and options to the composed provider as to deps.complete", async () => {
+	const { getProvider, calls } = capturingProvider(assistantText("ok"));
+	const prompt = Buffer.from("frozen prompt bytes", "utf8");
+	const outcome = await runInProcessReviewer(baseRequest({ prompt, thinking: "high" }), {
+		registry: { ...fakeRegistry([fakeModel()]), getProvider },
+		complete: unreachableComplete,
+		now: () => 12_345,
+	});
+	expectText(outcome);
+	assert.deepEqual(calls[0]!.context, {
+		messages: [{ role: "user", content: [{ type: "text", text: "frozen prompt bytes" }], timestamp: 12_345 }],
+	});
+	assert.equal(calls[0]!.options?.apiKey, "test-key", "registry-resolved credentials still travel on options");
+	assert.equal(calls[0]!.options?.reasoning, "high");
+});
+
+test("refuses instead of falling back when getProvider returns undefined for a model find() resolved", async () => {
+	const outcome = await runInProcessReviewer(baseRequest(), {
+		registry: { ...fakeRegistry([fakeModel()]), getProvider: () => undefined },
+		complete: unreachableComplete,
+	});
+	const refused = expectRefused(outcome);
+	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.MODEL_NOT_FOUND);
+	assert.match(refused.message, /review-risk/);
+	assert.deepEqual(refused.evidence, { provider: "openai", api: "openai-responses" }, "the evidence separates this cause from a plain unresolved selection");
 });

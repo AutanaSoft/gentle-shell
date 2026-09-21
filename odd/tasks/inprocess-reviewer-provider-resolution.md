@@ -98,6 +98,19 @@ narrow seam (pre-existing, follow-up issue).
 - **Incoherence guard.** When `registry.getProvider` exists but returns `undefined` for a model
   `find()` just resolved, that combination is incoherent and must refuse, not fall back silently.
   The fallback is reserved for "the seam has no `getProvider` at all", i.e. test doubles.
+- **The incoherence guard reuses `MODEL_NOT_FOUND`; no eleventh code is added.** Two reasons, one of
+  them a hard blocker. Blocker: `lib/review-host-relay.ts:579` closes its refusal-code switch with
+  `const unreachable: never = code`, so an eleventh member makes that assignment fail
+  (verified: `lib/review-host-relay.ts(579,10): error TS2322: Type '"provider-unresolved"' is not
+  assignable to type 'never'`), and `review-host-relay.ts` carries zero recorded diagnostics, so the
+  `scripts/check-types.mjs` ratchet would reject it. Merit: `MODEL_NOT_FOUND` already means "the
+  registry cannot resolve this selection into a dispatchable target", and `getProvider` returning
+  `undefined` is the second half of that same resolution failing for the same reason — the provider is
+  not present in this pi. It maps to `REVIEWER_MODEL_NOT_FOUND`, a configuration-actionable relay kind,
+  whereas `PROVIDER_FAILED` maps to `PI_FAILED`, the generic bucket, which reads as a transient upstream
+  error and would invite retries that can never succeed. The existing branch keeps its message and its
+  absent evidence byte-for-byte; the new branch carries its own message plus
+  `{ provider, api }` evidence so the two causes are distinguishable in logs.
 - **Env-API-key delta is a real risk, not a theoretical one.** compat wraps every dispatch in
   `withEnvApiKey(model, options)`; `provider.streamSimple` does not. A builtin provider authenticated
   purely by an env var with no stored credential is rescued by compat today and would not be after
@@ -119,16 +132,16 @@ narrow seam (pre-existing, follow-up issue).
 - [x] IRP-0 — Sanitize the local pi install so an e2e check is meaningful: `~/.pi/agent/npm/package.json`
       pins `gentle-pi` to a `file:` tarball that no longer exists, and the installed build is stock
       3.2.1 (subprocess relay, `--no-extensions`, no allowlist). Record the resulting versions.
-- [ ] IRP-1 — RED: a focused failing test asserting that a registry exposing `getProvider` routes the
+- [x] IRP-1 — RED: a focused failing test asserting that a registry exposing `getProvider` routes the
       completion through the returned provider's `streamSimple`, with the extension `api` reaching it,
       and that `deps.complete` is never called.
-- [ ] IRP-2 — GREEN: widen `InProcessReviewerRegistry` with optional `getProvider`, dispatch through
+- [x] IRP-2 — GREEN: widen `InProcessReviewerRegistry` with optional `getProvider`, dispatch through
       `provider.streamSimple(...).result()`, keep `deps.complete` as the no-`getProvider` fallback.
-- [ ] IRP-3 — RED/GREEN: the incoherence guard (`getProvider` present, returns `undefined` for a
+- [x] IRP-3 — RED/GREEN: the incoherence guard (`getProvider` present, returns `undefined` for a
       resolved model) refuses with a typed code instead of falling back.
 - [ ] IRP-4 — RED/GREEN: lock the env-API-key behavior for a provider with no stored credential, so
       the `withEnvApiKey` delta is a decision on record rather than a silent regression.
-- [ ] IRP-5 — Correct the module header: "Only `find` and `getApiKeyAndHeaders` are needed here"
+- [x] IRP-5 — Correct the module header: "Only `find` and `getApiKeyAndHeaders` are needed here"
       (`:25-26`) is now false, and "no extension hooks" (`:12`) must state that it excludes
       tool/skill/prompt hooks, not extension-registered providers.
 - [ ] IRP-6 — Verify: focused tests, `pnpm test`, `pnpm run typecheck`, and the maintainer matrix
@@ -194,6 +207,46 @@ PR remain the user's decision.
   `~/.pi/gentle-ai/review-relay.json` (nothing in 3.3.0 reads it) and `~/.pi/agent/pi-env.bak` (the
   env var it set is not read in 3.3.0).
 
+- IRP-1/2/3/5 (2026-09-21), one work unit on `fix/inprocess-reviewer-provider-resolution`, uncommitted
+  at hand-back. Diff: `lib/inprocess-reviewer.ts` (+41/−6) and `tests/inprocess-reviewer.test.ts`
+  (+72/−0); no other source file was touched.
+- IRP-1/2/3 TDD sequence, all foreground:
+  - Baseline, before any edit: `node --experimental-strip-types --test tests/inprocess-reviewer.test.ts`
+    → `tests 30 / pass 30 / fail 0`.
+  - RED, tests only: same command → `tests 33 / pass 30 / fail 3`. Observed failures:
+    `dispatches through the composed provider's streamSimple when the registry exposes getProvider` and
+    `forwards the same context and options to the composed provider as to deps.complete` both failed with
+    `expected text, got refusal provider-failed: Reviewer completion failed for review-risk: complete must
+    not be called for this refusal` — that is the `unreachableComplete` canary proving the dispatch still
+    went to pi-ai's compat path. `refuses instead of falling back when getProvider returns undefined for a
+    model find() resolved` failed with `actual 'provider-failed' / expected 'model-not-found'`.
+  - GREEN, after `lib/inprocess-reviewer.ts`: same command → `tests 33 / pass 33 / fail 0`.
+- `node --experimental-strip-types --test tests/review-host-relay.test.ts` → `tests 43 / pass 43 / fail 0`.
+- `pnpm run typecheck` → `types: 196 recorded diagnostic(s), no regressions; 3 file/code pair(s)
+  improved`, byte-identical to the pre-edit run. A direct `tsc -p tsconfig.json` filtered for
+  `reviewerRegistry|InProcessReviewerRegistry|inprocess-reviewer|review-host-relay` reports only the two
+  pre-existing `tests/review-host-relay-routing.test.ts` diagnostics already in the baseline. That is the
+  assignability proof for the widened seam: `ctx.modelRegistry` reaches an `InProcessReviewerRegistry`
+  parameter at `extensions/gentle-ai.ts:8888`/`:8931` through `:7397` and `:6766` with no cast and no new
+  diagnostic, so the real `ModelRegistry.getProvider` satisfies the optional member and the
+  composed-provider path is live in production, not only under the fakes.
+- `pnpm test` → exit 0; `tests 3000 / pass 2962 / fail 0 / skipped 38`, plus
+  `gentle-pi provider contract mirror check passed (contract 1.2.0, 9 bundle entries, 2 generated
+  baselines, acquisition field-test-local)` and the runtime harness.
+- The 30 pre-existing tests passed with the `fakeRegistry` helper unedited. The three new tests opt into
+  the composed-provider seam by spreading a `getProvider` over it at the call site
+  (`{ ...fakeRegistry([...]), getProvider }`), which is exactly what the optional member buys.
+- IRP-4 risk confirmed concretely while implementing, not deferred as theory. pi-ai
+  `dist/compat.js:190,193` wraps every dispatch in `withEnvApiKey`, and `:145-152` shows it injects only
+  when `options.apiKey` is absent or blank. `ModelRegistry.getApiKeyAndHeaders`
+  (`dist/core/model-registry.js:30-40`) can legitimately return `{ ok: true, headers }` with **no**
+  `apiKey` when `runtime.getAuth` resolves nothing and the compatibility config declares no `authHeader`.
+  That exact combination is the regression window: compat rescued it, `provider.streamSimple` will not.
+  Second, narrower point for IRP-4: compat reads `getEnvApiKey(model.provider, options?.env)`, and this
+  module's narrow seam already drops the real registry's `env` field, so even today's compat path falls
+  back to ambient `process.env` rather than registry-resolved env.
+
 ## Next step
 
-IRP-1: the RED test locking composed-provider routing for an extension-registered provider.
+IRP-4: lock the env-API-key behavior for a provider that resolves `ok: true` with no `apiKey`, so the
+`withEnvApiKey` delta recorded above becomes a decision on record instead of a silent regression.
