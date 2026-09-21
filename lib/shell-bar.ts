@@ -24,6 +24,10 @@ export interface ShellBarModel {
 	costTotal: number;
 	subscription: boolean;
 	usage: ProviderUsage | undefined;
+	/** Effective RDD presentation state supplied by the Shell lifecycle. */
+	rddMode?: "on" | "off" | "unknown";
+	/** True only when the authoritative native source is clone-local. */
+	rddProjectOverride?: boolean;
 	statuses: string[];
 }
 
@@ -141,14 +145,36 @@ function costSegment(costTotal: number, subscription: boolean, theme: ShellBarTh
 	return theme.fg(ROLE.VALUE, formatCost(costTotal, subscription));
 }
 
+export type RddStatusPresentation = "fullscreen" | "compact";
+
+// This renderer intentionally consumes only the lifecycle-projected model
+// state. It neither reads native status nor changes review-mode configuration.
+export function renderRddStatus(
+	mode: ShellBarModel["rddMode"],
+	projectOverride: boolean | undefined,
+	presentation: RddStatusPresentation,
+): string {
+	if (mode !== "on" && mode !== "off") return presentation === "fullscreen" ? "Review RDD: ?" : "RDD: ?";
+	const value = mode.toUpperCase();
+	const suffix = presentation === "fullscreen" && projectOverride ? " · Project" : "";
+	return presentation === "fullscreen" ? `Review RDD: ${value}${suffix}` : `RDD: ${value}`;
+}
+
+function rddCompactSegment(model: ShellBarModel, theme: ShellBarTheme): string {
+	return theme.fg(ROLE.STATUS, renderRddStatus(model.rddMode, model.rddProjectOverride, "compact"));
+}
+
 function buildSegments(model: ShellBarModel, theme: ShellBarTheme): string[] {
 	const location = locationSegment(model, theme);
 	const modelSegment = executionSegment(model.modelId, model.effort, theme);
 	const context = contextSegment(model.contextPercent, theme);
 	const cost = costSegment(model.costTotal, model.subscription, theme);
 	const usage = model.usage ? renderUsageBar(model.usage, theme, model.modelId) : undefined;
+	const rdd = rddCompactSegment(model, theme);
 	const statuses = model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status)));
-	return [theme.fg(ROLE.BRAND, SHELL_BAR_BRAND), location, modelSegment, context, cost, ...(usage ? [usage] : []), ...statuses];
+	// RDD follows opaque statuses so constrained layouts drop its whole segment
+	// before they sacrifice integration text or truncate an RDD label.
+	return [theme.fg(ROLE.BRAND, SHELL_BAR_BRAND), location, modelSegment, context, cost, ...(usage ? [usage] : []), ...statuses, rdd];
 }
 
 // When the line overflows, the location gives way first: the path shrinks to
@@ -182,6 +208,7 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 	const label = (text: string) => theme.fg(ROLE.LABEL, text);
 	const changes = model.changes;
 	const branch = model.branch ? `${label("Branch")} ${value(model.branch)}` : "";
+	const rdd = value(renderRddStatus(model.rddMode, model.rddProjectOverride, "fullscreen"));
 	// Pre-wrap values before indenting so Unicode/ANSI continuation lines keep
 	// the same inset without consuming the card's right border.
 	const innerWidth = cardInnerWidth(width);
@@ -196,6 +223,7 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 			lines: [
 				value(model.cwd),
 				...(branch ? [branch] : []),
+				rdd,
 				...(model.sessionName ? [`${label("Session")} ${value(model.sessionName)}`] : []),
 				...(model.profile ? [`${label("Profile")} ${value(sanitizeStatus(model.profile))}`] : []),
 			],

@@ -11,6 +11,7 @@ import {
 	renderShellHeaderBar,
 	renderShellHeaderRule,
 	renderShellSidebarBar,
+	renderRddStatus,
 	shellEnabled,
 	type ShellBarModel,
 	type ShellBarTheme,
@@ -50,6 +51,8 @@ function model(overrides: Partial<ShellBarModel> = {}): ShellBarModel {
 		costTotal: 9.49,
 		subscription: true,
 		usage: undefined,
+		rddMode: undefined,
+		rddProjectOverride: undefined,
 		statuses: [],
 		...overrides,
 	};
@@ -84,7 +87,7 @@ test("renderShellBar renders one line with the segments in order", () => {
 	assert.equal(rest.length, 0);
 	assert.equal(
 		line,
-		"✿ gentle shell ⟡ ~/work/gentle-pi main ⟡ gpt-5.5 · medium ⟡ ctx ▰▰▰▰▱▱▱▱ 45% ⟡ $9.49 sub",
+		"✿ gentle shell ⟡ ~/work/gentle-pi main ⟡ gpt-5.5 · medium ⟡ ctx ▰▰▰▰▱▱▱▱ 45% ⟡ $9.49 sub ⟡ RDD: ?",
 	);
 });
 
@@ -120,7 +123,7 @@ test("renderShellBar adds the subscription windows after the cost when usage is 
 		] }],
 	};
 	const [line] = renderShellBar(model({ usage }), plainTheme, 200);
-	assert.match(line, /\$9\.49 sub ⟡ codex 5h ▰▰▰▰▰▱▱▱ 62% · week 31%$/);
+	assert.match(line, /\$9\.49 sub ⟡ codex 5h ▰▰▰▰▰▱▱▱ 62% · week 31% ⟡ RDD: \?$/);
 });
 
 test("renderShellBar meters the model the session is using inside a multi-model provider", () => {
@@ -134,10 +137,10 @@ test("renderShellBar meters the model the session is using inside a multi-model 
 		],
 	};
 	const [glm] = renderShellBar(model({ modelId: "glm5.3-flash", usage }), plainTheme, 200);
-	assert.match(glm, /glm5\.3-flash ▰▱▱▱▱▱▱▱ 10%$/);
+	assert.match(glm, /glm5\.3-flash ▰▱▱▱▱▱▱▱ 10% ⟡ RDD: \?$/);
 	assert.doesNotMatch(glm, /deepseek-v4-flash ▰/);
 	const [other] = renderShellBar(model({ modelId: "deepseek-v4-flash", usage }), plainTheme, 200);
-	assert.match(other, /deepseek-v4-flash ▰▱▱▱▱▱▱▱ 18%$/);
+	assert.match(other, /deepseek-v4-flash ▰▱▱▱▱▱▱▱ 18% ⟡ RDD: \?$/);
 });
 
 test("renderShellBar keeps its own zero-window contract independent of the sidebar", () => {
@@ -150,7 +153,7 @@ test("renderShellBar keeps its own zero-window contract independent of the sideb
 			{ label: "week", usedPercent: 0, windowSeconds: 604_800, resetAt: null },
 		] }],
 	};
-	assert.match(renderShellBar(model({ usage }), plainTheme, 200)[0], /codex 5h ▱▱▱▱▱▱▱▱ 0% · week 0%$/);
+	assert.match(renderShellBar(model({ usage }), plainTheme, 200)[0], /codex 5h ▱▱▱▱▱▱▱▱ 0% · week 0% ⟡ RDD: \?$/);
 });
 
 test("renderShellBar shows an unknown context as a question mark after compaction", () => {
@@ -166,20 +169,20 @@ test("renderShellBar right-aligns the session name when it fits", () => {
 
 test("renderShellBar appends extension statuses as trailing segments", () => {
 	const [line] = renderShellBar(model({ statuses: ["🔌 MCP: 3 servers\tenabled"] }), plainTheme, 160);
-	assert.match(line, /⟡ 🔌 MCP: 3 servers enabled$/);
+	assert.match(line, /⟡ 🔌 MCP: 3 servers enabled ⟡ RDD: \?$/);
 });
 
 test("renderShellBar repaints extension statuses in the bar role, discarding colors the extension embedded", () => {
 	const tagged = { fg: (color: string, text: string) => `<${color}>${text}</${color}>`, bold: (text: string) => text };
 	const [line] = renderShellBar(model({ statuses: ["\x1b[38;2;255;0;0mMCP: 3/3 servers\x1b[0m"] }), tagged, 400);
-	assert.match(line, /<muted>MCP: 3\/3 servers<\/muted>$/);
+	assert.match(line, /<muted>MCP: 3\/3 servers<\/muted> <dim>⟡<\/dim> <muted>RDD: \?<\/muted>$/);
 	assert.doesNotMatch(line, /\x1b\[/);
 });
 
 test("renderShellBar compacts the path and branch before it sacrifices an extension status", () => {
 	const long = model({ branch: "fix/shell-bar-status-ansi", dirty: 2, statuses: ["MCP: 3/3 servers"] });
 	const [full] = renderShellBar(long, plainTheme, 160);
-	assert.match(full, /~\/work\/gentle-pi fix\/shell-bar-status-ansi ±2 .* MCP: 3\/3 servers$/);
+	assert.match(full, /~\/work\/gentle-pi fix\/shell-bar-status-ansi ±2 .* MCP: 3\/3 servers ⟡ RDD: \?$/);
 	const [compact] = renderShellBar(long, plainTheme, 118);
 	assert.ok(visibleWidth(compact) <= 118, `line overflowed: ${visibleWidth(compact)}`);
 	assert.match(compact, /⟡ gentle-pi fix\/shell-bar-… ±2 ⟡/);
@@ -235,6 +238,63 @@ test("sidebar unifies project, captured changes and integrations in one frame", 
 	const empty = renderShellSidebarBar(model(), plainTheme, 46).join("\n");
 	assert.match(empty, /No captured changes/);
 	assert.match(empty, /Integrations/);
+});
+
+test("RDD renderer maps structured state without making native calls", () => {
+	assert.equal(renderRddStatus("on", false, "fullscreen"), "Review RDD: ON");
+	assert.equal(renderRddStatus("off", false, "fullscreen"), "Review RDD: OFF");
+	assert.equal(renderRddStatus("on", true, "fullscreen"), "Review RDD: ON · Project");
+	assert.equal(renderRddStatus("off", true, "fullscreen"), "Review RDD: OFF · Project");
+	assert.equal(renderRddStatus("unknown", true, "fullscreen"), "Review RDD: ?");
+	assert.equal(renderRddStatus(undefined, true, "fullscreen"), "Review RDD: ?");
+	assert.equal(renderRddStatus("on", true, "compact"), "RDD: ON");
+	assert.equal(renderRddStatus("off", true, "compact"), "RDD: OFF");
+	assert.equal(renderRddStatus("unknown", true, "compact"), "RDD: ?");
+});
+
+test("sidebar places exactly one RDD line in Project before session and profile", () => {
+	const data = model({ rddMode: "off", rddProjectOverride: true, sessionName: "session", profile: "team", statuses: ["opaque integration"] });
+	const text = renderShellSidebarBar(data, plainTheme, 60).join("\n");
+	const branch = text.indexOf("Branch main");
+	const rdd = text.indexOf("Review RDD: OFF · Project");
+	const session = text.indexOf("Session session");
+	const profile = text.indexOf("Profile team");
+	assert.ok(branch < rdd && rdd < session && session < profile);
+	assert.equal((text.match(/Review RDD:/g) ?? []).length, 1);
+	assert.doesNotMatch(text, /\nReview\n/);
+	assert.ok(text.indexOf("Integrations") < text.indexOf("opaque integration"));
+});
+
+test("compact RDD is ordered before opaque statuses and drops whole before truncation", () => {
+	const data = model({ rddMode: "on", rddProjectOverride: true, statuses: ["MCP: connected"] });
+	const wide = renderShellBar(data, plainTheme, 200)[0];
+	assert.ok(wide.indexOf("MCP: connected") < wide.indexOf("RDD: ON"));
+	assert.doesNotMatch(wide, /Project/);
+	const exactWidth = Array.from({ length: 200 }, (_, index) => index + 1).find(width => {
+		const current = renderShellBar(model({ rddMode: "on" }), plainTheme, width)[0];
+		const previous = renderShellBar(model({ rddMode: "on" }), plainTheme, width - 1)[0];
+		return /RDD: ON$/.test(current) && !/RDD:/.test(previous);
+	});
+	assert.ok(exactWidth, "an exact RDD breakpoint exists");
+	const exact = renderShellBar(model({ rddMode: "on" }), plainTheme, exactWidth)[0];
+	const narrower = renderShellBar(model({ rddMode: "on" }), plainTheme, exactWidth - 1)[0];
+	assert.match(exact, /RDD: ON$/);
+	assert.doesNotMatch(narrower, /RDD: ON|RDD: O|…/);
+	assert.ok(visibleWidth(narrower) <= exactWidth - 1);
+});
+
+test("RDD rendering preserves ANSI and Unicode width bounds and accepts legacy models", () => {
+	const ansiTheme: ShellBarTheme = { fg: (_color, text) => `\x1b[35m${text}\x1b[0m`, bold: text => `\x1b[1m${text}\x1b[0m` };
+	const decorated = renderShellSidebarBar(model({ rddMode: "on", rddProjectOverride: true, cwd: "/界/é" }), ansiTheme, 24);
+	assert.ok(decorated.every(line => visibleWidth(line) <= 24));
+	const plain = decorated.join("\n").replace(/\x1b\[[0-9;]*m/g, "").replace(/[\s│]/g, "");
+	assert.match(plain, /ReviewRDD:ON·Project/);
+	const legacy: ShellBarModel = { ...model() };
+	delete legacy.rddMode;
+	delete legacy.rddProjectOverride;
+	const legacyText = renderShellSidebarBar(legacy, plainTheme, 46).join("\n");
+	assert.match(legacyText, /Review RDD: \?/);
+	assert.match(renderShellBar(legacy, plainTheme, 200)[0], /RDD: \?/);
 });
 
 test("sidebar profile wraps long names without changing the compact bar", () => {
