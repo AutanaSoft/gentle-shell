@@ -174,6 +174,7 @@ import {
 	RDD_STATUS_MEMO_TTL_MS,
 	RDD_STATUS_TIMEOUT_MS,
 	clearRddStatusMemoForTesting,
+	invalidateRddModeStatus,
 	isValidRddModeStatus,
 	readRddModeStatus,
 } from "../lib/rdd-mode-status.ts";
@@ -5126,6 +5127,7 @@ function nativeStartPreAuthorityRejection(): NativeStartPreAuthorityRejection {
 // other error (a real native process failure) still surfaces through the
 // caller's existing nativeOperationFailure handling.
 const REVIEW_MODE_DISABLED_OUTCOME = "review-mode-disabled";
+const RDD_MODE_STATUS_CHANGED = "gentle-pi:rdd-mode-status-changed";
 
 // Parity with gentle-ai's reviewModeScopeForSource
 // (internal/reviewtransaction/rdd_mode.go): the continuation is scoped to the
@@ -8694,6 +8696,10 @@ function createGentleAiExtensionForTesting(
 	const herdrLifecycle = createHerdrConfirmationLifecycle(pi.events);
 	const permissionEnvironment = dependencies.processEnv ?? process.env;
 	const oddDelegationGate = new OddRuntimeDelegationGate();
+	const publishRddModeStatusChanged = (cwd: string): void => {
+		invalidateRddModeStatus(cwd);
+		pi.events.emit(RDD_MODE_STATUS_CHANGED, { cwd });
+	};
 	const oddSessionId = (ctx: ExtensionContext): string => {
 		try { return ctx.sessionManager.getSessionId(); }
 		catch { return ""; }
@@ -9576,6 +9582,10 @@ function createGentleAiExtensionForTesting(
 						pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey),
 					);
 				}
+				const requested = subAction === NATIVE_REVIEW_MODE_OPERATION.ENABLE ? "on" : subAction === NATIVE_REVIEW_MODE_OPERATION.DISABLE ? "off" : result.status.effective;
+				if ((subAction === NATIVE_REVIEW_MODE_OPERATION.ENABLE || subAction === NATIVE_REVIEW_MODE_OPERATION.DISABLE) && result.status.effective === requested) {
+					publishRddModeStatusChanged(ctx.cwd);
+				}
 				const report = `receipt-driven development: ${result.status.effective} (decided by ${result.status.source})`;
 				// A mutating sub-action that left the effective mode unchanged did
 				// not do what the user asked, and reporting only the resulting
@@ -9585,7 +9595,6 @@ function createGentleAiExtensionForTesting(
 				// clone-local override and cannot enable global RDD. The native call
 				// exits 0, reports operation "enable", and changes nothing. Say
 				// that, and name the global-scope command that resolves it.
-				const requested = subAction === NATIVE_REVIEW_MODE_OPERATION.ENABLE ? "on" : subAction === NATIVE_REVIEW_MODE_OPERATION.DISABLE ? "off" : result.status.effective;
 				if (result.status.effective !== requested) {
 					ctx.ui.notify(`${report}\nThat did not turn reviews back on: /gentle:review-mode enable only clears a clone-local override, which cannot override a global off. Run \`gentle-ai review mode enable --scope=global\` to turn them back on.`, "warning");
 					return;

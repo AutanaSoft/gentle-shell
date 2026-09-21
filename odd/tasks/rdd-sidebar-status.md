@@ -4,7 +4,7 @@
 - Repository: `gentle-pi`
 - Branch: `feat/shell-rdd-status-v2`
 - Base: `main` / `upstream/main` at `cf1fdb65c267d9fbdad2c48f6c9e008f3f91d7a3`
-- Status: implementation authorized; RSS-1 in progress
+- Status: implementation authorized; RSS-1 complete, RSS-2 in progress
 - Source plan: `work-items/active/feat/938-shell-rdd-status/implementation-plan.md`
 - Related issue: `#938`
 - Route: delegated direct; each implementation task crosses the multi-file writer trigger
@@ -155,7 +155,7 @@ The task that owns a behavior runs its focused commands. Full-suite, runtime-mod
 
 ## Tasks
 
-- [ ] **RSS-1 — Centralize authoritative RDD status reads**
+- [x] **RSS-1 — Centralize authoritative RDD status reads**
   - Route: delegated writer; three non-trivial files trigger mandatory delegation.
   - Allowed surfaces:
     - `lib/rdd-mode-status.ts`
@@ -183,7 +183,7 @@ The task that owns a behavior runs its focused commands. Full-suite, runtime-mod
     ```
 
   - Work-unit commit proposal: `refactor(rdd): centralize authoritative mode status reads`.
-  - Completion evidence: RED observed for the missing shared reader and malformed partial native status; GREEN 23/23 focused tests; parity 22/22; typecheck passed with 196 baseline diagnostics and no regressions; independent verification found no blocker. Work-unit commit pending explicit authorization.
+  - Completion evidence: RED observed for the missing shared reader and malformed partial native status; GREEN 23/23 focused tests; parity 22/22; typecheck passed with 196 baseline diagnostics and no regressions; independent verification found no blocker; native review approved and acknowledged; committed as `e1f94388`.
 
 - [ ] **RSS-2 — Publish mutation-driven invalidation**
   - Route: delegated writer; two non-trivial files trigger mandatory delegation.
@@ -210,7 +210,7 @@ The task that owns a behavior runs its focused commands. Full-suite, runtime-mod
     ```
 
   - Work-unit commit proposal: `feat(rdd): publish review mode status invalidation`.
-  - Completion evidence: pending.
+  - Completion evidence: RED proved missing invalidation/event publication and exposed the global-off no-op edge; GREEN parity 22/22 and shared-reader 23/23; typecheck passed with 196 baseline diagnostics and no regressions; independent verification found no blocker. Work-unit commit pending native review.
 
 - [ ] **RSS-3 — Render compact structured RDD status**
   - Route: delegated writer; three non-trivial files trigger mandatory delegation.
@@ -319,8 +319,8 @@ The task that owns a behavior runs its focused commands. Full-suite, runtime-mod
 
 | Task | Status | TDD/verification evidence | Commit | Native review assessment |
 | --- | --- | --- | --- | --- |
-| RSS-1 | Verified; commit pending | RED and GREEN 23/23; parity 22/22; typecheck passed | Pending authorization | Assessment unassessable because intended untracked scope is undeclared; independent verification passed |
-| RSS-2 | Awaiting approval | — | — | — |
+| RSS-1 | Complete | RED and GREEN 23/23; parity 22/22; typecheck passed | `e1f94388` | Approved and acknowledged; three non-blocking readability suggestions recorded |
+| RSS-2 | Verified; review pending | RED/GREEN parity 22/22; reader 23/23; typecheck passed | — | Pending |
 | RSS-3 | Awaiting approval | — | — | — |
 | RSS-4 | Awaiting approval | — | — | — |
 | RSS-5 | Awaiting approval | — | — | — |

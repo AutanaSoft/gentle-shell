@@ -7,6 +7,7 @@ import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { __testing, createGentleAiExtension, PendingReviewConsentRegistry } from "../extensions/gentle-ai.ts";
 import { CandidateViewRegistry } from "../lib/review-candidate-view.ts";
+import { clearRddStatusMemoForTesting, readRddModeStatus } from "../lib/rdd-mode-status.ts";
 import {
 	NATIVE_REVIEW_ERROR_CODE,
 	NATIVE_REVIEW_MODE_OPERATION,
@@ -176,6 +177,7 @@ interface ParityRuntime {
 	controller: RegisteredControllerTool;
 	commands: Map<string, RegisteredCommand>;
 	events: Map<string, RegisteredEvent>;
+	emittedEvents: Array<{ name: string; event: unknown }>;
 }
 
 interface ParityRuntimeOptions {
@@ -189,6 +191,7 @@ function parityRuntime(nativeReviewCli: NativeReviewCli | null, options: ParityR
 	const tools = new Map<string, RegisteredControllerTool>();
 	const commands = new Map<string, RegisteredCommand>();
 	const events = new Map<string, RegisteredEvent>();
+	const emittedEvents: Array<{ name: string; event: unknown }> = [];
 	const dependencies = {
 		nativeReviewCli,
 		candidateViews: options.candidateViews ?? new CandidateViewRegistry(),
@@ -198,12 +201,13 @@ function parityRuntime(nativeReviewCli: NativeReviewCli | null, options: ParityR
 	} as unknown as Parameters<typeof createGentleAiExtension>[0];
 	__testing.createGentleAiExtension(dependencies)({
 		on(name: string, handler: RegisteredEvent) { events.set(name, handler); },
+		events: { emit(name: string, event: unknown) { emittedEvents.push({ name, event }); } },
 		registerTool(definition: RegisteredControllerTool & { name: string }) { tools.set(definition.name, definition); },
 		registerCommand(name: string, definition: RegisteredCommand) { commands.set(name, definition); },
 	} as unknown as ExtensionAPI);
 	const controller = tools.get("gentle_review");
 	assert.ok(controller);
-	return { controller: controller!, commands, events };
+	return { controller: controller!, commands, events, emittedEvents };
 }
 
 function repository(t: test.TestContext): string {
@@ -385,7 +389,8 @@ test("review-mode gate retains every off-source continuation and fails closed on
 	assert.equal(failed.outcome, "native-operation-failed");
 });
 
-test("public gentle:review-mode handler reports current operations, global-off warnings, and unavailability", async () => {
+test("public gentle:review-mode mutations invalidate and publish their active cwd", async () => {
+	const cwd = process.cwd();
 	const calls: string[] = [];
 	const native = {
 		reviewMode: async ({ operation }: { operation: "status" | "enable" | "disable" }) => {
@@ -398,24 +403,39 @@ test("public gentle:review-mode handler reports current operations, global-off w
 			};
 		},
 	} as unknown as NativeReviewCli;
-	const runtime = parityRuntime(native);
-	const command = runtime.commands.get("gentle:review-mode");
-	assert.ok(command);
-	const notices: Array<{ message: string; type?: string }> = [];
-	const ctx = context(process.cwd(), "review-mode-command", notices);
-	await command!.handler("status", ctx);
-	await command!.handler("disable", ctx);
-	await command!.handler("enable", ctx);
-	assert.deepEqual(calls, ["status", "disable", "enable"]);
-	assert.match(notices[0]?.message ?? "", /receipt-driven development: on/);
-	assert.match(notices[1]?.message ?? "", /receipt-driven development: off/);
-	assert.equal(notices[2]?.type, "warning");
-	assert.match(notices[2]?.message ?? "", /gentle-ai review mode enable --scope=global/);
+	clearRddStatusMemoForTesting();
+	try {
+		await readRddModeStatus(native, cwd);
+		const runtime = parityRuntime(native);
+		const command = runtime.commands.get("gentle:review-mode");
+		assert.ok(command);
+		const notices: Array<{ message: string; type?: string }> = [];
+		const ctx = context(cwd, "review-mode-command", notices);
+		await command!.handler("status", ctx);
+		assert.deepEqual(runtime.emittedEvents, []);
+		await command!.handler("disable", ctx);
+		assert.deepEqual(runtime.emittedEvents, [{ name: "gentle-pi:rdd-mode-status-changed", event: { cwd } }]);
+		await readRddModeStatus(native, cwd);
+		assert.equal(calls.filter((operation) => operation === "status").length, 3, "disable must force a fresh authoritative status read");
+		await command!.handler("enable", ctx);
+		assert.deepEqual(runtime.emittedEvents, [{ name: "gentle-pi:rdd-mode-status-changed", event: { cwd } }]);
+		await readRddModeStatus(native, cwd);
+		assert.equal(calls.filter((operation) => operation === "status").length, 3, "a global-off enable no-op must retain the current cached observation");
+		assert.match(notices[0]?.message ?? "", /receipt-driven development: on/);
+		assert.match(notices[1]?.message ?? "", /receipt-driven development: off/);
+		assert.equal(notices[2]?.type, "warning");
+		assert.match(notices[2]?.message ?? "", /gentle-ai review mode enable --scope=global/);
+	} finally {
+		clearRddStatusMemoForTesting();
+	}
 
-	const unavailable = parityRuntime({} as NativeReviewCli).commands.get("gentle:review-mode");
-	assert.ok(unavailable);
+	const failed = parityRuntime({ reviewMode: async () => { throw new Error("native mode failure"); } } as unknown as NativeReviewCli);
+	await failed.commands.get("gentle:review-mode")!.handler("disable", context(cwd));
+	assert.deepEqual(failed.emittedEvents, []);
+	const unavailable = parityRuntime({} as NativeReviewCli);
 	const unavailableNotices: Array<{ message: string; type?: string }> = [];
-	await unavailable!.handler("status", context(process.cwd(), "review-mode-unavailable", unavailableNotices));
+	await unavailable.commands.get("gentle:review-mode")!.handler("status", context(cwd, "review-mode-unavailable", unavailableNotices));
+	assert.deepEqual(unavailable.emittedEvents, []);
 	assert.deepEqual(unavailableNotices, [{ message: "Gentle AI review mode is not available with the currently negotiated native version.", type: "info" }]);
 });
 
