@@ -102,6 +102,17 @@ narrow seam (pre-existing, follow-up issue).
   `withEnvApiKey(model, options)`; `provider.streamSimple` does not. A builtin provider authenticated
   purely by an env var with no stored credential is rescued by compat today and would not be after
   this change. It gets its own test.
+- **Do not upgrade the local pi runtime for this change.** `getProvider` is present across the whole
+  supported range (verified on 0.85.1 locally, and on 0.86.1 and 0.87.0 from the published
+  declarations), so the fix needs no upgrade. Staying on 0.85.1 is deliberate: it is the declared peer
+  floor, so validating there proves the fix for every supported user, whereas validating on 0.87.0
+  would only prove the ceiling. Upgrading mid-change would also add a variable to IRP-7: a failing e2e
+  could no longer be attributed to the fix alone.
+- **`ModelRegistry.streamSimple` stays out of scope even though it is the better primitive.** It routes
+  through `ModelRuntime.prepareRequest` (composed provider + auth + `baseUrl` + merged headers) and
+  would incidentally close the dropped-`baseUrl` gap. It is 0.86.0+, so adopting it forces the peer
+  floor from `>=0.85.1` to `>=0.86.0` and breaks every 0.85.x user. That is a maintainer decision and
+  a breaking change, not part of this fix. Raise it in the PR as a follow-up option only.
 
 ## Tasks
 
