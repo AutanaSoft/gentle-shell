@@ -1,9 +1,43 @@
 import { closeSync, constants, fchmodSync, fsyncSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
+
+// The two directory layouts Pi's own package manager creates when it installs
+// a package into an agent home: the npm-backed `npm/node_modules/<package>`
+// (user scope `<agent dir>/npm/node_modules/gentle-pi`, project scope
+// `.pi/npm/node_modules/gentle-pi`) and the git-backed
+// `git/github.com/Gentleman-Programming/<package>` layout. A path is checked
+// for these sequences anywhere in its segments, not anchored to a specific
+// resolved agent home — unlike installTuiModeSetting's own ownership check.
+const PI_MANAGED_SEGMENT_SEQUENCES = [
+	["npm", "node_modules"],
+	["git", "github.com", "Gentleman-Programming"],
+];
+
+function containsSequence(segments, sequence) {
+	for (let start = 0; start + sequence.length <= segments.length; start += 1) {
+		if (sequence.every((part, offset) => segments[start + offset] === part)) return true;
+	}
+	return false;
+}
+
+/** Gates the POSTINSTALL entry point only (scripts/install-gentle-ai.mjs), not
+ * installTuiModeSetting or installIsolatedTuiModeSetting: true when
+ * `packageDir` (the directory of the gentle-pi package actually running,
+ * typically derived from that script's own import.meta.url) sits under one of
+ * the directory layouts above. A plain `npm install -g gentle-pi`, a
+ * development git checkout, an `npx` cache directory, or a pnpm store never
+ * match, so the postinstall entry skips writing the user's global Pi settings
+ * for those instead of relying solely on installTuiModeSetting's own,
+ * differently-scoped ownership check.
+ */
+export function isPiManagedInstall(packageDir) {
+	const segments = resolve(packageDir).split(sep);
+	return PI_MANAGED_SEGMENT_SEQUENCES.some((sequence) => containsSequence(segments, sequence));
+}
 
 function inspect(path) {
 	try { return lstatSync(path); }
