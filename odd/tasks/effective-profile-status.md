@@ -87,3 +87,4 @@ Fix GitHub issue #1176 so the fullscreen Status sidebar shows the profile that g
 - T5 type check: `node scripts/check-types.mjs` — passed with 196 recorded diagnostics, no regressions, and 3 file/code pairs improved.
 - T5 full suite: the required command reported 2923 passed, 1 failed, and 47 skipped only in `tests/review-host-relay-routing.test.ts`; the established native-runtime override passed that file's 31 tests, and the remaining suite passed 2893 tests with 47 skipped.
 - T5 diff check: `git diff --check --cached` — passed.
+- T5 merge commit: `c1bd0148` (`chore(branch): merge current main into effective profile fix`).
