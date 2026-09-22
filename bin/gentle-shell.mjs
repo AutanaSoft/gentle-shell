@@ -4,7 +4,7 @@
 // resolution, pi resolution order, the version gate, and the pi invocation —
 // lives in that pure, unit-tested module; this file only wires it to the real
 // process, filesystem, and child process.
-import { accessSync, constants as fsConstants, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { constants as osConstants, homedir } from "node:os";
 import { delimiter, dirname, join, resolve as resolvePath } from "node:path";
@@ -13,16 +13,19 @@ import { fileURLToPath } from "node:url";
 import {
 	buildPiInvocation,
 	checkPiVersion,
+	decideTakeOver,
 	describeVersion,
+	discoverLooseExtensionEntries,
+	findGentlePiDeclaration,
 	helpText,
 	launcherConfigPath,
 	missingPiMessage,
+	otherPackageInjections,
 	parseLauncherArgs,
 	parseLauncherConfig,
 	planSpawn,
 	resolveHome,
 	resolvePiRuntime,
-	settingsDeclareGentlePi,
 } from "../runtime/gentle-shell-launcher.mjs";
 import { installIsolatedTuiModeSetting } from "../scripts/install-tui-mode-setting.mjs";
 
@@ -83,7 +86,119 @@ function ownPackageVersion() {
 }
 
 function emptyArgs() {
-	return { link: false, isolated: false, home: undefined, help: false, version: false, command: undefined, commandArgs: [], passthrough: [], error: undefined };
+	return {
+		link: false,
+		isolated: false,
+		home: undefined,
+		packageRoot: undefined,
+		help: false,
+		version: false,
+		command: undefined,
+		commandArgs: [],
+		passthrough: [],
+		piSubcommand: undefined,
+		error: undefined,
+	};
+}
+
+// package.json "name" reader injected into findGentlePiDeclaration: a
+// missing or unreadable package.json, or a non-string "name", is never an
+// error here — it just means that path package is not gentle-pi.
+function readPackageName(dir) {
+	try {
+		const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+		return typeof pkg.name === "string" ? pkg.name : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+// Best-effort realpath: a directory that does not exist (yet, or ever)
+// cannot be realpath'd, so the take-over decision falls back to comparing
+// the raw path instead of failing.
+function safeRealpath(path) {
+	try {
+		return realpathSync(path);
+	} catch {
+		return path;
+	}
+}
+
+// Used to filter the loose extension dirs a take-over re-injects: a missing
+// path, or one that is not a directory (for example a stray file named
+// "extensions"), is silently excluded rather than passed to pi as -e.
+function isDirectory(path) {
+	try {
+		return statSync(path).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
+// Real-fs adapter for discoverLooseExtensionEntries (lib/gentle-shell-launcher.ts):
+// statSync-based isFile/isDirectory (not readdirSync's Dirent, which uses
+// lstat and so would treat a symlinked file or directory as neither) so a
+// symlinked loose extension resolves the same way pi's own fs.existsSync-based
+// checks would.
+const looseExtensionFs = {
+	readdir(dir) {
+		let names;
+		try {
+			names = readdirSync(dir);
+		} catch (error) {
+			// resolveLooseExtensionEntries only calls this once isDirectory(dir)
+			// has already confirmed the directory exists, so a failure here (for
+			// example EACCES) is a real read failure, not a missing directory.
+			// Warn instead of silently dropping every loose extension it would
+			// have contributed (R4-loose-extension-enumeration-fails-silently).
+			process.stderr.write(`gentle-shell: could not read loose extension directory ${dir}: ${error.message} (skipping)\n`);
+			return [];
+		}
+		return names.map((name) => {
+			const entryPath = join(dir, name);
+			try {
+				const entryStat = statSync(entryPath);
+				return { name, isFile: entryStat.isFile(), isDirectory: entryStat.isDirectory() };
+			} catch {
+				return { name, isFile: false, isDirectory: false };
+			}
+		});
+	},
+	exists: existsSync,
+};
+
+// A loose extensions directory that is itself a self-contained extension —
+// a package.json declaring a non-empty "pi.extensions" manifest — is passed
+// through as a single -e <dir> instead of being broken into per-file
+// entries: pi's own module loader (jiti) resolves that case directly,
+// exactly as it would for any other explicitly configured package path. A
+// root-level index.ts/index.js is deliberately NOT treated as that same
+// marker: pi's own discovery loads it as just another loose file, so
+// collapsing the whole directory on its presence silently dropped sibling
+// loose files like extra.ts (R4-loose-index-collapses-sibling-extensions).
+function readPiManifestExtensions(dir) {
+	try {
+		const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+		return Array.isArray(pkg?.pi?.extensions) ? pkg.pi.extensions : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function looseDirHasOwnEntryPoint(dir) {
+	const manifestExtensions = readPiManifestExtensions(dir);
+	return manifestExtensions !== undefined && manifestExtensions.length > 0;
+}
+
+// Resolves one candidate loose-extensions directory (<agentDir>/extensions or
+// <cwd>/.pi/extensions) into the -e entries a take-over must re-inject: the
+// directory itself when it is a self-contained extension, otherwise every
+// loose file discoverLooseExtensionEntries finds inside it. A missing or
+// non-directory candidate resolves to no entries.
+function resolveLooseExtensionEntries(dir) {
+	if (!isDirectory(dir)) return [];
+	if (looseDirHasOwnEntryPoint(dir)) return [dir];
+	return discoverLooseExtensionEntries(dir, looseExtensionFs);
 }
 
 function loadConfig() {
@@ -165,17 +280,77 @@ async function main() {
 		process.stderr.write(`gentle-shell: using a separate home at ${home.dir}. Run 'gentle-shell --link' to reuse your pi sign-ins and chats.\n`);
 	}
 
-	let linkDeclaresGentlePi = false;
-	if (home.mode === "link") {
-		const settingsText = readJsonIfExists(join(home.dir, "settings.json"));
-		linkDeclaresGentlePi = settingsDeclareGentlePi(settingsText);
+	const packageRootExplicit = args.packageRoot !== undefined;
+	const effectivePackageRoot = packageRootExplicit ? resolvePath(args.packageRoot) : packageRoot;
+	// R4-forced-package-root-unvalidated / R3-005: an unvalidated --package-root
+	// forces a take-over (dropping normal extension discovery via
+	// --no-extensions) and then hands pi -e/--theme/--skill/--prompt-template
+	// flags pointing at directories that do not exist, turning an operator typo
+	// into an obscure pi loader failure instead of a clear launcher error.
+	if (packageRootExplicit && !isDirectory(effectivePackageRoot)) {
+		fail(`--package-root ${args.packageRoot} does not exist or is not a directory.`, 2);
 	}
+
+	let declaration;
+	let takeOver = false;
+	let otherPackagePaths = [];
+	let looseExtensionEntries = [];
+
+	// Only --link can read another gentle-pi declaration out of a real
+	// settings.json; isolated and --home homes never declare one, so they
+	// always get the plain injection (declaration stays undefined) unless
+	// --package-root itself forces a take-over below. A pi subcommand skips
+	// this whole block: buildPiInvocation ignores takeOver/declaration once
+	// piSubcommand is set, and running the take-over/loose-dir discovery
+	// anyway would still print a misleading "taking over gentle-pi..."
+	// message (and otherPackageInjections warnings) for a plain
+	// `gentle-shell install npm:x` that never actually takes anything over.
+	if (home.mode === "link" && args.piSubcommand === undefined) {
+		const settingsText = readJsonIfExists(join(home.dir, "settings.json"));
+		declaration = findGentlePiDeclaration(settingsText, { agentDir: home.dir, readPackageName });
+		const realEffectivePackageRoot = safeRealpath(effectivePackageRoot);
+		const realDeclaredDir = declaration?.kind === "path" ? safeRealpath(declaration.dir) : undefined;
+		takeOver = decideTakeOver({
+			declaration,
+			realPackageRoot: realEffectivePackageRoot,
+			realDeclaredDir,
+			packageRootExplicit,
+		});
+		if (takeOver) {
+			const skip = declaration ?? { kind: "path", dir: realEffectivePackageRoot };
+			const injections = otherPackageInjections({ settingsText, agentDir: home.dir, skip, isDirectory, realpath: safeRealpath });
+			otherPackagePaths = injections.paths;
+			for (const warning of injections.warnings) process.stderr.write(`${warning}\n`);
+			// --no-extensions drops pi's normal settings-driven extension
+			// discovery, which also covers loose (non-package) extensions
+			// under <agentDir>/extensions and the project-local
+			// <cwd>/.pi/extensions. Re-injecting either directory wholesale
+			// as `-e <dir>` does not work for a directory of loose files: pi's
+			// -e flag hands the path straight to its module loader with no
+			// directory-discovery pass, so a bare directory of loose files
+			// fails with "Cannot find module ...". Resolve each candidate
+			// into its actual loose file entries (or pass it through
+			// unchanged when it is itself a self-contained extension) so a
+			// take-over does not silently stop loading them.
+			looseExtensionEntries = [join(home.dir, "extensions"), join(process.cwd(), ".pi", "extensions")].flatMap(resolveLooseExtensionEntries);
+			const declaredFrom = declaration === undefined ? "the requested package root" : declaration.kind === "npm" ? "npm:gentle-pi" : declaration.dir;
+			process.stderr.write(
+				`gentle-shell: taking over gentle-pi from ${declaredFrom} for this run (settings unchanged; its skills, prompts, and themes still load alongside this launcher's).\n`,
+			);
+		}
+	}
+	// Isolated and --home homes have no declaration to take over: declaration
+	// stays undefined and buildPiInvocation injects effectivePackageRoot the
+	// same way it always has, --package-root included.
 
 	const invocation = buildPiInvocation({
 		runtime,
 		home,
-		packageRoot,
-		settingsDeclareGentlePi: home.mode === "link" ? linkDeclaresGentlePi : false,
+		packageRoot: effectivePackageRoot,
+		declaration,
+		takeOver,
+		otherPackagePaths,
+		looseExtensionEntries,
 		passthrough: args.passthrough,
 		piSubcommand: args.piSubcommand,
 		baseEnv: process.env,

@@ -9,10 +9,15 @@ import {
 	buildPiInvocation,
 	checkPeerVersionPin,
 	checkPiVersion,
+	decideTakeOver,
 	describeVersion,
+	discoverLooseExtensionEntries,
+	findGentlePiDeclaration,
 	helpText,
 	launcherConfigPath,
+	type LooseExtensionFsEntry,
 	missingPiMessage,
+	otherPackageInjections,
 	parseLauncherArgs,
 	parseLauncherConfig,
 	planSpawn,
@@ -35,6 +40,7 @@ test("parseLauncherArgs returns all-false defaults for an empty argv", () => {
 		link: false,
 		isolated: false,
 		home: undefined,
+		packageRoot: undefined,
 		help: false,
 		version: false,
 		command: undefined,
@@ -43,6 +49,26 @@ test("parseLauncherArgs returns all-false defaults for an empty argv", () => {
 		piSubcommand: undefined,
 		error: undefined,
 	});
+});
+
+test("parseLauncherArgs captures a --package-root value from the next argument", () => {
+	assert.equal(parseLauncherArgs(["--package-root", "/custom/root"]).packageRoot, "/custom/root");
+});
+
+test("parseLauncherArgs captures a --package-root=<path> value", () => {
+	assert.equal(parseLauncherArgs(["--package-root=/custom/root"]).packageRoot, "/custom/root");
+});
+
+test("parseLauncherArgs reports an error when --package-root has no value", () => {
+	const parsed = parseLauncherArgs(["--package-root"]);
+	assert.equal(parsed.packageRoot, undefined);
+	assert.match(parsed.error ?? "", /--package-root/);
+});
+
+test("parseLauncherArgs reports an error when --package-root=<empty> has no value", () => {
+	const parsed = parseLauncherArgs(["--package-root="]);
+	assert.equal(parsed.packageRoot, undefined);
+	assert.match(parsed.error ?? "", /--package-root/);
 });
 
 test("parseLauncherArgs sets link on --link", () => {
@@ -203,6 +229,7 @@ function args(overrides: Partial<ParsedLauncherArgs> = {}): ParsedLauncherArgs {
 		link: false,
 		isolated: false,
 		home: undefined,
+		packageRoot: undefined,
 		help: false,
 		version: false,
 		command: undefined,
@@ -513,6 +540,315 @@ test("settingsDeclareGentlePi is false when packages lists unrelated entries", (
 	assert.equal(settingsDeclareGentlePi('{"packages":["npm:some-other-package"]}'), false);
 });
 
+test("settingsDeclareGentlePi is false for a path package entry, even one that resolves to gentle-pi on disk", () => {
+	// The compat wrapper never reads the filesystem: it only recognises npm
+	// declarations, matching its pre-existing behaviour before path detection
+	// was added via findGentlePiDeclaration.
+	assert.equal(settingsDeclareGentlePi('{"packages":["../../work/gentle-pi"]}'), false);
+});
+
+// --- findGentlePiDeclaration -------------------------------------------------
+
+function readPackageNameStub(names: Record<string, string | undefined>) {
+	return (dir: string) => names[dir];
+}
+
+test("findGentlePiDeclaration is undefined when settings text is undefined", () => {
+	assert.equal(findGentlePiDeclaration(undefined, { agentDir: "/agent", readPackageName: () => undefined }), undefined);
+});
+
+test("findGentlePiDeclaration is undefined for invalid JSON", () => {
+	assert.equal(findGentlePiDeclaration("not json", { agentDir: "/agent", readPackageName: () => undefined }), undefined);
+});
+
+test("findGentlePiDeclaration is undefined when packages is absent", () => {
+	assert.equal(findGentlePiDeclaration("{}", { agentDir: "/agent", readPackageName: () => undefined }), undefined);
+});
+
+test("findGentlePiDeclaration detects a bare npm:gentle-pi string entry", () => {
+	const result = findGentlePiDeclaration('{"packages":["npm:gentle-pi"]}', { agentDir: "/agent", readPackageName: () => undefined });
+	assert.deepEqual(result, { kind: "npm" });
+});
+
+test("findGentlePiDeclaration detects a versioned npm:gentle-pi string entry", () => {
+	const result = findGentlePiDeclaration('{"packages":["npm:gentle-pi@3.3.0"]}', { agentDir: "/agent", readPackageName: () => undefined });
+	assert.deepEqual(result, { kind: "npm" });
+});
+
+test("findGentlePiDeclaration detects a bare npm:gentle-pi object source entry", () => {
+	const result = findGentlePiDeclaration('{"packages":[{"source":"npm:gentle-pi"}]}', { agentDir: "/agent", readPackageName: () => undefined });
+	assert.deepEqual(result, { kind: "npm" });
+});
+
+test("findGentlePiDeclaration recognises a relative path entry whose package.json name is gentle-pi", () => {
+	const resolvedDir = join("/agent", "..", "..", "work", "gentle-pi");
+	const result = findGentlePiDeclaration('{"packages":["../../work/gentle-pi"]}', {
+		agentDir: "/agent",
+		readPackageName: readPackageNameStub({ [resolvedDir]: "gentle-pi" }),
+	});
+	assert.deepEqual(result, { kind: "path", dir: resolvedDir });
+});
+
+test("findGentlePiDeclaration recognises an absolute path entry whose package.json name is gentle-pi", () => {
+	const result = findGentlePiDeclaration('{"packages":["/checkouts/gentle-pi"]}', {
+		agentDir: "/agent",
+		readPackageName: readPackageNameStub({ "/checkouts/gentle-pi": "gentle-pi" }),
+	});
+	assert.deepEqual(result, { kind: "path", dir: "/checkouts/gentle-pi" });
+});
+
+test("findGentlePiDeclaration recognises a path object source entry whose package.json name is gentle-pi", () => {
+	const result = findGentlePiDeclaration('{"packages":[{"source":"../gentle-pi","extensions":[]}]}', {
+		agentDir: "/agent",
+		readPackageName: readPackageNameStub({ [join("/agent", "..", "gentle-pi")]: "gentle-pi" }),
+	});
+	assert.deepEqual(result, { kind: "path", dir: join("/agent", "..", "gentle-pi") });
+});
+
+test("findGentlePiDeclaration is undefined for a path entry whose package.json name is not gentle-pi", () => {
+	const resolvedDir = join("/agent", "..", "..", "work", "engram", "plugin", "pi");
+	const result = findGentlePiDeclaration('{"packages":["../../work/engram/plugin/pi"]}', {
+		agentDir: "/agent",
+		readPackageName: readPackageNameStub({ [resolvedDir]: "engram" }),
+	});
+	assert.equal(result, undefined);
+});
+
+test("findGentlePiDeclaration is undefined for a path entry with no readable package.json", () => {
+	const result = findGentlePiDeclaration('{"packages":["../gentle-pi"]}', { agentDir: "/agent", readPackageName: () => undefined });
+	assert.equal(result, undefined);
+});
+
+test("findGentlePiDeclaration ignores git and URL entries when looking for a path declaration", () => {
+	const result = findGentlePiDeclaration('{"packages":["git:github.com/foo/gentle-pi","https://github.com/foo/gentle-pi"]}', {
+		agentDir: "/agent",
+		readPackageName: () => "gentle-pi",
+	});
+	assert.equal(result, undefined);
+});
+
+test("findGentlePiDeclaration is undefined when packages lists unrelated entries", () => {
+	const result = findGentlePiDeclaration('{"packages":["npm:some-other-package"]}', { agentDir: "/agent", readPackageName: () => undefined });
+	assert.equal(result, undefined);
+});
+
+test("findGentlePiDeclaration returns the first matching declaration, path or npm, in list order", () => {
+	const result = findGentlePiDeclaration('{"packages":["../gentle-pi","npm:gentle-pi"]}', {
+		agentDir: "/agent",
+		readPackageName: readPackageNameStub({ [join("/agent", "..", "gentle-pi")]: "gentle-pi" }),
+	});
+	assert.deepEqual(result, { kind: "path", dir: join("/agent", "..", "gentle-pi") });
+});
+
+// --- decideTakeOver -----------------------------------------------------------
+
+test("decideTakeOver is false when there is no declaration and --package-root was not requested", () => {
+	assert.equal(
+		decideTakeOver({ declaration: undefined, realPackageRoot: "/pkg", packageRootExplicit: false }),
+		false,
+	);
+});
+
+test("decideTakeOver is false for an npm declaration matching the launcher's own install", () => {
+	assert.equal(
+		decideTakeOver({ declaration: { kind: "npm" }, realPackageRoot: "/pkg", packageRootExplicit: false }),
+		false,
+	);
+});
+
+test("decideTakeOver is true when a path declaration's real directory differs from the real package root", () => {
+	assert.equal(
+		decideTakeOver({
+			declaration: { kind: "path", dir: "/other/checkout" },
+			realPackageRoot: "/pkg",
+			realDeclaredDir: "/other/checkout",
+			packageRootExplicit: false,
+		}),
+		true,
+	);
+});
+
+test("decideTakeOver is false when a path declaration's real directory equals the real package root", () => {
+	assert.equal(
+		decideTakeOver({
+			declaration: { kind: "path", dir: "/pkg-symlink" },
+			realPackageRoot: "/pkg",
+			realDeclaredDir: "/pkg",
+			packageRootExplicit: false,
+		}),
+		false,
+	);
+});
+
+test("decideTakeOver is true when --package-root is explicitly requested, even for a matching npm declaration", () => {
+	assert.equal(
+		decideTakeOver({ declaration: { kind: "npm" }, realPackageRoot: "/pkg", packageRootExplicit: true }),
+		true,
+	);
+});
+
+test("decideTakeOver is true when --package-root is explicitly requested and there is no declaration", () => {
+	assert.equal(
+		decideTakeOver({ declaration: undefined, realPackageRoot: "/pkg", packageRootExplicit: true }),
+		true,
+	);
+});
+
+// --- otherPackageInjections ---------------------------------------------------
+
+test("otherPackageInjections resolves an npm entry to <agentDir>/npm/node_modules/<name>", () => {
+	const result = otherPackageInjections({
+		settingsText: '{"packages":["npm:some-other","npm:gentle-pi"]}',
+		agentDir: "/agent",
+		skip: { kind: "npm" },
+	});
+	assert.deepEqual(result.paths, [join("/agent", "npm", "node_modules", "some-other")]);
+	assert.deepEqual(result.warnings, []);
+});
+
+test("otherPackageInjections extracts a scoped and versioned npm package name", () => {
+	const result = otherPackageInjections({
+		settingsText: '{"packages":["npm:@scope/pkg@1.2.3","npm:gentle-pi"]}',
+		agentDir: "/agent",
+		skip: { kind: "npm" },
+	});
+	assert.deepEqual(result.paths, [join("/agent", "npm", "node_modules", "@scope/pkg")]);
+});
+
+test("otherPackageInjections resolves a path entry relative to agentDir", () => {
+	const result = otherPackageInjections({
+		settingsText: '{"packages":["../../work/pi-qwen-ambassador","npm:gentle-pi"]}',
+		agentDir: "/agent",
+		skip: { kind: "npm" },
+	});
+	assert.deepEqual(result.paths, [join("/agent", "..", "..", "work", "pi-qwen-ambassador")]);
+});
+
+test("otherPackageInjections skips a git entry and warns", () => {
+	const result = otherPackageInjections({
+		settingsText: '{"packages":["git:github.com/foo/bar","npm:gentle-pi"]}',
+		agentDir: "/agent",
+		skip: { kind: "npm" },
+	});
+	assert.deepEqual(result.paths, []);
+	assert.equal(result.warnings.length, 1);
+	assert.match(result.warnings[0], /git:github\.com\/foo\/bar/);
+});
+
+test("otherPackageInjections warns for an object entry with extensions or autoload filters but still includes it", () => {
+	const result = otherPackageInjections({
+		settingsText: '{"packages":[{"source":"npm:filtered","extensions":["a.ts"]},"npm:gentle-pi"]}',
+		agentDir: "/agent",
+		skip: { kind: "npm" },
+	});
+	assert.deepEqual(result.paths, [join("/agent", "npm", "node_modules", "filtered")]);
+	assert.equal(result.warnings.length, 1);
+	assert.match(result.warnings[0], /filtered/);
+});
+
+test("otherPackageInjections skips the entry matching a path declaration being taken over", () => {
+	const declaredDir = join("/agent", "..", "..", "work", "gentle-pi");
+	const result = otherPackageInjections({
+		settingsText: '{"packages":["npm:some-other","../../work/gentle-pi"]}',
+		agentDir: "/agent",
+		skip: { kind: "path", dir: declaredDir },
+	});
+	assert.deepEqual(result.paths, [join("/agent", "npm", "node_modules", "some-other")]);
+});
+
+test("otherPackageInjections tolerates undefined or malformed settings text", () => {
+	assert.deepEqual(otherPackageInjections({ settingsText: undefined, agentDir: "/agent", skip: { kind: "npm" } }), { paths: [], warnings: [] });
+	assert.deepEqual(otherPackageInjections({ settingsText: "not json", agentDir: "/agent", skip: { kind: "npm" } }), { paths: [], warnings: [] });
+});
+
+test("otherPackageInjections skips every gentle-pi entry, not only the one matching the declaration kind", () => {
+	const declaredDir = join("/agent", "..", "..", "work", "gentle-pi");
+	const result = otherPackageInjections({
+		// The declaration being taken over is the path entry, but settings
+		// also carries a second, unrelated npm:gentle-pi entry: both must be
+		// excluded, not just the one matching skip.kind, or the npm entry
+		// would get re-injected as an "other package" and double-load gentle-pi.
+		settingsText: '{"packages":["npm:some-other","../../work/gentle-pi","npm:gentle-pi"]}',
+		agentDir: "/agent",
+		skip: { kind: "path", dir: declaredDir },
+	});
+	assert.deepEqual(result.paths, [join("/agent", "npm", "node_modules", "some-other")]);
+	assert.deepEqual(result.warnings, []);
+});
+
+test("otherPackageInjections skips a duplicate npm:gentle-pi entry when the declaration being taken over is itself npm", () => {
+	const result = otherPackageInjections({
+		settingsText: '{"packages":["npm:some-other","npm:gentle-pi","npm:gentle-pi@1.2.3"]}',
+		agentDir: "/agent",
+		skip: { kind: "npm" },
+	});
+	assert.deepEqual(result.paths, [join("/agent", "npm", "node_modules", "some-other")]);
+});
+
+// R3-001/R4-takeover-injects-unverified-package-dirs: a declared-but-missing
+// package directory must never be handed to pi as -e (it fails at pi startup
+// with "Cannot find module"); it is filtered the same way loose extension
+// candidates are, via an injectable isDirectory predicate so this function
+// stays pure and unit-testable without a real filesystem.
+
+test("otherPackageInjections omits a declared package directory that isDirectory reports missing, and warns", () => {
+	const result = otherPackageInjections({
+		settingsText: '{"packages":["npm:missing-pkg","npm:gentle-pi"]}',
+		agentDir: "/agent",
+		skip: { kind: "npm" },
+		isDirectory: () => false,
+	});
+	assert.deepEqual(result.paths, []);
+	assert.equal(result.warnings.length, 1);
+	assert.match(result.warnings[0], /skipping declared package/);
+	assert.match(result.warnings[0], /"npm:missing-pkg"/);
+	assert.match(result.warnings[0], /is not a directory/);
+});
+
+test("otherPackageInjections keeps a declared package directory that isDirectory reports present", () => {
+	const result = otherPackageInjections({
+		settingsText: '{"packages":["npm:installed-pkg","npm:gentle-pi"]}',
+		agentDir: "/agent",
+		skip: { kind: "npm" },
+		isDirectory: (dir) => dir === join("/agent", "npm", "node_modules", "installed-pkg"),
+	});
+	assert.deepEqual(result.paths, [join("/agent", "npm", "node_modules", "installed-pkg")]);
+	assert.deepEqual(result.warnings, []);
+});
+
+test("otherPackageInjections excludes a settings path entry that resolves via realpath to the same physical directory as a realpath'd skip (R4-forced-root-symlink-double-injection)", () => {
+	const linkOtherDir = join("/agent", "link-other");
+	const result = otherPackageInjections({
+		settingsText: '{"packages":["link-other","npm:some-other"]}',
+		agentDir: "/agent",
+		// skip.dir mirrors bin/gentle-shell.mjs's --package-root case, where
+		// it is already the realpath of the effective package root.
+		skip: { kind: "path", dir: "/real/other" },
+		realpath: (dir) => (dir === linkOtherDir ? "/real/other" : dir),
+	});
+	assert.deepEqual(result.paths, [join("/agent", "npm", "node_modules", "some-other")]);
+	assert.deepEqual(result.warnings, []);
+});
+
+test("otherPackageInjections keeps comparing raw strings when no realpath resolver is provided (default stays pure)", () => {
+	const result = otherPackageInjections({
+		settingsText: '{"packages":["link-other","npm:some-other"]}',
+		agentDir: "/agent",
+		skip: { kind: "path", dir: "/real/other" },
+	});
+	assert.deepEqual(result.paths, [join("/agent", "link-other"), join("/agent", "npm", "node_modules", "some-other")]);
+});
+
+test("otherPackageInjections defaults to including every declared package when isDirectory is not provided (existing callers keep pure string resolution)", () => {
+	const result = otherPackageInjections({
+		settingsText: '{"packages":["npm:some-other","npm:gentle-pi"]}',
+		agentDir: "/agent",
+		skip: { kind: "npm" },
+	});
+	assert.deepEqual(result.paths, [join("/agent", "npm", "node_modules", "some-other")]);
+	assert.deepEqual(result.warnings, []);
+});
+
 // --- buildPiInvocation -------------------------------------------------------
 
 const linkHome: ResolvedHome = { mode: "link", dir: "/pi/agent", source: "flag" };
@@ -523,19 +859,23 @@ test("buildPiInvocation injects the launcher env into baseEnv", () => {
 		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
 		home: linkHome,
 		packageRoot: "/pkg",
-		settingsDeclareGentlePi: true,
+		declaration: { kind: "npm" },
+		takeOver: false,
+		otherPackagePaths: [],
 		passthrough: [],
 		baseEnv: { PATH: "/usr/bin" },
 	});
 	assert.deepEqual(built.env, { PATH: "/usr/bin", PI_CODING_AGENT_DIR: "/pi/agent", GENTLE_PI_AGENT_HOME: "/pi/agent" });
 });
 
-test("buildPiInvocation skips the gentle-pi injection flags when settings already declare the package", () => {
+test("buildPiInvocation skips injection when there is a declaration and no takeover (npm matches the launcher's own install)", () => {
 	const built = buildPiInvocation({
 		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
 		home: linkHome,
 		packageRoot: "/pkg",
-		settingsDeclareGentlePi: true,
+		declaration: { kind: "npm" },
+		takeOver: false,
+		otherPackagePaths: [],
 		passthrough: ["--mode", "rpc"],
 		baseEnv: {},
 	});
@@ -543,12 +883,14 @@ test("buildPiInvocation skips the gentle-pi injection flags when settings alread
 	assert.deepEqual(built.args, ["--mode", "rpc"]);
 });
 
-test("buildPiInvocation adds the gentle-pi injection flags when settings do not declare the package", () => {
+test("buildPiInvocation adds the gentle-pi injection flags when there is no declaration", () => {
 	const built = buildPiInvocation({
 		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
 		home: isolatedHomeResolved,
 		packageRoot: "/pkg",
-		settingsDeclareGentlePi: false,
+		declaration: undefined,
+		takeOver: false,
+		otherPackagePaths: [],
 		passthrough: ["--mode", "rpc"],
 		baseEnv: {},
 	});
@@ -571,7 +913,9 @@ test("buildPiInvocation emits only runtime args and passthrough when a pi subcom
 		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
 		home: isolatedHomeResolved,
 		packageRoot: "/pkg",
-		settingsDeclareGentlePi: false,
+		declaration: undefined,
+		takeOver: false,
+		otherPackagePaths: [],
 		passthrough: ["install", "npm:x"],
 		piSubcommand: "install",
 		baseEnv: {},
@@ -585,7 +929,9 @@ test("buildPiInvocation still injects the launcher env for a pi subcommand", () 
 		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
 		home: isolatedHomeResolved,
 		packageRoot: "/pkg",
-		settingsDeclareGentlePi: false,
+		declaration: undefined,
+		takeOver: false,
+		otherPackagePaths: [],
 		passthrough: ["list"],
 		piSubcommand: "list",
 		baseEnv: { PATH: "/usr/bin" },
@@ -597,12 +943,14 @@ test("buildPiInvocation still injects the launcher env for a pi subcommand", () 
 	});
 });
 
-test("buildPiInvocation in link mode with a pi subcommand is exactly pi <subcommand> against the user's own agent dir", () => {
+test("buildPiInvocation in link mode with a pi subcommand is exactly pi <subcommand> against the user's own agent dir, even when a conflicting declaration would otherwise force a take-over", () => {
 	const built = buildPiInvocation({
 		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
 		home: linkHome,
 		packageRoot: "/pkg",
-		settingsDeclareGentlePi: false,
+		declaration: { kind: "path", dir: "/other/checkout" },
+		takeOver: true,
+		otherPackagePaths: [join("/agent", "npm", "node_modules", "some-other")],
 		passthrough: ["auth", "status"],
 		piSubcommand: "auth",
 		baseEnv: {},
@@ -617,12 +965,312 @@ test("buildPiInvocation keeps the runtime's own args ahead of the injection and 
 		runtime: { kind: "bundled", command: "/usr/bin/node", args: ["/bundled/cli.js"] },
 		home: isolatedHomeResolved,
 		packageRoot: "/pkg",
-		settingsDeclareGentlePi: false,
+		declaration: undefined,
+		takeOver: false,
+		otherPackagePaths: [],
 		passthrough: [],
 		baseEnv: {},
 	});
 	assert.equal(built.args[0], "/bundled/cli.js");
 	assert.equal(built.command, "/usr/bin/node");
+});
+
+test("buildPiInvocation takes over a conflicting path declaration: --no-extensions, other package dirs, then the launcher's own -e and env", () => {
+	const built = buildPiInvocation({
+		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
+		home: linkHome,
+		packageRoot: "/pkg",
+		declaration: { kind: "path", dir: "/other/checkout" },
+		takeOver: true,
+		otherPackagePaths: [join("/agent", "npm", "node_modules", "some-other")],
+		passthrough: ["--mode", "rpc"],
+		baseEnv: {},
+	});
+	assert.deepEqual(built.args, [
+		"--no-extensions",
+		"-e",
+		join("/agent", "npm", "node_modules", "some-other"),
+		"-e",
+		"/pkg",
+		"--theme",
+		join("/pkg", "themes"),
+		"--skill",
+		join("/pkg", "skills"),
+		"--prompt-template",
+		join("/pkg", "prompts"),
+		"--mode",
+		"rpc",
+	]);
+});
+
+test("buildPiInvocation takes over with --package-root even for a matching npm declaration, and with no other packages", () => {
+	const built = buildPiInvocation({
+		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
+		home: linkHome,
+		packageRoot: "/forced/root",
+		declaration: { kind: "npm" },
+		takeOver: true,
+		otherPackagePaths: [],
+		passthrough: [],
+		baseEnv: {},
+	});
+	assert.deepEqual(built.args, [
+		"--no-extensions",
+		"-e",
+		"/forced/root",
+		"--theme",
+		join("/forced/root", "themes"),
+		"--skill",
+		join("/forced/root", "skills"),
+		"--prompt-template",
+		join("/forced/root", "prompts"),
+	]);
+});
+
+test("buildPiInvocation takes over with --package-root even when there is no declaration at all (takeOver wins over the plain no-declaration branch)", () => {
+	const built = buildPiInvocation({
+		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
+		home: linkHome,
+		packageRoot: "/forced/root",
+		declaration: undefined,
+		takeOver: true,
+		otherPackagePaths: [join("/agent", "npm", "node_modules", "some-other")],
+		passthrough: [],
+		baseEnv: {},
+	});
+	assert.deepEqual(built.args, [
+		"--no-extensions",
+		"-e",
+		join("/agent", "npm", "node_modules", "some-other"),
+		"-e",
+		"/forced/root",
+		"--theme",
+		join("/forced/root", "themes"),
+		"--skill",
+		join("/forced/root", "skills"),
+		"--prompt-template",
+		join("/forced/root", "prompts"),
+	]);
+});
+
+test("buildPiInvocation injects loose extension entries during a takeover, after other package dirs and before the launcher's own root", () => {
+	const built = buildPiInvocation({
+		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
+		home: linkHome,
+		packageRoot: "/pkg",
+		declaration: { kind: "path", dir: "/other/checkout" },
+		takeOver: true,
+		otherPackagePaths: [join("/agent", "npm", "node_modules", "some-other")],
+		looseExtensionEntries: [join("/agent", "extensions", "a.ts"), join("/project", ".pi", "extensions", "b.js")],
+		passthrough: ["--mode", "rpc"],
+		baseEnv: {},
+	});
+	assert.deepEqual(built.args, [
+		"--no-extensions",
+		"-e",
+		join("/agent", "npm", "node_modules", "some-other"),
+		"-e",
+		join("/agent", "extensions", "a.ts"),
+		"-e",
+		join("/project", ".pi", "extensions", "b.js"),
+		"-e",
+		"/pkg",
+		"--theme",
+		join("/pkg", "themes"),
+		"--skill",
+		join("/pkg", "skills"),
+		"--prompt-template",
+		join("/pkg", "prompts"),
+		"--mode",
+		"rpc",
+	]);
+});
+
+test("buildPiInvocation omits loose extension entry flags when the list is empty or not provided", () => {
+	const withoutField = buildPiInvocation({
+		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
+		home: linkHome,
+		packageRoot: "/pkg",
+		declaration: { kind: "path", dir: "/other/checkout" },
+		takeOver: true,
+		otherPackagePaths: [],
+		passthrough: [],
+		baseEnv: {},
+	});
+	assert.deepEqual(withoutField.args, ["--no-extensions", "-e", "/pkg", "--theme", join("/pkg", "themes"), "--skill", join("/pkg", "skills"), "--prompt-template", join("/pkg", "prompts")]);
+
+	const withEmptyField = buildPiInvocation({
+		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
+		home: linkHome,
+		packageRoot: "/pkg",
+		declaration: { kind: "path", dir: "/other/checkout" },
+		takeOver: true,
+		otherPackagePaths: [],
+		looseExtensionEntries: [],
+		passthrough: [],
+		baseEnv: {},
+	});
+	assert.deepEqual(withEmptyField.args, withoutField.args);
+});
+
+// R3-001: a settings package path can coincide with a discovered loose
+// extension file (or a loose extension can repeat across candidate dirs);
+// buildPiInvocation must inject each resolved path at most once, keeping
+// first-occurrence order, rather than loading it twice and letting pi report
+// a duplicate-registration tool conflict.
+test("buildPiInvocation dedupes loose extension entries against other-package paths and against each other", () => {
+	const built = buildPiInvocation({
+		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
+		home: linkHome,
+		packageRoot: "/pkg",
+		declaration: { kind: "path", dir: "/other/checkout" },
+		takeOver: true,
+		otherPackagePaths: [join("/agent", "npm", "node_modules", "some-other"), "/shared/dup.ts"],
+		looseExtensionEntries: ["/shared/dup.ts", "/agent/extensions/a.ts", "/agent/extensions/a.ts"],
+		passthrough: [],
+		baseEnv: {},
+	});
+	assert.deepEqual(built.args, [
+		"--no-extensions",
+		"-e",
+		join("/agent", "npm", "node_modules", "some-other"),
+		"-e",
+		"/shared/dup.ts",
+		"-e",
+		"/agent/extensions/a.ts",
+		"-e",
+		"/pkg",
+		"--theme",
+		join("/pkg", "themes"),
+		"--skill",
+		join("/pkg", "skills"),
+		"--prompt-template",
+		join("/pkg", "prompts"),
+	]);
+});
+
+// R3-003: the launcher's own package root must also be checked against the
+// dedupe set, not just appended unconditionally after the two loops — this
+// is reachable when --package-root names a directory that settings also
+// declare as a non-gentle-pi path entry.
+test("buildPiInvocation dedupes the launcher's own package root against an other-package path that resolves to the same directory", () => {
+	const built = buildPiInvocation({
+		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
+		home: linkHome,
+		packageRoot: "/pkg",
+		declaration: { kind: "path", dir: "/other/checkout" },
+		takeOver: true,
+		otherPackagePaths: [join("/agent", "npm", "node_modules", "some-other"), "/pkg"],
+		passthrough: [],
+		baseEnv: {},
+	});
+	const eFlags = built.args.filter((arg, index) => built.args[index - 1] === "-e");
+	assert.deepEqual(eFlags, [join("/agent", "npm", "node_modules", "some-other"), "/pkg"]);
+	assert.deepEqual(built.args, [
+		"--no-extensions",
+		"-e",
+		join("/agent", "npm", "node_modules", "some-other"),
+		"-e",
+		"/pkg",
+		"--theme",
+		join("/pkg", "themes"),
+		"--skill",
+		join("/pkg", "skills"),
+		"--prompt-template",
+		join("/pkg", "prompts"),
+	]);
+});
+
+// --- discoverLooseExtensionEntries -------------------------------------------
+//
+// Pure mirror of pi's own discoverExtensionsInDir (packages/coding-agent/src/
+// core/extensions/loader.ts): direct *.ts/*.js/*.mjs files, plus <subdir>/
+// index.ts or index.js for a child directory that has one. Hidden entries and
+// *.d.ts files are deliberately excluded even though pi's own scan does not
+// special-case them, because neither was ever a runnable extension and both
+// would otherwise surface a confusing "Cannot find module" error once handed
+// to pi's loader as an explicit, no-directory-discovery `-e <file>`.
+
+function fakeFs(entries: LooseExtensionFsEntry[], indexFiles: string[] = []) {
+	return {
+		readdir: (_dir: string) => entries,
+		exists: (path: string) => indexFiles.includes(path),
+	};
+}
+
+test("discoverLooseExtensionEntries keeps direct .ts/.js/.mjs files and skips other suffixes", () => {
+	const entries = [
+		{ name: "a.ts", isFile: true, isDirectory: false },
+		{ name: "b.js", isFile: true, isDirectory: false },
+		{ name: "c.mjs", isFile: true, isDirectory: false },
+		{ name: "readme.md", isFile: true, isDirectory: false },
+		{ name: "gentle-agent-state.ts.bak-pre-fullscreen-fix", isFile: true, isDirectory: false },
+	];
+	const found = discoverLooseExtensionEntries("/extensions", fakeFs(entries));
+	assert.deepEqual(found, [join("/extensions", "a.ts"), join("/extensions", "b.js"), join("/extensions", "c.mjs")]);
+});
+
+test("discoverLooseExtensionEntries skips hidden dotfiles and .d.ts declaration files", () => {
+	const entries = [
+		{ name: ".hidden.ts", isFile: true, isDirectory: false },
+		{ name: "types.d.ts", isFile: true, isDirectory: false },
+		{ name: "real.ts", isFile: true, isDirectory: false },
+	];
+	const found = discoverLooseExtensionEntries("/extensions", fakeFs(entries));
+	assert.deepEqual(found, [join("/extensions", "real.ts")]);
+});
+
+test("discoverLooseExtensionEntries is case-sensitive on the file extension", () => {
+	const entries = [{ name: "Upper.TS", isFile: true, isDirectory: false }];
+	const found = discoverLooseExtensionEntries("/extensions", fakeFs(entries));
+	assert.deepEqual(found, []);
+});
+
+test("discoverLooseExtensionEntries includes <subdir>/index.ts, falls back to index.js, and skips a subdir with neither", () => {
+	const entries = [
+		{ name: "with-ts", isFile: false, isDirectory: true },
+		{ name: "with-js", isFile: false, isDirectory: true },
+		{ name: "empty", isFile: false, isDirectory: true },
+	];
+	const indexFiles = [join("/extensions", "with-ts", "index.ts"), join("/extensions", "with-js", "index.js")];
+	const found = discoverLooseExtensionEntries("/extensions", fakeFs(entries, indexFiles));
+	// Sorted by name: "empty" (no index.ts/index.js -> excluded), then "with-js", then "with-ts".
+	assert.deepEqual(found, [join("/extensions", "with-js", "index.js"), join("/extensions", "with-ts", "index.ts")]);
+});
+
+test("discoverLooseExtensionEntries prefers index.ts over index.js when a subdir has both", () => {
+	const entries = [{ name: "both", isFile: false, isDirectory: true }];
+	const indexFiles = [join("/extensions", "both", "index.ts"), join("/extensions", "both", "index.js")];
+	const found = discoverLooseExtensionEntries("/extensions", fakeFs(entries, indexFiles));
+	assert.deepEqual(found, [join("/extensions", "both", "index.ts")]);
+});
+
+test("discoverLooseExtensionEntries skips a hidden subdirectory even with its own index.ts", () => {
+	const entries = [{ name: ".hidden-dir", isFile: false, isDirectory: true }];
+	const indexFiles = [join("/extensions", ".hidden-dir", "index.ts")];
+	const found = discoverLooseExtensionEntries("/extensions", fakeFs(entries, indexFiles));
+	assert.deepEqual(found, []);
+});
+
+test("discoverLooseExtensionEntries sorts results by name regardless of readdir order", () => {
+	const entries = [
+		{ name: "b.ts", isFile: true, isDirectory: false },
+		{ name: "a.ts", isFile: true, isDirectory: false },
+		{ name: "sub", isFile: false, isDirectory: true },
+	];
+	const indexFiles = [join("/extensions", "sub", "index.ts")];
+	const found = discoverLooseExtensionEntries("/extensions", fakeFs(entries, indexFiles));
+	assert.deepEqual(found, [join("/extensions", "a.ts"), join("/extensions", "b.ts"), join("/extensions", "sub", "index.ts")]);
+});
+
+test("discoverLooseExtensionEntries returns an empty list when readdir throws (missing or unreadable directory)", () => {
+	const fs = {
+		readdir: (_dir: string): LooseExtensionFsEntry[] => {
+			throw new Error("ENOENT");
+		},
+		exists: (_path: string) => false,
+	};
+	assert.deepEqual(discoverLooseExtensionEntries("/missing", fs), []);
 });
 
 // --- planSpawn / quoteForCmdExe ----------------------------------------------
@@ -700,6 +1348,7 @@ test("helpText documents the launcher flags, the home subcommand, the env vars, 
 	assert.match(text, /--link/);
 	assert.match(text, /--isolated/);
 	assert.match(text, /--home/);
+	assert.match(text, /--package-root/);
 	assert.match(text, /\bhome\b/);
 	assert.match(text, /GENTLE_SHELL_PI/);
 	assert.match(text, /GENTLE_SHELL_HOME/);
