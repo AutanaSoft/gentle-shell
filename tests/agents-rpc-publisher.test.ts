@@ -134,6 +134,48 @@ test("projectRpcActivity keeps only the last N thread items per task (default 40
 	assert.equal(items.at(-1)!.text, "note-49");
 });
 
+test("projectRpcActivity truncates text, thinking, and note item text to 2000 characters", () => {
+	const store = new TaskStore();
+	store.add(task("t1", "s1"));
+	store.apply("t1", { type: TASK_EVENT.TEXT, text: "a".repeat(3000) }, 1);
+	store.apply("t1", { type: TASK_EVENT.THINKING, text: "b".repeat(3000) }, 2);
+	store.apply("t1", { type: TASK_EVENT.NOTE, text: "c".repeat(3000) }, 3);
+
+	const activity = projectRpcActivity(store);
+	const items = activity.tasks[0]!.thread.items as { kind: string; text: string }[];
+
+	assert.equal(items.length, 3);
+	for (const item of items) {
+		assert.ok(item.text.length <= 2000, `${item.kind} item must be bounded to 2000 characters`);
+		assert.ok(item.text.endsWith("…"), `${item.kind} item must carry the truncation marker`);
+	}
+});
+
+test("projectRpcActivity truncates a synthetic 1 MiB text item to 2000 characters", () => {
+	const store = new TaskStore();
+	store.add(task("t1", "s1"));
+	store.apply("t1", { type: TASK_EVENT.TEXT, text: "x".repeat(1024 * 1024) }, 1);
+
+	const activity = projectRpcActivity(store);
+	const item = activity.tasks[0]!.thread.items[0] as { text: string };
+
+	assert.equal(item.text.length, 2000);
+	assert.ok(item.text.endsWith("…"));
+});
+
+test("projectRpcActivity truncates the summary error, label, and lastStep fields to 500 characters", () => {
+	const store = new TaskStore();
+	store.add(task("t1", "s1", { label: "l".repeat(600) }));
+	store.apply("t1", { type: TASK_EVENT.AGENT_END, text: "", outcome: "error", diagnostic: "e".repeat(600) }, 1);
+
+	const activity = projectRpcActivity(store);
+	const summary = activity.tasks[0]!.summary;
+
+	assert.ok(summary.label.length <= 500 && summary.label.endsWith("…"));
+	assert.ok(summary.lastStep.length <= 500 && summary.lastStep.endsWith("…"));
+	assert.ok(summary.error !== null && summary.error.length <= 500 && summary.error.endsWith("…"));
+});
+
 test("projectRpcActivity honors a custom maxThreadItems override", () => {
 	const store = new TaskStore();
 	store.add(task("t1", "s1"));
@@ -204,6 +246,26 @@ test("encodeActivityLines drops whole finished tasks, oldest first, once emptyin
 	assert.ok(!shrunk.tasks.some((entry) => entry.summary.id === "f-old"), "the oldest finished task must be dropped first");
 	assert.ok(shrunk.tasks.some((entry) => entry.summary.id === "f-new"), "the more recently finished task survives longer");
 	assert.ok(shrunk.tasks.some((entry) => entry.summary.id === "r1"), "the running task must never be dropped");
+});
+
+test("encodeActivityLines empties every remaining active task's thread as a last resort, emitting a summary-only payload", () => {
+	const activity: RpcActivity = {
+		schema: ACTIVITY_SCHEMA,
+		summary: { running: 2, queued: 0, waiting: 0, finished: 0 },
+		tasks: [
+			rpcTask("r1", TASK_STATUS.RUNNING, null, { items: 1, itemTextLen: 2000 }),
+			rpcTask("r2", TASK_STATUS.RUNNING, null, { items: 1, itemTextLen: 2000 }),
+		],
+	};
+	// No finished tasks to drop, and both running tasks are already down to
+	// one item each; only emptying every thread can still shrink this.
+	const maxBytes = byteLength(JSON.stringify(activity)) - 1000;
+
+	const [line] = encodeActivityLines(activity, maxBytes);
+	const shrunk = JSON.parse(line!) as RpcActivity;
+
+	assert.equal(shrunk.tasks.length, 2, "no active task's summary is ever dropped");
+	for (const entry of shrunk.tasks) assert.deepEqual(entry.thread.items, [], "every task's thread is emptied, summary-only");
 });
 
 test("encodeActivityLines never throws even when nothing left can be dropped to fit", () => {
