@@ -583,6 +583,30 @@ test("--link take-over injects the launcher's own package root once when --packa
 	]);
 });
 
+test("--isolated --package-root produces the plain injection (no --no-extensions): the take-over path is gated on link mode", (t) => {
+	const f = fixture(t);
+	const forcedRoot = join(f.root, "forced-root");
+	mkdirSync(forcedRoot, { recursive: true });
+
+	const result = run(f.env, ["--isolated", "--package-root", forcedRoot, "--mode", "rpc"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.doesNotMatch(result.stderr, /taking over gentle-pi from/);
+
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, [
+		"-e",
+		forcedRoot,
+		"--theme",
+		join(forcedRoot, "themes"),
+		"--skill",
+		join(forcedRoot, "skills"),
+		"--prompt-template",
+		join(forcedRoot, "prompts"),
+		"--mode",
+		"rpc",
+	]);
+});
+
 test("--package-root naming a directory that does not exist fails with a clear error instead of launching", (t) => {
 	const f = fixture(t);
 	const missingRoot = join(f.root, "does-not-exist");
@@ -625,6 +649,101 @@ test("--link take-over warns once when a loose extensions directory cannot be re
 	const payload = JSON.parse(result.stdout);
 	assert.deepEqual(payload.args, ["--no-extensions", "-e", packageRoot, "--theme", join(packageRoot, "themes"), "--skill", join(packageRoot, "skills"), "--prompt-template", join(packageRoot, "prompts")]);
 });
+
+// --- R3-004: loose-extensions manifest branch coverage ----------------------
+
+test("--link take-over falls through to per-file discovery when a loose dir's package.json declares an empty pi.extensions array", (t) => {
+	const f = fixture(t);
+	const piAgentDir = join(f.root, "pi-agent");
+	mkdirSync(piAgentDir, { recursive: true });
+
+	const otherGentlePiDir = join(f.root, "other-gentle-pi");
+	mkdirSync(otherGentlePiDir, { recursive: true });
+	writeFileSync(join(otherGentlePiDir, "package.json"), JSON.stringify({ name: "gentle-pi" }));
+
+	writeFileSync(join(piAgentDir, "settings.json"), JSON.stringify({ packages: ["../other-gentle-pi"] }));
+
+	const looseAgentExtensions = join(piAgentDir, "extensions");
+	mkdirSync(looseAgentExtensions, { recursive: true });
+	writeFileSync(join(looseAgentExtensions, "package.json"), JSON.stringify({ pi: { extensions: [] } }));
+	writeFileSync(join(looseAgentExtensions, "a.ts"), "export default () => {};");
+
+	const env = { ...f.env, PI_CODING_AGENT_DIR: piAgentDir };
+	const result = run(env, ["--link"], { cwd: f.root });
+	assert.equal(result.status, 0, result.stderr);
+
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, [
+		"--no-extensions",
+		"-e",
+		join(looseAgentExtensions, "a.ts"),
+		"-e",
+		packageRoot,
+		"--theme",
+		join(packageRoot, "themes"),
+		"--skill",
+		join(packageRoot, "skills"),
+		"--prompt-template",
+		join(packageRoot, "prompts"),
+	]);
+});
+
+test("--link take-over treats a malformed package.json as no manifest and falls through to per-file discovery", (t) => {
+	const f = fixture(t);
+	const piAgentDir = join(f.root, "pi-agent");
+	mkdirSync(piAgentDir, { recursive: true });
+
+	const otherGentlePiDir = join(f.root, "other-gentle-pi");
+	mkdirSync(otherGentlePiDir, { recursive: true });
+	writeFileSync(join(otherGentlePiDir, "package.json"), JSON.stringify({ name: "gentle-pi" }));
+
+	writeFileSync(join(piAgentDir, "settings.json"), JSON.stringify({ packages: ["../other-gentle-pi"] }));
+
+	const looseAgentExtensions = join(piAgentDir, "extensions");
+	mkdirSync(looseAgentExtensions, { recursive: true });
+	writeFileSync(join(looseAgentExtensions, "package.json"), "{ not valid json");
+	writeFileSync(join(looseAgentExtensions, "a.ts"), "export default () => {};");
+
+	const env = { ...f.env, PI_CODING_AGENT_DIR: piAgentDir };
+	const result = run(env, ["--link"], { cwd: f.root });
+	assert.equal(result.status, 0, result.stderr);
+
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, [
+		"--no-extensions",
+		"-e",
+		join(looseAgentExtensions, "a.ts"),
+		"-e",
+		packageRoot,
+		"--theme",
+		join(packageRoot, "themes"),
+		"--skill",
+		join(packageRoot, "skills"),
+		"--prompt-template",
+		join(packageRoot, "prompts"),
+	]);
+});
+
+// --- R4-takeover-leaves-two-gentle-pi-skill-sets-loaded ---------------------
+
+test("--link take-over stderr message also notes that the taken-over declaration's skills, prompts, and themes still load alongside this launcher's", (t) => {
+	const f = fixture(t);
+	const piAgentDir = join(f.root, "pi-agent");
+	mkdirSync(piAgentDir, { recursive: true });
+
+	const otherGentlePiDir = join(f.root, "other-gentle-pi");
+	mkdirSync(otherGentlePiDir, { recursive: true });
+	writeFileSync(join(otherGentlePiDir, "package.json"), JSON.stringify({ name: "gentle-pi" }));
+
+	writeFileSync(join(piAgentDir, "settings.json"), JSON.stringify({ packages: ["../other-gentle-pi"] }));
+
+	const env = { ...f.env, PI_CODING_AGENT_DIR: piAgentDir };
+	const result = run(env, ["--link"], { cwd: f.root });
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stderr, /taking over gentle-pi from/);
+	assert.match(result.stderr, /skills, prompts, and themes/);
+});
+
 test("--link take-over treats a file named `extensions` as not a loose extension dir", (t) => {
 	const f = fixture(t);
 	const piAgentDir = join(f.root, "pi-agent");

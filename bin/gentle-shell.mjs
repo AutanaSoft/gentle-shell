@@ -332,7 +332,9 @@ async function main() {
 			// take-over does not silently stop loading them.
 			looseExtensionEntries = [join(home.dir, "extensions"), join(process.cwd(), ".pi", "extensions")].flatMap(resolveLooseExtensionEntries);
 			const declaredFrom = declaration === undefined ? "the requested package root" : declaration.kind === "npm" ? "npm:gentle-pi" : declaration.dir;
-			process.stderr.write(`gentle-shell: taking over gentle-pi from ${declaredFrom} for this run (settings unchanged).\n`);
+			process.stderr.write(
+				`gentle-shell: taking over gentle-pi from ${declaredFrom} for this run (settings unchanged; its skills, prompts, and themes still load alongside this launcher's).\n`,
+			);
 		}
 	}
 	// Isolated and --home homes have no declaration to take over: declaration

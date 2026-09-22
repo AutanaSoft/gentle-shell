@@ -563,13 +563,15 @@ export function otherPackageInjections(input                             )      
 
 
 
-// scripts/build-runtime-modules.mjs rewrites every `.mjs"` / `.mjs'` import
-// specifier to `.mjs` when it generates runtime/gentle-shell-launcher.mjs —
-// a plain `.replace(/\.ts(["'])/g, ...)` that cannot tell an import path from
-// an ordinary string literal. A literal ".mjs" ending a string (like a bare
-// ".mjs" suffix or an "index.mjs" filename) would get silently corrupted into
-// ".mjs" in the generated runtime module, so both are built by concatenation
-// here instead of written as a literal ending in `ts"`.
+// scripts/build-runtime-modules.mjs rewrites every occurrence of a dot, the
+// letters ts, and an immediately following closing quote (single or double)
+// to end in mjs instead, when it generates runtime/gentle-shell-launcher.mjs
+// — a plain `.replace(/\.ts(["'])/g, ...)` that cannot tell an import
+// specifier from an ordinary string literal. Any other string ending the
+// same way — a dot, the letters ts, and a closing quote right after — would
+// get silently corrupted into the mjs form in the generated runtime module,
+// so the three constants below are built by concatenation instead of
+// written as literals that would trigger the same rewrite.
 const TS_EXTENSION = `.t${"s"}`;
 const INDEX_TS_FILENAME = `index${TS_EXTENSION}`;
 const DECLARATION_FILE_SUFFIX = `.d${TS_EXTENSION}`;
