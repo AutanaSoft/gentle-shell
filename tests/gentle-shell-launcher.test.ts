@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
 	MIN_PI_VERSION,
+	PI_SUBCOMMANDS,
 	buildPiInvocation,
 	checkPeerVersionPin,
 	checkPiVersion,
@@ -45,6 +46,7 @@ test("parseLauncherArgs returns all-false defaults for an empty argv", () => {
 		command: undefined,
 		commandArgs: [],
 		passthrough: [],
+		piSubcommand: undefined,
 		error: undefined,
 	});
 });
@@ -142,6 +144,53 @@ test("parseLauncherArgs treats home as a plain passthrough token when it is not 
 	const parsed = parseLauncherArgs(["--isolated", "home"]);
 	assert.equal(parsed.command, undefined);
 	assert.deepEqual(parsed.passthrough, ["home"]);
+});
+
+// --- pi subcommand passthrough (install/remove/uninstall/update/list/config/auth) ---
+
+test("parseLauncherArgs recognises install as a pi subcommand and keeps it in passthrough", () => {
+	const parsed = parseLauncherArgs(["install", "npm:x"]);
+	assert.equal(parsed.piSubcommand, "install");
+	assert.deepEqual(parsed.passthrough, ["install", "npm:x"]);
+});
+
+test("parseLauncherArgs recognises every pi subcommand", () => {
+	for (const subcommand of PI_SUBCOMMANDS) {
+		const parsed = parseLauncherArgs([subcommand]);
+		assert.equal(parsed.piSubcommand, subcommand);
+		assert.deepEqual(parsed.passthrough, [subcommand]);
+	}
+});
+
+test("parseLauncherArgs keeps piSubcommand when a launcher flag precedes it", () => {
+	const parsed = parseLauncherArgs(["--link", "install", "npm:x"]);
+	assert.equal(parsed.link, true);
+	assert.equal(parsed.piSubcommand, "install");
+	assert.deepEqual(parsed.passthrough, ["install", "npm:x"]);
+});
+
+test("parseLauncherArgs does not set piSubcommand for the home launcher subcommand", () => {
+	const parsed = parseLauncherArgs(["home", "link"]);
+	assert.equal(parsed.command, "home");
+	assert.equal(parsed.piSubcommand, undefined);
+});
+
+test("parseLauncherArgs does not treat an arbitrary prompt word as a pi subcommand", () => {
+	const parsed = parseLauncherArgs(["hello"]);
+	assert.equal(parsed.piSubcommand, undefined);
+	assert.deepEqual(parsed.passthrough, ["hello"]);
+});
+
+test("parseLauncherArgs only recognises the first passthrough token as a pi subcommand", () => {
+	const parsed = parseLauncherArgs(["hello", "install"]);
+	assert.equal(parsed.piSubcommand, undefined);
+	assert.deepEqual(parsed.passthrough, ["hello", "install"]);
+});
+
+test("parseLauncherArgs recognises a pi subcommand as the first token after --", () => {
+	const parsed = parseLauncherArgs(["--", "install", "npm:x"]);
+	assert.equal(parsed.piSubcommand, "install");
+	assert.deepEqual(parsed.passthrough, ["install", "npm:x"]);
 });
 
 test("parseLauncherArgs errors when --link is combined with --isolated", () => {
@@ -797,6 +846,58 @@ test("buildPiInvocation adds the gentle-pi injection flags when there is no decl
 	]);
 });
 
+test("buildPiInvocation emits only runtime args and passthrough when a pi subcommand is set, skipping injection", () => {
+	const built = buildPiInvocation({
+		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
+		home: isolatedHomeResolved,
+		packageRoot: "/pkg",
+		declaration: undefined,
+		takeOver: false,
+		otherPackagePaths: [],
+		passthrough: ["install", "npm:x"],
+		piSubcommand: "install",
+		baseEnv: {},
+	});
+	assert.deepEqual(built.args, ["install", "npm:x"]);
+	assert.equal(built.command, "/usr/bin/pi");
+});
+
+test("buildPiInvocation still injects the launcher env for a pi subcommand", () => {
+	const built = buildPiInvocation({
+		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
+		home: isolatedHomeResolved,
+		packageRoot: "/pkg",
+		declaration: undefined,
+		takeOver: false,
+		otherPackagePaths: [],
+		passthrough: ["list"],
+		piSubcommand: "list",
+		baseEnv: { PATH: "/usr/bin" },
+	});
+	assert.deepEqual(built.env, {
+		PATH: "/usr/bin",
+		PI_CODING_AGENT_DIR: "/gentle-shell/agent",
+		GENTLE_PI_AGENT_HOME: "/gentle-shell/agent",
+	});
+});
+
+test("buildPiInvocation in link mode with a pi subcommand is exactly pi <subcommand> against the user's own agent dir, even when a conflicting declaration would otherwise force a take-over", () => {
+	const built = buildPiInvocation({
+		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
+		home: linkHome,
+		packageRoot: "/pkg",
+		declaration: { kind: "path", dir: "/other/checkout" },
+		takeOver: true,
+		otherPackagePaths: [join("/agent", "npm", "node_modules", "some-other")],
+		passthrough: ["auth", "status"],
+		piSubcommand: "auth",
+		baseEnv: {},
+	});
+	assert.equal(built.command, "/usr/bin/pi");
+	assert.deepEqual(built.args, ["auth", "status"]);
+	assert.deepEqual(built.env, { PI_CODING_AGENT_DIR: "/pi/agent", GENTLE_PI_AGENT_HOME: "/pi/agent" });
+});
+
 test("buildPiInvocation keeps the runtime's own args ahead of the injection and passthrough", () => {
 	const built = buildPiInvocation({
 		runtime: { kind: "bundled", command: "/usr/bin/node", args: ["/bundled/cli.js"] },
@@ -1159,4 +1260,14 @@ test("helpText documents the launcher flags, the home subcommand, the env vars, 
 	assert.match(text, /GENTLE_SHELL_HOME/);
 	assert.match(text, /PI_CODING_AGENT_DIR/);
 	assert.match(text, /forward/i);
+});
+
+test("helpText documents pi's own package-management subcommands", () => {
+	const text = helpText();
+	assert.match(text, /\binstall\b/);
+	assert.match(text, /\bremove\b/);
+	assert.match(text, /\blist\b/);
+	assert.match(text, /\bupdate\b/);
+	assert.match(text, /\bconfig\b/);
+	assert.match(text, /\bauth\b/);
 });

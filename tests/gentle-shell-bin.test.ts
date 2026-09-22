@@ -149,6 +149,24 @@ test("--link skips injection and leaves settings.json byte-identical when it alr
 	assert.equal(existsSync(join(piAgentDir, ".gentle-shell")), false);
 });
 
+test("gentle-shell list forwards to pi as a bare subcommand, with no injected extension flags", (t) => {
+	const f = fixture(t);
+	const result = run(f.env, ["list"]);
+	assert.equal(result.status, 0, result.stderr);
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, ["list"]);
+	assert.equal(payload.PI_CODING_AGENT_DIR, f.gentleShellHome);
+});
+
+test("gentle-shell install npm:<pkg> forwards the subcommand and its argument verbatim", (t) => {
+	const f = fixture(t);
+	const result = run(f.env, ["install", "npm:pi-btw"]);
+	assert.equal(result.status, 0, result.stderr);
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, ["install", "npm:pi-btw"]);
+	assert.equal(payload.PI_CODING_AGENT_DIR, f.gentleShellHome);
+});
+
 test("a too-old pi exits 1 naming both versions", (t) => {
 	const f = fixture(t);
 	writePiScript(f.piScript, "0.80.0");
@@ -215,6 +233,30 @@ test("--link takes over a path-declared conflicting gentle-pi: --no-extensions, 
 		"rpc",
 	]);
 
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsText);
+	assert.equal(payload.PI_CODING_AGENT_DIR, piAgentDir);
+});
+
+test("--link install npm:x with a path-declared conflicting gentle-pi in settings forwards the bare subcommand, no take-over", (t) => {
+	const f = fixture(t);
+	const piAgentDir = join(f.root, "pi-agent");
+	mkdirSync(piAgentDir, { recursive: true });
+
+	const otherGentlePiDir = join(f.root, "other-gentle-pi");
+	mkdirSync(otherGentlePiDir, { recursive: true });
+	writeFileSync(join(otherGentlePiDir, "package.json"), JSON.stringify({ name: "gentle-pi" }));
+
+	const settingsPath = join(piAgentDir, "settings.json");
+	const settingsText = JSON.stringify({ packages: ["npm:some-other", "../other-gentle-pi"] });
+	writeFileSync(settingsPath, settingsText);
+
+	const env = { ...f.env, PI_CODING_AGENT_DIR: piAgentDir };
+	const result = run(env, ["--link", "install", "npm:x"], { cwd: f.root });
+	assert.equal(result.status, 0, result.stderr);
+	assert.doesNotMatch(result.stderr, /taking over gentle-pi from/);
+
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, ["install", "npm:x"]);
 	assert.equal(readFileSync(settingsPath, "utf8"), settingsText);
 	assert.equal(payload.PI_CODING_AGENT_DIR, piAgentDir);
 });

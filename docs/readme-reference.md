@@ -106,7 +106,7 @@ This is guidance through existing tools, not a new CLI, phase, state engine, or 
 | **Skill creation workflow**    | Provides the `gentle-ai-skill-creator`/`gentle-ai-skill-improver` skills, `/skill-creation` prompt, and packaged style guide for LLM-first skills. |
 | **Delivery skills**            | Includes issue-first PRs, chained PRs, work-unit commits, cognitive docs, comment writing, and Judgment Day review.                           |
 | **Bounded native review**      | Freezes one candidate, dispatches only controller-selected lenses, and records native authority. Review outcomes are informational; delivery follows ordinary repository policy. |
-| **Verified native runtime**    | The current source checkout provisions the exact package-local Gentle AI v3.4.0 runtime: signed, SHA-256-pinned release archives on Darwin/Linux and a Go SumDB-verified source build on Windows x64/arm64. It validates package-local integrity and rejects PATH, global, sibling, symlink, and mode fallbacks. |
+| **Verified native runtime**    | The current source checkout provisions the exact package-local Gentle AI v3.5.0 runtime: signed, SHA-256-pinned release archives on Darwin/Linux and a Go SumDB-verified source build on Windows x64/arm64. It validates package-local integrity and rejects PATH, global, sibling, symlink, and mode fallbacks. |
 | **Runtime safety**             | Blocks destructive shell commands, asks for confirmation for sensitive operations, and blocks direct read/write/edit access to sensitive paths. |
 
 ## Native pointer regions
@@ -143,7 +143,7 @@ The stable release is [`v2.6.0`](https://github.com/Gentleman-Programming/gentle
 
 ### Source checkout
 
-This checkout prepares `gentle-pi` `3.3.0`; it is source state, not a published release. Its package-local native runtime pin is Gentle AI `v3.4.0`, distinct from the published `v2.6.0` pairing.
+This checkout prepares `gentle-pi` `3.4.0`; it is source state, not a published release. Its package-local native runtime pin is Gentle AI `v3.5.0`, distinct from the published `v2.6.0` pairing.
 
 The native SDD status consumer accepts both the pinned producer's legacy
 `apply`/`verify`/`remediate`/`archive` instruction record and the classical
@@ -154,7 +154,7 @@ Unknown or incomplete instruction records still fail closed.
 The Pi runtime now uses native status exclusively for SDD and retires standalone
 sync. The full chain follows completed apply to archive, where applicable delta
 specs are composed; verification remains explicitly invokable. With the current
-3.4.0 pin, native still requires verification and its emitted evidence requirements;
+3.5.0 pin, native still requires verification and its emitted evidence requirements;
 a plain practical PASS report does not satisfy that legacy native gate. Pi forwards
 those exact instructions without overriding readiness or inventing legacy evidence.
 Classical direct-archive behavior is compatibility-tested with an identified
@@ -188,7 +188,7 @@ pi install npm:gentle-pi@2.6.0
 
 RDD remains opt-in. Enable it only through an explicit user decision with `/gentle:review-mode enable`; `status` lets you inspect the mode without changing it.
 
-The source checkout's RDD integration installs Gentle AI only into its private `.gentle-ai/` directory. Darwin and Linux use pinned release assets with asset and executable SHA-256 verification (signed archives for source pin `v3.4.0`; raw prerelease binaries only under a prerelease pin). Windows x64 and arm64 build the exact `v3.4.0` source tag with a local Go 1.25.10+ toolchain, a sealed Go environment, `GOTOOLCHAIN=local`, and `GOSUMDB=sum.golang.org`; it does not download Go automatically. Windows provenance is Go-toolchain plus SumDB evidence and postinstall tamper detection, **not** Authenticode or protection against a malicious joint binary-and-manifest replacement. Package-private locks coordinate cooperative concurrent or crashed installers; their tombstones fail closed. A malicious same-user process with write access to package-private `node_modules` is outside that protocol because it can already replace package code, binary, or manifest, and portable Node has no pathname-delete CAS. It never uses `PATH` or a global `gentle-ai` installation. For development or offline installs only, set `GENTLE_PI_SKIP_GENTLE_AI_INSTALL=1`; native review operations then fail closed with an actionable `package-local-binary-missing` error. To recover explicitly, if `GENTLE_PI_SKIP_GENTLE_AI_INSTALL` is set, remove or unset it before changing to the installed `gentle-pi` package directory. Then run `node scripts/install-gentle-ai.mjs`. This invokes the package-owned installer without relying on a global binary or npm configuration change. A missing binary can result from skipped lifecycle scripts, but does not prove that lifecycle scripts were disabled.
+The source checkout's RDD integration installs Gentle AI only into its private `.gentle-ai/` directory. Darwin and Linux use pinned release assets with asset and executable SHA-256 verification (signed archives for source pin `v3.5.0`; raw prerelease binaries only under a prerelease pin). Windows x64 and arm64 build the exact `v3.5.0` source tag with a local Go 1.25.10+ toolchain, a sealed Go environment, `GOTOOLCHAIN=local`, and `GOSUMDB=sum.golang.org`; it does not download Go automatically. Windows provenance is Go-toolchain plus SumDB evidence and postinstall tamper detection, **not** Authenticode or protection against a malicious joint binary-and-manifest replacement. Package-private locks coordinate cooperative concurrent or crashed installers; their tombstones fail closed. A malicious same-user process with write access to package-private `node_modules` is outside that protocol because it can already replace package code, binary, or manifest, and portable Node has no pathname-delete CAS. It never uses `PATH` or a global `gentle-ai` installation. For development or offline installs only, set `GENTLE_PI_SKIP_GENTLE_AI_INSTALL=1`; native review operations then fail closed with an actionable `package-local-binary-missing` error. To recover explicitly, if `GENTLE_PI_SKIP_GENTLE_AI_INSTALL` is set, remove or unset it before changing to the installed `gentle-pi` package directory. Then run `node scripts/install-gentle-ai.mjs`. This invokes the package-owned installer without relying on a global binary or npm configuration change. A missing binary can result from skipped lifecycle scripts, but does not prove that lifecycle scripts were disabled.
 
 Recommended companion packages:
 
@@ -252,6 +252,10 @@ gentle-shell home [link|isolated|<path>]
 
 `gentle-shell home` alone prints the effective mode and directory (`<mode> <dir>`) without persisting anything. `gentle-shell home link`, `gentle-shell home isolated`, or `gentle-shell home <path>` persists that choice to `~/.gentle-shell/config.json` as `{"home": "link" | "isolated" | "<path>"}`, so a later plain `gentle-shell` picks it up; a flag on a given invocation still overrides the persisted config without rewriting it.
 
+### Managing packages
+
+`gentle-shell install npm:<pkg>`, `gentle-shell remove ...`, `gentle-shell list`, `gentle-shell update ...`, `gentle-shell config`, and `gentle-shell auth ...` run pi's own commands against the resolved home — the `--isolated` home by default, or your own pi home with `--link`. A launcher flag before the subcommand (`--link`, `--isolated`, `--home <path>`) still selects which home the subcommand runs against. Running `gentle-shell install npm:gentle-pi` inside the isolated home is unnecessary: the launcher already loads the Gentle Shell package itself (see "Loading the package" below).
+
 ### pi runtime resolution
 
 1. `GENTLE_SHELL_PI` — path to a pi executable, when set to a non-empty value.
@@ -271,10 +275,11 @@ If none resolve, `gentle-shell` exits 1 naming all three options. Once a runtime
 
 ### Loading the package
 
-Unless the target home's `settings.json` already declares gentle-pi (checked only for `--link`), every invocation injects `-e <package root> --theme <root>/themes --skill <root>/skills --prompt-template <root>/prompts` ahead of the forwarded arguments, so the Gentle Shell extensions, themes, skills, and prompt templates load without a separate `pi install`. Isolated and `--home <path>` homes never declare the package, so they always get this injection.
+Unless the target home's `settings.json` already declares gentle-pi (checked only for `--link`), every invocation injects `-e <package root> --theme <root>/themes --skill <root>/skills --prompt-template <root>/prompts` ahead of the forwarded arguments, so the Gentle Shell extensions, themes, skills, and prompt templates load without a separate `pi install`. Isolated and `--home <path>` homes never declare the package, so they always get this injection — except when the forwarded arguments start with one of pi's own subcommands (`install`, `remove`, `uninstall`, `update`, `list`, `config`, `auth`): pi dispatches those on `argv[0]` before it parses any flags, so the injection — and any take-over below — is skipped entirely and pi sees the bare subcommand, e.g. `gentle-shell install npm:x` runs exactly `pi install npm:x`. A subcommand never triggers a take-over, even against a home whose settings declare a conflicting gentle-pi; see "Managing packages" above.
 
 A declaration is recognized either as `npm:gentle-pi[@version]` in the `packages` array, or as a local path package (string or `{"source": "..."}` entry, relative or absolute) whose own `package.json` names it `"gentle-pi"` — the shape produced when gentle-pi is developed from a checkout and referenced by path in `settings.json` instead of installed via `pi install npm:gentle-pi`.
 
+- **A pi subcommand as the first forwarded argument**: no injection and no take-over at all, regardless of any declaration — pi must see the bare subcommand as `argv[0]`.
 - **npm declaration matching this launcher's own install**: no injection — pi already loads gentle-pi from the declared package.
 - **No declaration at all, or a path declaration that resolves (after `realpath`) to this launcher's own package root**: the same plain injection as above.
 - **A declaration that resolves to a *different* gentle-pi** (a different checkout declared by path, for example) **— take-over**: `gentle-shell` prints `taking over gentle-pi from <declared source> for this run (settings unchanged)` to stderr, then runs pi with `--no-extensions` followed by an explicit `-e <dir>` for every *other* package already in settings (npm entries resolve to `<agent dir>/npm/node_modules/<name>`; path entries resolve relative to the settings file), then loose extension entries for `<agent dir>/extensions` and the project-local `<cwd>/.pi/extensions` (each candidate directory only consulted when it already exists), and finally its own `-e <package root> --theme ... --skill ... --prompt-template ...`. `settings.json` itself is never modified, and every `-e` path is injected at most once even if it would otherwise repeat.
@@ -282,7 +287,7 @@ A declaration is recognized either as `npm:gentle-pi[@version]` in the `packages
   `--no-extensions` disables pi's normal directory-discovery pass, and pi's `-e` flag hands a path straight to its module loader with no discovery of its own — passing a loose extensions directory as-is via `-e <dir>` fails with "Cannot find module" unless that directory is itself a self-contained extension. So each loose candidate directory is resolved before injection: a directory that is itself a self-contained extension (its own `index.ts`/`index.js`, or a `package.json` declaring a `pi.extensions` manifest) is passed through as a single `-e <dir>`; otherwise its direct `*.ts`/`*.js`/`*.mjs` files and any `<subdir>/index.ts`/`index.js` are discovered individually — mirroring pi's own directory scan — and each is injected as its own `-e <file>`. Hidden entries (dotfiles) and `*.d.ts` declaration files are skipped, since neither was ever a runnable extension.
 
   A git-sourced other package is skipped with a stderr warning, since its install directory cannot be derived without pi's own package manager; an object entry with `extensions` or `autoload` filters is still included but warned about, because the take-over cannot honor those filters for extension discovery — that package's skills, prompts, and themes still load normally through settings discovery, which `--no-extensions` does not affect.
-- **`--package-root <dir>`**: forces a take-over using `<dir>` as the package root, even when settings already declare a matching `npm:gentle-pi`, or when there is no declaration at all. Use it to test a different gentle-pi checkout against a home whose settings already point at another one.
+- **`--package-root <dir>`**: forces a take-over using `<dir>` as the package root, even when settings already declare a matching `npm:gentle-pi`, or when there is no declaration at all. Use it to test a different gentle-pi checkout against a home whose settings already point at another one. Has no effect when the forwarded arguments start with a pi subcommand, since a subcommand skips the take-over entirely.
 
 This take-over exists because two gentle-pi copies loaded at once — the declared one plus this launcher's own injection — register the same tools and extensions twice, which pi reports as tool conflicts (for example `Tool ask_user_choice conflicts with ...`).
 
@@ -297,6 +302,10 @@ On win32, when the resolved pi command ends in `.cmd` or `.bat` — the shape an
 ### Postinstall fullscreen guard
 
 gentle-pi's postinstall only writes the global `tuiMode: fullscreen` setting when the running package directory is a pi-managed install: under an `npm/node_modules` segment, or the exact `git/github.com/Gentleman-Programming` Git layout. `npm i -g gentle-pi`, a development checkout, and other layouts are recognized and skipped, logging `gentle-pi skipped enabling fullscreen in global Pi settings: <dir> is not a pi-managed install (npm install -g, a git checkout, and npx all land here).`
+
+### Interactive RPC hosts
+
+Setting `GENTLE_SHELL_INTERACTIVE_HOST=1` on a `pi --mode rpc` process turns on two things a plain headless RPC host does not get: dialogs for `ask_user_question` and `ask_user_choice` (one `ctx.ui.select` prompt per question, looped for multiSelect), and Gentle Agents' helper activity pushed live through `setWidget`. A subagent child spawned by such a host never inherits the variable, so nested children stay headless regardless of their parent. See the [activity payload reference](gentle-agents-activity.md) for the exact schema, field bounds, and shrink order.
 
 ## Quick start
 
@@ -436,13 +445,13 @@ flowchart TD
 
 VALIDATE is informational. Commit, push, PR, and release commands follow ordinary repository policy; RDD never authorizes, rewrites, consumes review state for, or blocks them. Dangerous-command safety and destructive-review consent remain independent.
 
-For the source checkout, native contract pairing is exact: this adapter resolves only the integrity-verified package-local Gentle AI v3.4.0 executable, independently hashes it, then negotiates `gentle-ai.review-integration/v2` outside the repository. Capabilities are cached by that executable digest. Every START, target status, FINALIZE, validate, and BIND-SDD request passes the same contract identifier. Negotiated envelopes decode exactly against the vendored schemas; `recover` routes only the provider-selected `action_disposition`, and optional additions require a future compatible schema/minor that the provider explicitly advertises and the consumer negotiates.
+For the source checkout, native contract pairing is exact: this adapter resolves only the integrity-verified package-local Gentle AI v3.5.0 executable, independently hashes it, then negotiates `gentle-ai.review-integration/v2` outside the repository. Capabilities are cached by that executable digest. Every START, target status, FINALIZE, validate, and BIND-SDD request passes the same contract identifier. Negotiated envelopes decode exactly against the vendored schemas; `recover` routes only the provider-selected `action_disposition`, and optional additions require a future compatible schema/minor that the provider explicitly advertises and the consumer negotiates.
 
 Contract `/v2` replaces the Base64 `candidate_diff` reviewer transport of `/v1` with immutable `base_tree`/`candidate_tree` plus an ordered `changed_path_manifest` and never an inline patch. `gentle-pi` negotiates `/v2` only, with no dual-lane fallback; the cutover landed as one atomic commit against gentle-ai v2.2.2 (tracked by the `migrate-review-integration-v2` change), and the `/v1` schemas stay packaged because the `/v2` schemas `$ref` into their fragments. This provider contract version is unrelated to Pi's own internal "compact-v2" review-authority naming used below — the shared digit is coincidental, not a version pairing.
 
 Target status owns `current_target`, `unrelated`, `ambiguous`, and `corrupted` applicability and returns one native action. Pi does not reconstruct ordinary authority from provider-private files or choose a lineage from repository-wide history. Restart recovery rebuilds only the derived candidate view from the native Git/content projection, including intended-untracked paths, symlinks, and immutable gitlink identities. Native failure envelopes retain their exact mutation outcome, replayability, required inputs, request digest, and next action. After an unknown or lost mutating result, Pi calls target status before any replay decision and returns only the provider-declared action.
 
-Once the source checkout's pinned gentle-ai runtime (currently v3.4.0) has written review authority, rollback MUST preserve every native store and receipt and MUST NOT run a downgraded binary against that repository. Disable the Pi route or roll forward to a compatible authority-aware release instead; deleting authority data or reinstalling an older binary is not a rollback path.
+Once the source checkout's pinned gentle-ai runtime (currently v3.5.0) has written review authority, rollback MUST preserve every native store and receipt and MUST NOT run a downgraded binary against that repository. Disable the Pi route or roll forward to a compatible authority-aware release instead; deleting authority data or reinstalling an older binary is not a rollback path.
 
 ### FINALIZE wrapper input
 

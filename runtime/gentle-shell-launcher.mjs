@@ -7,6 +7,16 @@ import { join, resolve as resolvePath } from "node:path";
 
 
 
+// pi's own package-management subcommands (see pi's cli/args.ts printHelp
+// "Commands" list): each is dispatched by pi itself, before pi's own flag
+// parsing, purely on argv[0]. `uninstall` is pi's alias for `remove`.
+export const PI_SUBCOMMANDS = ["install", "remove", "uninstall", "update", "list", "config", "auth"]         ;
+
+
+
+function isPiSubcommand(token        )                        {
+	return (PI_SUBCOMMANDS                     ).includes(token);
+}
 
 
 
@@ -14,6 +24,12 @@ import { join, resolve as resolvePath } from "node:path";
 
 
 
+
+
+
+
+
+	                                                                  
 
 
 
@@ -35,6 +51,7 @@ export function parseLauncherArgs(argv          )                     {
 			command: "home",
 			commandArgs: argv.slice(1),
 			passthrough: [],
+			piSubcommand: undefined,
 			error: undefined,
 		};
 	}
@@ -46,12 +63,17 @@ export function parseLauncherArgs(argv          )                     {
 	let help = false;
 	let version = false;
 	let error                    ;
+	let piSubcommand                          ;
 	const passthrough           = [];
 
 	for (let i = 0; i < argv.length; i += 1) {
 		const arg = argv[i];
 		if (arg === "--") {
-			passthrough.push(...argv.slice(i + 1));
+			const rest = argv.slice(i + 1);
+			if (passthrough.length === 0 && rest.length > 0 && isPiSubcommand(rest[0])) {
+				piSubcommand = rest[0];
+			}
+			passthrough.push(...rest);
 			break;
 		}
 		if (arg === "--link") {
@@ -110,6 +132,9 @@ export function parseLauncherArgs(argv          )                     {
 			i += 1;
 			continue;
 		}
+		if (passthrough.length === 0 && isPiSubcommand(arg)) {
+			piSubcommand = arg;
+		}
 		passthrough.push(arg);
 	}
 
@@ -123,7 +148,7 @@ export function parseLauncherArgs(argv          )                     {
 		}
 	}
 
-	return { link, isolated, home, packageRoot, help, version, command: undefined, commandArgs: [], passthrough, error };
+	return { link, isolated, home, packageRoot, help, version, command: undefined, commandArgs: [], passthrough, piSubcommand, error };
 }
 
 // --- home resolution -------------------------------------------------------
@@ -622,28 +647,41 @@ export function discoverLooseExtensionEntries(dir        , fs                  )
 
 
 
+
+
+
+
+
 function packageRootInjectionArgs(packageRoot        )           {
 	return ["-e", packageRoot, "--theme", join(packageRoot, "themes"), "--skill", join(packageRoot, "skills"), "--prompt-template", join(packageRoot, "prompts")];
 }
 
-// Three cases, `takeOver` checked first: a forced takeover (from an explicit
-// --package-root) must win even when there is no declaration to report, or
-// the plain branch would silently drop --no-extensions and the other-package
-// injections while bin/gentle-shell.mjs still prints the "taking over"
-// message — the bug this ordering fixes.
+// Four cases, checked in this order — `piSubcommand` first, then `takeOver`:
+//   - piSubcommand: pi dispatches install/remove/uninstall/update/list/
+//     config/auth on argv[0] before it even parses flags, so any injected
+//     -e/--theme/--skill/--prompt-template flag ahead of it stops pi from
+//     recognising its subcommand at all — this is exactly the observed
+//     2026-09-22 bug where `gentle-shell install npm:x` opened an
+//     interactive pi session instead of running the package manager. No
+//     injection of any kind (including a take-over's --no-extensions and
+//     other-package/loose-extension -e flags) may precede it.
 //   - takeOver: the target settings declare a *different* gentle-pi, or
-//     --package-root forced a takeover regardless of any declaration.
-//     `--no-extensions` drops normal settings-driven extension discovery, so
-//     it is replaced by an explicit `-e <dir>` for every OTHER settings
-//     package (skills/prompts/themes for those packages still load through
-//     ordinary settings discovery, which --no-extensions does not affect),
-//     then an explicit `-e <file>` for every loose extension entry normal
-//     discovery would otherwise have found under <agentDir>/extensions and
-//     the project-local .pi/extensions, and finally this launcher's own
-//     packageRoot injected last so it wins any conflict. Every -e path is
-//     injected at most once (R3-001): a loose entry that duplicates an
-//     other-package path, or repeats within looseExtensionEntries itself, is
-//     skipped rather than loaded twice.
+//     --package-root forced a takeover regardless of any declaration. This
+//     must win over the next two cases even when there is no declaration to
+//     report, or the plain branch would silently drop --no-extensions and
+//     the other-package injections while bin/gentle-shell.mjs still prints
+//     the "taking over" message. `--no-extensions` drops normal
+//     settings-driven extension discovery, so it is replaced by an explicit
+//     `-e <dir>` for every OTHER settings package (skills/prompts/themes
+//     for those packages still load through ordinary settings discovery,
+//     which --no-extensions does not affect), then an explicit `-e <file>`
+//     for every loose extension entry normal discovery would otherwise have
+//     found under <agentDir>/extensions and the project-local
+//     .pi/extensions, and finally this launcher's own packageRoot injected
+//     last so it wins any conflict. Every -e path is injected at most once
+//     (R3-001): a loose entry that duplicates an other-package path, or
+//     repeats within looseExtensionEntries itself, is skipped rather than
+//     loaded twice.
 //   - Not takeOver, no declaration: inject this launcher's own packageRoot,
 //     exactly as when nothing else in settings loads gentle-pi.
 //   - Not takeOver, with a declaration: no injection at all — the target
@@ -652,7 +690,9 @@ function packageRootInjectionArgs(packageRoot        )           {
 export function buildPiInvocation(input                        )               {
 	const args = [...input.runtime.args];
 
-	if (input.takeOver) {
+	if (input.piSubcommand !== undefined) {
+		// No injection at all: pi must see the bare subcommand as argv[0].
+	} else if (input.takeOver) {
 		args.push("--no-extensions");
 		const injected = new Set        ();
 		for (const otherPath of input.otherPackagePaths) {
@@ -754,6 +794,18 @@ export function helpText()         {
 		"",
 		"Commands:",
 		"  home             Print or persist the effective home mode (link, isolated, or a path).",
+		"",
+		"Managing packages:",
+		"  gentle-shell install npm:<pkg>   Run pi's own 'install' against the resolved home.",
+		"  gentle-shell remove <source>     Run pi's own 'remove' against the resolved home.",
+		"  gentle-shell list                Run pi's own 'list' against the resolved home.",
+		"  gentle-shell update [target]     Run pi's own 'update' against the resolved home.",
+		"  gentle-shell config              Run pi's own 'config' against the resolved home.",
+		"  gentle-shell auth <command>      Run pi's own 'auth' against the resolved home.",
+		"  These run pi's own commands, forwarded verbatim, against the --isolated home",
+		"  (or your own pi home with --link). Running 'gentle-shell install npm:gentle-pi'",
+		"  inside the isolated home is unnecessary: gentle-shell already loads the",
+		"  package itself.",
 		"",
 		"Environment variables:",
 		"  GENTLE_SHELL_PI       Path to the pi executable to run.",

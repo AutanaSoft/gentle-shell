@@ -96,6 +96,7 @@ function emptyArgs() {
 		command: undefined,
 		commandArgs: [],
 		passthrough: [],
+		piSubcommand: undefined,
 		error: undefined,
 	};
 }
@@ -282,8 +283,13 @@ async function main() {
 	// Only --link can read another gentle-pi declaration out of a real
 	// settings.json; isolated and --home homes never declare one, so they
 	// always get the plain injection (declaration stays undefined) unless
-	// --package-root itself forces a take-over below.
-	if (home.mode === "link") {
+	// --package-root itself forces a take-over below. A pi subcommand skips
+	// this whole block: buildPiInvocation ignores takeOver/declaration once
+	// piSubcommand is set, and running the take-over/loose-dir discovery
+	// anyway would still print a misleading "taking over gentle-pi..."
+	// message (and otherPackageInjections warnings) for a plain
+	// `gentle-shell install npm:x` that never actually takes anything over.
+	if (home.mode === "link" && args.piSubcommand === undefined) {
 		const settingsText = readJsonIfExists(join(home.dir, "settings.json"));
 		declaration = findGentlePiDeclaration(settingsText, { agentDir: home.dir, readPackageName });
 		const realEffectivePackageRoot = safeRealpath(effectivePackageRoot);
@@ -329,6 +335,7 @@ async function main() {
 		otherPackagePaths,
 		looseExtensionEntries,
 		passthrough: args.passthrough,
+		piSubcommand: args.piSubcommand,
 		baseEnv: process.env,
 	});
 
