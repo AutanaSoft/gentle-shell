@@ -256,6 +256,82 @@ export function parseLauncherConfig(text: string): LauncherConfig | undefined {
 	return { mode: "path", dir: home };
 }
 
+// --- provisioning marker (S7 auto-provision) --------------------------------
+
+// Raw config.json shape as actually stored on disk: a plain object that may
+// carry `home` (see LauncherConfig above), `provisioned`, and any other key
+// a future feature adds. Unlike parseLauncherConfig's discriminated
+// LauncherConfig, these helpers operate on (and return) the whole object so
+// a write never drops a field it does not itself understand — notably
+// another home's provisioned marker when `gentle-shell home ...` persists a
+// mode change.
+export type RawLauncherConfig = Record<string, unknown>;
+
+// Tolerant like parseLauncherConfig: a missing, malformed, or foreign
+// config.json resolves to an empty object rather than throwing, so a caller
+// can always merge into (and write back) whatever it finds.
+export function parseRawLauncherConfig(text: string | undefined): RawLauncherConfig {
+	if (text === undefined) return {};
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch {
+		return {};
+	}
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+	return parsed as RawLauncherConfig;
+}
+
+export interface ProvisionedEntry {
+	gentleAi: string;
+	at: string;
+}
+
+function isProvisionedEntry(value: unknown): value is ProvisionedEntry {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		typeof (value as Record<string, unknown>).gentleAi === "string" &&
+		typeof (value as Record<string, unknown>).at === "string"
+	);
+}
+
+// Tolerant read of config.provisioned: a missing, non-object, or malformed
+// map (or a malformed individual entry) is dropped rather than thrown, same
+// tolerance policy as parseLauncherConfig above.
+function provisionedMap(config: RawLauncherConfig): Record<string, ProvisionedEntry> {
+	const value = config.provisioned;
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+	const map: Record<string, ProvisionedEntry> = {};
+	for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+		if (isProvisionedEntry(entry)) map[key] = entry;
+	}
+	return map;
+}
+
+// The provisioning record for `homeDir` (the caller passes a realpath, so
+// two different-looking paths to the same home never diverge), or undefined
+// when that home has never been auto- or manually provisioned.
+export function provisionedEntry(config: RawLauncherConfig, homeDir: string): ProvisionedEntry | undefined {
+	return provisionedMap(config)[homeDir];
+}
+
+// True when `homeDir` has never been provisioned, or was provisioned with a
+// gentle-ai pin other than `pin` — the signal bin/gentle-shell.mjs uses to
+// decide whether a plain launch should run the setup flow automatically
+// before starting pi.
+export function needsProvisioning(config: RawLauncherConfig, homeDir: string, pin: string): boolean {
+	const entry = provisionedEntry(config, homeDir);
+	return entry === undefined || entry.gentleAi !== pin;
+}
+
+// Returns a new config object recording `homeDir` as provisioned at `pin`,
+// preserving every other key — including every other home's provisioned
+// entry — unchanged. Never mutates `config`.
+export function recordProvisioned(config: RawLauncherConfig, homeDir: string, pin: string, now: string): RawLauncherConfig {
+	return { ...config, provisioned: { ...provisionedMap(config), [homeDir]: { gentleAi: pin, at: now } } };
+}
+
 // --- pi runtime resolution ---------------------------------------------------
 
 export type PiRuntimeKind = "env" | "bundled" | "path";

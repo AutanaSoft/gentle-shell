@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +16,13 @@ const binUrl = new URL("../bin/gentle-shell.mjs", import.meta.url);
 const binPath = fileURLToPath(binUrl);
 const packageRoot = dirname(dirname(binPath));
 
+// GENTLE_SHELL_NO_AUTO_SETUP=1 is in the base fixture env so every test that
+// is not itself about auto-provisioning (S7) keeps today's plain-launch
+// behavior: without it, every fixture-driven test against a fresh isolated
+// home would trigger a real `gentle-ai install --agent pi` (network, tens of
+// seconds, mutating state) unless it also happened to set
+// GENTLE_SHELL_GENTLE_AI_BIN. The auto-provision test section below opts
+// back in per test via enableAutoProvision.
 function fixture(t: test.TestContext) {
 	const root = mkdtempSync(join(tmpdir(), "gentle-shell-bin-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -30,8 +37,16 @@ function fixture(t: test.TestContext) {
 		USERPROFILE: home,
 		GENTLE_SHELL_HOME: gentleShellHome,
 		GENTLE_SHELL_PI: piScript,
+		GENTLE_SHELL_NO_AUTO_SETUP: "1",
 	};
 	return { root, home, gentleShellHome, piScript, env };
+}
+
+// Removes the fixture's default GENTLE_SHELL_NO_AUTO_SETUP=1 opt-out, for a
+// test that specifically exercises auto-provisioning (S7).
+function enableAutoProvision(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+	const { GENTLE_SHELL_NO_AUTO_SETUP, ...rest } = env;
+	return rest;
 }
 
 // `removeExitCode` controls only the `pi remove ...` branch exercised by the
@@ -87,6 +102,27 @@ function writeGentleAiScript(path: string, exitCode = 0) {
 			"  GENTLE_PI_AGENT_HOME: process.env.GENTLE_PI_AGENT_HOME,",
 			"  PATH: process.env.PATH,",
 			"}));",
+			`process.exit(${exitCode});`,
+			"",
+		].join("\n"),
+	);
+	chmodSync(path, 0o755);
+}
+
+// Test/development-only stub for the setup subcommand's gentle-ai binary
+// that also records each invocation's args to `counterPath` (one JSON line
+// per run), so an auto-provision test can prove the flow ran exactly once
+// (or not at all) across several gentle-shell invocations, independent of
+// what lands on stdout/stderr.
+function writeGentleAiScriptCountingRuns(path: string, counterPath: string, exitCode = 0) {
+	writeFileSync(
+		path,
+		[
+			"#!/usr/bin/env node",
+			"import { appendFileSync } from 'node:fs';",
+			"const args = process.argv.slice(2);",
+			`appendFileSync(${JSON.stringify(counterPath)}, JSON.stringify(args) + '\\n');`,
+			"process.stdout.write(JSON.stringify({ args, PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR }));",
 			`process.exit(${exitCode});`,
 			"",
 		].join("\n"),
@@ -195,6 +231,26 @@ test("home <path> persists a custom directory", (t) => {
 	assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")), { home: target });
 	const check = run(f.env, ["home"]);
 	assert.equal(check.stdout.trim(), `path ${target}`);
+});
+
+// Test/development-only: GENTLE_SHELL_CONFIG overrides the launcher
+// config.json path (normally <homedir>/.gentle-shell/config.json), so a test
+// or a field run against the real HOME (for example the packed-artifact E2E
+// script, which needs `--link` probes against the real pi home) never
+// touches the real ~/.gentle-shell/config.json. Documented as
+// test/development-only in docs/readme-reference.md.
+test("GENTLE_SHELL_CONFIG redirects the config.json path used by 'home' and auto-provisioning", (t) => {
+	const f = fixture(t);
+	const overridePath = join(f.root, "alt-config.json");
+	const env = { ...f.env, GENTLE_SHELL_CONFIG: overridePath };
+
+	const save = run(env, ["home", "link"]);
+	assert.equal(save.status, 0, save.stderr);
+	assert.deepEqual(JSON.parse(readFileSync(overridePath, "utf8")), { home: "link" });
+	assert.equal(existsSync(join(f.home, ".gentle-shell", "config.json")), false);
+
+	const check = run(env, ["home"]);
+	assert.match(check.stdout, /^link /);
 });
 
 test("first isolated run bootstraps the home, writes fullscreen, and prints the hint once", (t) => {
@@ -663,6 +719,201 @@ test("gentle-shell setup shell-quotes a --home path containing a space in the fa
 			`gentle-shell: could not remove npm:@juicesharp/rpiv-ask-user-question; run \`gentle-shell --home '${target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}' remove npm:@juicesharp/rpiv-ask-user-question\` before starting`,
 		),
 	);
+});
+
+// --- automatic first-run provisioning (S7) ---------------------------------
+//
+// A plain `gentle-shell` in an isolated or `--home` home now runs the same
+// flow as `gentle-shell setup` automatically, before launching pi, when the
+// home has never been provisioned or was provisioned with a different
+// gentle-ai pin. GENTLE_SHELL_GENTLE_AI_PIN pins the reported pin to a fixed
+// value so these tests are independent of the real installed pin.
+
+test("first launch auto-provisions the isolated home, writes the marker, then launches pi; stdout carries only pi's output", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	const counterPath = join(f.root, "gentle-ai-runs.log");
+	writeGentleAiScriptCountingRuns(gentleAiScript, counterPath);
+	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" });
+
+	const result = run(env, ["--mode", "rpc", "-p", "hi"]);
+	assert.equal(result.status, 0, result.stderr);
+
+	// The flow ran exactly once, before pi.
+	const runs = readFileSync(counterPath, "utf8").trim().split("\n");
+	assert.equal(runs.length, 1, counterPath);
+	assert.deepEqual(JSON.parse(runs[0]), ["install", "--agent", "pi", "--scope", "global"]);
+
+	// stdout carries only the final pi invocation's own output (the flow's
+	// stdout and stderr, and the launcher's own notices, all went to stderr).
+	const stdoutLines = result.stdout.trim().split("\n").filter((line) => line.length > 0);
+	assert.equal(stdoutLines.length, 1, result.stdout);
+	const payload = JSON.parse(stdoutLines[0]);
+	assert.deepEqual(payload.args.slice(-4), ["--mode", "rpc", "-p", "hi"]);
+
+	assert.match(result.stderr, /gentle-shell: first run in .+: installing the Gentle AI companion packages \(one time; set GENTLE_SHELL_NO_AUTO_SETUP=1 to skip\)/);
+	assert.match(result.stderr, new RegExp(JSON.stringify({ args: ["install", "--agent", "pi", "--scope", "global"], PI_CODING_AGENT_DIR: f.gentleShellHome }).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+
+	const config = JSON.parse(readFileSync(join(f.home, ".gentle-shell", "config.json"), "utf8"));
+	const homeKey = realpathSync(f.gentleShellHome);
+	assert.equal(config.provisioned[homeKey].gentleAi, "3.6.0");
+	assert.equal(typeof config.provisioned[homeKey].at, "string");
+	assert.equal(existsSync(join(f.gentleShellHome, ".gentle-shell-setup.lock")), false);
+});
+
+test("a second launch against an already-provisioned home skips the flow entirely", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	const counterPath = join(f.root, "gentle-ai-runs.log");
+	writeGentleAiScriptCountingRuns(gentleAiScript, counterPath);
+	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" });
+
+	const first = run(env, []);
+	assert.equal(first.status, 0, first.stderr);
+	assert.equal(readFileSync(counterPath, "utf8").trim().split("\n").length, 1);
+
+	const second = run(env, []);
+	assert.equal(second.status, 0, second.stderr);
+	assert.doesNotMatch(second.stderr, /gentle-shell: first run in/);
+	assert.doesNotMatch(second.stderr, /gentle-ai pin changed/);
+	assert.equal(readFileSync(counterPath, "utf8").trim().split("\n").length, 1, "gentle-ai must not run a second time");
+});
+
+test("a changed gentle-ai pin re-runs the flow and updates the marker", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	const counterPath = join(f.root, "gentle-ai-runs.log");
+	writeGentleAiScriptCountingRuns(gentleAiScript, counterPath);
+	const baseEnv = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript });
+
+	const first = run({ ...baseEnv, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" }, []);
+	assert.equal(first.status, 0, first.stderr);
+
+	const second = run({ ...baseEnv, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.1" }, []);
+	assert.equal(second.status, 0, second.stderr);
+	assert.match(second.stderr, /gentle-shell: gentle-ai pin changed \(3\.6\.0 -> 3\.6\.1\): updating/);
+
+	assert.equal(readFileSync(counterPath, "utf8").trim().split("\n").length, 2);
+	const config = JSON.parse(readFileSync(join(f.home, ".gentle-shell", "config.json"), "utf8"));
+	const homeKey = realpathSync(f.gentleShellHome);
+	assert.equal(config.provisioned[homeKey].gentleAi, "3.6.1");
+});
+
+test("a failing auto-provision flow warns, still launches pi, and writes no marker", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScript(gentleAiScript, 5);
+	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" });
+
+	const result = run(env, ["--mode", "rpc"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(
+		result.stderr,
+		/gentle-shell: automatic setup failed \(exit 5\); starting anyway and retrying next run\. Run `gentle-shell setup` to see the full output\./,
+	);
+	// pi still launches, with today's plain injection (the home never got a
+	// gentle-pi declaration since the flow failed).
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args.slice(-2), ["--mode", "rpc"]);
+
+	const configPath = join(f.home, ".gentle-shell", "config.json");
+	if (existsSync(configPath)) {
+		const config = JSON.parse(readFileSync(configPath, "utf8"));
+		assert.equal(config.provisioned, undefined);
+	}
+});
+
+test("a failing auto-provision flow names the --home selector in its retry remediation", (t) => {
+	const f = fixture(t);
+	const target = join(f.root, "custom-home");
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScript(gentleAiScript, 5);
+	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" });
+
+	const result = run(env, ["--home", target, "--mode", "rpc"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(
+		result.stderr,
+		new RegExp(`Run \`gentle-shell --home ${target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} setup\` to see the full output\\.`),
+	);
+});
+
+test("GENTLE_SHELL_NO_AUTO_SETUP=1 skips auto-provisioning entirely", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	const counterPath = join(f.root, "gentle-ai-runs.log");
+	writeGentleAiScriptCountingRuns(gentleAiScript, counterPath);
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_NO_AUTO_SETUP: "1" };
+
+	const result = run(env, []);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(existsSync(counterPath), false);
+	const configPath = join(f.home, ".gentle-shell", "config.json");
+	assert.equal(existsSync(configPath), false);
+});
+
+test("--link never auto-provisions", (t) => {
+	const f = fixture(t);
+	const piAgentDir = join(f.root, "pi-agent");
+	mkdirSync(piAgentDir, { recursive: true });
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	const counterPath = join(f.root, "gentle-ai-runs.log");
+	writeGentleAiScriptCountingRuns(gentleAiScript, counterPath);
+	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, PI_CODING_AGENT_DIR: piAgentDir });
+
+	const result = run(env, ["--link", "--mode", "rpc"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(existsSync(counterPath), false);
+	assert.equal(existsSync(join(piAgentDir, ".gentle-shell-setup.lock")), false);
+});
+
+test("a pi subcommand (list) never auto-provisions", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	const counterPath = join(f.root, "gentle-ai-runs.log");
+	writeGentleAiScriptCountingRuns(gentleAiScript, counterPath);
+	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript });
+
+	const result = run(env, ["list"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(existsSync(counterPath), false);
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, ["list"]);
+});
+
+test("a fresh concurrent lock skips auto-provisioning for this run, without removing the lock", (t) => {
+	const f = fixture(t);
+	mkdirSync(f.gentleShellHome, { recursive: true });
+	const lockPath = join(f.gentleShellHome, ".gentle-shell-setup.lock");
+	writeFileSync(lockPath, "");
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	const counterPath = join(f.root, "gentle-ai-runs.log");
+	writeGentleAiScriptCountingRuns(gentleAiScript, counterPath);
+	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript });
+
+	const result = run(env, ["--mode", "rpc"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(existsSync(counterPath), false);
+	assert.match(result.stderr, /already provisioning/);
+	assert.equal(existsSync(lockPath), true);
+});
+
+test("a stale lock (older than 15 minutes) is removed and auto-provisioning proceeds", (t) => {
+	const f = fixture(t);
+	mkdirSync(f.gentleShellHome, { recursive: true });
+	const lockPath = join(f.gentleShellHome, ".gentle-shell-setup.lock");
+	writeFileSync(lockPath, "");
+	const staleTime = new Date(Date.now() - 16 * 60 * 1000);
+	utimesSync(lockPath, staleTime, staleTime);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	const counterPath = join(f.root, "gentle-ai-runs.log");
+	writeGentleAiScriptCountingRuns(gentleAiScript, counterPath);
+	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" });
+
+	const result = run(env, ["--mode", "rpc"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(readFileSync(counterPath, "utf8").trim().split("\n").length, 1);
+	assert.equal(existsSync(lockPath), false, "the lock must be released once the flow completes");
 });
 
 // --- --package-root silently ignored in a declared non-link home ----------

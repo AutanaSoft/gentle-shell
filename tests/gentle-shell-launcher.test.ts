@@ -21,17 +21,22 @@ import {
 	launcherConfigPath,
 	type LooseExtensionFsEntry,
 	missingPiMessage,
+	needsProvisioning,
 	otherPackageInjections,
 	parseLauncherArgs,
 	parseLauncherConfig,
+	parseRawLauncherConfig,
 	planSpawn,
+	provisionedEntry,
 	quoteForCmdExe,
+	recordProvisioned,
 	resolveHome,
 	resolvePiRuntime,
 	settingsDeclareGentlePi,
 	shellQuote,
 	type PackageJsonPeerShape,
 	type ParsedLauncherArgs,
+	type RawLauncherConfig,
 	type ResolvedHome,
 } from "../lib/gentle-shell-launcher.ts";
 
@@ -402,6 +407,78 @@ test("parseLauncherConfig tolerates a non-string home value", () => {
 
 test("parseLauncherConfig tolerates an empty home value", () => {
 	assert.equal(parseLauncherConfig('{"home":""}'), undefined);
+});
+
+// --- parseRawLauncherConfig / provisionedEntry / needsProvisioning / recordProvisioned (S7) ---
+//
+// Unlike parseLauncherConfig's discriminated LauncherConfig (home mode only),
+// these operate on the full raw config.json object so a write never drops a
+// key (like a sibling home's provisioned marker) it does not itself
+// understand.
+
+test("parseRawLauncherConfig returns an empty object for a missing file", () => {
+	assert.deepEqual(parseRawLauncherConfig(undefined), {});
+});
+
+test("parseRawLauncherConfig tolerates invalid JSON and non-object documents", () => {
+	assert.deepEqual(parseRawLauncherConfig("not json"), {});
+	assert.deepEqual(parseRawLauncherConfig("[]"), {});
+	assert.deepEqual(parseRawLauncherConfig('"link"'), {});
+});
+
+test("parseRawLauncherConfig preserves every key, not just home", () => {
+	assert.deepEqual(parseRawLauncherConfig('{"home":"link","provisioned":{"/a":{"gentleAi":"3.6.0","at":"2026-09-22T00:00:00.000Z"}}}'), {
+		home: "link",
+		provisioned: { "/a": { gentleAi: "3.6.0", at: "2026-09-22T00:00:00.000Z" } },
+	});
+});
+
+test("provisionedEntry is undefined for a home with no marker", () => {
+	assert.equal(provisionedEntry({}, "/home/alan/.gentle-shell/agent"), undefined);
+});
+
+test("provisionedEntry returns the stored record for a matching home", () => {
+	const config: RawLauncherConfig = { provisioned: { "/a": { gentleAi: "3.6.0", at: "2026-09-22T00:00:00.000Z" } } };
+	assert.deepEqual(provisionedEntry(config, "/a"), { gentleAi: "3.6.0", at: "2026-09-22T00:00:00.000Z" });
+});
+
+test("provisionedEntry tolerates a malformed provisioned map (non-object, missing fields)", () => {
+	assert.equal(provisionedEntry({ provisioned: "nope" } as unknown as RawLauncherConfig, "/a"), undefined);
+	assert.equal(provisionedEntry({ provisioned: { "/a": { gentleAi: "3.6.0" } } } as unknown as RawLauncherConfig, "/a"), undefined);
+});
+
+test("needsProvisioning is true for a home with no marker", () => {
+	assert.equal(needsProvisioning({}, "/a", "3.6.0"), true);
+});
+
+test("needsProvisioning is true when the marker's pin differs from the current pin", () => {
+	const config: RawLauncherConfig = { provisioned: { "/a": { gentleAi: "3.6.0", at: "2026-09-22T00:00:00.000Z" } } };
+	assert.equal(needsProvisioning(config, "/a", "3.6.1"), true);
+});
+
+test("needsProvisioning is false when the marker's pin matches the current pin", () => {
+	const config: RawLauncherConfig = { provisioned: { "/a": { gentleAi: "3.6.0", at: "2026-09-22T00:00:00.000Z" } } };
+	assert.equal(needsProvisioning(config, "/a", "3.6.0"), false);
+});
+
+test("recordProvisioned adds a marker and preserves every other key, including other homes", () => {
+	const config: RawLauncherConfig = { home: "isolated", provisioned: { "/other": { gentleAi: "3.5.0", at: "2026-01-01T00:00:00.000Z" } } };
+	const updated = recordProvisioned(config, "/a", "3.6.0", "2026-09-22T00:00:00.000Z");
+	assert.deepEqual(updated, {
+		home: "isolated",
+		provisioned: {
+			"/other": { gentleAi: "3.5.0", at: "2026-01-01T00:00:00.000Z" },
+			"/a": { gentleAi: "3.6.0", at: "2026-09-22T00:00:00.000Z" },
+		},
+	});
+	// Returns a new object; never mutates the input.
+	assert.deepEqual(config, { home: "isolated", provisioned: { "/other": { gentleAi: "3.5.0", at: "2026-01-01T00:00:00.000Z" } } });
+});
+
+test("recordProvisioned overwrites an existing marker for the same home", () => {
+	const config: RawLauncherConfig = { provisioned: { "/a": { gentleAi: "3.6.0", at: "2026-01-01T00:00:00.000Z" } } };
+	const updated = recordProvisioned(config, "/a", "3.6.1", "2026-09-22T00:00:00.000Z");
+	assert.deepEqual(updated, { provisioned: { "/a": { gentleAi: "3.6.1", at: "2026-09-22T00:00:00.000Z" } } });
 });
 
 // --- resolvePiRuntime ------------------------------------------------------

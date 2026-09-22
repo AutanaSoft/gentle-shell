@@ -4,7 +4,20 @@
 // resolution, pi resolution order, the version gate, and the pi invocation —
 // lives in that pure, unit-tested module; this file only wires it to the real
 // process, filesystem, and child process.
-import { accessSync, constants as fsConstants, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import {
+	accessSync,
+	closeSync,
+	constants as fsConstants,
+	existsSync,
+	mkdirSync,
+	openSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import { constants as osConstants, homedir } from "node:os";
 import { delimiter, dirname, join, resolve as resolvePath } from "node:path";
@@ -25,10 +38,14 @@ import {
 	launcherConfigPath,
 	MIN_SETUP_GENTLE_AI_VERSION,
 	missingPiMessage,
+	needsProvisioning,
 	otherPackageInjections,
 	parseLauncherArgs,
 	parseLauncherConfig,
+	parseRawLauncherConfig,
 	planSpawn,
+	provisionedEntry,
+	recordProvisioned,
 	resolveHome,
 	resolvePiRuntime,
 	shellQuote,
@@ -208,9 +225,34 @@ function resolveLooseExtensionEntries(dir) {
 	return discoverLooseExtensionEntries(dir, looseExtensionFs);
 }
 
+// Test/development-only override for the launcher config.json path
+// (normally launcherConfigPath(homedir())). Lets a test — or the
+// packed-artifact E2E script, which also needs `--link` probes against the
+// real pi home and so cannot just redirect HOME wholesale — read and write
+// the `home` subcommand's and the auto-provisioning marker's config file
+// without ever touching the real ~/.gentle-shell/config.json. Never
+// consulted outside these two call sites; see docs/readme-reference.md.
+function resolveConfigPath() {
+	const override = process.env.GENTLE_SHELL_CONFIG;
+	return override !== undefined && override.length > 0 ? override : launcherConfigPath(homedir());
+}
+
+// Raw config.json as a plain object (see RawLauncherConfig in
+// lib/gentle-shell-launcher.ts): unlike parseLauncherConfig, this preserves
+// every key, so a write (home persistence, or the provisioning marker below)
+// never drops a key it does not itself understand.
+function readRawConfig(configPath) {
+	return parseRawLauncherConfig(readJsonIfExists(configPath));
+}
+
+function writeRawConfig(configPath, config) {
+	const configDir = dirname(configPath);
+	if (!existsSync(configDir)) mkdirSync(configDir, { recursive: true, mode: 0o700 });
+	writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+}
+
 function loadConfig() {
-	const configPath = launcherConfigPath(homedir());
-	const text = readJsonIfExists(configPath);
+	const text = readJsonIfExists(resolveConfigPath());
 	return text === undefined ? undefined : parseLauncherConfig(text);
 }
 
@@ -224,17 +266,16 @@ function handleHomeCommand(commandArgs) {
 	const [value] = commandArgs;
 	if (value.length === 0) fail("gentle-shell home requires a non-empty argument. Run 'gentle-shell --help'.", 2);
 
-	const configPath = launcherConfigPath(homedir());
-	const configDir = dirname(configPath);
-	if (!existsSync(configDir)) mkdirSync(configDir, { recursive: true, mode: 0o700 });
+	const configPath = resolveConfigPath();
+	const existing = readRawConfig(configPath);
 
 	if (value === "link" || value === "isolated") {
-		writeFileSync(configPath, `${JSON.stringify({ home: value }, null, 2)}\n`, "utf8");
+		writeRawConfig(configPath, { ...existing, home: value });
 		process.stdout.write(`Saved home: ${value}\n`);
 		process.exit(0);
 	}
 	const dir = resolvePath(value);
-	writeFileSync(configPath, `${JSON.stringify({ home: dir }, null, 2)}\n`, "utf8");
+	writeRawConfig(configPath, { ...existing, home: dir });
 	process.stdout.write(`Saved home: path ${dir}\n`);
 	process.exit(0);
 }
@@ -271,8 +312,46 @@ function resolveSetupGentleAiInstaller() {
 	return override !== undefined && override.length > 0 ? override : join(packageRoot, "scripts", "install-gentle-ai.mjs");
 }
 
-// Self-heals a missing package-local gentle-ai binary before `setup` gives
-// up on it. `npm install -g <tarball>` on a machine whose npm config
+// Spawns `command` and resolves once it exits, instead of exiting the
+// process directly: the shared core the manual `setup` subcommand and the
+// automatic first-run provisioning flow (S7) both drive, deciding for
+// themselves whether to `process.exit` (setup) or warn and continue (auto
+// mode). `stdio` lets a silent caller route the child's stdout/stderr to the
+// launcher's own stderr (see runSetupFlow) while a manual `setup` keeps the
+// child's stdio inherited. A `signal` on the result (rather than folding it
+// into a plain non-zero exit) lets a caller skip printing remediation advice
+// for a process this launcher itself killed — never a real failure to
+// diagnose.
+function spawnAndWait(command, args, env, stdio) {
+	return new Promise((resolve) => {
+		const launchPlan = planSpawn({ command, args, platform: process.platform });
+		const child = spawn(launchPlan.command, launchPlan.args, { stdio, env, shell: launchPlan.shell });
+		const signalHandlers = ["SIGINT", "SIGTERM", "SIGHUP"].map((signal) => {
+			const handler = () => child.kill(signal);
+			process.on(signal, handler);
+			return [signal, handler];
+		});
+		const cleanup = () => {
+			for (const [signal, handler] of signalHandlers) process.removeListener(signal, handler);
+		};
+		child.on("error", (error) => {
+			cleanup();
+			resolve({ ok: false, exitCode: 1, error });
+		});
+		child.on("exit", (code, signal) => {
+			cleanup();
+			if (signal) {
+				resolve({ ok: false, exitCode: signalExitCode(signal), signal });
+				return;
+			}
+			const exitCode = code ?? 1;
+			resolve({ ok: exitCode === 0, exitCode });
+		});
+	});
+}
+
+// Self-heals a missing package-local gentle-ai binary before the setup flow
+// gives up on it. `npm install -g <tarball>` on a machine whose npm config
 // disables lifecycle scripts (`ignore-scripts=true`, this maintainer's own
 // machine included) never runs the package's own postinstall
 // (scripts/install-gentle-ai.mjs), so .gentle-ai/v<pin>/gentle-ai is missing
@@ -282,23 +361,42 @@ function resolveSetupGentleAiInstaller() {
 // GENTLE_PI_SKIP_GENTLE_AI_INSTALL is "1" — the same variable that already
 // controls whether real postinstall provisioning runs (see
 // docs/readme-reference.md) — in which case today's plain missing-binary
-// failure is kept, with the variable named in the message. Exits the
-// process (never returns) when the binary is still missing afterward.
-function ensurePackageLocalGentleAi(binaryPath, pinnedVersion) {
-	if (existsSync(binaryPath)) return;
+// failure is kept, with the variable named in the message. Returns
+// {ok, exitCode, message} instead of exiting the process, so the caller
+// decides whether to exit (manual setup) or warn and continue (auto mode).
+function ensurePackageLocalGentleAi(binaryPath, pinnedVersion, stdio) {
+	if (existsSync(binaryPath)) return { ok: true };
 	if (process.env[SKIP_GENTLE_AI_INSTALL_ENV] === "1") {
-		fail(
-			`${new PackageLocalGentleAiBinaryMissingError(binaryPath).message} (${SKIP_GENTLE_AI_INSTALL_ENV} is set; not installing it automatically)`,
-			1,
-		);
+		return {
+			ok: false,
+			exitCode: 1,
+			message: `${new PackageLocalGentleAiBinaryMissingError(binaryPath).message} (${SKIP_GENTLE_AI_INSTALL_ENV} is set; not installing it automatically)`,
+		};
 	}
 	process.stderr.write(
 		`gentle-shell: the package-local gentle-ai v${pinnedVersion} is missing (npm lifecycle scripts may be disabled); installing it now\n`,
 	);
 	const installerPath = resolveSetupGentleAiInstaller();
-	const result = spawnSync(process.execPath, [installerPath], { stdio: "inherit" });
-	if (result.error) fail(`Could not run the gentle-ai installer at ${installerPath}: ${result.error.message}`, 1);
-	if (!existsSync(binaryPath)) fail(new PackageLocalGentleAiBinaryMissingError(binaryPath).message, 1);
+	const result = spawnSync(process.execPath, [installerPath], { stdio });
+	if (result.error) {
+		return { ok: false, exitCode: 1, message: `Could not run the gentle-ai installer at ${installerPath}: ${result.error.message}` };
+	}
+	if (!existsSync(binaryPath)) return { ok: false, exitCode: 1, message: new PackageLocalGentleAiBinaryMissingError(binaryPath).message };
+	return { ok: true };
+}
+
+// Shared env for the gentle-ai install spawn and the pi remove cleanup spawn
+// below: PI_CODING_AGENT_DIR/GENTLE_PI_AGENT_HOME point both at the resolved
+// home, and the resolved pi runtime's directory is prepended to PATH so
+// gentle-ai's (or pi's own) preflight finds `pi` even when it is bundled or
+// given through GENTLE_SHELL_PI.
+function buildSetupEnv(home, runtime) {
+	return {
+		...process.env,
+		PI_CODING_AGENT_DIR: home.dir,
+		GENTLE_PI_AGENT_HOME: home.dir,
+		PATH: `${dirname(runtime.command)}${delimiter}${process.env.PATH ?? ""}`,
+	};
 }
 
 // Provisions `home` with everything `gentle-ai install --agent pi` installs
@@ -306,12 +404,101 @@ function ensurePackageLocalGentleAi(binaryPath, pinnedVersion) {
 // (never a PATH `gentle-ai`) with PI_CODING_AGENT_DIR/GENTLE_PI_AGENT_HOME set
 // to `home.dir` and the resolved pi runtime's directory prepended to PATH, so
 // gentle-ai's own preflight finds `pi` even when it is bundled or given
-// through GENTLE_SHELL_PI. `home` and `runtime` are resolved by the caller
-// exactly as a normal run resolves them (including the isolated/--home
-// bootstrap and the pi version gate). Precondition: the package-local
-// gentle-ai pin must be at least MIN_SETUP_GENTLE_AI_VERSION — the first
-// release that honors PI_CODING_AGENT_DIR here — or this refuses to spawn it,
-// since an older pin would silently provision the caller's real ~/.pi/agent.
+// through GENTLE_SHELL_PI, then removes any conflicting package it declared
+// (see runSetupConflictCleanup below). `home` and `runtime` are resolved by
+// the caller exactly as a normal run resolves them (including the
+// isolated/--home bootstrap and the pi version gate). Precondition: the
+// package-local gentle-ai pin must be at least MIN_SETUP_GENTLE_AI_VERSION —
+// the first release that honors PI_CODING_AGENT_DIR here — or this refuses
+// to spawn it, since an older pin would silently provision the caller's real
+// ~/.pi/agent.
+//
+// Returns {ok, exitCode, message?} instead of exiting the process: the
+// manual `setup` subcommand (handleSetupCommand) exits on the result, and
+// the automatic first-run flow (maybeAutoProvisionHome, S7) warns and
+// continues the launch on failure instead. `stdio` is threaded through to
+// both child spawns unchanged (see spawnAndWait and
+// ensurePackageLocalGentleAi above) — "inherit" for a manual `setup`, or
+// `["ignore", 2, 2]` in auto mode so every child's stdout/stderr lands on
+// this launcher's own stderr and its real stdout stays clean for `--mode
+// rpc`/`-p` consumers.
+async function runSetupFlow(home, runtime, { dryRun, stdio }) {
+	const pinnedVersion = resolveSetupGentleAiPin();
+	if (!isSetupCapablePin(pinnedVersion)) {
+		return {
+			ok: false,
+			exitCode: 1,
+			message: `gentle-shell: setup needs the package-local gentle-ai v${MIN_SETUP_GENTLE_AI_VERSION} or newer (pinned: ${pinnedVersion}); this build cannot provision a home without touching ~/.pi/agent`,
+		};
+	}
+
+	const binaryPath = resolveSetupGentleAiBinary();
+	const ensured = ensurePackageLocalGentleAi(binaryPath, pinnedVersion, stdio);
+	if (!ensured.ok) return ensured;
+
+	process.stderr.write(`gentle-shell: provisioning ${home.dir} with the gentle-ai companion packages\n`);
+
+	const setupArgs = ["install", "--agent", "pi", "--scope", "global", ...(dryRun ? ["--dry-run"] : [])];
+	const env = buildSetupEnv(home, runtime);
+	const installResult = await spawnAndWait(binaryPath, setupArgs, env, stdio);
+	if (installResult.error) {
+		return { ok: false, exitCode: 1, message: `Could not start the gentle-ai binary: ${installResult.error.message}` };
+	}
+	if (!installResult.ok) return installResult;
+
+	return runSetupConflictCleanup(home, runtime, dryRun, stdio);
+}
+
+// Runs once the gentle-ai install spawned by runSetupFlow above has exited
+// 0: gentle-ai's managed Pi stack still installs
+// npm:@juicesharp/rpiv-ask-user-question, which conflicts with gentle-pi's
+// own first-party ask_user_question tool (Pi refuses two providers for the
+// same tool name; gentle-ai #4820, gentle-shell #1277). The gentle-ai fix
+// lands separately, so setup removes it from the just-provisioned home
+// itself, unless this is a --dry-run. A --dry-run gentle-ai install writes
+// nothing, so settings.json read afterwards would only report whatever
+// pre-existed the run (e.g. the isolated-home bootstrap), never what the
+// skipped install would have declared; report the known conflict sources
+// unconditionally instead of reading settings.json at all.
+async function runSetupConflictCleanup(home, runtime, dryRun, stdio) {
+	if (dryRun) {
+		for (const source of CONFLICTING_SETUP_PACKAGE_SOURCES) {
+			process.stderr.write(`gentle-shell: setup would then remove ${source} if the install declares it (gentle-ai #4820)\n`);
+		}
+		return { ok: true, exitCode: 0 };
+	}
+	const settingsText = readJsonIfExists(join(home.dir, "settings.json"));
+	const conflicting = conflictingSetupPackages(settingsText);
+	if (conflicting.length === 0) return { ok: true, exitCode: 0 };
+	return removeConflictingSetupPackages(conflicting, 0, home, runtime, stdio);
+}
+
+// Removes each conflicting package in turn via the resolved pi runtime
+// itself (never gentle-ai), stopping at the first failure so its exit code
+// and actionable message are not masked by a later removal.
+async function removeConflictingSetupPackages(sources, index, home, runtime, stdio) {
+	if (index >= sources.length) return { ok: true, exitCode: 0 };
+	const source = sources[index];
+	process.stderr.write(
+		`gentle-shell: removing ${source} from ${home.dir}: gentle-pi ships ask_user_question and Pi refuses two providers (gentle-ai #4820)\n`,
+	);
+	const env = buildSetupEnv(home, runtime);
+	const result = await spawnAndWait(runtime.command, [...runtime.args, "remove", source], env, stdio);
+	if (result.error) {
+		return { ok: false, exitCode: 1, message: `Could not run the pi runtime to remove ${source}: ${result.error.message}` };
+	}
+	if (!result.ok) {
+		if (result.signal) return result;
+		const remediation = [...homeSelectorFlags(home).map(shellQuote), "remove", source].join(" ");
+		return { ok: false, exitCode: result.exitCode, message: `gentle-shell: could not remove ${source}; run \`gentle-shell ${remediation}\` before starting` };
+	}
+	return removeConflictingSetupPackages(sources, index + 1, home, runtime, stdio);
+}
+
+// CLI entry for `gentle-shell [home selectors] setup [--dry-run]`: parses
+// --dry-run, runs the shared flow with the child's stdio inherited (today's
+// behavior, unchanged), then exits with its result — this is the one place
+// that keeps the pre-S7 exit semantics `handleSetupCommand` always had.
 async function handleSetupCommand(commandArgs, home, runtime) {
 	let dryRun = false;
 	for (const arg of commandArgs) {
@@ -322,114 +509,105 @@ async function handleSetupCommand(commandArgs, home, runtime) {
 		fail(`Unrecognized argument for 'gentle-shell setup': ${arg}\nRun 'gentle-shell --help' for usage.`, 2);
 	}
 
-	const pinnedVersion = resolveSetupGentleAiPin();
-	if (!isSetupCapablePin(pinnedVersion)) {
-		fail(
-			`gentle-shell: setup needs the package-local gentle-ai v${MIN_SETUP_GENTLE_AI_VERSION} or newer (pinned: ${pinnedVersion}); this build cannot provision a home without touching ~/.pi/agent`,
-			1,
-		);
-	}
-
-	const binaryPath = resolveSetupGentleAiBinary();
-	ensurePackageLocalGentleAi(binaryPath, pinnedVersion);
-
-	process.stderr.write(`gentle-shell: provisioning ${home.dir} with the gentle-ai companion packages\n`);
-
-	const setupArgs = ["install", "--agent", "pi", "--scope", "global", ...(dryRun ? ["--dry-run"] : [])];
-	const env = buildSetupEnv(home, runtime);
-
-	const launchPlan = planSpawn({ command: binaryPath, args: setupArgs, platform: process.platform });
-	const child = spawn(launchPlan.command, launchPlan.args, { stdio: "inherit", env, shell: launchPlan.shell });
-	for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
-		process.on(signal, () => child.kill(signal));
-	}
-	child.on("error", (error) => fail(`Could not start the gentle-ai binary: ${error.message}`, 1));
-	child.on("exit", (code, signal) => {
-		if (signal) {
-			process.exit(signalExitCode(signal));
-			return;
-		}
-		const exitCode = code ?? 1;
-		if (exitCode !== 0) {
-			process.exit(exitCode);
-			return;
-		}
-		handleSetupConflictCleanup(home, runtime, dryRun);
-	});
+	const result = await runSetupFlow(home, runtime, { dryRun, stdio: "inherit" });
+	if (!result.ok && result.message !== undefined) process.stderr.write(`${result.message}\n`);
+	process.exit(result.exitCode);
 }
 
-// Shared env for both the gentle-ai install spawn above and the pi remove
-// cleanup spawn below: PI_CODING_AGENT_DIR/GENTLE_PI_AGENT_HOME point both
-// at the resolved home, and the resolved pi runtime's directory is prepended
-// to PATH so gentle-ai's (or pi's own) preflight finds `pi` even when it is
-// bundled or given through GENTLE_SHELL_PI.
-function buildSetupEnv(home, runtime) {
-	return {
-		...process.env,
-		PI_CODING_AGENT_DIR: home.dir,
-		GENTLE_PI_AGENT_HOME: home.dir,
-		PATH: `${dirname(runtime.command)}${delimiter}${process.env.PATH ?? ""}`,
-	};
+const AUTO_SETUP_OPT_OUT_ENV = "GENTLE_SHELL_NO_AUTO_SETUP";
+const SETUP_LOCK_STALE_MS = 15 * 60 * 1000;
+
+// Guards concurrent first-run auto-provisioning of the same home: an
+// exclusive create (`wx`) fails when the lock already exists. A lock file
+// younger than SETUP_LOCK_STALE_MS means another gentle-shell process is (or
+// very recently was) provisioning this home, so this run skips
+// auto-provisioning entirely rather than racing gentle-ai's own installer;
+// the existing lock is left untouched since this run never owned it. An
+// older lock is stale — a previous run crashed or was killed before its
+// `finally` released it — so it is removed here and acquisition retried.
+// Any unexpected fs error (permissions, a vanished lock between the EEXIST
+// and the stat, …) must never block the launch, so it resolves to "proceed"
+// rather than failing closed.
+function acquireSetupLock(lockPath) {
+	try {
+		closeSync(openSync(lockPath, "wx"));
+		return true;
+	} catch (error) {
+		if (error.code !== "EEXIST") return true;
+		let age;
+		try {
+			age = Date.now() - statSync(lockPath).mtimeMs;
+		} catch {
+			return true;
+		}
+		if (age < SETUP_LOCK_STALE_MS) {
+			process.stderr.write(
+				`gentle-shell: another gentle-shell process is already provisioning ${dirname(lockPath)}; skipping automatic setup for this run\n`,
+			);
+			return false;
+		}
+		try {
+			rmSync(lockPath, { force: true });
+		} catch {
+			return false;
+		}
+		return acquireSetupLock(lockPath);
+	}
 }
 
-// Runs once the gentle-ai install spawned by handleSetupCommand above has
-// exited 0: gentle-ai's managed Pi stack still installs
-// npm:@juicesharp/rpiv-ask-user-question, which conflicts with gentle-pi's
-// own first-party ask_user_question tool (Pi refuses two providers for the
-// same tool name; gentle-ai #4820, gentle-shell #1277). The gentle-ai fix
-// lands separately, so setup removes it from the just-provisioned home
-// itself, unless this is a --dry-run. A --dry-run gentle-ai install writes
-// nothing, so settings.json read afterwards would only report whatever
-// pre-existed the run (e.g. the isolated-home bootstrap), never what the
-// skipped install would have declared; report the known conflict sources
-// unconditionally instead of reading settings.json at all.
-function handleSetupConflictCleanup(home, runtime, dryRun) {
-	if (dryRun) {
-		for (const source of CONFLICTING_SETUP_PACKAGE_SOURCES) {
-			process.stderr.write(`gentle-shell: setup would then remove ${source} if the install declares it (gentle-ai #4820)\n`);
-		}
-		process.exit(0);
-		return;
+function releaseSetupLock(lockPath) {
+	try {
+		rmSync(lockPath, { force: true });
+	} catch {
+		// Best-effort cleanup only: a missing or unremovable lock file must
+		// never fail an otherwise-successful (or already-failed) run.
 	}
-	const settingsText = readJsonIfExists(join(home.dir, "settings.json"));
-	const conflicting = conflictingSetupPackages(settingsText);
-	if (conflicting.length === 0) {
-		process.exit(0);
-		return;
-	}
-	removeConflictingSetupPackages(conflicting, 0, home, runtime);
 }
 
-// Removes each conflicting package in turn via the resolved pi runtime
-// itself (never gentle-ai), stopping at the first failure so its exit code
-// and actionable message are not masked by a later removal.
-function removeConflictingSetupPackages(sources, index, home, runtime) {
-	if (index >= sources.length) {
-		process.exit(0);
-		return;
+// Runs the same flow as `gentle-shell setup` automatically before a plain
+// launch, for an isolated or `--home <path>` home that was never provisioned
+// or was provisioned with a different gentle-ai pin (S7). Never runs for
+// `--link` (the caller only calls this for home.mode "isolated"/"path") or a
+// pi subcommand (the caller only calls this when args.piSubcommand is
+// undefined) — see main() below. Never blocks the launch: a failure (an
+// older pin, a missing binary the self-heal could not recover, a non-zero
+// gentle-ai or pi exit) only warns and lets the plain launch continue with
+// today's injection behavior, to retry automatically on a later run.
+async function maybeAutoProvisionHome(home, runtime) {
+	if (process.env[AUTO_SETUP_OPT_OUT_ENV] === "1") return;
+
+	const configPath = resolveConfigPath();
+	const homeKey = safeRealpath(home.dir);
+	const pin = resolveSetupGentleAiPin();
+	const beforeConfig = readRawConfig(configPath);
+	if (!needsProvisioning(beforeConfig, homeKey, pin)) return;
+
+	const lockPath = join(home.dir, ".gentle-shell-setup.lock");
+	if (!acquireSetupLock(lockPath)) return;
+
+	try {
+		const previous = provisionedEntry(beforeConfig, homeKey);
+		if (previous === undefined) {
+			process.stderr.write(
+				`gentle-shell: first run in ${home.dir}: installing the Gentle AI companion packages (one time; set ${AUTO_SETUP_OPT_OUT_ENV}=1 to skip)\n`,
+			);
+		} else {
+			process.stderr.write(`gentle-shell: gentle-ai pin changed (${previous.gentleAi} -> ${pin}): updating ${home.dir}\n`);
+		}
+
+		const result = await runSetupFlow(home, runtime, { dryRun: false, stdio: ["ignore", 2, 2] });
+		if (!result.ok) {
+			const remediation = [...homeSelectorFlags(home).map(shellQuote), "setup"].join(" ");
+			process.stderr.write(
+				`gentle-shell: automatic setup failed (exit ${result.exitCode}); starting anyway and retrying next run. Run \`gentle-shell ${remediation}\` to see the full output.\n`,
+			);
+			return;
+		}
+
+		writeRawConfig(configPath, recordProvisioned(readRawConfig(configPath), homeKey, pin, new Date().toISOString()));
+	} finally {
+		releaseSetupLock(lockPath);
 	}
-	const source = sources[index];
-	process.stderr.write(
-		`gentle-shell: removing ${source} from ${home.dir}: gentle-pi ships ask_user_question and Pi refuses two providers (gentle-ai #4820)\n`,
-	);
-	const env = buildSetupEnv(home, runtime);
-	const launchPlan = planSpawn({ command: runtime.command, args: [...runtime.args, "remove", source], platform: process.platform });
-	const child = spawn(launchPlan.command, launchPlan.args, { stdio: "inherit", env, shell: launchPlan.shell });
-	child.on("error", (error) => fail(`Could not run the pi runtime to remove ${source}: ${error.message}`, 1));
-	child.on("exit", (code, signal) => {
-		if (signal) {
-			process.exit(signalExitCode(signal));
-			return;
-		}
-		const exitCode = code ?? 1;
-		if (exitCode !== 0) {
-			const remediation = [...homeSelectorFlags(home).map(shellQuote), "remove", source].join(" ");
-			process.stderr.write(`gentle-shell: could not remove ${source}; run \`gentle-shell ${remediation}\` before starting\n`);
-			process.exit(exitCode);
-			return;
-		}
-		removeConflictingSetupPackages(sources, index + 1, home, runtime);
-	});
 }
 
 async function main() {
@@ -483,6 +661,19 @@ async function main() {
 	if (args.command === "setup") {
 		await handleSetupCommand(args.commandArgs, home, runtime);
 		return;
+	}
+
+	// Auto-provision (S7): a plain launch against an isolated or --home home
+	// (never --link) runs the same flow as `gentle-shell setup` automatically
+	// before pi starts, so the maintainer's own packages install without ever
+	// needing to know `setup` exists. Skipped for a pi subcommand
+	// (`gentle-shell install/remove/list/...`) — argv[0] must stay the bare
+	// subcommand for pi to dispatch it, same reason the declaration/take-over
+	// block below skips it. Must run before that block reads settings.json,
+	// so a freshly provisioned home's npm:gentle-pi declaration is honored by
+	// this same launch instead of only starting from the next one.
+	if ((home.mode === "isolated" || home.mode === "path") && args.piSubcommand === undefined) {
+		await maybeAutoProvisionHome(home, runtime);
 	}
 
 	const packageRootExplicit = args.packageRoot !== undefined;
