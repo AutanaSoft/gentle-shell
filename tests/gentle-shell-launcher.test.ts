@@ -16,6 +16,7 @@ import {
 	discoverLooseExtensionEntries,
 	findGentlePiDeclaration,
 	helpText,
+	homeSelectorFlags,
 	isSetupCapablePin,
 	launcherConfigPath,
 	type LooseExtensionFsEntry,
@@ -343,6 +344,20 @@ test("resolveHome lets a flag override a persisted config", () => {
 	const resolved = resolveHome({ args: args({ link: true }), env: {}, homedir: "/home/alan", config: { mode: "isolated" } });
 	assert.equal(resolved.mode, "link");
 	assert.equal(resolved.source, "flag");
+});
+
+// --- homeSelectorFlags -----------------------------------------------------
+
+test("homeSelectorFlags reproduces --link for a link home", () => {
+	assert.deepEqual(homeSelectorFlags({ mode: "link", dir: "/home/alan/.pi/agent", source: "flag" }), ["--link"]);
+});
+
+test("homeSelectorFlags reproduces --home <dir> for a path home", () => {
+	assert.deepEqual(homeSelectorFlags({ mode: "path", dir: "/explicit/path", source: "flag" }), ["--home", "/explicit/path"]);
+});
+
+test("homeSelectorFlags is empty for the isolated default (no flags needed)", () => {
+	assert.deepEqual(homeSelectorFlags({ mode: "isolated", dir: "/home/alan/.gentle-shell/agent", source: "default" }), []);
 });
 
 // --- launcherConfigPath / parseLauncherConfig -----------------------------

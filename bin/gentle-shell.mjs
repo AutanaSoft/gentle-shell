@@ -13,12 +13,14 @@ import { fileURLToPath } from "node:url";
 import {
 	buildPiInvocation,
 	checkPiVersion,
+	CONFLICTING_SETUP_PACKAGE_SOURCES,
 	conflictingSetupPackages,
 	decideTakeOver,
 	describeVersion,
 	discoverLooseExtensionEntries,
 	findGentlePiDeclaration,
 	helpText,
+	homeSelectorFlags,
 	isSetupCapablePin,
 	launcherConfigPath,
 	MIN_SETUP_GENTLE_AI_VERSION,
@@ -334,18 +336,22 @@ function buildSetupEnv(home, runtime) {
 // own first-party ask_user_question tool (Pi refuses two providers for the
 // same tool name; gentle-ai #4820, gentle-shell #1277). The gentle-ai fix
 // lands separately, so setup removes it from the just-provisioned home
-// itself, unless this is a --dry-run (which only reports what it would do).
+// itself, unless this is a --dry-run. A --dry-run gentle-ai install writes
+// nothing, so settings.json read afterwards would only report whatever
+// pre-existed the run (e.g. the isolated-home bootstrap), never what the
+// skipped install would have declared; report the known conflict sources
+// unconditionally instead of reading settings.json at all.
 function handleSetupConflictCleanup(home, runtime, dryRun) {
-	const settingsText = readJsonIfExists(join(home.dir, "settings.json"));
-	const conflicting = conflictingSetupPackages(settingsText);
-	if (conflicting.length === 0) {
+	if (dryRun) {
+		for (const source of CONFLICTING_SETUP_PACKAGE_SOURCES) {
+			process.stderr.write(`gentle-shell: setup would then remove ${source} if the install declares it (gentle-ai #4820)\n`);
+		}
 		process.exit(0);
 		return;
 	}
-	if (dryRun) {
-		for (const source of conflicting) {
-			process.stderr.write(`gentle-shell: setup would then remove ${source} (gentle-ai #4820)\n`);
-		}
+	const settingsText = readJsonIfExists(join(home.dir, "settings.json"));
+	const conflicting = conflictingSetupPackages(settingsText);
+	if (conflicting.length === 0) {
 		process.exit(0);
 		return;
 	}
@@ -375,7 +381,8 @@ function removeConflictingSetupPackages(sources, index, home, runtime) {
 		}
 		const exitCode = code ?? 1;
 		if (exitCode !== 0) {
-			process.stderr.write(`gentle-shell: could not remove ${source}; run \`gentle-shell remove ${source}\` before starting\n`);
+			const remediation = [...homeSelectorFlags(home), "remove", source].join(" ");
+			process.stderr.write(`gentle-shell: could not remove ${source}; run \`gentle-shell ${remediation}\` before starting\n`);
 			process.exit(exitCode);
 			return;
 		}

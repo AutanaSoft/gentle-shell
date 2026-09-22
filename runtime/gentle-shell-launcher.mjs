@@ -215,6 +215,20 @@ export function resolveHome(input                  )               {
 	return { mode: "isolated", dir: isolatedDir(env, homedir), source: "default" };
 }
 
+// The flags that reproduce `home`'s resolved mode on a later `gentle-shell
+// <flags> ...` invocation — used by remediation messages (e.g. "run
+// `gentle-shell <flags> remove <source>`") so they point at the exact home
+// setup provisioned instead of silently defaulting to the isolated home.
+// Mirrors the three ResolvedHome modes one-to-one: "link" needs --link
+// (PI_CODING_AGENT_DIR-derived dirs aren't reproducible as a literal path),
+// "path" needs its --home <dir>, and "isolated" needs nothing since it's
+// gentle-shell's own default when no selector is given.
+export function homeSelectorFlags(home              )           {
+	if (home.mode === "link") return ["--link"];
+	if (home.mode === "path") return ["--home", home.dir];
+	return [];
+}
+
 export function launcherConfigPath(homedir        )         {
 	return join(homedir, ".gentle-shell", "config.json");
 }
@@ -446,6 +460,14 @@ export function settingsDeclareGentlePi(settingsText                    )       
 const CONFLICTING_SETUP_PACKAGES                                                                = [
 	{ name: "@juicesharp/rpiv-ask-user-question", source: "npm:@juicesharp/rpiv-ask-user-question" },
 ];
+
+// The known conflicting sources, exposed so a `--dry-run` caller can report
+// what setup would remove *if* gentle-ai's install declares it, without
+// reading settings.json itself: a dry run writes nothing, so settings.json
+// afterwards would only reflect whatever pre-existed the run, not what the
+// (skipped) install would have declared. See handleSetupConflictCleanup in
+// bin/gentle-shell.mjs.
+export const CONFLICTING_SETUP_PACKAGE_SOURCES                    = CONFLICTING_SETUP_PACKAGES.map((entry) => entry.source);
 
 // Scans a settings.json `packages` list (same string/object-source parsing
 // as settingsDeclareGentlePi/findGentlePiDeclaration above) for any entry

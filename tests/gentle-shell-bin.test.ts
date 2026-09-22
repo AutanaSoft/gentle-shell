@@ -476,15 +476,25 @@ test("gentle-shell setup runs no pi remove when gentle-ai did not declare the co
 	assert.deepEqual(payload.args, ["install", "--agent", "pi", "--scope", "global"]);
 });
 
-test("gentle-shell setup --dry-run prints the pending removal without running pi remove", (t) => {
+// A --dry-run gentle-ai install writes nothing, so reading settings.json
+// afterwards would only ever report whatever pre-existed the run (e.g. the
+// isolated-home bootstrap this fixture's fake-gentle-ai script never
+// touches), never what the skipped install would have declared. Setup must
+// therefore print the pending-removal message unconditionally, without
+// reading settings.json — proven here with a fresh home that never declares
+// the conflicting package at all.
+test("gentle-shell setup --dry-run prints the pending removal unconditionally, without reading settings.json", (t) => {
 	const f = fixture(t);
 	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
-	writeGentleAiScriptDeclaringConflict(gentleAiScript);
+	writeGentleAiScript(gentleAiScript);
 	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript };
 
 	const result = run(env, ["setup", "--dry-run"]);
 	assert.equal(result.status, 0, result.stderr);
-	assert.match(result.stderr, /gentle-shell: setup would then remove npm:@juicesharp\/rpiv-ask-user-question \(gentle-ai #4820\)/);
+	assert.match(
+		result.stderr,
+		/gentle-shell: setup would then remove npm:@juicesharp\/rpiv-ask-user-question if the install declares it \(gentle-ai #4820\)/,
+	);
 	assert.doesNotMatch(result.stderr, /gentle-shell: removing/);
 
 	const lines = result.stdout.trim().split("\n").filter((line) => line.length > 0);
@@ -505,6 +515,29 @@ test("gentle-shell setup propagates a non-zero pi remove exit code with an actio
 	assert.match(
 		result.stderr,
 		/gentle-shell: could not remove npm:@juicesharp\/rpiv-ask-user-question; run `gentle-shell remove npm:@juicesharp\/rpiv-ask-user-question` before starting/,
+	);
+});
+
+// The remediation message must include whatever home selector setup was run
+// with, so a copy-pasted `gentle-shell remove <source>` doesn't silently
+// fall back to the isolated default and miss the package in the home the
+// user actually set up (gentle-shell #1277 follow-up).
+test("gentle-shell setup --home <dir> includes --home <dir> in the failing-removal remediation command", (t) => {
+	const f = fixture(t);
+	const target = join(f.root, "custom-home");
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScriptDeclaringConflict(gentleAiScript);
+	const failingPiScript = join(f.root, "fake-pi-remove-fails.mjs");
+	writePiScript(failingPiScript, "0.85.1", 7);
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_PI: failingPiScript };
+
+	const result = run(env, ["--home", target, "setup"]);
+	assert.equal(result.status, 7);
+	assert.match(
+		result.stderr,
+		new RegExp(
+			`gentle-shell: could not remove npm:@juicesharp/rpiv-ask-user-question; run \`gentle-shell --home ${target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} remove npm:@juicesharp/rpiv-ask-user-question\` before starting`,
+		),
 	);
 });
 
