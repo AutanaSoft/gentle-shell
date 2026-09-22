@@ -325,10 +325,15 @@ function resolveSetupGentleAiInstaller() {
 // themselves whether to `process.exit` (setup) or warn and continue (auto
 // mode). `stdio` lets a silent caller route the child's stdout/stderr to the
 // launcher's own stderr (see runSetupFlow) while a manual `setup` keeps the
-// child's stdio inherited. A `signal` on the result (rather than folding it
-// into a plain non-zero exit) lets a caller skip printing remediation advice
-// for a process this launcher itself killed — never a real failure to
-// diagnose. `timeoutMs`, when given, kills the child and resolves with
+// child's stdio inherited. A `signal` on the result records that the child
+// exited via signal for any reason; `interrupted: true` additionally marks
+// that it happened because *this launcher itself* received
+// SIGINT/SIGTERM/SIGHUP and forwarded it — as opposed to the child dying by a
+// signal entirely on its own (a crash, an OOM kill, an external `kill`),
+// which is an ordinary failure, not a request to stop (R3-002). Only
+// `interrupted` lets a caller skip printing remediation advice and abort the
+// whole launch; a plain `signal` with no `interrupted` is treated like any
+// other failure. `timeoutMs`, when given, kills the child and resolves with
 // `timedOut: true` instead of waiting forever on a hung gentle-ai/pi
 // invocation; only the automatic first-run flow passes it (see
 // AUTO_SETUP_CHILD_TIMEOUT_MS below) — manual `setup` never times out.
@@ -337,12 +342,16 @@ function spawnAndWait(command, args, env, stdio, timeoutMs) {
 		const launchPlan = planSpawn({ command, args, platform: process.platform });
 		const child = spawn(launchPlan.command, launchPlan.args, { stdio, env, shell: launchPlan.shell });
 		let timedOut = false;
+		let interrupted = false;
 		const timer = timeoutMs !== undefined ? setTimeout(() => {
 			timedOut = true;
 			child.kill("SIGTERM");
 		}, timeoutMs) : undefined;
 		const signalHandlers = ["SIGINT", "SIGTERM", "SIGHUP"].map((signal) => {
-			const handler = () => child.kill(signal);
+			const handler = () => {
+				interrupted = true;
+				child.kill(signal);
+			};
 			process.on(signal, handler);
 			return [signal, handler];
 		});
@@ -361,13 +370,34 @@ function spawnAndWait(command, args, env, stdio, timeoutMs) {
 				return;
 			}
 			if (signal) {
-				resolve({ ok: false, exitCode: signalExitCode(signal), signal });
+				resolve(
+					interrupted
+						? { ok: false, exitCode: signalExitCode(signal), signal, interrupted: true }
+						: { ok: false, exitCode: signalExitCode(signal), signal },
+				);
 				return;
 			}
 			const exitCode = code ?? 1;
 			resolve({ ok: exitCode === 0, exitCode });
 		});
 	});
+}
+
+// Renders `ms` as a human ceiling for a "timed out after ..." message: whole
+// minutes when `ms` is an exact multiple of 60000 (matching the production
+// 15-minute default and any operator-chosen whole-minute override), seconds
+// otherwise — including the sub-second overrides
+// GENTLE_SHELL_AUTO_SETUP_TIMEOUT_MS sets in tests. Used at every "timed out
+// after ..." call site instead of a hardcoded "15 minutes"
+// (R2-timeout-message-hardcoded), so the message always reflects the ceiling
+// that actually fired.
+function formatTimeoutCeiling(ms) {
+	if (ms % 60000 === 0) {
+		const minutes = ms / 60000;
+		return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+	}
+	const seconds = ms / 1000;
+	return `${seconds} second${seconds === 1 ? "" : "s"}`;
 }
 
 // Self-heals a missing package-local gentle-ai binary before the setup flow
@@ -384,6 +414,18 @@ function spawnAndWait(command, args, env, stdio, timeoutMs) {
 // failure is kept, with the variable named in the message. Returns
 // {ok, exitCode, message} instead of exiting the process, so the caller
 // decides whether to exit (manual setup) or warn and continue (auto mode).
+//
+// Signal-contract note (R2-signal-contract-cleanup-gap): unlike the two
+// children spawnAndWait drives during this flow (the package-local gentle-ai
+// binary in runSetupFlow, and each `pi remove` in removePostInstallSources),
+// this installer runs via a *synchronous* spawnSync with no timeout and no
+// launcher-interrupt tracking. A SIGINT/SIGTERM/SIGHUP reaching the launcher
+// while this specific call is blocking falls back to Node's default signal
+// disposition (the launcher exits immediately) instead of the
+// interrupted-vs-ordinary-failure distinction spawnAndWait's callers get. The
+// installer script itself is small, fast, and non-interactive in practice, so
+// this gap is accepted rather than converting it to the async, timeout-bound
+// spawnAndWait path.
 function ensurePackageLocalGentleAi(binaryPath, pinnedVersion, stdio) {
 	if (existsSync(binaryPath)) return { ok: true };
 	if (process.env[SKIP_GENTLE_AI_INSTALL_ENV] === "1") {
@@ -615,7 +657,7 @@ async function runSetupFlow(home, runtime, { dryRun, stdio, timeoutMs }) {
 		}
 	}
 	if (installResult.timedOut) {
-		return { ok: false, exitCode: 1, message: `gentle-shell: gentle-ai install timed out after 15 minutes` };
+		return { ok: false, exitCode: 1, message: `gentle-shell: gentle-ai install timed out after ${formatTimeoutCeiling(timeoutMs)}` };
 	}
 	if (installResult.error) {
 		return { ok: false, exitCode: 1, message: `Could not start the gentle-ai binary: ${installResult.error.message}` };
@@ -682,13 +724,16 @@ async function removePostInstallSources(sources, index, home, runtime, stdio, ti
 	const env = buildSetupEnv(home, runtime);
 	const result = await spawnAndWait(runtime.command, [...runtime.args, "remove", source], env, stdio, timeoutMs);
 	if (result.timedOut) {
-		return { ok: false, exitCode: 1, message: `gentle-shell: pi remove ${source} timed out after 15 minutes` };
+		return { ok: false, exitCode: 1, message: `gentle-shell: pi remove ${source} timed out after ${formatTimeoutCeiling(timeoutMs)}` };
 	}
 	if (result.error) {
 		return { ok: false, exitCode: 1, message: `Could not run the pi runtime to remove ${source}: ${result.error.message}` };
 	}
 	if (!result.ok) {
-		if (result.signal) return result;
+		// Only a launcher-forwarded interrupt (R3-002) skips remediation and
+		// bubbles straight up; a signal death the child caused on its own is an
+		// ordinary failure and gets the same remediation message as any other.
+		if (result.interrupted) return result;
 		const remediation = [...homeSelectorFlags(home).map(shellQuote), "remove", source].join(" ");
 		return { ok: false, exitCode: result.exitCode, message: `gentle-shell: could not remove ${source}; run \`gentle-shell ${remediation}\` before starting` };
 	}
@@ -733,15 +778,39 @@ function printForeignHomeHint(home, reason) {
 	process.stderr.write(`gentle-shell: ${home.dir} ${reason}; run \`gentle-shell ${remediation}\` to provision it\n`);
 }
 
+// Ownership marker (R3-001): written into a home's own directory by the
+// isolated/--home bootstrap (main, below) the moment gentle-shell creates
+// that home — the same place it seeds settings.json with tuiMode. Lets
+// homeIsForeign recognize a home gentle-shell itself created even when the
+// config.json provisioning marker was never written because the *first*
+// auto-provision attempt against it failed (a --home directory whose
+// bootstrap already seeded settings.json otherwise looks identical to an
+// unrelated non-empty directory on the next launch, and would be treated as
+// foreign and never retried). Content is a one-line JSON object naming the
+// launcher version that created it, purely informational — homeIsForeign
+// only checks the file's existence.
+const HOME_OWNERSHIP_MARKER_FILENAME = ".gentle-shell-home";
+
+function homeOwnershipMarkerPath(home) {
+	return join(home.dir, HOME_OWNERSHIP_MARKER_FILENAME);
+}
+
+function writeHomeOwnershipMarker(home) {
+	const content = JSON.stringify({ createdBy: "gentle-shell", version: ownPackageVersion() });
+	writeFileSync(homeOwnershipMarkerPath(home), `${content}\n`, "utf8");
+}
+
 // `homeHadContentBeforeBootstrap` must be read by the caller (main, below)
 // before the isolated/--home bootstrap runs: that bootstrap itself creates
-// and seeds a brand-new directory (settings.json with tuiMode), so checking
-// directory contents from inside this function would always see that seeded
-// file and wrongly call a genuinely fresh home "foreign".
+// and seeds a brand-new directory (settings.json with tuiMode, and now the
+// ownership marker above), so checking directory contents from inside this
+// function would always see that seeded content and wrongly call a genuinely
+// fresh home "foreign".
 function homeIsForeign(home, previousEntry, homeHadContentBeforeBootstrap) {
 	if (home.mode !== "path") return false; // the isolated home is always owned
 	if (previousEntry !== undefined) return false; // already provisioned by gentle-shell before; trust the marker
 	if (safeRealpath(home.dir) === safeRealpath(defaultPiAgentDir())) return true; // never touch pi's own default home, even if empty
+	if (existsSync(homeOwnershipMarkerPath(home))) return false; // gentle-shell's own bootstrap created this home (R3-001); retry it even after a failed first attempt
 	return homeHadContentBeforeBootstrap;
 }
 
@@ -835,13 +904,16 @@ function resolveAutoSetupTimeoutMs() {
 // pi subcommand (the caller only calls this when args.piSubcommand is
 // undefined) — see main() below. Never blocks the launch: a failure (an
 // older pin, a missing binary the self-heal could not recover, a non-zero
-// gentle-ai or pi exit, a timeout) only warns and lets the plain launch
-// continue with today's injection behavior, to retry automatically on a
-// later run — except an interrupt (SIGINT/SIGTERM/SIGHUP) reaching the
-// spawned child, which returns `{ exitCode }` instead so the caller (main,
-// below) exits the whole launcher immediately without starting pi (S9): the
-// user asked this process to stop, not to fall back to a plain launch.
-// Returns undefined to mean "continue the launch normally".
+// gentle-ai or pi exit, a timeout, or a spawned child dying by a signal on
+// its own — a crash, an OOM kill, an external `kill`, never something this
+// launcher asked for) only warns and lets the plain launch continue with
+// today's injection behavior, to retry automatically on a later run —
+// except an interrupt (SIGINT/SIGTERM/SIGHUP) actually reaching *this
+// launcher*, which forwards it to the spawned child and returns
+// `{ exitCode }` instead (R3-002) so the caller (main, below) exits the
+// whole launcher immediately without starting pi (S9): the user asked this
+// process to stop, not to fall back to a plain launch. Returns undefined to
+// mean "continue the launch normally".
 async function maybeAutoProvisionHome(home, runtime, { homeHadContentBeforeBootstrap }) {
 	if (process.env[AUTO_SETUP_OPT_OUT_ENV] === "1") return undefined;
 
@@ -889,7 +961,11 @@ async function maybeAutoProvisionHome(home, runtime, { homeHadContentBeforeBoots
 		}
 
 		const result = await runSetupFlow(home, runtime, { dryRun: false, stdio: ["ignore", 2, 2], timeoutMs: resolveAutoSetupTimeoutMs() });
-		if (result.signal) return { exitCode: result.exitCode };
+		// Abort the whole launch only for a launcher-forwarded interrupt
+		// (R3-002); a child that exited via signal on its own (crash, OOM kill,
+		// external kill) falls through to the ordinary-failure branch below,
+		// which warns and still starts pi.
+		if (result.interrupted) return { exitCode: result.exitCode };
 		if (!result.ok) {
 			const remediation = [...homeSelectorFlags(home).map(shellQuote), "setup"].join(" ");
 			process.stderr.write(
@@ -965,6 +1041,7 @@ async function main() {
 	if ((home.mode === "isolated" || home.mode === "path") && !existsSync(home.dir)) {
 		mkdirSync(home.dir, { recursive: true });
 		await installIsolatedTuiModeSetting(home.dir);
+		writeHomeOwnershipMarker(home); // R3-001: lets a failed first auto-provision attempt still be retried later
 		process.stderr.write(`gentle-shell: using a separate home at ${home.dir}. Run 'gentle-shell --link' to reuse your pi sign-ins and chats.\n`);
 	}
 

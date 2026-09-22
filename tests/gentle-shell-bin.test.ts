@@ -1476,6 +1476,42 @@ test("a --home equal to pi's own default agent home is never auto-provisioned, e
 	assert.match(result.stderr, /never auto-provisions it/);
 });
 
+// --- --home ownership marker and retry after a failed first attempt (R3-001) -----
+
+test("a freshly bootstrapped isolated or --home directory gets a gentle-shell ownership marker file", (t) => {
+	const f = fixture(t);
+	const target = join(f.root, "marked-home");
+	const result = run(f.env, ["--home", target, "--mode", "rpc"]);
+	assert.equal(result.status, 0, result.stderr);
+	const marker = JSON.parse(readFileSync(join(target, ".gentle-shell-home"), "utf8"));
+	assert.equal(marker.createdBy, "gentle-shell");
+	assert.equal(marker.version, ownGentlePiVersion());
+});
+
+test("a --home directory gentle-shell itself bootstrapped is retried after its first auto-provision attempt fails", (t) => {
+	const f = fixture(t);
+	const target = join(f.root, "retry-home");
+	const failingGentleAiScript = join(f.root, "fake-gentle-ai-fails.mjs");
+	writeGentleAiScript(failingGentleAiScript, 1);
+	const firstEnv = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: failingGentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" });
+
+	const first = run(firstEnv, ["--home", target, "--mode", "rpc"]);
+	assert.equal(first.status, 0, first.stderr);
+	assert.match(first.stderr, /gentle-shell: automatic setup failed/);
+	assert.ok(existsSync(join(target, "settings.json")), "bootstrap must have seeded settings.json before the failed attempt");
+	assert.ok(existsSync(join(target, ".gentle-shell-home")), "bootstrap must mark the home as gentle-shell-owned");
+
+	const counterPath = join(f.root, "gentle-ai-runs.log");
+	const succeedingGentleAiScript = join(f.root, "fake-gentle-ai-succeeds.mjs");
+	writeGentleAiScriptCountingRuns(succeedingGentleAiScript, counterPath);
+	const secondEnv = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: succeedingGentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" });
+
+	const second = run(secondEnv, ["--home", target, "--mode", "rpc"]);
+	assert.equal(second.status, 0, second.stderr);
+	assert.doesNotMatch(second.stderr, /already has content and was not set up by gentle-shell/);
+	assert.equal(readFileSync(counterPath, "utf8").trim().split("\n").length, 1, "the retry must actually run gentle-ai against the previously-failed home");
+});
+
 // --- auto-provisioning interrupts, resilience, timeouts, atomic writes -----
 
 // Waits until `child`'s stderr has emitted a line matching `pattern`, so a
@@ -1506,10 +1542,27 @@ function delay(ms) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-test("SIGINT during automatic provisioning kills the child and exits 130 without launching pi", async (t) => {
+// Unique token the stub gentle-ai below writes to its own stderr (relayed
+// through this launcher's inherited stdio, see buildSetupEnv's stdio wiring)
+// the instant it starts, before it sleeps. Waiting for this — instead of the
+// launcher's own "provisioning" stderr line, which is written before the
+// child is even spawned and proves nothing about the child or spawnAndWait's
+// signal-forwarding listeners being ready — is deterministic: it can only
+// appear once the child process actually exists and spawnAndWait has
+// resolved its Promise executor synchronously (spawn + signal handler
+// registration, no `await` in between), so no fixed settle delay is needed
+// before sending the real signal.
+const CHILD_READY_TOKEN = "GENTLE_SHELL_TEST_CHILD_READY";
+
+test("SIGINT during automatic provisioning kills the child and exits 130 without launching pi", { timeout: 10000 }, async (t) => {
 	const f = fixture(t);
 	const gentleAiScript = join(f.root, "fake-gentle-ai-sleep.mjs");
-	writeFileSync(gentleAiScript, ["#!/usr/bin/env node", "await new Promise((resolve) => setTimeout(resolve, 20000));", "process.exit(0);", ""].join("\n"));
+	writeFileSync(
+		gentleAiScript,
+		["#!/usr/bin/env node", `process.stderr.write(${JSON.stringify(CHILD_READY_TOKEN)} + "\\n");`, "await new Promise((resolve) => setTimeout(resolve, 20000));", "process.exit(0);", ""].join(
+			"\n",
+		),
+	);
 	chmodSync(gentleAiScript, 0o755);
 	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" });
 
@@ -1522,20 +1575,27 @@ test("SIGINT during automatic provisioning kills the child and exits 130 without
 		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
 	});
 
-	await waitForStderrMatch(child, /provisioning/);
-	// Seeing the "provisioning" line only proves the message was written, not
-	// that the child spawn and its signal-forwarding listeners (registered a
-	// couple of synchronous statements later, inside spawnAndWait) are fully
-	// set up on the other side of this OS pipe yet; a short settle avoids
-	// racing the signal against that relay, exactly as a real interactive
-	// Ctrl-C (tens of milliseconds of human reaction time at least) never does.
-	await delay(150);
+	await waitForStderrMatch(child, new RegExp(CHILD_READY_TOKEN));
 	child.kill("SIGINT");
 	const { code, signal } = await waitForExit(child);
 
 	assert.equal(signal, null, "the launcher process itself must exit normally, not be killed by the signal");
 	assert.equal(code, 130);
 	assert.equal(stdout.trim(), "", "pi must never launch once an auto-provision spawn was interrupted");
+});
+
+test("a child that dies by a signal on its own during automatic provisioning is an ordinary failure, not a launcher interrupt: pi still launches", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai-self-kill.mjs");
+	writeFileSync(gentleAiScript, ["#!/usr/bin/env node", "process.kill(process.pid, 'SIGKILL');", ""].join("\n"));
+	chmodSync(gentleAiScript, 0o755);
+	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" });
+
+	const result = run(env, ["--mode", "rpc", "-p", "hi"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stderr, /gentle-shell: automatic setup failed/);
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args.slice(-4), ["--mode", "rpc", "-p", "hi"]);
 });
 
 test(
@@ -1634,7 +1694,46 @@ test("a hung child during automatic provisioning is killed after the timeout cei
 	assert.equal(result.status, 0, result.stderr);
 	assert.ok(elapsed < 15000, `expected the hung child to be killed quickly, took ${elapsed}ms`);
 	assert.match(result.stderr, /gentle-shell: automatic setup failed/);
-	assert.match(result.stderr, /timed out after 15 minutes/);
+	// The message reports the *effective* ceiling (GENTLE_SHELL_AUTO_SETUP_TIMEOUT_MS=300
+	// above), not the hardcoded production default: 300ms is not a whole number
+	// of minutes, so it renders in seconds.
+	assert.match(result.stderr, /timed out after 0\.3 seconds/);
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args.slice(-4), ["--mode", "rpc", "-p", "hi"]);
+});
+
+test("a hung 'pi remove' during post-install cleanup is killed after the timeout ceiling and reports it in seconds too", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai-declares-conflict.mjs");
+	writeGentleAiScriptDeclaringConflict(gentleAiScript);
+	const hangingPiScript = join(f.root, "fake-pi-hangs-on-remove.mjs");
+	writeFileSync(
+		hangingPiScript,
+		[
+			"#!/usr/bin/env node",
+			"const args = process.argv.slice(2);",
+			'if (args.includes("--version")) { console.log("0.85.1"); process.exit(0); }',
+			"if (args[0] === 'remove') { await new Promise((resolve) => setTimeout(resolve, 60000)); process.exit(0); }",
+			"console.log(JSON.stringify({ args, PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR }));",
+			"process.exit(0);",
+			"",
+		].join("\n"),
+	);
+	chmodSync(hangingPiScript, 0o755);
+	const env = enableAutoProvision({
+		...f.env,
+		GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript,
+		GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0",
+		GENTLE_SHELL_PI: hangingPiScript,
+		GENTLE_SHELL_AUTO_SETUP_TIMEOUT_MS: "2000",
+	});
+
+	const started = Date.now();
+	const result = run(env, ["--mode", "rpc", "-p", "hi"]);
+	const elapsed = Date.now() - started;
+	assert.equal(result.status, 0, result.stderr);
+	assert.ok(elapsed < 15000, `expected the hung 'pi remove' to be killed quickly, took ${elapsed}ms`);
+	assert.match(result.stderr, /gentle-shell: pi remove npm:@juicesharp\/rpiv-ask-user-question timed out after 2 seconds/);
 	const payload = JSON.parse(result.stdout);
 	assert.deepEqual(payload.args.slice(-4), ["--mode", "rpc", "-p", "hi"]);
 });
