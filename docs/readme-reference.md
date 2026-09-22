@@ -262,6 +262,7 @@ An orphan branch with commits and no parent has no branch point to name as `base
 ```bash
 gentle-shell [options] [-- pi-args...]
 gentle-shell home [link|isolated|<path>]
+gentle-shell [home selectors] setup [--dry-run]
 ```
 
 ### Flags
@@ -288,6 +289,26 @@ gentle-shell home [link|isolated|<path>]
 
 `gentle-shell update` and `gentle-shell list` follow that same home selection, so they inspect and update packages in whichever home the effective flag or persisted `home` config points to.
 
+### `setup` subcommand
+
+`gentle-shell setup` provisions the resolved home — the same home selection as any other invocation, `--isolated` by default, or `--link`/`--home <path>` when given before `setup` — with the same companion packages a regular `gentle-ai install --agent pi` installs into a Pi agent home: `npm:gentle-pi`, `npm:gentle-engram`, `npm:pi-mcp-adapter`, `npm:@juicesharp/rpiv-ask-user-question`, `npm:pi-web-access`, `npm:pi-btw`, plus running `pi-engram init`. It never touches `~/.pi/agent` unless you pass `--link`.
+
+It resolves the home and the pi runtime exactly as a normal run does (including the isolated/`--home` bootstrap and the pi version gate), then runs the package-local pinned gentle-ai binary — `gentleAiBinaryPath()` from `lib/gentle-ai-binary.ts`, never a `gentle-ai` found on `PATH` — as:
+
+```bash
+<package>/.gentle-ai/v<version>/gentle-ai install --agent pi --scope global [--dry-run]
+```
+
+with `PI_CODING_AGENT_DIR` and `GENTLE_PI_AGENT_HOME` set to the resolved home, and the resolved pi runtime's directory prepended to `PATH`, so gentle-ai's own preflight finds `pi` even when it is bundled or given through `GENTLE_SHELL_PI`. `--dry-run` is forwarded to gentle-ai unchanged. Output streams straight through (`stdio: "inherit"`), and `gentle-shell setup` exits with gentle-ai's own exit code. A missing package-local gentle-ai binary exits 1 with an actionable message instead of failing to spawn.
+
+Requires the package-local gentle-ai pin at v3.6.0 or newer — the pin that adds `PI_CODING_AGENT_DIR` support to `gentle-ai install` lands separately from this subcommand. An older pinned gentle-ai ignores that variable and installs into `~/.pi/agent` instead of the target home.
+
+Once `gentle-shell setup` installs `npm:gentle-pi` into the home's `settings.json`, the launcher stops injecting its own copy there (see "Loading the package" below) — the home behaves like a regular Pi agent home with gentle-pi installed, and `gentle-shell update npm:gentle-pi` updates it like any other package.
+
+**Known limitation**: gentle-ai always writes its persona file to the shared `~/.pi/gentle-ai/persona.json` without honoring `PI_CODING_AGENT_DIR`, so the persona is shared across every home `gentle-shell setup` provisions, not per-home.
+
+**Test/development only**: `GENTLE_SHELL_GENTLE_AI_BIN` overrides which gentle-ai executable `setup` runs, bypassing the pinned package-local resolution. It exists for the test suite and for exercising a different gentle-ai build; end users never need it.
+
 ### pi runtime resolution
 
 1. `GENTLE_SHELL_PI` — path to a pi executable, when set to a non-empty value.
@@ -307,7 +328,7 @@ If none resolve, `gentle-shell` exits 1 naming all three options. Once a runtime
 
 ### Loading the package
 
-Unless the target home's `settings.json` already declares gentle-pi (checked only for `--link`), every invocation injects `-e <package root> --theme <root>/themes --skill <root>/skills --prompt-template <root>/prompts` ahead of the forwarded arguments, so the Gentle Shell extensions, themes, skills, and prompt templates load without a separate `pi install`. Isolated and `--home <path>` homes never declare the package, so they always get this injection — except when the forwarded arguments start with one of pi's own subcommands (`install`, `remove`, `uninstall`, `update`, `list`, `config`, `auth`): pi dispatches those on `argv[0]` before it parses any flags, so the injection — and any take-over below — is skipped entirely and pi sees the bare subcommand, e.g. `gentle-shell install npm:x` runs exactly `pi install npm:x`. A subcommand never triggers a take-over, even against a home whose settings declare a conflicting gentle-pi; see "Managing packages" above.
+Unless the target home's `settings.json` already declares gentle-pi, every invocation injects `-e <package root> --theme <root>/themes --skill <root>/skills --prompt-template <root>/prompts` ahead of the forwarded arguments, so the Gentle Shell extensions, themes, skills, and prompt templates load without a separate `pi install`. Every mode — `--link`, `--isolated`, and `--home <path>` — consults the home's own `settings.json` for a declaration; an isolated or `--home` home only ever carries one by running `gentle-shell setup` (see above), which installs `npm:gentle-pi` into it, or by hand-editing `settings.json`. A home without any declaration always gets the plain injection — except when the forwarded arguments start with one of pi's own subcommands (`install`, `remove`, `uninstall`, `update`, `list`, `config`, `auth`): pi dispatches those on `argv[0]` before it parses any flags, so the injection — and any take-over below — is skipped entirely and pi sees the bare subcommand, e.g. `gentle-shell install npm:x` runs exactly `pi install npm:x`. A subcommand never triggers a take-over, even against a home whose settings declare a conflicting gentle-pi; see "Managing packages" above.
 
 A declaration is recognized either as `npm:gentle-pi[@version]` in the `packages` array, or as a local path package (string or `{"source": "..."}` entry, relative or absolute) whose own `package.json` names it `"gentle-pi"` — the shape produced when gentle-pi is developed from a checkout and referenced by path in `settings.json` instead of installed via `pi install npm:gentle-pi`.
 
@@ -323,7 +344,7 @@ A declaration is recognized either as `npm:gentle-pi[@version]` in the `packages
   A git-sourced other package is skipped with a stderr warning, since its install directory cannot be derived without pi's own package manager; an object entry with `extensions` or `autoload` filters is still included but warned about, because the take-over cannot honor those filters for extension discovery — that package's skills, prompts, and themes still load normally through settings discovery, which `--no-extensions` does not affect.
 
   **Known limitation**: the take-over never removes the original declaration from `settings.json`, so its skills, prompt templates, and themes are still discovered alongside this launcher's own — only its extensions are replaced by `--no-extensions` plus the injected `-e` flags above.
-- **`--package-root <dir>`**: forces a take-over using `<dir>` as the package root, even when settings already declare a matching `npm:gentle-pi`, or when there is no declaration at all. Use it to test a different gentle-pi checkout against a home whose settings already point at another one. Has no effect when the forwarded arguments start with a pi subcommand, since a subcommand skips the take-over entirely. The take-over path itself is only ever reached for `--link`: with `--isolated` or `--home <path>`, `--package-root` still changes which directory is injected, but always through the same plain injection as "no declaration at all" above — no `--no-extensions`, and no other-package or loose-extension re-injection — since those homes never carry a `settings.json` declaration to take over from. `--package-root` must also name an existing directory; a missing or non-directory path fails fast with a clear error instead of launching pi with unresolvable flags.
+- **`--package-root <dir>`**: forces a take-over using `<dir>` as the package root, even when settings already declare a matching `npm:gentle-pi`, or when there is no declaration at all. Use it to test a different gentle-pi checkout against a home whose settings already point at another one. Has no effect when the forwarded arguments start with a pi subcommand, since a subcommand skips the take-over entirely. This *forcing* behavior — a take-over with no matching declaration required — is only ever reached for `--link`: with `--isolated` or `--home <path>`, `--package-root` still changes which directory is injected, but on its own it goes through the same plain injection as "no declaration at all" above — no `--no-extensions`, and no other-package or loose-extension re-injection. A settings.json declaration in an isolated or `--home` home (one `gentle-shell setup` installed, or a hand-edited path entry) still triggers its own take-over there exactly as it would for `--link`, independent of `--package-root`. `--package-root` must also name an existing directory; a missing or non-directory path fails fast with a clear error instead of launching pi with unresolvable flags.
 
 This take-over exists because two gentle-pi copies loaded at once — the declared one plus this launcher's own injection — register the same tools and extensions twice, which pi reports as tool conflicts (for example `Tool ask_user_choice conflicts with ...`).
 

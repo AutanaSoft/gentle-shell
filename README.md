@@ -222,6 +222,13 @@ gentle-shell --link
 `gentle-shell` alone starts in its own home, `~/.gentle-shell/agent`. `gentle-shell --link` reuses `~/.pi/agent` as-is.
 
 ```bash
+# Install the gentle-ai companion packages into this home
+gentle-shell setup
+```
+
+`gentle-shell setup` installs the same companion packages gentle-ai provisions into a regular Pi, into this home only.
+
+```bash
 # Make --link the default
 gentle-shell home link
 ```
