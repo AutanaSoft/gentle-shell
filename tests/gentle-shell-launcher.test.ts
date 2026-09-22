@@ -14,6 +14,7 @@ import {
 	describeVersion,
 	discoverLooseExtensionEntries,
 	findGentlePiDeclaration,
+	forceJsonFieldIfAbsentInOriginal,
 	helpText,
 	homeSelectorFlags,
 	isSetupCapablePin,
@@ -1639,6 +1640,63 @@ test("restoreJsonField matches compact formatting (no indent, no trailing newlin
 	const current = '{"managed_asset_digest":"def456","installed_agents":["pi"]}';
 	const result = restoreJsonField(original, current, "managed_asset_digest");
 	assert.equal(result, '{"managed_asset_digest":"abc123","installed_agents":["pi"]}');
+});
+
+// --- forceJsonFieldIfAbsentInOriginal ------------------------------------------
+//
+// Pure JSON merge used by bin/gentle-shell.mjs's setup flow to make sure a
+// home gentle-shell provisions ends up with the default Gentle Shell theme
+// unless the home (or the user) already had an opinion about it — even when
+// gentle-ai's own managed install wrote a *different* default theme into
+// settings.json. Unlike restoreJsonField above (which restores a field back
+// to whatever it was originally), this only ever forces one specific value,
+// and only when the original text had no opinion on the field at all.
+
+test("forceJsonFieldIfAbsentInOriginal forces the field when the original had none and the current text disagrees", () => {
+	const original = `${JSON.stringify({ tuiMode: "fullscreen" }, null, 2)}\n`;
+	const current = `${JSON.stringify({ tuiMode: "fullscreen", theme: "kanagawa" }, null, 2)}\n`;
+	const result = forceJsonFieldIfAbsentInOriginal(original, current, "theme", "Gentleman-Cute");
+	assert.equal(result, `${JSON.stringify({ tuiMode: "fullscreen", theme: "Gentleman-Cute" }, null, 2)}\n`);
+});
+
+test("forceJsonFieldIfAbsentInOriginal forces the field when the original had none and the current text also has none", () => {
+	const original = `${JSON.stringify({ tuiMode: "fullscreen" }, null, 2)}\n`;
+	const current = `${JSON.stringify({ tuiMode: "fullscreen" }, null, 2)}\n`;
+	const result = forceJsonFieldIfAbsentInOriginal(original, current, "theme", "Gentleman-Cute");
+	assert.equal(result, `${JSON.stringify({ tuiMode: "fullscreen", theme: "Gentleman-Cute" }, null, 2)}\n`);
+});
+
+test("forceJsonFieldIfAbsentInOriginal returns undefined when the original already declared the field", () => {
+	const original = `${JSON.stringify({ tuiMode: "fullscreen", theme: "rose" }, null, 2)}\n`;
+	const current = `${JSON.stringify({ tuiMode: "fullscreen", theme: "rose" }, null, 2)}\n`;
+	assert.equal(forceJsonFieldIfAbsentInOriginal(original, current, "theme", "Gentleman-Cute"), undefined);
+});
+
+test("forceJsonFieldIfAbsentInOriginal returns undefined when the original declared the field, even if the current text changed it", () => {
+	const original = `${JSON.stringify({ tuiMode: "fullscreen", theme: "rose" }, null, 2)}\n`;
+	const current = `${JSON.stringify({ tuiMode: "fullscreen", theme: "kanagawa" }, null, 2)}\n`;
+	assert.equal(forceJsonFieldIfAbsentInOriginal(original, current, "theme", "Gentleman-Cute"), undefined);
+});
+
+test("forceJsonFieldIfAbsentInOriginal returns undefined when the current value already matches the forced value", () => {
+	const original = `${JSON.stringify({ tuiMode: "fullscreen" }, null, 2)}\n`;
+	const current = `${JSON.stringify({ tuiMode: "fullscreen", theme: "Gentleman-Cute" }, null, 2)}\n`;
+	assert.equal(forceJsonFieldIfAbsentInOriginal(original, current, "theme", "Gentleman-Cute"), undefined);
+});
+
+test("forceJsonFieldIfAbsentInOriginal returns undefined for invalid original JSON", () => {
+	assert.equal(forceJsonFieldIfAbsentInOriginal("not json", '{"theme":"kanagawa"}', "theme", "Gentleman-Cute"), undefined);
+});
+
+test("forceJsonFieldIfAbsentInOriginal returns undefined for invalid current JSON", () => {
+	assert.equal(forceJsonFieldIfAbsentInOriginal("{}", "not json", "theme", "Gentleman-Cute"), undefined);
+});
+
+test("forceJsonFieldIfAbsentInOriginal matches the current text's own indentation and trailing-newline convention, not the original's", () => {
+	const original = '{\n  "tuiMode": "fullscreen"\n}\n';
+	const current = '{"tuiMode":"fullscreen"}';
+	const result = forceJsonFieldIfAbsentInOriginal(original, current, "theme", "Gentleman-Cute");
+	assert.equal(result, '{"tuiMode":"fullscreen","theme":"Gentleman-Cute"}');
 });
 
 // --- shellQuote ---------------------------------------------------------------

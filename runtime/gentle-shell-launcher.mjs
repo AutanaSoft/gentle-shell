@@ -1079,6 +1079,44 @@ export function restoreJsonField(originalText        , currentText        , fiel
 	return trailingNewline ? `${serialized}\n` : serialized;
 }
 
+// Pure JSON merge: forces `field` in `currentText` to `value`, but only when
+// `originalText` (the state from before whatever wrote `currentText`) did not
+// declare that field at all — never overriding a value the original already
+// had, in either direction. Keeps every other field exactly as `currentText`
+// left it, and formats the result to match `currentText`'s own indentation
+// and trailing newline (unlike restoreJsonField above, which matches the
+// *original*'s formatting — here `currentText` is what the other writer just
+// produced, so its own convention is respected instead of imposed on).
+// Used by bin/gentle-shell.mjs's setup flow so a home gentle-shell provisions
+// ends up with the maintainer's default theme unless the home (or the user)
+// already had an opinion about it, even when gentle-ai's own managed install
+// writes a *different* default theme into settings.json.
+//
+// Returns the new text, or `undefined` when either text fails to parse as a
+// JSON object, the original text already declared `field` (nothing to
+// force), or the current value already equals `value` (nothing to change).
+export function forceJsonFieldIfAbsentInOriginal(originalText        , currentText        , field        , value         )                     {
+	let originalValue         ;
+	let currentValue         ;
+	try {
+		originalValue = JSON.parse(originalText);
+		currentValue = JSON.parse(currentText);
+	} catch {
+		return undefined;
+	}
+	if (typeof originalValue !== "object" || originalValue === null || Array.isArray(originalValue)) return undefined;
+	if (typeof currentValue !== "object" || currentValue === null || Array.isArray(currentValue)) return undefined;
+	const originalObj = originalValue                           ;
+	const currentObj = currentValue                           ;
+	if (Object.prototype.hasOwnProperty.call(originalObj, field)) return undefined;
+	if (jsonValuesEqual(currentObj[field], value)) return undefined;
+
+	const forced = { ...currentObj, [field]: value };
+	const { indent, trailingNewline } = detectJsonFormatting(currentText);
+	const serialized = JSON.stringify(forced, null, indent);
+	return trailingNewline ? `${serialized}\n` : serialized;
+}
+
 // --- reporting ---------------------------------------------------------------
 
 

@@ -17,6 +17,23 @@ const PI_MANAGED_SEGMENT_SEQUENCES = [
 	["git", "github.com", "Gentleman-Programming"],
 ];
 
+// Gentle Shell's default theme (themes/Gentleman-Cute.json, "name":
+// "Gentleman-Cute"): applied by withIsolatedHomeDefaults below whenever a
+// home's settings do not already declare one, never overriding a user's own
+// choice.
+export const DEFAULT_THEME_NAME = "Gentleman-Cute";
+
+// Pure merge: returns `value` with fullscreen tuiMode always applied, and —
+// only when `value` does not already declare a "theme" key — the default
+// theme above added too. No filesystem access, so it is unit-testable
+// without a tempdir; installIsolatedTuiModeSetting below is the only caller,
+// applying this to a freshly bootstrapped home's settings.
+export function withIsolatedHomeDefaults(value) {
+	const next = { ...value, tuiMode: "fullscreen" };
+	if (!("theme" in value)) next.theme = DEFAULT_THEME_NAME;
+	return next;
+}
+
 function containsSequence(segments, sequence) {
 	for (let start = 0; start + sequence.length <= segments.length; start += 1) {
 		if (sequence.every((part, offset) => segments[start + offset] === part)) return true;
@@ -147,7 +164,9 @@ export async function installTuiModeSetting(options = {}) {
 	}
 }
 
-/** Writes tuiMode: "fullscreen" into a directory gentle-shell's own isolated-home
+/** Writes tuiMode: "fullscreen" and — when the home has no theme of its own
+ * yet — the default Gentle Shell theme (withIsolatedHomeDefaults,
+ * DEFAULT_THEME_NAME above) into a directory gentle-shell's own isolated-home
  * bootstrap (T2) just created and owns. Unlike installTuiModeSetting, there is no
  * "physically installed under this home's npm/node_modules" ownership check to
  * satisfy: the caller already knows it created `dir` moments ago as gentle-shell's
@@ -170,7 +189,7 @@ export async function installIsolatedTuiModeSetting(dir) {
 		const fd = openSync(staging, "wx", original.stat ? original.stat.mode & 0o777 : 0o600);
 		try {
 			if (original.stat) fchmodSync(fd, original.stat.mode & 0o777);
-			writeFileSync(fd, `${JSON.stringify({ ...original.value, tuiMode: "fullscreen" }, null, 2)}\n`, "utf8");
+			writeFileSync(fd, `${JSON.stringify(withIsolatedHomeDefaults(original.value), null, 2)}\n`, "utf8");
 			fsyncSync(fd);
 		} finally { closeSync(fd); }
 		assertDirectories([home]);
