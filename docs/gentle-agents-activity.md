@@ -61,7 +61,7 @@ Pi's `setWidget` is the only fire-and-forget RPC push structured enough to carry
 
 `summary` is `TaskSummary` from `lib/agents-protocol.ts`, unchanged. Each task's `summary` is a field whitelist of its `TaskRecord`: `id`, `agent`, `label`, `prompt`, `status`, `createdAt`, `startedAt`, `endedAt`, `lastStep`, `lastActivityAt`, `turns`, `toolCalls`, `error`. Every other `TaskRecord` field — `cwd`, `parentSessionId`, `mode`, `model`, `thinking`, `sessionPath`, `result`, `tokens`, `cost` — is deliberately left out, the same discipline `lib/orchestrator-presence.ts`'s `projectActivity` already applies to same-profile peer discovery.
 
-`thread.items` is a `ThreadItem[]` whitelist too: text/thinking/note items keep `{ kind, text }`; tool items carry `{ kind: "tool", name, args, running, isError, output }`, where `args` is the tool's argument object `JSON.stringify`'d (never the raw object). `thread.dropped` is the store's own ring-buffer drop counter (unrelated to the per-push item cap below); `thread.version` increments on every thread mutation.
+`thread.items` is a `ThreadItem[]` whitelist too: text/thinking/note items keep `{ kind, text }` (`text` bounded, see below); tool items carry `{ kind: "tool", name, args, running, isError, output }`, where `args` is the tool's argument object `JSON.stringify`'d (never the raw object). `thread.dropped` is the store's own ring-buffer drop counter (unrelated to the per-push item cap below); `thread.version` increments on every thread mutation.
 
 Tasks are ordered `running`, `waiting`, `queued`, then finished tasks by `endedAt` descending (most recently finished first).
 
@@ -72,12 +72,23 @@ Every bound below fails closed: a value that cannot fit is truncated or dropped,
 | Field | Bound |
 |---|---|
 | `summary.prompt` | 200 characters, trailing `…` |
+| `summary.error`, `summary.label`, `summary.lastStep` | 500 characters, trailing `…` |
 | tool `args` (stringified) | 500 characters, trailing `…` |
 | tool `output` | 500 characters, trailing `…` |
+| text/thinking/note item `text` | 2000 characters, trailing `…` |
 | `thread.items` per task | last 40, most recent last |
 | whole payload | 256 KiB |
 
-When the whole-payload bound is still exceeded after the field- and item-level truncations above, `encodeActivityLines` shrinks the payload in this order: halve every task's kept `thread.items` (repeatedly, down to one item each), then empty finished tasks' threads entirely, then drop whole finished tasks — oldest-finished first. A running, waiting, or queued task's summary is never dropped.
+Truncation always keeps the field's prefix and marks the cut with a trailing `…` (never a separate `truncated` flag) — the same convention `projectRpcActivity`'s other bounded fields already use.
+
+When the whole-payload bound is still exceeded after the field- and item-level truncations above, `encodeActivityLines` shrinks the payload in this order:
+
+1. Halve every task's kept `thread.items` (repeatedly, down to one item each).
+2. Empty finished tasks' threads entirely.
+3. Drop whole finished tasks — oldest-finished first, by `endedAt`.
+4. Last resort: once only active (running/waiting/queued) tasks remain, each already down to one thread item, empty every remaining task's thread too — a summary-only payload.
+
+A task's `summary` — active or finished — is never dropped; only its `thread.items` are.
 
 ## Coalescing
 
