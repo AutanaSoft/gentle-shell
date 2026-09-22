@@ -14,6 +14,7 @@ import {
 	readdirSync,
 	readFileSync,
 	realpathSync,
+	renameSync,
 	rmSync,
 	statSync,
 	writeFileSync,
@@ -422,6 +423,67 @@ function buildSetupEnv(home, runtime) {
 // `["ignore", 2, 2]` in auto mode so every child's stdout/stderr lands on
 // this launcher's own stderr and its real stdout stays clean for `--mode
 // rpc`/`-p` consumers.
+// The shared Pi persona file gentle-ai writes on every install, regardless
+// of the target home: its own PiPersonaConfigPath always resolves against
+// the OS home, never PI_CODING_AGENT_DIR (gentle-ai internal/components/persona/inject.go),
+// so a `setup` run for any home silently resets whatever persona mode the
+// user already chose back to gentle-ai's default preset unless something
+// snapshots and restores it. See snapshotFile/restoreFile below and
+// docs/readme-reference.md's setup "Known limitation".
+function sharedPersonaPath() {
+	return join(homedir(), ".pi", "gentle-ai", "persona.json");
+}
+
+// Records `path`'s current state before a child process that might rewrite
+// it runs: whether it exists, and if so its exact bytes and mode. Returns
+// `{ path, existed: false }` for a missing file so restoreFile below knows
+// to delete rather than rewrite it. Any error other than "does not exist"
+// propagates — a snapshot that silently treats a permissions error as
+// "missing" would then delete a file it never actually read.
+function snapshotFile(path) {
+	try {
+		const bytes = readFileSync(path);
+		const mode = statSync(path).mode & 0o777;
+		return { path, existed: true, bytes, mode };
+	} catch (error) {
+		if (error.code === "ENOENT") return { path, existed: false };
+		throw error;
+	}
+}
+
+// Restores `snapshot` after the child that might have rewritten it exits,
+// but only when its current state actually differs from what was recorded:
+// a changed existing file is rewritten atomically (temp file in the same
+// directory, then renamed, so a crash mid-restore never leaves a partial
+// file) preserving the original mode; a file that did not exist before is
+// removed if the child created one. Returns true when a restore/removal
+// actually happened, so the caller prints exactly one notice.
+function restoreFile(snapshot) {
+	const { path, existed } = snapshot;
+	if (!existed) {
+		if (!existsSync(path)) return false;
+		rmSync(path, { force: true });
+		return true;
+	}
+	let currentBytes;
+	try {
+		currentBytes = readFileSync(path);
+	} catch (error) {
+		if (error.code !== "ENOENT") throw error;
+	}
+	if (currentBytes !== undefined && currentBytes.equals(snapshot.bytes)) return false;
+	mkdirSync(dirname(path), { recursive: true });
+	const tempPath = join(dirname(path), `.${basenameOf(path)}.gentle-shell-restore-${process.pid}.tmp`);
+	writeFileSync(tempPath, snapshot.bytes, { mode: snapshot.mode });
+	renameSync(tempPath, path);
+	return true;
+}
+
+function basenameOf(path) {
+	const parts = path.split(/[\\/]/);
+	return parts[parts.length - 1];
+}
+
 async function runSetupFlow(home, runtime, { dryRun, stdio }) {
 	const pinnedVersion = resolveSetupGentleAiPin();
 	if (!isSetupCapablePin(pinnedVersion)) {
@@ -440,7 +502,16 @@ async function runSetupFlow(home, runtime, { dryRun, stdio }) {
 
 	const setupArgs = ["install", "--agent", "pi", "--scope", "global", ...(dryRun ? ["--dry-run"] : [])];
 	const env = buildSetupEnv(home, runtime);
-	const installResult = await spawnAndWait(binaryPath, setupArgs, env, stdio);
+	const personaPath = sharedPersonaPath();
+	const personaSnapshot = snapshotFile(personaPath);
+	let installResult;
+	try {
+		installResult = await spawnAndWait(binaryPath, setupArgs, env, stdio);
+	} finally {
+		if (restoreFile(personaSnapshot)) {
+			process.stderr.write(`gentle-shell: kept your Pi persona unchanged (gentle-ai rewrote ${personaPath}; tracked upstream)\n`);
+		}
+	}
 	if (installResult.error) {
 		return { ok: false, exitCode: 1, message: `Could not start the gentle-ai binary: ${installResult.error.message}` };
 	}

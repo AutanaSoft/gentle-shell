@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -190,6 +202,32 @@ function writeGentleAiScriptDeclaringConflict(path: string, exitCode = 0) {
 			"settings.packages = ['npm:@juicesharp/rpiv-ask-user-question@1.2.3'];",
 			"writeFileSync(settingsPath, JSON.stringify(settings));",
 			"process.stdout.write(JSON.stringify({ args }) + '\\n');",
+			`process.exit(${exitCode});`,
+			"",
+		].join("\n"),
+	);
+	chmodSync(path, 0o755);
+}
+
+// Test/development-only stub for the setup subcommand's gentle-ai binary
+// that also rewrites the shared Pi persona file at
+// `$HOME/.pi/gentle-ai/persona.json` to the default preset, exactly like the
+// real gentle-ai does regardless of `PI_CODING_AGENT_DIR` (gentle-ai's
+// `PiPersonaConfigPath` always resolves against the OS home). Reads
+// `homedir()` inside the child so it honors the fixture's isolated `HOME`,
+// never `PI_CODING_AGENT_DIR` — that mismatch is exactly the bug the
+// snapshot/restore wrap in `runSetupFlow` guards against.
+function writeGentleAiScriptRewritingPersona(path: string, exitCode = 0) {
+	writeFileSync(
+		path,
+		[
+			"#!/usr/bin/env node",
+			"import { writeFileSync, mkdirSync } from 'node:fs';",
+			"import { homedir } from 'node:os';",
+			"import { join } from 'node:path';",
+			"const personaDir = join(homedir(), '.pi', 'gentle-ai');",
+			"mkdirSync(personaDir, { recursive: true });",
+			"writeFileSync(join(personaDir, 'persona.json'), JSON.stringify({ mode: 'gentleman' }));",
 			`process.exit(${exitCode});`,
 			"",
 		].join("\n"),
@@ -719,6 +757,123 @@ test("gentle-shell setup shell-quotes a --home path containing a space in the fa
 			`gentle-shell: could not remove npm:@juicesharp/rpiv-ask-user-question; run \`gentle-shell --home '${target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}' remove npm:@juicesharp/rpiv-ask-user-question\` before starting`,
 		),
 	);
+});
+
+// --- persona snapshot/restore -----------------------------------------------
+//
+// gentle-ai's persona file always lives at the shared `~/.pi/gentle-ai/persona.json`
+// regardless of `PI_CODING_AGENT_DIR` (see docs/readme-reference.md's setup
+// "Known limitation"), so `setup` snapshots it before spawning gentle-ai and
+// restores it afterward — in every mode gentle-ai gets spawned in: manual,
+// `--dry-run`, and automatic first-run provisioning.
+
+function personaPathFor(f: { home: string }) {
+	return join(f.home, ".pi", "gentle-ai", "persona.json");
+}
+
+test("gentle-shell setup restores the user's Pi persona file when gentle-ai rewrites it", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScriptRewritingPersona(gentleAiScript);
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript };
+
+	const personaPath = personaPathFor(f);
+	mkdirSync(dirname(personaPath), { recursive: true });
+	const originalBytes = JSON.stringify({ mode: "neutral" });
+	writeFileSync(personaPath, originalBytes);
+	chmodSync(personaPath, 0o600);
+
+	const result = run(env, ["setup"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(readFileSync(personaPath, "utf8"), originalBytes);
+	assert.equal(statSync(personaPath).mode & 0o777, 0o600);
+	assert.match(
+		result.stderr,
+		new RegExp(
+			`gentle-shell: kept your Pi persona unchanged \\(gentle-ai rewrote ${personaPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}; tracked upstream\\)`,
+		),
+	);
+});
+
+test("gentle-shell setup removes a Pi persona file gentle-ai created where none existed", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScriptRewritingPersona(gentleAiScript);
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript };
+
+	const personaPath = personaPathFor(f);
+	assert.equal(existsSync(personaPath), false);
+
+	const result = run(env, ["setup"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(existsSync(personaPath), false);
+	assert.match(result.stderr, /gentle-shell: kept your Pi persona unchanged/);
+});
+
+test("gentle-shell setup prints no persona notice when gentle-ai leaves the persona file alone", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScript(gentleAiScript);
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript };
+
+	const personaPath = personaPathFor(f);
+	mkdirSync(dirname(personaPath), { recursive: true });
+	writeFileSync(personaPath, JSON.stringify({ mode: "neutral" }));
+
+	const result = run(env, ["setup"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.doesNotMatch(result.stderr, /kept your Pi persona unchanged/);
+});
+
+test("gentle-shell setup restores the persona file even when gentle-ai exits non-zero after rewriting it", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScriptRewritingPersona(gentleAiScript, 3);
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript };
+
+	const personaPath = personaPathFor(f);
+	mkdirSync(dirname(personaPath), { recursive: true });
+	const originalBytes = JSON.stringify({ mode: "neutral" });
+	writeFileSync(personaPath, originalBytes);
+
+	const result = run(env, ["setup"]);
+	assert.equal(result.status, 3);
+	assert.equal(readFileSync(personaPath, "utf8"), originalBytes);
+	assert.match(result.stderr, /gentle-shell: kept your Pi persona unchanged/);
+});
+
+test("gentle-shell setup --dry-run also restores the persona file gentle-ai rewrites", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScriptRewritingPersona(gentleAiScript);
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript };
+
+	const personaPath = personaPathFor(f);
+	mkdirSync(dirname(personaPath), { recursive: true });
+	const originalBytes = JSON.stringify({ mode: "neutral" });
+	writeFileSync(personaPath, originalBytes);
+
+	const result = run(env, ["setup", "--dry-run"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(readFileSync(personaPath, "utf8"), originalBytes);
+	assert.match(result.stderr, /gentle-shell: kept your Pi persona unchanged/);
+});
+
+test("automatic first-run provisioning also restores the persona file gentle-ai rewrites", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScriptRewritingPersona(gentleAiScript);
+	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" });
+
+	const personaPath = personaPathFor(f);
+	mkdirSync(dirname(personaPath), { recursive: true });
+	const originalBytes = JSON.stringify({ mode: "neutral" });
+	writeFileSync(personaPath, originalBytes);
+
+	const result = run(env, []);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(readFileSync(personaPath, "utf8"), originalBytes);
+	assert.match(result.stderr, /gentle-shell: kept your Pi persona unchanged/);
 });
 
 // --- automatic first-run provisioning (S7) ---------------------------------
