@@ -4,7 +4,7 @@
 // resolution, pi resolution order, the version gate, and the pi invocation —
 // lives in that pure, unit-tested module; this file only wires it to the real
 // process, filesystem, and child process.
-import { accessSync, constants as fsConstants, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { constants as osConstants, homedir } from "node:os";
 import { delimiter, dirname, join, resolve as resolvePath } from "node:path";
@@ -15,6 +15,7 @@ import {
 	checkPiVersion,
 	decideTakeOver,
 	describeVersion,
+	discoverLooseExtensionEntries,
 	findGentlePiDeclaration,
 	helpText,
 	launcherConfigPath,
@@ -133,6 +134,64 @@ function isDirectory(path) {
 	}
 }
 
+// Real-fs adapter for discoverLooseExtensionEntries (lib/gentle-shell-launcher.ts):
+// statSync-based isFile/isDirectory (not readdirSync's Dirent, which uses
+// lstat and so would treat a symlinked file or directory as neither) so a
+// symlinked loose extension resolves the same way pi's own fs.existsSync-based
+// checks would.
+const looseExtensionFs = {
+	readdir(dir) {
+		let names;
+		try {
+			names = readdirSync(dir);
+		} catch {
+			return [];
+		}
+		return names.map((name) => {
+			const entryPath = join(dir, name);
+			try {
+				const entryStat = statSync(entryPath);
+				return { name, isFile: entryStat.isFile(), isDirectory: entryStat.isDirectory() };
+			} catch {
+				return { name, isFile: false, isDirectory: false };
+			}
+		});
+	},
+	exists: existsSync,
+};
+
+// A loose extensions directory that is itself a self-contained extension —
+// its own index.ts/index.js, or a package.json declaring a non-empty
+// "pi.extensions" manifest — is passed through as a single -e <dir> instead
+// of being broken into per-file entries: pi's own module loader (jiti)
+// resolves that case directly, exactly as it would for any other explicitly
+// configured package path.
+function readPiManifestExtensions(dir) {
+	try {
+		const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+		return Array.isArray(pkg?.pi?.extensions) ? pkg.pi.extensions : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function looseDirHasOwnEntryPoint(dir) {
+	const manifestExtensions = readPiManifestExtensions(dir);
+	if (manifestExtensions !== undefined && manifestExtensions.length > 0) return true;
+	return existsSync(join(dir, "index.ts")) || existsSync(join(dir, "index.js"));
+}
+
+// Resolves one candidate loose-extensions directory (<agentDir>/extensions or
+// <cwd>/.pi/extensions) into the -e entries a take-over must re-inject: the
+// directory itself when it is a self-contained extension, otherwise every
+// loose file discoverLooseExtensionEntries finds inside it. A missing or
+// non-directory candidate resolves to no entries.
+function resolveLooseExtensionEntries(dir) {
+	if (!isDirectory(dir)) return [];
+	if (looseDirHasOwnEntryPoint(dir)) return [dir];
+	return discoverLooseExtensionEntries(dir, looseExtensionFs);
+}
+
 function loadConfig() {
 	const configPath = launcherConfigPath(homedir());
 	const text = readJsonIfExists(configPath);
@@ -218,7 +277,7 @@ async function main() {
 	let declaration;
 	let takeOver = false;
 	let otherPackagePaths = [];
-	let looseExtensionDirs = [];
+	let looseExtensionEntries = [];
 
 	// Only --link can read another gentle-pi declaration out of a real
 	// settings.json; isolated and --home homes never declare one, so they
@@ -244,9 +303,15 @@ async function main() {
 			// --no-extensions drops pi's normal settings-driven extension
 			// discovery, which also covers loose (non-package) extensions
 			// under <agentDir>/extensions and the project-local
-			// <cwd>/.pi/extensions; re-inject both explicitly so a
+			// <cwd>/.pi/extensions. Re-injecting either directory wholesale
+			// as `-e <dir>` does not work for a directory of loose files: pi's
+			// -e flag hands the path straight to its module loader with no
+			// directory-discovery pass, so a bare directory of loose files
+			// fails with "Cannot find module ...". Resolve each candidate
+			// into its actual loose file entries (or pass it through
+			// unchanged when it is itself a self-contained extension) so a
 			// take-over does not silently stop loading them.
-			looseExtensionDirs = [join(home.dir, "extensions"), join(process.cwd(), ".pi", "extensions")].filter(isDirectory);
+			looseExtensionEntries = [join(home.dir, "extensions"), join(process.cwd(), ".pi", "extensions")].flatMap(resolveLooseExtensionEntries);
 			const declaredFrom = declaration === undefined ? "the requested package root" : declaration.kind === "npm" ? "npm:gentle-pi" : declaration.dir;
 			process.stderr.write(`gentle-shell: taking over gentle-pi from ${declaredFrom} for this run (settings unchanged).\n`);
 		}
@@ -262,7 +327,7 @@ async function main() {
 		declaration,
 		takeOver,
 		otherPackagePaths,
-		looseExtensionDirs,
+		looseExtensionEntries,
 		passthrough: args.passthrough,
 		baseEnv: process.env,
 	});

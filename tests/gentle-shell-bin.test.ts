@@ -304,15 +304,20 @@ test("--package-root forces a takeover even with no gentle-pi declaration at all
 	assert.equal(readFileSync(settingsPath, "utf8"), settingsText);
 });
 
-// --- loose extension dirs re-injected during a take-over ------------------
+// --- loose extension files re-injected during a take-over -----------------
 //
-// Regression coverage for R4-003/R3-003: --no-extensions drops pi's normal
-// settings-driven extension discovery, which also happens to be how pi finds
-// loose (non-package) extensions under <agentDir>/extensions and the
-// project-local <cwd>/.pi/extensions. A take-over must re-inject both as
-// explicit -e flags, or a maintainer's own extensions silently stop loading.
+// Regression coverage for R4-003/R3-003 (and the follow-up bug it left
+// behind): --no-extensions drops pi's normal settings-driven extension
+// discovery, which also happens to be how pi finds loose (non-package)
+// extensions under <agentDir>/extensions and the project-local
+// <cwd>/.pi/extensions. Re-injecting those two directories wholesale as
+// `-e <dir>` does not work: pi's `-e` flag hands the path straight to its
+// module loader (no directory-discovery pass), so a bare directory holding
+// only loose files fails with "Cannot find module ...". A take-over must
+// instead discover each loose file the same way pi's own directory scan
+// would (see discoverLooseExtensionEntries) and inject it individually.
 
-test("--link take-over re-injects loose extension dirs from <agentDir>/extensions and the project-local .pi/extensions", (t) => {
+test("--link take-over re-injects loose extension files, one -e per discovered file, from <agentDir>/extensions and the project-local .pi/extensions", (t) => {
 	const f = fixture(t);
 	const piAgentDir = join(f.root, "pi-agent");
 	mkdirSync(piAgentDir, { recursive: true });
@@ -325,12 +330,20 @@ test("--link take-over re-injects loose extension dirs from <agentDir>/extension
 	const settingsText = JSON.stringify({ packages: ["../other-gentle-pi"] });
 	writeFileSync(settingsPath, settingsText);
 
+	// <agentDir>/extensions: a.ts, b.js, c.ts.bak-pre-fullscreen-fix (skipped,
+	// suffix doesn't end in .ts/.js/.mjs), sub/index.ts, .hidden.ts (skipped).
 	const looseAgentExtensions = join(piAgentDir, "extensions");
-	mkdirSync(looseAgentExtensions, { recursive: true });
+	mkdirSync(join(looseAgentExtensions, "sub"), { recursive: true });
+	writeFileSync(join(looseAgentExtensions, "a.ts"), "export default () => {};");
+	writeFileSync(join(looseAgentExtensions, "b.js"), "export default () => {};");
+	writeFileSync(join(looseAgentExtensions, "gentle-agent-state.ts.bak-pre-fullscreen-fix"), "stale backup");
+	writeFileSync(join(looseAgentExtensions, ".hidden.ts"), "export default () => {};");
+	writeFileSync(join(looseAgentExtensions, "sub", "index.ts"), "export default () => {};");
 
 	const projectDir = join(f.root, "project");
 	const looseProjectExtensions = join(projectDir, ".pi", "extensions");
 	mkdirSync(looseProjectExtensions, { recursive: true });
+	writeFileSync(join(looseProjectExtensions, "project-ext.mjs"), "export default () => {};");
 	// The launcher derives this dir from process.cwd() inside the spawned
 	// child, which resolves symlinks (e.g. macOS's /tmp -> /private/tmp);
 	// realpath the expectation the same way so the two agree everywhere.
@@ -345,9 +358,13 @@ test("--link take-over re-injects loose extension dirs from <agentDir>/extension
 	assert.deepEqual(payload.args, [
 		"--no-extensions",
 		"-e",
-		looseAgentExtensions,
+		join(looseAgentExtensions, "a.ts"),
 		"-e",
-		resolvedLooseProjectExtensions,
+		join(looseAgentExtensions, "b.js"),
+		"-e",
+		join(looseAgentExtensions, "sub", "index.ts"),
+		"-e",
+		join(resolvedLooseProjectExtensions, "project-ext.mjs"),
 		"-e",
 		packageRoot,
 		"--theme",
@@ -360,6 +377,50 @@ test("--link take-over re-injects loose extension dirs from <agentDir>/extension
 		"rpc",
 	]);
 	assert.equal(readFileSync(settingsPath, "utf8"), settingsText);
+});
+
+test("--link take-over passes a loose extensions directory through unchanged when it is itself a self-contained extension (own index.ts)", (t) => {
+	const f = fixture(t);
+	const piAgentDir = join(f.root, "pi-agent");
+	mkdirSync(piAgentDir, { recursive: true });
+
+	const otherGentlePiDir = join(f.root, "other-gentle-pi");
+	mkdirSync(otherGentlePiDir, { recursive: true });
+	writeFileSync(join(otherGentlePiDir, "package.json"), JSON.stringify({ name: "gentle-pi" }));
+
+	writeFileSync(join(piAgentDir, "settings.json"), JSON.stringify({ packages: ["../other-gentle-pi"] }));
+
+	const looseAgentExtensions = join(piAgentDir, "extensions");
+	mkdirSync(looseAgentExtensions, { recursive: true });
+	writeFileSync(join(looseAgentExtensions, "index.ts"), "export default () => {};");
+	// A stray loose file alongside the root index.ts must not also be
+	// discovered individually: the whole directory is one self-contained
+	// extension, passed through as a single -e <dir>, exactly like pi's own
+	// resolveExtensionEntries would resolve it.
+	writeFileSync(join(looseAgentExtensions, "extra.ts"), "export default () => {};");
+
+	const env = { ...f.env, PI_CODING_AGENT_DIR: piAgentDir };
+	const result = run(env, ["--link"], { cwd: f.root });
+	assert.equal(result.status, 0, result.stderr);
+
+	const payload = JSON.parse(result.stdout);
+	// The only settings package is the declared gentle-pi being taken over
+	// (skipped from otherPackagePaths), so the sole -e before the launcher's
+	// own root is the loose extensions directory itself, passed through
+	// unchanged rather than broken into a[n empty] per-file list.
+	assert.deepEqual(payload.args, [
+		"--no-extensions",
+		"-e",
+		looseAgentExtensions,
+		"-e",
+		packageRoot,
+		"--theme",
+		join(packageRoot, "themes"),
+		"--skill",
+		join(packageRoot, "skills"),
+		"--prompt-template",
+		join(packageRoot, "prompts"),
+	]);
 });
 
 test("--link take-over omits -e flags for loose extension dirs that do not exist", (t) => {

@@ -10,9 +10,11 @@ import {
 	checkPiVersion,
 	decideTakeOver,
 	describeVersion,
+	discoverLooseExtensionEntries,
 	findGentlePiDeclaration,
 	helpText,
 	launcherConfigPath,
+	type LooseExtensionFsEntry,
 	missingPiMessage,
 	otherPackageInjections,
 	parseLauncherArgs,
@@ -888,7 +890,7 @@ test("buildPiInvocation takes over with --package-root even when there is no dec
 	]);
 });
 
-test("buildPiInvocation injects loose extension dirs during a takeover, after other package dirs and before the launcher's own root", () => {
+test("buildPiInvocation injects loose extension entries during a takeover, after other package dirs and before the launcher's own root", () => {
 	const built = buildPiInvocation({
 		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
 		home: linkHome,
@@ -896,7 +898,7 @@ test("buildPiInvocation injects loose extension dirs during a takeover, after ot
 		declaration: { kind: "path", dir: "/other/checkout" },
 		takeOver: true,
 		otherPackagePaths: [join("/agent", "npm", "node_modules", "some-other")],
-		looseExtensionDirs: ["/agent/extensions", join("/project", ".pi", "extensions")],
+		looseExtensionEntries: [join("/agent", "extensions", "a.ts"), join("/project", ".pi", "extensions", "b.js")],
 		passthrough: ["--mode", "rpc"],
 		baseEnv: {},
 	});
@@ -905,9 +907,9 @@ test("buildPiInvocation injects loose extension dirs during a takeover, after ot
 		"-e",
 		join("/agent", "npm", "node_modules", "some-other"),
 		"-e",
-		"/agent/extensions",
+		join("/agent", "extensions", "a.ts"),
 		"-e",
-		join("/project", ".pi", "extensions"),
+		join("/project", ".pi", "extensions", "b.js"),
 		"-e",
 		"/pkg",
 		"--theme",
@@ -921,7 +923,7 @@ test("buildPiInvocation injects loose extension dirs during a takeover, after ot
 	]);
 });
 
-test("buildPiInvocation omits loose extension dir flags when the list is empty or not provided", () => {
+test("buildPiInvocation omits loose extension entry flags when the list is empty or not provided", () => {
 	const withoutField = buildPiInvocation({
 		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
 		home: linkHome,
@@ -941,11 +943,139 @@ test("buildPiInvocation omits loose extension dir flags when the list is empty o
 		declaration: { kind: "path", dir: "/other/checkout" },
 		takeOver: true,
 		otherPackagePaths: [],
-		looseExtensionDirs: [],
+		looseExtensionEntries: [],
 		passthrough: [],
 		baseEnv: {},
 	});
 	assert.deepEqual(withEmptyField.args, withoutField.args);
+});
+
+// R3-001: a settings package path can coincide with a discovered loose
+// extension file (or a loose extension can repeat across candidate dirs);
+// buildPiInvocation must inject each resolved path at most once, keeping
+// first-occurrence order, rather than loading it twice and letting pi report
+// a duplicate-registration tool conflict.
+test("buildPiInvocation dedupes loose extension entries against other-package paths and against each other", () => {
+	const built = buildPiInvocation({
+		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
+		home: linkHome,
+		packageRoot: "/pkg",
+		declaration: { kind: "path", dir: "/other/checkout" },
+		takeOver: true,
+		otherPackagePaths: [join("/agent", "npm", "node_modules", "some-other"), "/shared/dup.ts"],
+		looseExtensionEntries: ["/shared/dup.ts", "/agent/extensions/a.ts", "/agent/extensions/a.ts"],
+		passthrough: [],
+		baseEnv: {},
+	});
+	assert.deepEqual(built.args, [
+		"--no-extensions",
+		"-e",
+		join("/agent", "npm", "node_modules", "some-other"),
+		"-e",
+		"/shared/dup.ts",
+		"-e",
+		"/agent/extensions/a.ts",
+		"-e",
+		"/pkg",
+		"--theme",
+		join("/pkg", "themes"),
+		"--skill",
+		join("/pkg", "skills"),
+		"--prompt-template",
+		join("/pkg", "prompts"),
+	]);
+});
+
+// --- discoverLooseExtensionEntries -------------------------------------------
+//
+// Pure mirror of pi's own discoverExtensionsInDir (packages/coding-agent/src/
+// core/extensions/loader.ts): direct *.ts/*.js/*.mjs files, plus <subdir>/
+// index.ts or index.js for a child directory that has one. Hidden entries and
+// *.d.ts files are deliberately excluded even though pi's own scan does not
+// special-case them, because neither was ever a runnable extension and both
+// would otherwise surface a confusing "Cannot find module" error once handed
+// to pi's loader as an explicit, no-directory-discovery `-e <file>`.
+
+function fakeFs(entries: LooseExtensionFsEntry[], indexFiles: string[] = []) {
+	return {
+		readdir: (_dir: string) => entries,
+		exists: (path: string) => indexFiles.includes(path),
+	};
+}
+
+test("discoverLooseExtensionEntries keeps direct .ts/.js/.mjs files and skips other suffixes", () => {
+	const entries = [
+		{ name: "a.ts", isFile: true, isDirectory: false },
+		{ name: "b.js", isFile: true, isDirectory: false },
+		{ name: "c.mjs", isFile: true, isDirectory: false },
+		{ name: "readme.md", isFile: true, isDirectory: false },
+		{ name: "gentle-agent-state.ts.bak-pre-fullscreen-fix", isFile: true, isDirectory: false },
+	];
+	const found = discoverLooseExtensionEntries("/extensions", fakeFs(entries));
+	assert.deepEqual(found, [join("/extensions", "a.ts"), join("/extensions", "b.js"), join("/extensions", "c.mjs")]);
+});
+
+test("discoverLooseExtensionEntries skips hidden dotfiles and .d.ts declaration files", () => {
+	const entries = [
+		{ name: ".hidden.ts", isFile: true, isDirectory: false },
+		{ name: "types.d.ts", isFile: true, isDirectory: false },
+		{ name: "real.ts", isFile: true, isDirectory: false },
+	];
+	const found = discoverLooseExtensionEntries("/extensions", fakeFs(entries));
+	assert.deepEqual(found, [join("/extensions", "real.ts")]);
+});
+
+test("discoverLooseExtensionEntries is case-sensitive on the file extension", () => {
+	const entries = [{ name: "Upper.TS", isFile: true, isDirectory: false }];
+	const found = discoverLooseExtensionEntries("/extensions", fakeFs(entries));
+	assert.deepEqual(found, []);
+});
+
+test("discoverLooseExtensionEntries includes <subdir>/index.ts, falls back to index.js, and skips a subdir with neither", () => {
+	const entries = [
+		{ name: "with-ts", isFile: false, isDirectory: true },
+		{ name: "with-js", isFile: false, isDirectory: true },
+		{ name: "empty", isFile: false, isDirectory: true },
+	];
+	const indexFiles = [join("/extensions", "with-ts", "index.ts"), join("/extensions", "with-js", "index.js")];
+	const found = discoverLooseExtensionEntries("/extensions", fakeFs(entries, indexFiles));
+	// Sorted by name: "empty" (no index.ts/index.js -> excluded), then "with-js", then "with-ts".
+	assert.deepEqual(found, [join("/extensions", "with-js", "index.js"), join("/extensions", "with-ts", "index.ts")]);
+});
+
+test("discoverLooseExtensionEntries prefers index.ts over index.js when a subdir has both", () => {
+	const entries = [{ name: "both", isFile: false, isDirectory: true }];
+	const indexFiles = [join("/extensions", "both", "index.ts"), join("/extensions", "both", "index.js")];
+	const found = discoverLooseExtensionEntries("/extensions", fakeFs(entries, indexFiles));
+	assert.deepEqual(found, [join("/extensions", "both", "index.ts")]);
+});
+
+test("discoverLooseExtensionEntries skips a hidden subdirectory even with its own index.ts", () => {
+	const entries = [{ name: ".hidden-dir", isFile: false, isDirectory: true }];
+	const indexFiles = [join("/extensions", ".hidden-dir", "index.ts")];
+	const found = discoverLooseExtensionEntries("/extensions", fakeFs(entries, indexFiles));
+	assert.deepEqual(found, []);
+});
+
+test("discoverLooseExtensionEntries sorts results by name regardless of readdir order", () => {
+	const entries = [
+		{ name: "b.ts", isFile: true, isDirectory: false },
+		{ name: "a.ts", isFile: true, isDirectory: false },
+		{ name: "sub", isFile: false, isDirectory: true },
+	];
+	const indexFiles = [join("/extensions", "sub", "index.ts")];
+	const found = discoverLooseExtensionEntries("/extensions", fakeFs(entries, indexFiles));
+	assert.deepEqual(found, [join("/extensions", "a.ts"), join("/extensions", "b.ts"), join("/extensions", "sub", "index.ts")]);
+});
+
+test("discoverLooseExtensionEntries returns an empty list when readdir throws (missing or unreadable directory)", () => {
+	const fs = {
+		readdir: (_dir: string): LooseExtensionFsEntry[] => {
+			throw new Error("ENOENT");
+		},
+		exists: (_path: string) => false,
+	};
+	assert.deepEqual(discoverLooseExtensionEntries("/missing", fs), []);
 });
 
 // --- planSpawn / quoteForCmdExe ----------------------------------------------

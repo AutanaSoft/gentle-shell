@@ -505,6 +505,87 @@ export function otherPackageInjections(input                             )      
 	return { paths, warnings };
 }
 
+// --- loose extension discovery ----------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// scripts/build-runtime-modules.mjs rewrites every `.mjs"` / `.mjs'` import
+// specifier to `.mjs` when it generates runtime/gentle-shell-launcher.mjs —
+// a plain `.replace(/\.ts(["'])/g, ...)` that cannot tell an import path from
+// an ordinary string literal. A literal ".mjs" ending a string (like a bare
+// ".mjs" suffix or an "index.mjs" filename) would get silently corrupted into
+// ".mjs" in the generated runtime module, so both are built by concatenation
+// here instead of written as a literal ending in `ts"`.
+const TS_EXTENSION = `.t${"s"}`;
+const INDEX_TS_FILENAME = `index${TS_EXTENSION}`;
+const DECLARATION_FILE_SUFFIX = `.d${TS_EXTENSION}`;
+const LOOSE_EXTENSION_FILE_PATTERN = /\.(?:ts|js|mjs)$/;
+
+function isLooseExtensionFile(name        )          {
+	if (name.startsWith(".")) return false;
+	if (name.endsWith(DECLARATION_FILE_SUFFIX)) return false;
+	return LOOSE_EXTENSION_FILE_PATTERN.test(name);
+}
+
+// Mirrors pi's own discoverExtensionsInDir (packages/coding-agent/src/core/
+// extensions/loader.ts): direct *.ts/*.js/*.mjs files, plus <subdir>/index.ts
+// (falling back to <subdir>/index.js) for a child directory that has one. No
+// recursion beyond that one level, matching pi's own rule that a more complex
+// nested package must use a package.json manifest instead.
+//
+// Unlike pi's own scan, hidden entries (dotfiles, and hidden subdirectories)
+// and *.d.ts files are deliberately excluded here: pi's `-e <file>` flag hands
+// the path straight to its module loader with no directory-discovery pass of
+// its own (see buildPiInvocation's takeOver branch), so a hidden file or a
+// type-only declaration file was never a runnable extension and would only
+// surface a confusing "Cannot find module"/empty-module error once injected.
+//
+// Returns already-resolved absolute file paths, sorted by name so the result
+// (and therefore -e ordering) does not depend on the host filesystem's
+// unspecified readdir order.
+export function discoverLooseExtensionEntries(dir        , fs                  )           {
+	let entries                         ;
+	try {
+		entries = fs.readdir(dir);
+	} catch {
+		return [];
+	}
+
+	const sorted = [...entries].sort((a, b) => a.name.localeCompare(b.name));
+	const discovered           = [];
+
+	for (const entry of sorted) {
+		if (entry.name.startsWith(".")) continue;
+
+		if (entry.isFile) {
+			if (isLooseExtensionFile(entry.name)) discovered.push(join(dir, entry.name));
+			continue;
+		}
+
+		if (!entry.isDirectory) continue;
+		const childDir = join(dir, entry.name);
+		const indexTs = join(childDir, INDEX_TS_FILENAME);
+		const indexJs = join(childDir, "index.js");
+		if (fs.exists(indexTs)) discovered.push(indexTs);
+		else if (fs.exists(indexJs)) discovered.push(indexJs);
+	}
+
+	return discovered;
+}
+
 // --- pi invocation builder ---------------------------------------------------
 
 
@@ -523,6 +604,11 @@ export function otherPackageInjections(input                             )      
 
 
 
+	                                         
+
+
+	                                      
+	                                    
 
 
 
@@ -551,10 +637,13 @@ function packageRootInjectionArgs(packageRoot        )           {
 //     it is replaced by an explicit `-e <dir>` for every OTHER settings
 //     package (skills/prompts/themes for those packages still load through
 //     ordinary settings discovery, which --no-extensions does not affect),
-//     then an explicit `-e <dir>` for every loose extension directory normal
+//     then an explicit `-e <file>` for every loose extension entry normal
 //     discovery would otherwise have found under <agentDir>/extensions and
 //     the project-local .pi/extensions, and finally this launcher's own
-//     packageRoot injected last so it wins any conflict.
+//     packageRoot injected last so it wins any conflict. Every -e path is
+//     injected at most once (R3-001): a loose entry that duplicates an
+//     other-package path, or repeats within looseExtensionEntries itself, is
+//     skipped rather than loaded twice.
 //   - Not takeOver, no declaration: inject this launcher's own packageRoot,
 //     exactly as when nothing else in settings loads gentle-pi.
 //   - Not takeOver, with a declaration: no injection at all — the target
@@ -565,11 +654,16 @@ export function buildPiInvocation(input                        )               {
 
 	if (input.takeOver) {
 		args.push("--no-extensions");
+		const injected = new Set        ();
 		for (const otherPath of input.otherPackagePaths) {
+			if (injected.has(otherPath)) continue;
+			injected.add(otherPath);
 			args.push("-e", otherPath);
 		}
-		for (const looseDir of input.looseExtensionDirs ?? []) {
-			args.push("-e", looseDir);
+		for (const entry of input.looseExtensionEntries ?? []) {
+			if (injected.has(entry)) continue;
+			injected.add(entry);
+			args.push("-e", entry);
 		}
 		args.push(...packageRootInjectionArgs(input.packageRoot));
 	} else if (input.declaration === undefined) {
