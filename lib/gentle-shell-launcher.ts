@@ -6,6 +6,17 @@ import { join } from "node:path";
 
 export type LauncherCommand = "home";
 
+// pi's own package-management subcommands (see pi's cli/args.ts printHelp
+// "Commands" list): each is dispatched by pi itself, before pi's own flag
+// parsing, purely on argv[0]. `uninstall` is pi's alias for `remove`.
+export const PI_SUBCOMMANDS = ["install", "remove", "uninstall", "update", "list", "config", "auth"] as const;
+
+export type PiSubcommand = (typeof PI_SUBCOMMANDS)[number];
+
+function isPiSubcommand(token: string): token is PiSubcommand {
+	return (PI_SUBCOMMANDS as readonly string[]).includes(token);
+}
+
 export interface ParsedLauncherArgs {
 	link: boolean;
 	isolated: boolean;
@@ -15,6 +26,11 @@ export interface ParsedLauncherArgs {
 	command?: LauncherCommand;
 	commandArgs: string[];
 	passthrough: string[];
+	// Set when the first passthrough token is one of PI_SUBCOMMANDS (e.g.
+	// `gentle-shell install npm:x`). It stays part of `passthrough` — this
+	// field only tells buildPiInvocation to skip its extension injection, so
+	// pi sees the bare subcommand it expects as argv[0].
+	piSubcommand?: PiSubcommand;
 	error?: string;
 }
 
@@ -32,6 +48,7 @@ export function parseLauncherArgs(argv: string[]): ParsedLauncherArgs {
 			command: "home",
 			commandArgs: argv.slice(1),
 			passthrough: [],
+			piSubcommand: undefined,
 			error: undefined,
 		};
 	}
@@ -42,12 +59,17 @@ export function parseLauncherArgs(argv: string[]): ParsedLauncherArgs {
 	let help = false;
 	let version = false;
 	let error: string | undefined;
+	let piSubcommand: PiSubcommand | undefined;
 	const passthrough: string[] = [];
 
 	for (let i = 0; i < argv.length; i += 1) {
 		const arg = argv[i];
 		if (arg === "--") {
-			passthrough.push(...argv.slice(i + 1));
+			const rest = argv.slice(i + 1);
+			if (passthrough.length === 0 && rest.length > 0 && isPiSubcommand(rest[0])) {
+				piSubcommand = rest[0];
+			}
+			passthrough.push(...rest);
 			break;
 		}
 		if (arg === "--link") {
@@ -86,6 +108,9 @@ export function parseLauncherArgs(argv: string[]): ParsedLauncherArgs {
 			i += 1;
 			continue;
 		}
+		if (passthrough.length === 0 && isPiSubcommand(arg)) {
+			piSubcommand = arg;
+		}
 		passthrough.push(arg);
 	}
 
@@ -99,7 +124,7 @@ export function parseLauncherArgs(argv: string[]): ParsedLauncherArgs {
 		}
 	}
 
-	return { link, isolated, home, help, version, command: undefined, commandArgs: [], passthrough, error };
+	return { link, isolated, home, help, version, command: undefined, commandArgs: [], passthrough, piSubcommand, error };
 }
 
 // --- home resolution -------------------------------------------------------
@@ -313,6 +338,11 @@ export interface BuildPiInvocationInput {
 	packageRoot: string;
 	settingsDeclareGentlePi: boolean;
 	passthrough: string[];
+	// Set when parseLauncherArgs recognised passthrough[0] as one of
+	// PI_SUBCOMMANDS. pi dispatches install/remove/uninstall/update/list/
+	// config/auth on argv[0] before its own flag parsing, so none of the
+	// gentle-pi extension injection below may precede it.
+	piSubcommand?: PiSubcommand;
 	baseEnv: Record<string, string | undefined>;
 }
 
@@ -322,14 +352,20 @@ export interface PiInvocation {
 	env: Record<string, string | undefined>;
 }
 
-// The `-e/--theme/--skill/--prompt-template` injection is skipped only when
-// the caller already confirmed the target settings.json declares the
-// package (the `--link` case with a pi-managed install). Isolated and path
-// homes never declare it, so callers pass `settingsDeclareGentlePi: false`
-// for those and the injection always happens there.
+// The `-e/--theme/--skill/--prompt-template` injection is skipped when the
+// caller already confirmed the target settings.json declares the package
+// (the `--link` case with a pi-managed install), or when passthrough[0] is
+// one of pi's own subcommands: pi dispatches install/remove/uninstall/
+// update/list/config/auth on argv[0] before it even parses flags, so any
+// injected flag ahead of it stops pi from recognising its subcommand at
+// all — this is exactly the observed 2026-09-22 bug where `gentle-shell
+// install npm:x` opened an interactive pi session instead of running the
+// package manager. Isolated and path homes never declare the package, so
+// callers pass `settingsDeclareGentlePi: false` for those and the
+// injection always happens there, unless a pi subcommand is set.
 export function buildPiInvocation(input: BuildPiInvocationInput): PiInvocation {
 	const args = [...input.runtime.args];
-	if (!input.settingsDeclareGentlePi) {
+	if (input.piSubcommand === undefined && !input.settingsDeclareGentlePi) {
 		args.push(
 			"-e",
 			input.packageRoot,
@@ -423,6 +459,18 @@ export function helpText(): string {
 		"",
 		"Commands:",
 		"  home             Print or persist the effective home mode (link, isolated, or a path).",
+		"",
+		"Managing packages:",
+		"  gentle-shell install npm:<pkg>   Run pi's own 'install' against the resolved home.",
+		"  gentle-shell remove <source>     Run pi's own 'remove' against the resolved home.",
+		"  gentle-shell list                Run pi's own 'list' against the resolved home.",
+		"  gentle-shell update [target]     Run pi's own 'update' against the resolved home.",
+		"  gentle-shell config              Run pi's own 'config' against the resolved home.",
+		"  gentle-shell auth <command>      Run pi's own 'auth' against the resolved home.",
+		"  These run pi's own commands, forwarded verbatim, against the --isolated home",
+		"  (or your own pi home with --link). Running 'gentle-shell install npm:gentle-pi'",
+		"  inside the isolated home is unnecessary: gentle-shell already loads the",
+		"  package itself.",
 		"",
 		"Environment variables:",
 		"  GENTLE_SHELL_PI       Path to the pi executable to run.",

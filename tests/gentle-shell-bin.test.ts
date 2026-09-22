@@ -149,6 +149,24 @@ test("--link skips injection and leaves settings.json byte-identical when it alr
 	assert.equal(existsSync(join(piAgentDir, ".gentle-shell")), false);
 });
 
+test("gentle-shell list forwards to pi as a bare subcommand, with no injected extension flags", (t) => {
+	const f = fixture(t);
+	const result = run(f.env, ["list"]);
+	assert.equal(result.status, 0, result.stderr);
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, ["list"]);
+	assert.equal(payload.PI_CODING_AGENT_DIR, f.gentleShellHome);
+});
+
+test("gentle-shell install npm:<pkg> forwards the subcommand and its argument verbatim", (t) => {
+	const f = fixture(t);
+	const result = run(f.env, ["install", "npm:pi-btw"]);
+	assert.equal(result.status, 0, result.stderr);
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, ["install", "npm:pi-btw"]);
+	assert.equal(payload.PI_CODING_AGENT_DIR, f.gentleShellHome);
+});
+
 test("a too-old pi exits 1 naming both versions", (t) => {
 	const f = fixture(t);
 	writePiScript(f.piScript, "0.80.0");
