@@ -469,6 +469,52 @@ test("gentle-agents notifies once, deduplicated, when the RPC activity publisher
 	assert.equal(notify.mock.calls[0]?.arguments[1], "warning");
 });
 
+// Regression for the desktop app's Helpers tab showing helpers from every
+// session: a resumed session's own finished tasks restore from disk into
+// the shared `TaskStore` (see "resuming a session restores its own
+// finished tasks as history, never another session's" above for the
+// overlay-render side of this), and the RPC activity publisher created on
+// `session_start` must scope its `setWidget` payload to the same session,
+// never surfacing another session's restored task.
+test("gentle-agents' RPC activity payload excludes a restored task from another session", async (t) => {
+	const h = fakePi();
+	const runtime = deps();
+	const scheduler = fakeScheduler();
+	runtime.deps.schedule = scheduler.schedule;
+	runtime.deps.env = { PATH: "/bin", GENTLE_SHELL_INTERACTIVE_HOST: "1" };
+	const historyHome = join(root, "rpc-restore-history-home");
+	const own: TaskRecord = { id: "own-1", agent: "explore-a", mode: "background", prompt: "p", label: "p", cwd, parentSessionId: "resumed-session", status: TASK_STATUS.COMPLETED, createdAt: 1, startedAt: 1, endedAt: 100, model: "m", thinking: undefined, sessionPath: null, error: null, result: "done", lastStep: "responded", lastActivityAt: 100, turns: 1, toolCalls: 0, tokens: 0, cost: 0 };
+	const other: TaskRecord = { ...own, id: "not-mine", agent: "explore-other", parentSessionId: "other-session" };
+	await saveTask(historyDir(historyHome), own, emptyThread());
+	await saveTask(historyDir(historyHome), other, emptyThread());
+	runtime.deps.home = historyHome;
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	Object.assign(ctx, { mode: "rpc", hasUI: true });
+	ctx.sessionManager.getSessionId = () => "resumed-session";
+	const setWidget = t.mock.method(ctx.ui, "setWidget");
+
+	await h.fire("session_start", ctx, { reason: "resume" });
+
+	// The disk history read behind restoreSessionHistory is fire-and-forget
+	// real async I/O, unrelated to the fake coalescing scheduler; poll both
+	// until the resumed session's own restored task reaches a flushed frame.
+	let activity: { tasks: Array<{ summary: { id: string } }> } | undefined;
+	for (let attempt = 0; attempt < 40 && !activity; attempt += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		scheduler.flushAll();
+		const activityCalls = setWidget.mock.calls.filter((call) => call.arguments[0] === "gentle-agents" && Array.isArray(call.arguments[1]));
+		if (activityCalls.length === 0) continue;
+		const [, lines] = activityCalls.at(-1)!.arguments as unknown as [string, string[]];
+		const parsed = JSON.parse(lines[0]!) as { tasks: Array<{ summary: { id: string } }> };
+		if (parsed.tasks.some((entry) => entry.summary.id === "own-1")) activity = parsed;
+	}
+
+	assert.ok(activity, "the RPC activity payload must eventually include the resumed session's own restored task");
+	assert.ok(!activity!.tasks.some((entry) => entry.summary.id === "not-mine"), "another session's restored task must never appear in the RPC activity payload");
+	await h.fire("session_shutdown", ctx);
+});
+
 test("all nine subagent registrations own their transcript shell", () => {
 	const { pi, tools } = fakePi();
 	gentleAgents(pi, {}, deps().deps);

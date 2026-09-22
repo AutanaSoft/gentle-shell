@@ -185,6 +185,41 @@ test("projectRpcActivity honors a custom maxThreadItems override", () => {
 	assert.deepEqual((activity.tasks[0]!.thread.items as { text: string }[]).map((item) => item.text), ["n3", "n4"]);
 });
 
+// Regression for the desktop app's Helpers tab showing helpers from every
+// session: `TaskStore` restores finished tasks of every session from disk at
+// startup, so an RPC push scoped to `opts.parentSessionId` must project only
+// the current session's tasks, and its `summary` counts must match.
+test("projectRpcActivity with parentSessionId keeps only that session's tasks and computes the summary from them", () => {
+	const store = new TaskStore();
+	store.add(task("mine-running", "s1", { status: TASK_STATUS.RUNNING }));
+	store.add(task("mine-finished", "s1", { status: TASK_STATUS.COMPLETED, endedAt: 100 }));
+	store.add(task("other-running", "s2", { status: TASK_STATUS.RUNNING }));
+	store.add(task("other-finished", "s2", { status: TASK_STATUS.COMPLETED, endedAt: 200 }));
+
+	const activity = projectRpcActivity(store, { parentSessionId: "s1" });
+
+	assert.deepEqual(
+		activity.tasks.map((entry) => entry.summary.id).sort(),
+		["mine-finished", "mine-running"],
+		"only the requested session's tasks are projected",
+	);
+	assert.deepEqual(activity.summary, store.summary("s1"), "summary counts are scoped to the same session filter, not the whole store");
+	assert.notDeepEqual(activity.summary, store.summary(), "an unfiltered summary would have counted the other session's tasks too");
+});
+
+// Tasks restored on demand (e.g. opening an older task from another session
+// in the overlay) can land in the shared store without ever being live in
+// the current session; the RPC projection must still exclude them by id.
+test("projectRpcActivity with parentSessionId excludes a task from another session even when it is the only one in the store", () => {
+	const store = new TaskStore();
+	store.add(task("not-mine", "other-session"));
+
+	const activity = projectRpcActivity(store, { parentSessionId: "current-session" });
+
+	assert.deepEqual(activity.tasks, []);
+	assert.deepEqual(activity.summary, { running: 0, queued: 0, waiting: 0, finished: 0 });
+});
+
 test("encodeActivityLines returns the activity untouched as a single line when it already fits", () => {
 	const activity: RpcActivity = { schema: ACTIVITY_SCHEMA, summary: { running: 0, queued: 0, waiting: 0, finished: 0 }, tasks: [] };
 
@@ -364,6 +399,37 @@ test("createRpcActivityPublisher stop unsubscribes everything and publishes exac
 	store.apply("t1", { type: TASK_EVENT.TEXT, text: "after stop" }, 10);
 	assert.equal(scheduler.pendingCount(), 0, "task subscriptions are torn down by stop");
 	assert.equal(calls.length, 1, "no further frame is published after stop");
+});
+
+// `parentSessionId` is a value captured at construction, not a live getter.
+// Honoring a mid-process session switch (a resumed/new/forked session) is
+// the caller's job: stop the old publisher and construct a new one scoped
+// to the new session id, exactly as `extensions/gentle-agents.ts` does on
+// every `session_start`. This locks in that only the newly scoped publisher
+// ever sees the other session's tasks.
+test("createRpcActivityPublisher recreated with a new parentSessionId after a session switch publishes only the new session's tasks", () => {
+	const store = new TaskStore();
+	store.add(task("session-a-task", "session-a"));
+	const scheduler = fakeScheduler();
+	const calls: string[][] = [];
+	const ui = { setWidget: (_key: string, lines: string[]) => calls.push(lines) };
+
+	const first = createRpcActivityPublisher({ store, ui, schedule: scheduler.schedule, parentSessionId: "session-a" });
+	first.start();
+	scheduler.flushAll();
+	const firstActivity = JSON.parse(calls.at(-1)![0]!) as RpcActivity;
+	assert.deepEqual(firstActivity.tasks.map((entry) => entry.summary.id), ["session-a-task"]);
+
+	first.stop();
+	calls.length = 0;
+	store.add(task("session-b-task", "session-b"));
+
+	const second = createRpcActivityPublisher({ store, ui, schedule: scheduler.schedule, parentSessionId: "session-b" });
+	second.start();
+	scheduler.flushAll();
+
+	const secondActivity = JSON.parse(calls.at(-1)![0]!) as RpcActivity;
+	assert.deepEqual(secondActivity.tasks.map((entry) => entry.summary.id), ["session-b-task"], "the publisher scoped to the new session must never carry the old session's task");
 });
 
 test("createRpcActivityPublisher flush publishes immediately and cancels a pending coalescing timer", () => {
