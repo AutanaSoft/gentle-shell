@@ -410,6 +410,33 @@ Every acceptance criterion except the e2e one is now met. What remains unproven 
 cannot prove: that a real extension provider satisfies `streamSimple(...).result()` at runtime. That is
 IRP-7.
 
+## IRP-7 setup (build installed, e2e pending)
+
+- `pnpm run check:runtime-modules` — exit 0, `runtime matches TypeScript sources (6 generated
+  modules)`. `lib/inprocess-reviewer.ts` is not a generated module, so no regeneration was needed.
+- `node scripts/verify-package-files.mjs` — exit 0, `167 files; 69 exact byte-pinned contract
+  artifacts for the v3.4.0 runtime`.
+- `pnpm pack` on `e8f20fda` produced `gentle-pi-3.3.0.tgz` (its `prepack` re-ran the full suite, the
+  runtime-module check and the package-file check, all green).
+- The tarball was moved to `~/.pi/local-builds/gentle-pi-3.3.0-e8f20fda.tgz` **before** installing, and
+  `~/.pi/agent/npm` now pins `file:../../local-builds/gentle-pi-3.3.0-e8f20fda.tgz`. This is a
+  deliberate correction of the earlier mistake IRP-0 had to clean up: the previous local build was
+  packed inside the repository, so a branch switch deleted the tarball and left a pin pointing at
+  nothing. A path under `~/.pi` is not touched by repository operations, and the commit sha in the
+  filename makes it obvious which build is installed.
+- Installed build verified to carry the fix: `lib/inprocess-reviewer.ts:216`
+  `deps.registry.getProvider?.(parsed.provider)` and `:295` the `streamSimple(...).result()` dispatch.
+- Runtime note: gentle-pi manages its own package-local binary at `.gentle-ai/v3.4.0/gentle-ai`. The
+  `gentle-ai` on `PATH` (`~/.local/bin`, v3.3.0) is a separate global install. The extension uses the
+  managed one, so the earlier `review assess` runs in this document used the PATH binary and were
+  informational only.
+
+**Still pending and only the human can do it:** the e2e needs a **new pi session** — not `/reload`,
+because a live session already holds the previously loaded module — and a review whose lens routes to
+`claude-bridge/*`.
+
+To roll back: `cd ~/.pi/agent/npm && npm install gentle-pi@3.3.0`.
+
 ## Native review boundary
 
 Receipt-driven development is **on** (decided by global). Per work-unit commit:
