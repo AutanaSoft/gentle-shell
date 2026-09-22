@@ -4,7 +4,7 @@
 // resolution, pi resolution order, the version gate, and the pi invocation —
 // lives in that pure, unit-tested module; this file only wires it to the real
 // process, filesystem, and child process.
-import { accessSync, constants as fsConstants, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { constants as osConstants, homedir } from "node:os";
 import { delimiter, dirname, join, resolve as resolvePath } from "node:path";
@@ -13,16 +13,18 @@ import { fileURLToPath } from "node:url";
 import {
 	buildPiInvocation,
 	checkPiVersion,
+	decideTakeOver,
 	describeVersion,
+	findGentlePiDeclaration,
 	helpText,
 	launcherConfigPath,
 	missingPiMessage,
+	otherPackageInjections,
 	parseLauncherArgs,
 	parseLauncherConfig,
 	planSpawn,
 	resolveHome,
 	resolvePiRuntime,
-	settingsDeclareGentlePi,
 } from "../runtime/gentle-shell-launcher.mjs";
 import { installIsolatedTuiModeSetting } from "../scripts/install-tui-mode-setting.mjs";
 
@@ -83,7 +85,41 @@ function ownPackageVersion() {
 }
 
 function emptyArgs() {
-	return { link: false, isolated: false, home: undefined, help: false, version: false, command: undefined, commandArgs: [], passthrough: [], error: undefined };
+	return {
+		link: false,
+		isolated: false,
+		home: undefined,
+		packageRoot: undefined,
+		help: false,
+		version: false,
+		command: undefined,
+		commandArgs: [],
+		passthrough: [],
+		error: undefined,
+	};
+}
+
+// package.json "name" reader injected into findGentlePiDeclaration: a
+// missing or unreadable package.json, or a non-string "name", is never an
+// error here — it just means that path package is not gentle-pi.
+function readPackageName(dir) {
+	try {
+		const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+		return typeof pkg.name === "string" ? pkg.name : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+// Best-effort realpath: a directory that does not exist (yet, or ever)
+// cannot be realpath'd, so the take-over decision falls back to comparing
+// the raw path instead of failing.
+function safeRealpath(path) {
+	try {
+		return realpathSync(path);
+	} catch {
+		return path;
+	}
 }
 
 function loadConfig() {
@@ -165,17 +201,49 @@ async function main() {
 		process.stderr.write(`gentle-shell: using a separate home at ${home.dir}. Run 'gentle-shell --link' to reuse your pi sign-ins and chats.\n`);
 	}
 
-	let linkDeclaresGentlePi = false;
+	const packageRootExplicit = args.packageRoot !== undefined;
+	const effectivePackageRoot = packageRootExplicit ? resolvePath(args.packageRoot) : packageRoot;
+
+	let declaration;
+	let takeOver = false;
+	let otherPackagePaths = [];
+
+	// Only --link can read another gentle-pi declaration out of a real
+	// settings.json; isolated and --home homes never declare one, so they
+	// always get the plain injection (declaration stays undefined) unless
+	// --package-root itself forces a take-over below.
 	if (home.mode === "link") {
 		const settingsText = readJsonIfExists(join(home.dir, "settings.json"));
-		linkDeclaresGentlePi = settingsDeclareGentlePi(settingsText);
+		declaration = findGentlePiDeclaration(settingsText, { agentDir: home.dir, readPackageName });
+		const realEffectivePackageRoot = safeRealpath(effectivePackageRoot);
+		const realDeclaredDir = declaration?.kind === "path" ? safeRealpath(declaration.dir) : undefined;
+		takeOver = decideTakeOver({
+			declaration,
+			packageRoot: effectivePackageRoot,
+			realPackageRoot: realEffectivePackageRoot,
+			realDeclaredDir,
+			packageRootExplicit,
+		});
+		if (takeOver) {
+			const skip = declaration ?? { kind: "path", dir: realEffectivePackageRoot };
+			const injections = otherPackageInjections({ settingsText, agentDir: home.dir, skip });
+			otherPackagePaths = injections.paths;
+			for (const warning of injections.warnings) process.stderr.write(`${warning}\n`);
+			const declaredFrom = declaration === undefined ? "the requested package root" : declaration.kind === "npm" ? "npm:gentle-pi" : declaration.dir;
+			process.stderr.write(`gentle-shell: taking over gentle-pi from ${declaredFrom} for this run (settings unchanged).\n`);
+		}
 	}
+	// Isolated and --home homes have no declaration to take over: declaration
+	// stays undefined and buildPiInvocation injects effectivePackageRoot the
+	// same way it always has, --package-root included.
 
 	const invocation = buildPiInvocation({
 		runtime,
 		home,
-		packageRoot,
-		settingsDeclareGentlePi: home.mode === "link" ? linkDeclaresGentlePi : false,
+		packageRoot: effectivePackageRoot,
+		declaration,
+		takeOver,
+		otherPackagePaths,
 		passthrough: args.passthrough,
 		baseEnv: process.env,
 	});

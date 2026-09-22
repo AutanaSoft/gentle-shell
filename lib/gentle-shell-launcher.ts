@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
 
 // The gentle-shell launcher: pure, side-effect-free functions over injected
 // env/fs/exec. `bin/gentle-shell.mjs` (T2) wires these into the real process,
@@ -10,6 +10,7 @@ export interface ParsedLauncherArgs {
 	link: boolean;
 	isolated: boolean;
 	home?: string;
+	packageRoot?: string;
 	help: boolean;
 	version: boolean;
 	command?: LauncherCommand;
@@ -27,6 +28,7 @@ export function parseLauncherArgs(argv: string[]): ParsedLauncherArgs {
 			link: false,
 			isolated: false,
 			home: undefined,
+			packageRoot: undefined,
 			help: false,
 			version: false,
 			command: "home",
@@ -39,6 +41,7 @@ export function parseLauncherArgs(argv: string[]): ParsedLauncherArgs {
 	let link = false;
 	let isolated = false;
 	let home: string | undefined;
+	let packageRoot: string | undefined;
 	let help = false;
 	let version = false;
 	let error: string | undefined;
@@ -86,6 +89,26 @@ export function parseLauncherArgs(argv: string[]): ParsedLauncherArgs {
 			i += 1;
 			continue;
 		}
+		if (arg.startsWith("--package-root=")) {
+			const value = arg.slice("--package-root=".length);
+			if (value.length === 0) {
+				error = "--package-root requires a non-empty path argument";
+				continue;
+			}
+			packageRoot = value;
+			continue;
+		}
+		if (arg === "--package-root") {
+			const value = argv[i + 1];
+			if (value === undefined || value.length === 0) {
+				error = "--package-root requires a non-empty path argument";
+				if (value !== undefined) i += 1;
+				continue;
+			}
+			packageRoot = value;
+			i += 1;
+			continue;
+		}
 		passthrough.push(arg);
 	}
 
@@ -99,7 +122,7 @@ export function parseLauncherArgs(argv: string[]): ParsedLauncherArgs {
 		}
 	}
 
-	return { link, isolated, home, help, version, command: undefined, commandArgs: [], passthrough, error };
+	return { link, isolated, home, packageRoot, help, version, command: undefined, commandArgs: [], passthrough, error };
 }
 
 // --- home resolution -------------------------------------------------------
@@ -282,27 +305,198 @@ export function checkPeerVersionPin(packageJson: PackageJsonPeerShape, peerName:
 	return { ok: true, pinned };
 }
 
-// --- settings.json detection ---------------------------------------------------
+// --- settings.json package declaration detection --------------------------
 
-function packageEntryDeclaresGentlePi(entry: unknown): boolean {
-	const declares = (value: unknown): boolean => typeof value === "string" && (value === "npm:gentle-pi" || value.startsWith("npm:gentle-pi@"));
-	if (declares(entry)) return true;
-	if (entry !== null && typeof entry === "object") return declares((entry as Record<string, unknown>).source);
-	return false;
+// Matches the raw git URL forms pi accepts without a `git:` prefix.
+const GIT_URL_PATTERN = /^(?:https?|ssh|git):\/\//;
+
+function entrySource(entry: unknown): string | undefined {
+	if (typeof entry === "string") return entry;
+	if (entry !== null && typeof entry === "object") {
+		const source = (entry as Record<string, unknown>).source;
+		if (typeof source === "string") return source;
+	}
+	return undefined;
 }
 
-export function settingsDeclareGentlePi(settingsText: string | undefined): boolean {
-	if (settingsText === undefined) return false;
+export type PackageSourceKind = "npm" | "git" | "path";
+
+// A settings `packages` entry is npm- or git-sourced only via an explicit
+// `npm:`/`git:` prefix or a bare git URL; every other source (relative or
+// absolute) is a local path, per pi's own package-source rules.
+export function packageSourceKind(source: string): PackageSourceKind {
+	if (source.startsWith("npm:")) return "npm";
+	if (source.startsWith("git:")) return "git";
+	if (GIT_URL_PATTERN.test(source)) return "git";
+	return "path";
+}
+
+function npmSourceDeclaresGentlePi(source: string): boolean {
+	return source === "npm:gentle-pi" || source.startsWith("npm:gentle-pi@");
+}
+
+// npm:<name> or npm:<name>@<version>, tolerating a scoped `@scope/name`: only
+// the first `@` *after* the leading scope marker starts a version suffix.
+function npmPackageName(source: string): string {
+	const spec = source.slice("npm:".length);
+	if (spec.startsWith("@")) {
+		const versionAt = spec.indexOf("@", 1);
+		return versionAt === -1 ? spec : spec.slice(0, versionAt);
+	}
+	const versionAt = spec.indexOf("@");
+	return versionAt === -1 ? spec : spec.slice(0, versionAt);
+}
+
+function parseSettingsPackages(settingsText: string | undefined): unknown[] | undefined {
+	if (settingsText === undefined) return undefined;
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(settingsText);
 	} catch {
-		return false;
+		return undefined;
 	}
-	if (typeof parsed !== "object" || parsed === null) return false;
+	if (typeof parsed !== "object" || parsed === null) return undefined;
 	const packages = (parsed as Record<string, unknown>).packages;
-	if (!Array.isArray(packages)) return false;
+	return Array.isArray(packages) ? packages : undefined;
+}
+
+function packageEntryDeclaresGentlePi(entry: unknown): boolean {
+	const source = entrySource(entry);
+	return source !== undefined && packageSourceKind(source) === "npm" && npmSourceDeclaresGentlePi(source);
+}
+
+// Deprecated: recognises only an `npm:gentle-pi` declaration. Kept as a thin
+// compatibility wrapper over the pre-existing behaviour for any caller that
+// only cares about the npm case; findGentlePiDeclaration below also detects
+// a path package whose own package.json names it "gentle-pi".
+export function settingsDeclareGentlePi(settingsText: string | undefined): boolean {
+	const packages = parseSettingsPackages(settingsText);
+	if (packages === undefined) return false;
 	return packages.some(packageEntryDeclaresGentlePi);
+}
+
+export type GentlePiDeclaration = { kind: "npm" } | { kind: "path"; dir: string };
+
+export interface FindGentlePiDeclarationOptions {
+	agentDir: string;
+	// Injected fs reader: returns <dir>/package.json's "name" field, or
+	// undefined when the file is missing, unreadable, or has no string name.
+	readPackageName: (dir: string) => string | undefined;
+}
+
+// Detects a settings.json `packages` entry that already loads gentle-pi,
+// either as `npm:gentle-pi[@version]` or as a local path (string or object
+// `source`) whose own package.json declares `"name": "gentle-pi"`. Path
+// entries are resolved relative to `opts.agentDir`, matching how pi itself
+// resolves a settings-relative local path.
+export function findGentlePiDeclaration(settingsText: string | undefined, opts: FindGentlePiDeclarationOptions): GentlePiDeclaration | undefined {
+	const packages = parseSettingsPackages(settingsText);
+	if (packages === undefined) return undefined;
+
+	for (const entry of packages) {
+		const source = entrySource(entry);
+		if (source === undefined) continue;
+		const kind = packageSourceKind(source);
+		if (kind === "npm" && npmSourceDeclaresGentlePi(source)) return { kind: "npm" };
+		if (kind === "path") {
+			const dir = resolvePath(opts.agentDir, source);
+			if (opts.readPackageName(dir) === "gentle-pi") return { kind: "path", dir };
+		}
+	}
+	return undefined;
+}
+
+// --- take-over decision ---------------------------------------------------
+
+export interface DecideTakeOverInput {
+	declaration: GentlePiDeclaration | undefined;
+	packageRoot: string;
+	realPackageRoot: string;
+	// realpath of the declared path dir, when declaration.kind === "path".
+	// Falls back to the raw declared dir when the caller could not realpath
+	// it (for example the directory does not exist).
+	realDeclaredDir?: string;
+	// True when the user passed --package-root explicitly: forces a
+	// take-over even for a matching npm declaration, so a different
+	// checkout can always be tested on demand.
+	packageRootExplicit: boolean;
+}
+
+export function decideTakeOver(input: DecideTakeOverInput): boolean {
+	if (input.packageRootExplicit) return true;
+	if (input.declaration === undefined) return false;
+	if (input.declaration.kind === "npm") return false;
+	const realDeclaredDir = input.realDeclaredDir ?? input.declaration.dir;
+	return realDeclaredDir !== input.realPackageRoot;
+}
+
+// --- other-package injection planning --------------------------------------
+
+export interface OtherPackageInjectionsInput {
+	settingsText: string | undefined;
+	agentDir: string;
+	// The gentle-pi declaration being taken over: its own entry is excluded
+	// from the result, since it is injected separately as the launcher's
+	// own packageRoot.
+	skip: GentlePiDeclaration;
+}
+
+export interface OtherPackageInjections {
+	paths: string[];
+	warnings: string[];
+}
+
+function entryFilterKeys(entry: unknown): string[] {
+	if (entry === null || typeof entry !== "object") return [];
+	const record = entry as Record<string, unknown>;
+	const keys: string[] = [];
+	if ("extensions" in record) keys.push("extensions");
+	if ("autoload" in record) keys.push("autoload");
+	return keys;
+}
+
+// Plans the `-e <dir>` flags a take-over must add for every OTHER settings
+// package once `--no-extensions` drops normal settings-driven extension
+// discovery. git-sourced packages are skipped (their install directory is
+// not derivable without pi's own package manager) with a warning; object
+// entries carrying `extensions`/`autoload` filters are still included, with
+// a warning that the take-over cannot honour those filters (their skills,
+// prompts, and themes still load through ordinary settings discovery, which
+// --no-extensions does not affect).
+export function otherPackageInjections(input: OtherPackageInjectionsInput): OtherPackageInjections {
+	const paths: string[] = [];
+	const warnings: string[] = [];
+	const packages = parseSettingsPackages(input.settingsText);
+	if (packages === undefined) return { paths, warnings };
+
+	for (const entry of packages) {
+		const source = entrySource(entry);
+		if (source === undefined) continue;
+		const kind = packageSourceKind(source);
+
+		if (kind === "npm" && npmSourceDeclaresGentlePi(source) && input.skip.kind === "npm") continue;
+		if (kind === "path") {
+			const dir = resolvePath(input.agentDir, source);
+			if (input.skip.kind === "path" && dir === input.skip.dir) continue;
+		}
+
+		if (kind === "git") {
+			warnings.push(
+				`gentle-shell: skipping git-sourced package "${source}" during takeover (its install directory is not derivable without pi's own package manager).`,
+			);
+			continue;
+		}
+
+		const filters = entryFilterKeys(entry);
+		if (filters.length > 0) {
+			warnings.push(
+				`gentle-shell: package "${source}" has ${filters.join("/")} filters that this takeover cannot honour for extensions; its skills, prompts, and themes still load through settings discovery.`,
+			);
+		}
+
+		paths.push(kind === "npm" ? join(input.agentDir, "npm", "node_modules", npmPackageName(source)) : resolvePath(input.agentDir, source));
+	}
+	return { paths, warnings };
 }
 
 // --- pi invocation builder ---------------------------------------------------
@@ -311,7 +505,15 @@ export interface BuildPiInvocationInput {
 	runtime: PiRuntime;
 	home: ResolvedHome;
 	packageRoot: string;
-	settingsDeclareGentlePi: boolean;
+	declaration: GentlePiDeclaration | undefined;
+	// True when the target settings already declare a *different* gentle-pi
+	// than this launcher's own packageRoot (or --package-root forces it):
+	// the launcher takes over the pi invocation instead of deferring to the
+	// declared package.
+	takeOver: boolean;
+	// Directories for every OTHER settings package, from otherPackageInjections.
+	// Only consulted when takeOver is true.
+	otherPackagePaths: string[];
 	passthrough: string[];
 	baseEnv: Record<string, string | undefined>;
 }
@@ -322,25 +524,35 @@ export interface PiInvocation {
 	env: Record<string, string | undefined>;
 }
 
-// The `-e/--theme/--skill/--prompt-template` injection is skipped only when
-// the caller already confirmed the target settings.json declares the
-// package (the `--link` case with a pi-managed install). Isolated and path
-// homes never declare it, so callers pass `settingsDeclareGentlePi: false`
-// for those and the injection always happens there.
+function packageRootInjectionArgs(packageRoot: string): string[] {
+	return ["-e", packageRoot, "--theme", join(packageRoot, "themes"), "--skill", join(packageRoot, "skills"), "--prompt-template", join(packageRoot, "prompts")];
+}
+
+// Three cases:
+//   - No declaration: inject this launcher's own packageRoot, exactly as
+//     when nothing else in settings loads gentle-pi.
+//   - Declaration and not takeOver: no injection at all — the target
+//     settings already load a gentle-pi the launcher accepts as-is (the
+//     `--link` case with a pi-managed install matching this launcher).
+//   - Declaration and takeOver: the target settings declare a *different*
+//     gentle-pi. `--no-extensions` drops normal settings-driven extension
+//     discovery, an explicit `-e <dir>` is added for every OTHER settings
+//     package (skills/prompts/themes for those packages still load through
+//     ordinary settings discovery, which --no-extensions does not affect),
+//     and this launcher's own packageRoot is injected last so it wins.
 export function buildPiInvocation(input: BuildPiInvocationInput): PiInvocation {
 	const args = [...input.runtime.args];
-	if (!input.settingsDeclareGentlePi) {
-		args.push(
-			"-e",
-			input.packageRoot,
-			"--theme",
-			join(input.packageRoot, "themes"),
-			"--skill",
-			join(input.packageRoot, "skills"),
-			"--prompt-template",
-			join(input.packageRoot, "prompts"),
-		);
+
+	if (input.declaration === undefined) {
+		args.push(...packageRootInjectionArgs(input.packageRoot));
+	} else if (input.takeOver) {
+		args.push("--no-extensions");
+		for (const otherPath of input.otherPackagePaths) {
+			args.push("-e", otherPath);
+		}
+		args.push(...packageRootInjectionArgs(input.packageRoot));
 	}
+
 	args.push(...input.passthrough);
 
 	return {
@@ -418,6 +630,8 @@ export function helpText(): string {
 		"  --link           Use your existing pi agent home (never edits its settings.json).",
 		"  --isolated       Use the dedicated ~/.gentle-shell/agent home (default).",
 		"  --home <path>    Use a custom agent home directory.",
+		"  --package-root <dir>  Force this directory as the gentle-pi package to load, taking over",
+		"                        from any conflicting package the target settings.json already declares.",
 		"  --help, -h       Show this help text.",
 		"  --version        Show gentle-shell, pi, and home version information.",
 		"",

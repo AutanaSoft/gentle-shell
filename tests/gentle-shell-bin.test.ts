@@ -168,3 +168,105 @@ test("--version prints three lines", (t) => {
 	assert.match(lines[1], /^pi 0\.85\.1$/);
 	assert.match(lines[2], /^home isolated /);
 });
+
+// --- --link takeover of a conflicting path package -----------------------
+//
+// Regression coverage for the settings.json shape that triggered the tool
+// conflict bug: gentle-pi declared as a relative *path* package (not
+// npm:gentle-pi) alongside another package. findGentlePiDeclaration now
+// recognises that path declaration by reading its package.json "name", and
+// the launcher takes over the pi invocation instead of also injecting its
+// own -e, which used to load two copies of gentle-pi side by side.
+
+test("--link takes over a path-declared conflicting gentle-pi: --no-extensions, the other package's dir, then this launcher's own -e, settings byte-identical", (t) => {
+	const f = fixture(t);
+	const piAgentDir = join(f.root, "pi-agent");
+	mkdirSync(piAgentDir, { recursive: true });
+
+	const otherGentlePiDir = join(f.root, "other-gentle-pi");
+	mkdirSync(otherGentlePiDir, { recursive: true });
+	writeFileSync(join(otherGentlePiDir, "package.json"), JSON.stringify({ name: "gentle-pi" }));
+
+	const settingsPath = join(piAgentDir, "settings.json");
+	const settingsText = JSON.stringify({ packages: ["npm:some-other", "../other-gentle-pi"] });
+	writeFileSync(settingsPath, settingsText);
+
+	const env = { ...f.env, PI_CODING_AGENT_DIR: piAgentDir };
+	const result = run(env, ["--link", "--mode", "rpc"]);
+	assert.equal(result.status, 0, result.stderr);
+
+	assert.match(result.stderr, /taking over gentle-pi from/);
+	assert.match(result.stderr, /other-gentle-pi/);
+
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, [
+		"--no-extensions",
+		"-e",
+		join(piAgentDir, "npm", "node_modules", "some-other"),
+		"-e",
+		packageRoot,
+		"--theme",
+		join(packageRoot, "themes"),
+		"--skill",
+		join(packageRoot, "skills"),
+		"--prompt-template",
+		join(packageRoot, "prompts"),
+		"--mode",
+		"rpc",
+	]);
+
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsText);
+	assert.equal(payload.PI_CODING_AGENT_DIR, piAgentDir);
+});
+
+test("--link does not take over a git-sourced other package: it is skipped with a warning, not injected", (t) => {
+	const f = fixture(t);
+	const piAgentDir = join(f.root, "pi-agent");
+	mkdirSync(piAgentDir, { recursive: true });
+
+	const otherGentlePiDir = join(f.root, "other-gentle-pi");
+	mkdirSync(otherGentlePiDir, { recursive: true });
+	writeFileSync(join(otherGentlePiDir, "package.json"), JSON.stringify({ name: "gentle-pi" }));
+
+	const settingsPath = join(piAgentDir, "settings.json");
+	writeFileSync(settingsPath, JSON.stringify({ packages: ["git:github.com/foo/bar", "../other-gentle-pi"] }));
+
+	const env = { ...f.env, PI_CODING_AGENT_DIR: piAgentDir };
+	const result = run(env, ["--link"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stderr, /skipping git-sourced package/);
+
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, ["--no-extensions", "-e", packageRoot, "--theme", join(packageRoot, "themes"), "--skill", join(packageRoot, "skills"), "--prompt-template", join(packageRoot, "prompts")]);
+});
+
+test("--package-root forces a takeover even when settings already declare a matching npm:gentle-pi", (t) => {
+	const f = fixture(t);
+	const piAgentDir = join(f.root, "pi-agent");
+	mkdirSync(piAgentDir, { recursive: true });
+	const settingsPath = join(piAgentDir, "settings.json");
+	const settingsText = JSON.stringify({ packages: ["npm:gentle-pi"] });
+	writeFileSync(settingsPath, settingsText);
+
+	const forcedRoot = join(f.root, "forced-root");
+	mkdirSync(forcedRoot, { recursive: true });
+
+	const env = { ...f.env, PI_CODING_AGENT_DIR: piAgentDir };
+	const result = run(env, ["--link", "--package-root", forcedRoot]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stderr, /taking over gentle-pi from npm:gentle-pi/);
+
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, [
+		"--no-extensions",
+		"-e",
+		forcedRoot,
+		"--theme",
+		join(forcedRoot, "themes"),
+		"--skill",
+		join(forcedRoot, "skills"),
+		"--prompt-template",
+		join(forcedRoot, "prompts"),
+	]);
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsText);
+});
