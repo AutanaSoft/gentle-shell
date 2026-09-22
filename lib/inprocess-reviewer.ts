@@ -26,11 +26,14 @@ import { SAFE_MODEL_ID_PATTERN } from "./model-routing-authority.ts";
 
 // ---------------------------------------------------------------------------
 // Registry seam — a structural subset of pi's live ModelRegistry
-// (@earendil-works/pi-coding-agent core/model-registry.ts). `find`,
-// `getApiKeyAndHeaders` and `getProvider` are all needed here; the real
-// registry's resolved auth carries extra optional fields (`baseUrl`, `env`)
-// that this narrower shape simply ignores. `getProvider` is optional so a
-// test double with no composition layer still satisfies the seam.
+// (@earendil-works/pi-coding-agent core/model-registry.ts). `find` and
+// `getApiKeyAndHeaders` are required. `getProvider` is optional and selects
+// the dispatch path: when present, the completion goes through the composed
+// provider it returns (which is what reaches extension-registered providers);
+// when absent, it falls back to `deps.complete`, so a test double with no
+// composition layer still satisfies the seam. The real registry's resolved
+// auth carries extra optional fields (`baseUrl`, `env`) that this narrower
+// shape simply ignores.
 // ---------------------------------------------------------------------------
 
 /**
