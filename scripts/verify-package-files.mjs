@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const root = join(fileURLToPath(new URL("..", import.meta.url)));
 
 const requiredPaths = [
+  "bin/gentle-shell.mjs",
   "assets/orchestrator.md",
   "assets/orchestrator-delegation.md",
   "assets/orchestrator-memory.md",
@@ -54,6 +55,7 @@ const requiredPaths = [
   "extensions/sdd-init.ts",
   "extensions/skill-registry.ts",
   "lib/gentle-ai-binary.ts",
+  "lib/gentle-shell-launcher.ts",
   "lib/native-review-cli.ts",
   "lib/provider-contract-bundle.ts",
   "lib/review-host-relay.ts",
@@ -62,6 +64,7 @@ const requiredPaths = [
   "lib/sdd-preflight.ts",
   "lib/telemetry-trigger.ts",
 	"runtime/gentle-ai-binary.mjs",
+	"runtime/gentle-shell-launcher.mjs",
 	"runtime/native-review-cli.mjs",
 	"runtime/review-integration-v2.mjs",
 	"runtime/review-risk-assessment.mjs",
@@ -70,6 +73,7 @@ const requiredPaths = [
   "scripts/check-provider-contract.mjs",
   "scripts/gentle-ai-installer.mjs",
   "scripts/install-gentle-ai.mjs",
+  "scripts/install-tui-mode-setting.mjs",
   "scripts/mirror-provider-contract.mjs",
   "tests/fixtures/native-review-cli/v2.1.3/start.json",
   "tests/fixtures/provider-contract-bundle/v1.1.0/README.md",

@@ -233,6 +233,29 @@ See the [v2.6.0 release notes](https://github.com/Gentleman-Programming/gentle-p
 
 For prerequisites, source-checkout instructions, full install behavior, and release policy, use the **[installation reference](docs/readme-reference.md#install)**. For everyday work, describe the outcome and follow [ODD](#odd--the-everyday-workflow).
 
+### Without touching your pi
+
+`gentle-shell` opens Pi with the Gentle Shell package loaded, without installing it into your pi agent or editing its `settings.json`.
+
+```bash
+npm i -g gentle-pi
+
+# Own home, never touches your pi install
+gentle-shell
+
+# Reuse your pi sign-ins, models and chats instead
+gentle-shell --link
+```
+
+`gentle-shell` alone starts in its own home, `~/.gentle-shell/agent`. `gentle-shell --link` reuses `~/.pi/agent` as-is.
+
+```bash
+# Make --link the default
+gentle-shell home link
+```
+
+Every other argument is forwarded to pi unchanged, for example `gentle-shell --mode rpc` or `gentle-shell -p "..."`. Full flags, env vars, and modes: **[launcher reference](docs/readme-reference.md#gentle-shell-launcher)**.
+
 <p align="right"><a href="#top">Back to top ↑</a></p>
 
 <p align="center">
