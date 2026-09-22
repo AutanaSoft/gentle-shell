@@ -203,12 +203,22 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 	// (a test double with no composition layer) still uses `deps.complete`.
 	// A registry that has `getProvider` yet owns no provider for a model its
 	// own `find` just resolved is incoherent: refuse, never route past it.
-	const provider = deps.registry.getProvider?.(model.provider);
+	//
+	// The lookup deliberately uses `parsed.provider` — the key `find` was
+	// called with — and not `model.provider`, which is a field of the object
+	// `find` returned. In pi's registry both reads hit one provider map
+	// (core/model-runtime.ts `getProvider`/`getModel` -> pi-ai models.ts, where
+	// `getModels(provider)` returns [] for an unknown id), so a resolved model
+	// always has a provider under its own key and this branch is unreachable by
+	// construction. Keying on the returned field instead would make that
+	// guarantee depend on every provider's `getModels()` echoing its own id,
+	// which a native or OAuth-modified extension provider is free not to do.
+	const provider = deps.registry.getProvider?.(parsed.provider);
 	if (deps.registry.getProvider !== undefined && provider === undefined) {
 		return refuse(
 			INPROCESS_REVIEWER_FAILURE.MODEL_NOT_FOUND,
-			`The model registry resolved ${JSON.stringify(request.selection)} for ${request.routingKey} but owns no provider for ${JSON.stringify(model.provider)}; reassign ${request.routingKey} to a model whose provider the interactive pi can actually dispatch.`,
-			{ provider: model.provider, api: model.api },
+			`The model registry resolved ${JSON.stringify(request.selection)} for ${request.routingKey} but owns no provider for ${JSON.stringify(parsed.provider)}; reassign ${request.routingKey} to a model whose provider the interactive pi can actually dispatch.`,
+			{ provider: parsed.provider, api: model.api },
 		);
 	}
 

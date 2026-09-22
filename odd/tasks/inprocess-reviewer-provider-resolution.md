@@ -246,6 +246,49 @@ PR remain the user's decision.
   module's narrow seam already drops the real registry's `env` field, so even today's compat path falls
   back to ambient `process.env` rather than registry-resolved env.
 
+## Audit: is the incoherence guard reachable?
+
+Asked before IRP-4, because a guard that refuses a working configuration would be a regression the
+e2e could not see. `getProvider` is keyed by provider id; `completeSimple`'s fallback was keyed by
+api (`getApiProvider(model.api)`). Different keys, so the question was real.
+
+**Verdict: not reachable. The guard is safe.** The invariant holds by construction, not by survey:
+`ModelRegistry.find` and `ModelRegistry.getProvider` both delegate to one `ModelRuntime` and one
+pi-ai `Models` instance, and `getModels(provider)` returns `[]` for a provider id absent from that
+map. So `find(p, id) !== undefined` implies `getProvider(p) !== undefined`. There is no second
+catalog. Every insertion path (builtins, `models.json`, radius, native extension provider,
+`ProviderConfigInput` extension provider, OAuth) keys on the same provider id.
+
+A custom provider id riding a builtin api is representable in `models.json`, but the same declaration
+that makes the model findable also registers the provider, and pi's composer falls back to the
+identical `getApiProvider(model.api)` internally — so that case is not divergent either.
+
+**Hardening applied anyway (behaviourally identical today):** the lookup now keys on
+`parsed.provider`, the key `find` was called with, instead of `model.provider`, a field of the object
+`find` returned. `find` filters only on `model.id`, so keying on the returned field would make the
+guarantee depend on every provider's `getModels()` echoing its own id — which a native or
+OAuth-`modifyModels` extension provider is free not to do. Keying on the call argument makes the
+branch unreachable by construction rather than by survey. A `getApiProvider`-style fallback was
+explicitly rejected: it would reintroduce exactly the extension-provider blindness this change fixes.
+
+**This audit also revises the IRP-4 risk, and the two sources disagree.** The implementer reported
+`withEnvApiKey` as a live regression window; this audit finds it redundant, because pi's own auth
+resolvers already read `process.env` through the auth context and `getApiKeyAndHeaders` runs before
+the call. IRP-4 settles it with a test, not by picking a side.
+
+## Native review boundary
+
+Receipt-driven development is **on** (decided by global). Per work-unit commit:
+
+- `aa964db4`, `a0130b50` — documentation only, passive, structural readback only. Boundary advanced.
+- `60f9d4e6` — `gentle-ai review assess --base-ref aa964db4 --committed-only` returned `risk: medium`
+  (`executable_change` on `lib/inprocess-reviewer.ts`, 3 paths, 193 changed lines). Medium **defers to
+  the PR slice**: the candidate is the range accumulated since `aa964db4`, and the native preflight
+  STATUS runs at slice close (after IRP-4 and IRP-6), not per commit. Outcome so far:
+  **deferred to slice**.
+
+The next reviewed boundary becomes the base for whatever follows the slice.
+
 ## Next step
 
 IRP-4: lock the env-API-key behavior for a provider that resolves `ok: true` with no `apiKey`, so the
