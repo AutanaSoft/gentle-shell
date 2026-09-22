@@ -355,6 +355,76 @@ test("gentle-shell setup exits 1 with an actionable message when the pinned gent
 	assert.match(result.stderr, new RegExp(missingBinary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });
 
+// --- setup subcommand's gentle-ai pin gate (R3/R4 advisory findings) -------
+//
+// `gentle-shell setup` points PI_CODING_AGENT_DIR at the resolved home
+// before spawning the package-local pinned gentle-ai; only gentle-ai >=
+// 3.6.0 honors that variable in its own provisioning. An older pin would
+// silently provision the caller's real ~/.pi/agent instead, so setup must
+// refuse to spawn it. GENTLE_SHELL_GENTLE_AI_PIN is a test/development-only
+// override for the reported pin, next to GENTLE_SHELL_GENTLE_AI_BIN;
+// documented as test/development-only in docs/readme-reference.md.
+
+test("gentle-shell setup refuses to run an older-than-3.6.0 pin and spawns nothing", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScript(gentleAiScript);
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.5.0" };
+
+	const result = run(env, ["setup"]);
+	assert.equal(result.status, 1);
+	assert.match(result.stderr, /gentle-shell: setup needs the package-local gentle-ai v3\.6\.0 or newer \(pinned: 3\.5\.0\); this build cannot provision a home without touching ~\/\.pi\/agent/);
+	// The isolated-home bootstrap runs before command dispatch on every run
+	// (same as a successful setup); the pin gate only refuses to spawn
+	// gentle-ai, so no gentle-ai invocation is recorded on stdout.
+	assert.equal(result.stdout, "");
+});
+
+test("gentle-shell setup proceeds when the reported pin is exactly 3.6.0", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScript(gentleAiScript);
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" };
+
+	const result = run(env, ["setup"]);
+	assert.equal(result.status, 0, result.stderr);
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, ["install", "--agent", "pi", "--scope", "global"]);
+});
+
+// --- --package-root silently ignored in a declared non-link home ----------
+
+test("--package-root warns and is ignored when an isolated home already declares gentle-pi", (t) => {
+	const f = fixture(t);
+	mkdirSync(f.gentleShellHome, { recursive: true });
+	writeFileSync(join(f.gentleShellHome, "settings.json"), JSON.stringify({ packages: ["npm:gentle-pi@3.5.1"], tuiMode: "fullscreen" }));
+	const forcedRoot = join(f.root, "forced-root");
+	mkdirSync(forcedRoot, { recursive: true });
+
+	const result = run(f.env, ["--package-root", forcedRoot, "--mode", "rpc"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(
+		result.stderr,
+		new RegExp(
+			`--package-root only forces a take-over in --link mode; ${f.gentleShellHome.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} declares gentle-pi, so the installed package is used and ${forcedRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} is ignored`,
+		),
+	);
+	assert.doesNotMatch(result.stderr, /taking over gentle-pi from/);
+
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, ["--mode", "rpc"]);
+});
+
+test("--package-root prints no warning when the home does not declare gentle-pi", (t) => {
+	const f = fixture(t);
+	const forcedRoot = join(f.root, "forced-root");
+	mkdirSync(forcedRoot, { recursive: true });
+
+	const result = run(f.env, ["--package-root", forcedRoot, "--mode", "rpc"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.doesNotMatch(result.stderr, /--package-root only forces a take-over/);
+});
+
 test("--help mentions the setup subcommand", (t) => {
 	const f = fixture(t);
 	const result = run(f.env, ["--help"]);

@@ -18,7 +18,9 @@ import {
 	discoverLooseExtensionEntries,
 	findGentlePiDeclaration,
 	helpText,
+	isSetupCapablePin,
 	launcherConfigPath,
+	MIN_SETUP_GENTLE_AI_VERSION,
 	missingPiMessage,
 	otherPackageInjections,
 	parseLauncherArgs,
@@ -27,7 +29,7 @@ import {
 	resolveHome,
 	resolvePiRuntime,
 } from "../runtime/gentle-shell-launcher.mjs";
-import { gentleAiBinaryPath, PackageLocalGentleAiBinaryMissingError } from "../runtime/gentle-ai-binary.mjs";
+import { GENTLE_AI_VERSION, gentleAiBinaryPath, PackageLocalGentleAiBinaryMissingError } from "../runtime/gentle-ai-binary.mjs";
 import { installIsolatedTuiModeSetting } from "../scripts/install-tui-mode-setting.mjs";
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -243,6 +245,15 @@ function resolveSetupGentleAiBinary() {
 	return override !== undefined && override.length > 0 ? override : gentleAiBinaryPath();
 }
 
+// Test/development-only override for the setup subcommand's reported
+// package-local gentle-ai pin. Lets a test simulate an older or newer pin
+// without changing the real installed .gentle-ai/v<version> bundle. Never
+// consulted outside `setup`; see docs/readme-reference.md.
+function resolveSetupGentleAiPin() {
+	const override = process.env.GENTLE_SHELL_GENTLE_AI_PIN;
+	return override !== undefined && override.length > 0 ? override : GENTLE_AI_VERSION;
+}
+
 // Provisions `home` with everything `gentle-ai install --agent pi` installs
 // into a regular Pi, by spawning the package-local pinned gentle-ai binary
 // (never a PATH `gentle-ai`) with PI_CODING_AGENT_DIR/GENTLE_PI_AGENT_HOME set
@@ -250,7 +261,10 @@ function resolveSetupGentleAiBinary() {
 // gentle-ai's own preflight finds `pi` even when it is bundled or given
 // through GENTLE_SHELL_PI. `home` and `runtime` are resolved by the caller
 // exactly as a normal run resolves them (including the isolated/--home
-// bootstrap and the pi version gate).
+// bootstrap and the pi version gate). Precondition: the package-local
+// gentle-ai pin must be at least MIN_SETUP_GENTLE_AI_VERSION — the first
+// release that honors PI_CODING_AGENT_DIR here — or this refuses to spawn it,
+// since an older pin would silently provision the caller's real ~/.pi/agent.
 async function handleSetupCommand(commandArgs, home, runtime) {
 	let dryRun = false;
 	for (const arg of commandArgs) {
@@ -259,6 +273,14 @@ async function handleSetupCommand(commandArgs, home, runtime) {
 			continue;
 		}
 		fail(`Unrecognized argument for 'gentle-shell setup': ${arg}\nRun 'gentle-shell --help' for usage.`, 2);
+	}
+
+	const pinnedVersion = resolveSetupGentleAiPin();
+	if (!isSetupCapablePin(pinnedVersion)) {
+		fail(
+			`gentle-shell: setup needs the package-local gentle-ai v${MIN_SETUP_GENTLE_AI_VERSION} or newer (pinned: ${pinnedVersion}); this build cannot provision a home without touching ~/.pi/agent`,
+			1,
+		);
 	}
 
 	const binaryPath = resolveSetupGentleAiBinary();
@@ -378,6 +400,15 @@ async function main() {
 	if (args.piSubcommand === undefined) {
 		const settingsText = readJsonIfExists(join(home.dir, "settings.json"));
 		declaration = findGentlePiDeclaration(settingsText, { agentDir: home.dir, readPackageName });
+		// --package-root only forces a take-over in --link mode (see below);
+		// in every other mode a declared home silently keeps using its
+		// declared gentle-pi and --package-root has no effect at all. Warn
+		// once so an operator does not assume --package-root took effect.
+		if (packageRootExplicit && home.mode !== "link" && declaration !== undefined) {
+			process.stderr.write(
+				`gentle-shell: --package-root only forces a take-over in --link mode; ${home.dir} declares gentle-pi, so the installed package is used and ${args.packageRoot} is ignored\n`,
+			);
+		}
 		const realEffectivePackageRoot = safeRealpath(effectivePackageRoot);
 		const realDeclaredDir = declaration?.kind === "path" ? safeRealpath(declaration.dir) : undefined;
 		takeOver = decideTakeOver({

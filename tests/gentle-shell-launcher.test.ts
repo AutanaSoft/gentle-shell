@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
 	MIN_PI_VERSION,
+	MIN_SETUP_GENTLE_AI_VERSION,
 	PI_SUBCOMMANDS,
 	buildPiInvocation,
 	checkPeerVersionPin,
@@ -14,6 +15,7 @@ import {
 	discoverLooseExtensionEntries,
 	findGentlePiDeclaration,
 	helpText,
+	isSetupCapablePin,
 	launcherConfigPath,
 	type LooseExtensionFsEntry,
 	missingPiMessage,
@@ -545,6 +547,44 @@ test("checkPiVersion accepts a custom minimum", () => {
 	assert.equal(checkPiVersion("1.0.0", "1.1.0").ok, false);
 	assert.equal(checkPiVersion("1.1.0", "1.1.0").ok, true);
 	assert.equal(checkPiVersion("1.2.0", "1.1.0").ok, true);
+});
+
+// --- isSetupCapablePin -------------------------------------------------------
+// `gentle-shell setup` provisions a home through the package-local pinned
+// gentle-ai binary by pointing PI_CODING_AGENT_DIR at that home; only
+// gentle-ai >= 3.6.0 honors that variable in its own `install --agent pi`
+// provisioning. An older pin would silently provision the caller's real
+// ~/.pi/agent instead, so setup must refuse to spawn it.
+
+test("MIN_SETUP_GENTLE_AI_VERSION is 3.6.0", () => {
+	assert.equal(MIN_SETUP_GENTLE_AI_VERSION, "3.6.0");
+});
+
+test("isSetupCapablePin accepts a version equal to the minimum", () => {
+	assert.equal(isSetupCapablePin("3.6.0"), true);
+});
+
+test("isSetupCapablePin accepts a version above the minimum", () => {
+	assert.equal(isSetupCapablePin("3.6.1"), true);
+	assert.equal(isSetupCapablePin("4.0.0"), true);
+});
+
+test("isSetupCapablePin rejects a version below the minimum", () => {
+	assert.equal(isSetupCapablePin("3.5.1"), false);
+	assert.equal(isSetupCapablePin("3.5.9"), false);
+});
+
+test("isSetupCapablePin accepts a v-prefixed version", () => {
+	assert.equal(isSetupCapablePin("v3.6.0"), true);
+});
+
+test("isSetupCapablePin rejects unparsable input", () => {
+	assert.equal(isSetupCapablePin("not a version"), false);
+});
+
+test("isSetupCapablePin accepts a custom minimum", () => {
+	assert.equal(isSetupCapablePin("2.0.0", "2.1.0"), false);
+	assert.equal(isSetupCapablePin("2.1.0", "2.1.0"), true);
 });
 
 // --- settingsDeclareGentlePi ------------------------------------------------

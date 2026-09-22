@@ -313,6 +313,25 @@ export function checkPiVersion(output        , minimum         = MIN_PI_VERSION)
 	return { ok: true, version };
 }
 
+// --- setup subcommand's gentle-ai pin gate -----------------------------------
+
+// The first gentle-ai release that honors PI_CODING_AGENT_DIR in its own
+// `install --agent pi` provisioning. `gentle-shell setup` spawns the
+// package-local pinned gentle-ai with PI_CODING_AGENT_DIR set to the
+// resolved home; an older pin ignores that variable and silently provisions
+// the caller's real ~/.pi/agent instead, so setup must refuse to run it.
+export const MIN_SETUP_GENTLE_AI_VERSION = "3.6.0";
+
+export function isSetupCapablePin(version        , minimum         = MIN_SETUP_GENTLE_AI_VERSION)          {
+	const match = VERSION_PATTERN.exec(version);
+	if (!match) return false;
+	const minimumMatch = VERSION_PATTERN.exec(minimum);
+	if (!minimumMatch) throw new Error(`invalid minimum version "${minimum}"`);
+	const found                           = [Number(match[1]), Number(match[2]), Number(match[3])];
+	const wanted                           = [Number(minimumMatch[1]), Number(minimumMatch[2]), Number(minimumMatch[3])];
+	return compareVersions(found, wanted) >= 0;
+}
+
 // --- packaging drift guard -----------------------------------------------------
 
 
