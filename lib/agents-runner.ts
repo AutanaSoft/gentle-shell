@@ -2,6 +2,7 @@ import { isSessionChangeEvidence, type SessionChangeEvidence } from "./session-c
 import type { Duplex, Readable, Writable } from "node:stream";
 import { stripVTControlCharacters } from "node:util";
 import { RESEARCH_SELECTION_ENV } from "./sdd-research-capabilities.ts";
+import { withoutInteractiveHost } from "./rpc-host.ts";
 import { AGENT_MODE, formatModelRef, type AgentDefinition, type AgentMode, type ModelRef } from "./agents-config.ts";
 import { CHILD_QUERY_MAX_INFLIGHT, CHILD_QUERY_TIMEOUT_MS, parseChildFrame, validChildMessage, validChildQueryId } from "./agents-messaging.ts";
 import { ParentStandingReviewPermissionBroker } from "./review-session-standing-permission-ipc.ts";
@@ -491,13 +492,17 @@ export class AgentRunner {
 		const detached = this.processControl.platform !== "win32";
 		const hasParentPermissionChannel = request.authorizeParentStandingReviewPermission !== undefined;
 		const permissionChannelStdio = this.processControl.platform === "win32" ? "overlapped" : "pipe";
-		const env = {
+		// Subagent children are always headless: strip the desktop app's
+		// interactive-host signal even if it leaked into `request.env`, so a
+		// child spawned from an interactive RPC host never mistakes itself for
+		// one (`lib/rpc-host.ts`).
+		const env = withoutInteractiveHost({
 			...request.env,
 			...(request.extensionPaths ? { [RESEARCH_SELECTION_ENV]: JSON.stringify(request.researchSelection ?? null) } : {}),
 			[CHILD_MARKER]: "1",
 			[IPC_MARKER]: `${this.deps.now()}-${Math.random().toString(36).slice(2)}`,
 			...(hasParentPermissionChannel ? { GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3" } : {}),
-		};
+		});
 		delete env[REMEDIATION_PLAN_ENV];
 		if (request.sddRemediation) env[REMEDIATION_PLAN_ENV] = JSON.stringify({ plan: request.sddRemediation.plan, scope: request.sddRemediation.scope, selection: request.sddChange });
 		let child: ChildLike;

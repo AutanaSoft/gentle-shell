@@ -379,6 +379,96 @@ for (const mode of ["print", "tui", "rpc"] as const) {
 	});
 }
 
+/** Controllable fake for `AgentsDeps.schedule`: records every scheduled callback instead of running it, so a test can fire the RPC publisher's coalescing window deterministically. */
+function fakeScheduler() {
+	const pending: Array<{ id: number; fn: () => void }> = [];
+	let nextId = 0;
+	return {
+		schedule: (fn: () => void, _ms: number) => {
+			const id = nextId++;
+			pending.push({ id, fn });
+			return () => {
+				const index = pending.findIndex((entry) => entry.id === id);
+				if (index !== -1) pending.splice(index, 1);
+			};
+		},
+		flushAll: () => {
+			const due = pending.splice(0, pending.length);
+			for (const entry of due) entry.fn();
+		},
+	};
+}
+
+for (const scenario of [
+	{ label: "an interactive RPC host", mode: "rpc", env: { PATH: "/bin", GENTLE_SHELL_INTERACTIVE_HOST: "1" }, expectPublish: true },
+	{ label: "plain RPC without the interactive-host variable", mode: "rpc", env: { PATH: "/bin" }, expectPublish: false },
+	{ label: "TUI", mode: "tui", env: { PATH: "/bin" }, expectPublish: false },
+] as const) {
+	test(`gentle-agents publishes the live activity payload through setWidget only on ${scenario.label}`, async (t) => {
+		const h = fakePi();
+		const runtime = deps();
+		const scheduler = fakeScheduler();
+		runtime.deps.schedule = scheduler.schedule;
+		runtime.deps.env = scenario.env;
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx } = fakeContext();
+		Object.assign(ctx, { mode: scenario.mode, hasUI: scenario.mode === "tui" || scenario.mode === "rpc" });
+		const setWidget = t.mock.method(ctx.ui, "setWidget");
+
+		await h.fire("session_start", ctx);
+		scheduler.flushAll(); // consume the publisher's own start-time frame, if any
+		setWidget.mock.resetCalls();
+
+		await h.tools.get("subagent_run")!.execute("control", { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
+		scheduler.flushAll();
+
+		// The TUI card's own setWidget call always carries a component-factory
+		// function, never an array; only the RPC publisher pushes an array.
+		const activityCalls = setWidget.mock.calls.filter((call) => call.arguments[0] === "gentle-agents" && Array.isArray(call.arguments[1]));
+		if (!scenario.expectPublish) {
+			assert.deepEqual(activityCalls, [], "no array-shaped setWidget push outside an interactive RPC host");
+			return;
+		}
+		assert.equal(activityCalls.length, 1, "one push per coalescing window");
+		// The fake `ui.setWidget` types `content` as the TUI-only component factory;
+		// the RPC publisher instead calls it with a plain `string[]` (real pi's
+		// RPC-mode contract), which needs an unknown-mediated cast here.
+		const [key, lines] = activityCalls[0]!.arguments as unknown as [string, string[]];
+		assert.equal(key, "gentle-agents");
+		assert.equal(lines.length, 1);
+		const activity = JSON.parse(lines[0]!) as { schema: string; tasks: Array<{ summary: { id: string } }> };
+		assert.equal(activity.schema, "gentle-agents.activity/v1");
+		assert.ok(activity.tasks.some((task) => typeof task.summary.id === "string" && task.summary.id.length > 0), "the newly launched task must be in the payload");
+	});
+}
+
+test("gentle-agents notifies once, deduplicated, when the RPC activity publisher's setWidget throws", async (t) => {
+	const h = fakePi();
+	const runtime = deps();
+	const scheduler = fakeScheduler();
+	runtime.deps.schedule = scheduler.schedule;
+	runtime.deps.env = { PATH: "/bin", GENTLE_SHELL_INTERACTIVE_HOST: "1" };
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	Object.assign(ctx, { mode: "rpc", hasUI: true });
+	const notify = t.mock.method(ctx.ui, "notify");
+	// Only the publisher's array-shaped push fails; the TUI card's own
+	// component-factory push (`showWidget`) must stay untouched.
+	ctx.ui.setWidget = ((_key: string, content: unknown) => {
+		if (Array.isArray(content)) throw new Error("boom");
+	}) as typeof ctx.ui.setWidget;
+
+	await h.fire("session_start", ctx);
+	scheduler.flushAll(); // the publisher's own start-time frame fails: one notify
+
+	await h.tools.get("subagent_run")!.execute("control", { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
+	scheduler.flushAll(); // a second flush with the same recurring failure must not notify again
+
+	assert.equal(notify.mock.callCount(), 1, "the same recurring setWidget failure is deduplicated to one notify per session");
+	assert.match(String(notify.mock.calls[0]?.arguments[0]), /boom/);
+	assert.equal(notify.mock.calls[0]?.arguments[1], "warning");
+});
+
 test("all nine subagent registrations own their transcript shell", () => {
 	const { pi, tools } = fakePi();
 	gentleAgents(pi, {}, deps().deps);
