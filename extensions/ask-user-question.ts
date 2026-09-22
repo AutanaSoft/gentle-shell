@@ -80,8 +80,9 @@ const MULTI_SELECT_ROUND_CAP_FLOOR = 32;
 
 /**
  * Hard bound on toggle rounds for one question: every option must be
- * toggleable at least once with one round left for the explicit Done, so
- * the cap scales with the option count (`options.length + 2`), floored at
+ * toggleable at least once, plus one round for the explicit Done and one
+ * spare round for a single correction (an un-toggle), so the cap scales
+ * with the option count (`options.length + 2`), floored at
  * `MULTI_SELECT_ROUND_CAP_FLOOR` for small questions.
  */
 function multiSelectRoundCap(optionsLength: number): number {

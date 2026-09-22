@@ -88,7 +88,7 @@ When the whole-payload bound is still exceeded after the field- and item-level t
 3. Drop whole finished tasks — oldest-finished first, by `endedAt`.
 4. Last resort: once only active (running/waiting/queued) tasks remain, each already down to one thread item, empty every remaining task's thread too — a summary-only payload.
 
-A task's `summary` — active or finished — is never dropped; only its `thread.items` are.
+An active task's `summary` (running, waiting or queued) is never dropped; only its `thread.items` shrink. Finished tasks can be dropped whole by step 3, oldest first.
 
 ## Coalescing
 
