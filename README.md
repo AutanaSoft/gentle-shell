@@ -203,37 +203,9 @@ The [v2.6.0 release](https://github.com/Gentleman-Programming/gentle-pi/releases
 
 ## Get started
 
-Install the stable release, restart Pi, then synchronize the installed assets.
-
 > **Naming transition:** The product is called `gentle-shell`; the current npm package and repository remain `gentle-pi` until migration.
 
-```bash
-# Published stable release: v2.6.0
-pi install npm:gentle-pi@2.6.0
-
-# Restart Pi, then run:
-gentle-ai sync
-
-# Start Pi in your project
-pi
-```
-
-See the [v2.6.0 release notes](https://github.com/Gentleman-Programming/gentle-pi/releases/tag/v2.6.0) for version-specific changes.
-
-```text
-/gentle:status
-/gentle:doctor
-```
-
-> **RDD is opt-in:** enable native receipt-driven development only through an explicit `/gentle:review-mode enable` decision.
-
-> **Fullscreen installation note:** a recognized global installation persists Pi’s `"tuiMode": "fullscreen"` setting. Project-local and other install paths do not receive that change.
-
-> **Interactive RPC hosts:** the desktop app sets `GENTLE_SHELL_INTERACTIVE_HOST=1` automatically, without touching your Pi config — see the [installation reference](docs/readme-reference.md#interactive-rpc-hosts).
-
-For prerequisites, source-checkout instructions, full install behavior, and release policy, use the **[installation reference](docs/readme-reference.md#install)**. For everyday work, describe the outcome and follow [ODD](#odd--the-everyday-workflow).
-
-### Without touching your pi
+### Path A: standalone `gentle-shell` (recommended, no pi changes)
 
 `gentle-shell` opens Pi with the Gentle Shell package loaded, without installing it into your pi agent or editing its `settings.json`.
 
@@ -255,6 +227,36 @@ gentle-shell home link
 ```
 
 Every other argument is forwarded to pi unchanged, for example `gentle-shell --mode rpc` or `gentle-shell -p "..."`. Full flags, env vars, and modes: **[launcher reference](docs/readme-reference.md#gentle-shell-launcher)**.
+
+### Path B: inside an existing pi
+
+Install the stable release into an existing pi agent, restart Pi, then synchronize the installed assets.
+
+```bash
+# Published stable release: v3.5.1
+pi install npm:gentle-pi@3.5.1
+
+# Restart Pi, then run:
+gentle-ai sync
+
+# Start Pi in your project
+pi
+```
+
+See the [v3.5.1 release notes](https://github.com/Gentleman-Programming/gentle-shell/releases/tag/v3.5.1) for version-specific changes.
+
+```text
+/gentle:status
+/gentle:doctor
+```
+
+> **RDD is opt-in:** enable native receipt-driven development only through an explicit `/gentle:review-mode enable` decision.
+
+> **Fullscreen installation note:** a recognized global installation persists Pi’s `"tuiMode": "fullscreen"` setting. Project-local and other install paths do not receive that change.
+
+> **Interactive RPC hosts:** the desktop app sets `GENTLE_SHELL_INTERACTIVE_HOST=1` automatically, without touching your Pi config — see the [installation reference](docs/readme-reference.md#interactive-rpc-hosts).
+
+For prerequisites, source-checkout instructions, full install behavior, and release policy, use the **[installation reference](docs/readme-reference.md#install)**. For everyday work, describe the outcome and follow [ODD](#odd--the-everyday-workflow).
 
 <p align="right"><a href="#top">Back to top ↑</a></p>
 

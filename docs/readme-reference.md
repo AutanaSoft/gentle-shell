@@ -135,15 +135,33 @@ Callers own keyboard policy, theme state, and business actions.
 
 ## Install
 
+Two paths reach the same package. Path A stays standalone; Path B installs into an existing pi.
+
+### Path A: standalone `gentle-shell` (recommended, no pi changes)
+
 ```bash
-pi install npm:gentle-pi@2.6.0
+npm i -g gentle-pi
+
+# Own home, never touches your pi install
+gentle-shell
+
+# Reuse your pi sign-ins, models and chats instead
+gentle-shell --link
 ```
 
-The stable release is [`v2.6.0`](https://github.com/Gentleman-Programming/gentle-pi/releases/tag/v2.6.0). Restart Pi after installation, then run `gentle-ai sync`. That published release pairs with Gentle AI `v2.8.0` and provider contract `1.2.0`; capabilities `v2.5` are retained. The command above installs that exact published version.
+`gentle-shell` alone starts in its own home, `~/.gentle-shell/agent`. `gentle-shell --link` reuses `~/.pi/agent` as-is. Run `gentle-shell home link` to make `--link` the default. Full flags, env vars, and modes: [gentle-shell launcher](#gentle-shell-launcher).
+
+### Path B: inside an existing pi
+
+```bash
+pi install npm:gentle-pi@3.5.1
+```
+
+The stable release is [`v3.5.1`](https://github.com/Gentleman-Programming/gentle-shell/releases/tag/v3.5.1). Restart Pi after installation, then run `gentle-ai sync`. That published release pairs with Gentle AI `v2.8.0` and provider contract `1.2.0`; capabilities `v2.5` are retained. The command above installs that exact published version.
 
 ### Source checkout
 
-This checkout prepares `gentle-pi` `3.4.0`; it is source state, not a published release. Its package-local native runtime pin is Gentle AI `v3.5.0`, distinct from the published `v2.6.0` pairing.
+This checkout prepares `gentle-pi` `3.5.1`; it is source state, not a published release. Its package-local native runtime pin is Gentle AI `v3.5.0`, distinct from the published `v3.5.1` pairing.
 
 The native SDD status consumer accepts both the pinned producer's legacy
 `apply`/`verify`/`remediate`/`archive` instruction record and the classical
@@ -179,18 +197,30 @@ Malformed/nonobject JSON, symlink/nonregular settings, unsafe paths, or a busy s
 
 ### RDD history and opt-in
 
-Native RDD was introduced in `gentle-pi` `v0.15.0` on 2026-07-10 with bounded review transactions. The current stable release, [`v2.6.0`](https://github.com/Gentleman-Programming/gentle-pi/releases/tag/v2.6.0), includes native RDD:
+Native RDD was introduced in `gentle-pi` `v0.15.0` on 2026-07-10 with bounded review transactions. The current stable release, [`v3.5.1`](https://github.com/Gentleman-Programming/gentle-shell/releases/tag/v3.5.1), includes native RDD:
 
 ```bash
 # Stable release
-pi install npm:gentle-pi@2.6.0
+pi install npm:gentle-pi@3.5.1
 ```
 
 RDD remains opt-in. Enable it only through an explicit user decision with `/gentle:review-mode enable`; `status` lets you inspect the mode without changing it.
 
 The source checkout's RDD integration installs Gentle AI only into its private `.gentle-ai/` directory. Darwin and Linux use pinned release assets with asset and executable SHA-256 verification (signed archives for source pin `v3.5.0`; raw prerelease binaries only under a prerelease pin). Windows x64 and arm64 build the exact `v3.5.0` source tag with a local Go 1.25.10+ toolchain, a sealed Go environment, `GOTOOLCHAIN=local`, and `GOSUMDB=sum.golang.org`; it does not download Go automatically. Windows provenance is Go-toolchain plus SumDB evidence and postinstall tamper detection, **not** Authenticode or protection against a malicious joint binary-and-manifest replacement. Package-private locks coordinate cooperative concurrent or crashed installers; their tombstones fail closed. A malicious same-user process with write access to package-private `node_modules` is outside that protocol because it can already replace package code, binary, or manifest, and portable Node has no pathname-delete CAS. It never uses `PATH` or a global `gentle-ai` installation. For development or offline installs only, set `GENTLE_PI_SKIP_GENTLE_AI_INSTALL=1`; native review operations then fail closed with an actionable `package-local-binary-missing` error. To recover explicitly, if `GENTLE_PI_SKIP_GENTLE_AI_INSTALL` is set, remove or unset it before changing to the installed `gentle-pi` package directory. Then run `node scripts/install-gentle-ai.mjs`. This invokes the package-owned installer without relying on a global binary or npm configuration change. A missing binary can result from skipped lifecycle scripts, but does not prove that lifecycle scripts were disabled.
 
-Recommended companion packages:
+Recommended companion packages, into the standalone `gentle-shell` home:
+
+```bash
+gentle-shell install npm:pi-intercom
+gentle-shell install npm:gentle-engram
+gentle-shell install npm:pi-web-access
+gentle-shell install npm:pi-lens
+gentle-shell install npm:@juicesharp/rpiv-ask-user-question
+```
+
+`--link` before the subcommand (for example `gentle-shell --link install npm:pi-intercom`) targets `~/.pi/agent` instead of the isolated home.
+
+Or, when `gentle-pi` is installed inside an existing pi:
 
 ```bash
 pi install npm:pi-intercom
@@ -255,6 +285,8 @@ gentle-shell home [link|isolated|<path>]
 ### Managing packages
 
 `gentle-shell install npm:<pkg>`, `gentle-shell remove ...`, `gentle-shell list`, `gentle-shell update ...`, `gentle-shell config`, and `gentle-shell auth ...` run pi's own commands against the resolved home — the `--isolated` home by default, or your own pi home with `--link`. A launcher flag before the subcommand (`--link`, `--isolated`, `--home <path>`) still selects which home the subcommand runs against. Running `gentle-shell install npm:gentle-pi` inside the isolated home is unnecessary: the launcher already loads the Gentle Shell package itself (see "Loading the package" below).
+
+`gentle-shell update` and `gentle-shell list` follow that same home selection, so they inspect and update packages in whichever home the effective flag or persisted `home` config points to.
 
 ### pi runtime resolution
 
