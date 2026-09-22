@@ -8,12 +8,10 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import {
 	existsSync,
 	lstatSync,
-	mkdtempSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
 	realpathSync,
-	rmSync,
 	writeFileSync,
 } from "node:fs";
 import {
@@ -23,7 +21,7 @@ import {
 	readdir,
 	writeFile,
 } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -197,7 +195,7 @@ import {
 	nativeReviewLegacyQuarantineAuthorization,
 	nativeReviewReconcileAuthorization,
 	nativeReviewRecoverAuthorization,
-	normalizeNativeReviewCwd,
+
 	NativeReviewCliError,
 	nativeUntrackedSelection,
 	NativeReviewConsentBindingError,
@@ -2439,24 +2437,6 @@ function builtinAgentDirs(cwd: string): string[] {
 	];
 }
 
-function listBuiltinAgentNames(cwd: string): Set<string> {
-	return new Set(
-		builtinAgentDirs(cwd).flatMap((dir) =>
-			listAgentsFromDir(dir, "builtin").map((agent) => agent.name),
-		),
-	);
-}
-
-async function listBuiltinAgentNamesAsync(cwd: string): Promise<Set<string>> {
-	const names = new Set<string>();
-	for (const dir of builtinAgentDirs(cwd)) {
-		for (const agent of await listAgentsFromDirAsync(dir, "builtin")) {
-			names.add(agent.name);
-		}
-	}
-	return names;
-}
-
 function listDiscoverableAgents(cwd: string): AgentEntry[] {
 	const builtinDirs = builtinAgentDirs(cwd);
 	const agents = [
@@ -2837,7 +2817,20 @@ function describeModelConfig(cwd: string, config: AgentModelConfig): string[] {
 }
 
 async function getPiModelOptions(ctx: ExtensionContext): Promise<string[]> {
-	const models = await ctx.modelRegistry.getAvailable();
+	const registry = ctx.modelRegistry;
+	if (!registry) {
+		return [...MODEL_CONTROL_OPTIONS];
+	}
+	let raw: unknown;
+	try {
+		raw = await registry.getAvailable();
+	} catch {
+		return [...MODEL_CONTROL_OPTIONS];
+	}
+	if (!Array.isArray(raw)) {
+		return [...MODEL_CONTROL_OPTIONS];
+	}
+	const models = raw as { provider: string; id: string }[];
 	const modelIds = models
 		.map((model) => normalizeModelId(`${model.provider}/${model.id}`))
 		.filter((model): model is string => model !== undefined)
@@ -4164,7 +4157,14 @@ async function switchLiveOrchestrator(ctx: ExtensionContext, live: LiveSession, 
 	const reference = parseOrchestratorModelRef(entry.model);
 	if (reference === undefined) return "";
 	const label = `${reference.provider}/${reference.model}`;
-	const model = ctx.modelRegistry.find(reference.provider, reference.model);
+	const registry = ctx.modelRegistry;
+	if (!registry) {
+		if (ctx.hasUI && ctx.ui.notify) {
+			ctx.ui.notify("Model registry unavailable; this session keeps its current model.", "warning");
+		}
+		return `\nModel registry unavailable; this session keeps its current model.`;
+	}
+	const model = registry.find(reference.provider, reference.model);
 	if (model === undefined) return `\n${label} is not in the model catalog; this session keeps its current model.`;
 	let switched = false;
 	try {
@@ -5143,14 +5143,6 @@ function parseStartInput(value: Record<string, unknown>): ReviewControllerStartI
 
 function isReviewTransition(value: string): value is ReviewTransition {
 	return Object.values(REVIEW_TRANSITION).some((transition) => transition === value);
-}
-
-function isGraphV1JudgmentDayLineage(cwd: string, lineageId: string): boolean {
-	try {
-		return ReviewTransactionStore.forRepository(cwd).read(lineageId).mode === REVIEW_MODE.JUDGMENT_DAY;
-	} catch {
-		return false;
-	}
 }
 
 interface NativeStartPreAuthorityRejection {
@@ -8699,6 +8691,9 @@ export const __testing = {
 	readSddChangeFlag,
 	resetTelemetryTriggerGuardForTesting,
 	createGentleAiExtension: createGentleAiExtensionForTesting,
+	getPiModelOptions,
+	MODEL_CONTROL_OPTIONS,
+	switchLiveOrchestrator,
 };
 
 export interface GentleAiRuntimeDependencies {
