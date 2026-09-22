@@ -27,8 +27,6 @@ import { fileURLToPath } from "node:url";
 import {
 	buildPiInvocation,
 	checkPiVersion,
-	CONFLICTING_SETUP_PACKAGE_SOURCES,
-	conflictingSetupPackages,
 	decideTakeOver,
 	describeVersion,
 	discoverLooseExtensionEntries,
@@ -45,6 +43,8 @@ import {
 	parseLauncherConfig,
 	parseRawLauncherConfig,
 	planSpawn,
+	POST_INSTALL_REMOVAL_SOURCES,
+	postInstallRemovals,
 	provisionedEntry,
 	recordProvisioned,
 	resolveHome,
@@ -517,42 +517,63 @@ async function runSetupFlow(home, runtime, { dryRun, stdio }) {
 	}
 	if (!installResult.ok) return installResult;
 
-	return runSetupConflictCleanup(home, runtime, dryRun, stdio);
+	return runPostInstallCleanup(home, runtime, dryRun, stdio);
+}
+
+// The stderr line printed once `source` is actually removed from `home`.
+// npm:gentle-pi names the running launcher's own version, so it is
+// self-evident which copy stays authoritative; every other source keeps its
+// original gentle-ai #4820 wording unchanged.
+function postInstallRemovingMessage(source, home) {
+	if (source === "npm:gentle-pi") {
+		return `gentle-shell: removing ${source} from ${home.dir}: this launcher loads its own gentle-pi ${ownPackageVersion()}, so the home always matches it`;
+	}
+	return `gentle-shell: removing ${source} from ${home.dir}: gentle-pi ships ask_user_question and Pi refuses two providers (gentle-ai #4820)`;
+}
+
+// The --dry-run stderr line for `source`, printed unconditionally (see
+// runPostInstallCleanup below). Kept byte-identical to the pre-existing
+// rpiv wording; npm:gentle-pi gets its own analogous "would remove" line.
+function postInstallWouldRemoveMessage(source) {
+	if (source === "npm:gentle-pi") {
+		return `gentle-shell: setup would then remove ${source} if the install declares it: this launcher loads its own gentle-pi ${ownPackageVersion()}, so the home always matches it`;
+	}
+	return `gentle-shell: setup would then remove ${source} if the install declares it (gentle-ai #4820)`;
 }
 
 // Runs once the gentle-ai install spawned by runSetupFlow above has exited
-// 0: gentle-ai's managed Pi stack still installs
-// npm:@juicesharp/rpiv-ask-user-question, which conflicts with gentle-pi's
-// own first-party ask_user_question tool (Pi refuses two providers for the
-// same tool name; gentle-ai #4820, gentle-shell #1277). The gentle-ai fix
-// lands separately, so setup removes it from the just-provisioned home
-// itself, unless this is a --dry-run. A --dry-run gentle-ai install writes
-// nothing, so settings.json read afterwards would only report whatever
-// pre-existed the run (e.g. the isolated-home bootstrap), never what the
-// skipped install would have declared; report the known conflict sources
+// 0. gentle-ai's managed Pi stack always declares two packages this launcher
+// must remove from the just-provisioned home itself, unless this is a
+// --dry-run: npm:@juicesharp/rpiv-ask-user-question, which conflicts with
+// gentle-pi's own first-party ask_user_question tool (Pi refuses two
+// providers for the same tool name; gentle-ai #4820, gentle-shell #1277,
+// fix pending upstream), and npm:gentle-pi itself, which must never survive
+// setup — this launcher always loads its own gentle-pi, never the one
+// gentle-ai's stack installs. A --dry-run gentle-ai install writes nothing,
+// so settings.json read afterwards would only report whatever pre-existed
+// the run (e.g. the isolated-home bootstrap), never what the skipped
+// install would have declared; report every known removal source
 // unconditionally instead of reading settings.json at all.
-async function runSetupConflictCleanup(home, runtime, dryRun, stdio) {
+async function runPostInstallCleanup(home, runtime, dryRun, stdio) {
 	if (dryRun) {
-		for (const source of CONFLICTING_SETUP_PACKAGE_SOURCES) {
-			process.stderr.write(`gentle-shell: setup would then remove ${source} if the install declares it (gentle-ai #4820)\n`);
+		for (const source of POST_INSTALL_REMOVAL_SOURCES) {
+			process.stderr.write(`${postInstallWouldRemoveMessage(source)}\n`);
 		}
 		return { ok: true, exitCode: 0 };
 	}
 	const settingsText = readJsonIfExists(join(home.dir, "settings.json"));
-	const conflicting = conflictingSetupPackages(settingsText);
-	if (conflicting.length === 0) return { ok: true, exitCode: 0 };
-	return removeConflictingSetupPackages(conflicting, 0, home, runtime, stdio);
+	const removals = postInstallRemovals(settingsText);
+	if (removals.length === 0) return { ok: true, exitCode: 0 };
+	return removePostInstallSources(removals, 0, home, runtime, stdio);
 }
 
-// Removes each conflicting package in turn via the resolved pi runtime
-// itself (never gentle-ai), stopping at the first failure so its exit code
-// and actionable message are not masked by a later removal.
-async function removeConflictingSetupPackages(sources, index, home, runtime, stdio) {
+// Removes each declared post-install source in turn via the resolved pi
+// runtime itself (never gentle-ai), stopping at the first failure so its
+// exit code and actionable message are not masked by a later removal.
+async function removePostInstallSources(sources, index, home, runtime, stdio) {
 	if (index >= sources.length) return { ok: true, exitCode: 0 };
 	const source = sources[index];
-	process.stderr.write(
-		`gentle-shell: removing ${source} from ${home.dir}: gentle-pi ships ask_user_question and Pi refuses two providers (gentle-ai #4820)\n`,
-	);
+	process.stderr.write(`${postInstallRemovingMessage(source, home)}\n`);
 	const env = buildSetupEnv(home, runtime);
 	const result = await spawnAndWait(runtime.command, [...runtime.args, "remove", source], env, stdio);
 	if (result.error) {
@@ -563,7 +584,7 @@ async function removeConflictingSetupPackages(sources, index, home, runtime, std
 		const remediation = [...homeSelectorFlags(home).map(shellQuote), "remove", source].join(" ");
 		return { ok: false, exitCode: result.exitCode, message: `gentle-shell: could not remove ${source}; run \`gentle-shell ${remediation}\` before starting` };
 	}
-	return removeConflictingSetupPackages(sources, index + 1, home, runtime, stdio);
+	return removePostInstallSources(sources, index + 1, home, runtime, stdio);
 }
 
 // CLI entry for `gentle-shell [home selectors] setup [--dry-run]`: parses
@@ -650,8 +671,9 @@ async function maybeAutoProvisionHome(home, runtime) {
 	const configPath = resolveConfigPath();
 	const homeKey = safeRealpath(home.dir);
 	const pin = resolveSetupGentleAiPin();
+	const gentlePiVersion = ownPackageVersion();
 	const beforeConfig = readRawConfig(configPath);
-	if (!needsProvisioning(beforeConfig, homeKey, pin)) return;
+	if (!needsProvisioning(beforeConfig, homeKey, pin, gentlePiVersion)) return;
 
 	const lockPath = join(home.dir, ".gentle-shell-setup.lock");
 	if (!acquireSetupLock(lockPath)) return;
@@ -663,7 +685,21 @@ async function maybeAutoProvisionHome(home, runtime) {
 				`gentle-shell: first run in ${home.dir}: installing the Gentle AI companion packages (one time; set ${AUTO_SETUP_OPT_OUT_ENV}=1 to skip)\n`,
 			);
 		} else {
-			process.stderr.write(`gentle-shell: gentle-ai pin changed (${previous.gentleAi} -> ${pin}): updating ${home.dir}\n`);
+			// A marker written before gentle-pi version tracking existed (S8)
+			// has no `gentlePi` field: needsProvisioning above already treats
+			// that as changed, so this reports "unknown" as its prior value
+			// instead of "undefined".
+			const gentleAiChanged = previous.gentleAi !== pin;
+			const gentlePiChanged = previous.gentlePi !== gentlePiVersion;
+			if (gentleAiChanged && gentlePiChanged) {
+				process.stderr.write(
+					`gentle-shell: gentle-ai pin changed (${previous.gentleAi} -> ${pin}) and gentle-pi changed (${previous.gentlePi ?? "unknown"} -> ${gentlePiVersion}): updating ${home.dir}\n`,
+				);
+			} else if (gentlePiChanged) {
+				process.stderr.write(`gentle-shell: gentle-pi changed (${previous.gentlePi ?? "unknown"} -> ${gentlePiVersion}): updating ${home.dir}\n`);
+			} else {
+				process.stderr.write(`gentle-shell: gentle-ai pin changed (${previous.gentleAi} -> ${pin}): updating ${home.dir}\n`);
+			}
 		}
 
 		const result = await runSetupFlow(home, runtime, { dryRun: false, stdio: ["ignore", 2, 2] });
@@ -675,7 +711,7 @@ async function maybeAutoProvisionHome(home, runtime) {
 			return;
 		}
 
-		writeRawConfig(configPath, recordProvisioned(readRawConfig(configPath), homeKey, pin, new Date().toISOString()));
+		writeRawConfig(configPath, recordProvisioned(readRawConfig(configPath), homeKey, pin, gentlePiVersion, new Date().toISOString()));
 	} finally {
 		releaseSetupLock(lockPath);
 	}

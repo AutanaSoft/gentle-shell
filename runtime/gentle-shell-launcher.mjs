@@ -288,13 +288,15 @@ export function parseRawLauncherConfig(text                    )                
 
 
 
+
+
+
+
 function isProvisionedEntry(value         )                            {
-	return (
-		typeof value === "object" &&
-		value !== null &&
-		typeof (value                           ).gentleAi === "string" &&
-		typeof (value                           ).at === "string"
-	);
+	if (typeof value !== "object" || value === null) return false;
+	const record = value                           ;
+	if (typeof record.gentleAi !== "string" || typeof record.at !== "string") return false;
+	return record.gentlePi === undefined || typeof record.gentlePi === "string";
 }
 
 // Tolerant read of config.provisioned: a missing, non-object, or malformed
@@ -317,20 +319,24 @@ export function provisionedEntry(config                   , homeDir        )    
 	return provisionedMap(config)[homeDir];
 }
 
-// True when `homeDir` has never been provisioned, or was provisioned with a
-// gentle-ai pin other than `pin` — the signal bin/gentle-shell.mjs uses to
-// decide whether a plain launch should run the setup flow automatically
-// before starting pi.
-export function needsProvisioning(config                   , homeDir        , pin        )          {
+// True when `homeDir` has never been provisioned, was provisioned with a
+// gentle-ai pin other than `pin`, or was provisioned against a gentle-pi
+// other than `gentlePiVersion` (the running launcher's own version, from its
+// package.json) — the signal bin/gentle-shell.mjs uses to decide whether a
+// plain launch should run the setup flow automatically before starting pi.
+// A marker written before gentle-pi version tracking existed has no
+// `gentlePi` field, which never strictly-equals a real version string, so it
+// always counts as needing provisioning too — see ProvisionedEntry above.
+export function needsProvisioning(config                   , homeDir        , pin        , gentlePiVersion        )          {
 	const entry = provisionedEntry(config, homeDir);
-	return entry === undefined || entry.gentleAi !== pin;
+	return entry === undefined || entry.gentleAi !== pin || entry.gentlePi !== gentlePiVersion;
 }
 
-// Returns a new config object recording `homeDir` as provisioned at `pin`,
-// preserving every other key — including every other home's provisioned
-// entry — unchanged. Never mutates `config`.
-export function recordProvisioned(config                   , homeDir        , pin        , now        )                    {
-	return { ...config, provisioned: { ...provisionedMap(config), [homeDir]: { gentleAi: pin, at: now } } };
+// Returns a new config object recording `homeDir` as provisioned at `pin`
+// and `gentlePiVersion`, preserving every other key — including every other
+// home's provisioned entry — unchanged. Never mutates `config`.
+export function recordProvisioned(config                   , homeDir        , pin        , gentlePiVersion        , now        )                    {
+	return { ...config, provisioned: { ...provisionedMap(config), [homeDir]: { gentleAi: pin, gentlePi: gentlePiVersion, at: now } } };
 }
 
 // --- pi runtime resolution ---------------------------------------------------
@@ -531,28 +537,40 @@ export function settingsDeclareGentlePi(settingsText                    )       
 // extensions/ask-user-question.ts). Tracked upstream as gentle-ai #4820 and
 // gentle-shell #1277; the gentle-ai fix lands separately, so `gentle-shell
 // setup` (bin/gentle-shell.mjs) must remove it from the provisioned home
-// itself. One entry today; kept as a table so a future conflicting package
-// only needs a new row here.
-const CONFLICTING_SETUP_PACKAGES                                                                = [
+// itself.
+//
+// gentle-ai's managed Pi stack also always declares npm:gentle-pi itself.
+// That declaration must never survive setup either, for an unrelated reason:
+// this launcher always loads its own gentle-pi (its own package root, or a
+// take-over), never the one gentle-ai's stack installs, so leaving the
+// declaration in place would silently let the home drift onto whatever
+// gentle-pi npm last installed — or, for a developer running from a source
+// checkout, onto the published npm package — instead of the running
+// launcher's own copy. See docs/readme-reference.md's "setup" section.
+//
+// Table of every package `setup` removes after gentle-ai finishes, so a
+// future addition only needs a new row here.
+const POST_INSTALL_REMOVAL_PACKAGES                                                                = [
 	{ name: "@juicesharp/rpiv-ask-user-question", source: "npm:@juicesharp/rpiv-ask-user-question" },
+	{ name: "gentle-pi", source: "npm:gentle-pi" },
 ];
 
-// The known conflicting sources, exposed so a `--dry-run` caller can report
-// what setup would remove *if* gentle-ai's install declares it, without
-// reading settings.json itself: a dry run writes nothing, so settings.json
+// The known removal sources, exposed so a `--dry-run` caller can report what
+// setup would remove *if* gentle-ai's install declares it, without reading
+// settings.json itself: a dry run writes nothing, so settings.json
 // afterwards would only reflect whatever pre-existed the run, not what the
-// (skipped) install would have declared. See handleSetupConflictCleanup in
+// (skipped) install would have declared. See runPostInstallCleanup in
 // bin/gentle-shell.mjs.
-export const CONFLICTING_SETUP_PACKAGE_SOURCES                    = CONFLICTING_SETUP_PACKAGES.map((entry) => entry.source);
+export const POST_INSTALL_REMOVAL_SOURCES                    = POST_INSTALL_REMOVAL_PACKAGES.map((entry) => entry.source);
 
 // Scans a settings.json `packages` list (same string/object-source parsing
 // as settingsDeclareGentlePi/findGentlePiDeclaration above) for any entry
-// whose npm package name matches CONFLICTING_SETUP_PACKAGES, at any version
-// spec. Returns each match's canonical unversioned source, deduped, in the
-// order those packages first appear in `packages` — never the declared
-// (possibly versioned) source text, since the caller always removes the
-// bare package.
-export function conflictingSetupPackages(settingsText                    )           {
+// whose npm package name matches POST_INSTALL_REMOVAL_PACKAGES, at any
+// version spec. Returns each match's canonical unversioned source, deduped,
+// in the order those packages first appear in `packages` — never the
+// declared (possibly versioned) source text, since the caller always removes
+// the bare package.
+export function postInstallRemovals(settingsText                    )           {
 	const packages = parseSettingsPackages(settingsText);
 	if (packages === undefined) return [];
 
@@ -561,8 +579,8 @@ export function conflictingSetupPackages(settingsText                    )      
 		const source = entrySource(entry);
 		if (source === undefined || packageSourceKind(source) !== "npm") continue;
 		const name = npmPackageName(source);
-		const conflict = CONFLICTING_SETUP_PACKAGES.find((candidate) => candidate.name === name);
-		if (conflict !== undefined && !found.includes(conflict.source)) found.push(conflict.source);
+		const match = POST_INSTALL_REMOVAL_PACKAGES.find((candidate) => candidate.name === name);
+		if (match !== undefined && !found.includes(match.source)) found.push(match.source);
 	}
 	return found;
 }

@@ -219,7 +219,7 @@ gentle-shell
 gentle-shell --link
 ```
 
-`gentle-shell` alone starts in its own home, `~/.gentle-shell/agent`, and sets that home up on first run — no separate step. Gentle Shell keeps its own home with the Gentle AI companion packages and no conflicting plugins; your pi install is untouched. `gentle-shell --link` reuses `~/.pi/agent` as-is and is never auto-provisioned.
+`gentle-shell` alone starts in its own home, `~/.gentle-shell/agent`, and sets that home up on first run — no separate step. Gentle Shell keeps its own home with the Gentle AI companion packages and no conflicting plugins; gentle-pi itself always stays this launcher's own copy, never one installed into the home; your pi install is untouched. `gentle-shell --link` reuses `~/.pi/agent` as-is and is never auto-provisioned.
 
 ```bash
 # Re-run provisioning by hand, e.g. to see the full install output

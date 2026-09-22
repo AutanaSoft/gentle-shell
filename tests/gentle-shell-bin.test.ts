@@ -28,6 +28,14 @@ const binUrl = new URL("../bin/gentle-shell.mjs", import.meta.url);
 const binPath = fileURLToPath(binUrl);
 const packageRoot = dirname(dirname(binPath));
 
+// The launcher's own gentle-pi version, exactly as `ownPackageVersion()` in
+// bin/gentle-shell.mjs reads it (package.json at packageRoot) — used to
+// assert the post-install gentle-pi removal message and the provisioning
+// marker's `gentlePi` field without hardcoding this package's own version.
+function ownGentlePiVersion(): string {
+	return JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")).version;
+}
+
 // GENTLE_SHELL_NO_AUTO_SETUP=1 is in the base fixture env so every test that
 // is not itself about auto-provisioning (S7) keeps today's plain-launch
 // behavior: without it, every fixture-driven test against a fresh isolated
@@ -203,6 +211,73 @@ function writeGentleAiScriptDeclaringConflict(path: string, exitCode = 0) {
 			"writeFileSync(settingsPath, JSON.stringify(settings));",
 			"process.stdout.write(JSON.stringify({ args }) + '\\n');",
 			`process.exit(${exitCode});`,
+			"",
+		].join("\n"),
+	);
+	chmodSync(path, 0o755);
+}
+
+// Test/development-only stub for the setup subcommand's gentle-ai binary,
+// simulating the real gentle-ai's managed Pi stack always declaring
+// npm:gentle-pi itself into the provisioned home's settings.json (the
+// problem this fix addresses: the home must never keep running that
+// declared copy instead of the launcher's own). `extraSources` lets a test
+// also declare the conflicting rpiv package alongside it, in the given
+// order, to prove both post-install removals run together.
+function writeGentleAiScriptDeclaringGentlePi(path: string, extraSources: string[] = [], exitCode = 0) {
+	writeFileSync(
+		path,
+		[
+			"#!/usr/bin/env node",
+			"import { readFileSync, writeFileSync } from 'node:fs';",
+			"import { join } from 'node:path';",
+			"const args = process.argv.slice(2);",
+			"const settingsPath = join(process.env.PI_CODING_AGENT_DIR, 'settings.json');",
+			"const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));",
+			`settings.packages = [...${JSON.stringify(extraSources)}, 'npm:gentle-pi@3.5.1'];`,
+			"writeFileSync(settingsPath, JSON.stringify(settings));",
+			"process.stdout.write(JSON.stringify({ args }) + '\\n');",
+			`process.exit(${exitCode});`,
+			"",
+		].join("\n"),
+	);
+	chmodSync(path, 0o755);
+}
+
+// Test/development-only fake pi runtime whose `remove <source>` branch also
+// rewrites the target home's settings.json, dropping the matching `packages`
+// entry — unlike the plain `writePiScript` stub above (which only records
+// the invocation), this models what a real `pi remove` does to settings.json
+// closely enough to prove a later plain launch sees the declaration gone and
+// resumes the launcher's own injection.
+function writePiScriptEditingSettingsOnRemove(path: string, version = "0.85.1") {
+	writeFileSync(
+		path,
+		[
+			"#!/usr/bin/env node",
+			"import { readFileSync, writeFileSync } from 'node:fs';",
+			"import { join } from 'node:path';",
+			"const args = process.argv.slice(2);",
+			`if (args.includes("--version")) { console.log(${JSON.stringify(version)}); process.exit(0); }`,
+			"if (args[0] === 'remove') {",
+			"  const settingsPath = join(process.env.PI_CODING_AGENT_DIR, 'settings.json');",
+			"  const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));",
+			"  const target = args[1];",
+			"  settings.packages = (settings.packages || []).filter((entry) => {",
+			"    const source = typeof entry === 'string' ? entry : entry.source;",
+			"    return source !== target && !source.startsWith(target + '@');",
+			"  });",
+			"  writeFileSync(settingsPath, JSON.stringify(settings));",
+			"  console.log(JSON.stringify({",
+			"    args,",
+			"    PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,",
+			"    GENTLE_PI_AGENT_HOME: process.env.GENTLE_PI_AGENT_HOME,",
+			"    PATH: process.env.PATH,",
+			"  }));",
+			"  process.exit(0);",
+			"}",
+			"console.log(JSON.stringify({ args, PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR }));",
+			"process.exit(0);",
 			"",
 		].join("\n"),
 	);
@@ -670,6 +745,56 @@ test("gentle-shell setup runs no pi remove when gentle-ai did not declare the co
 	assert.deepEqual(payload.args, ["install", "--agent", "pi", "--scope", "global"]);
 });
 
+// --- setup subcommand keeps the home on the launcher's own gentle-pi -------
+//
+// gentle-ai's managed Pi stack always declares npm:gentle-pi itself into the
+// provisioned home's settings.json. That declaration must never survive
+// setup: this launcher always loads its own gentle-pi, so leaving it in
+// place would let the home drift onto whatever gentle-pi npm last installed
+// (or, worse, onto the published npm package instead of a developer's source
+// checkout) instead of the running launcher's own copy.
+
+test("gentle-shell setup removes npm:gentle-pi that gentle-ai declared, naming this launcher's own version", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScriptDeclaringGentlePi(gentleAiScript);
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript };
+
+	const result = run(env, ["setup"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(
+		result.stderr,
+		new RegExp(
+			`gentle-shell: removing npm:gentle-pi from .+: this launcher loads its own gentle-pi ${ownGentlePiVersion().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}, so the home always matches it`,
+		),
+	);
+
+	const lines = result.stdout.trim().split("\n").filter((line) => line.length > 0);
+	assert.equal(lines.length, 2, result.stdout);
+	assert.deepEqual(JSON.parse(lines[0]).args, ["install", "--agent", "pi", "--scope", "global"]);
+	const removePayload = JSON.parse(lines[1]);
+	assert.deepEqual(removePayload.args, ["remove", "npm:gentle-pi"]);
+	assert.equal(removePayload.PI_CODING_AGENT_DIR, f.gentleShellHome);
+	assert.equal(removePayload.GENTLE_PI_AGENT_HOME, f.gentleShellHome);
+	assert.ok(removePayload.PATH.startsWith(`${dirname(f.piScript)}${delimiter}`), removePayload.PATH);
+});
+
+test("gentle-shell setup removes both the conflicting rpiv package and npm:gentle-pi, in declaration order", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScriptDeclaringGentlePi(gentleAiScript, ["npm:@juicesharp/rpiv-ask-user-question@1.2.3"]);
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript };
+
+	const result = run(env, ["setup"]);
+	assert.equal(result.status, 0, result.stderr);
+
+	const lines = result.stdout.trim().split("\n").filter((line) => line.length > 0);
+	assert.equal(lines.length, 3, result.stdout);
+	assert.deepEqual(JSON.parse(lines[0]).args, ["install", "--agent", "pi", "--scope", "global"]);
+	assert.deepEqual(JSON.parse(lines[1]).args, ["remove", "npm:@juicesharp/rpiv-ask-user-question"]);
+	assert.deepEqual(JSON.parse(lines[2]).args, ["remove", "npm:gentle-pi"]);
+});
+
 // A --dry-run gentle-ai install writes nothing, so reading settings.json
 // afterwards would only ever report whatever pre-existed the run (e.g. the
 // isolated-home bootstrap this fixture's fake-gentle-ai script never
@@ -689,11 +814,46 @@ test("gentle-shell setup --dry-run prints the pending removal unconditionally, w
 		result.stderr,
 		/gentle-shell: setup would then remove npm:@juicesharp\/rpiv-ask-user-question if the install declares it \(gentle-ai #4820\)/,
 	);
+	assert.match(
+		result.stderr,
+		new RegExp(
+			`gentle-shell: setup would then remove npm:gentle-pi if the install declares it: this launcher loads its own gentle-pi ${ownGentlePiVersion().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}, so the home always matches it`,
+		),
+	);
 	assert.doesNotMatch(result.stderr, /gentle-shell: removing/);
 
 	const lines = result.stdout.trim().split("\n").filter((line) => line.length > 0);
 	assert.equal(lines.length, 1, result.stdout);
 	assert.deepEqual(JSON.parse(lines[0]).args, ["install", "--agent", "pi", "--scope", "global", "--dry-run"]);
+});
+
+test("a later normal launch injects the launcher's own package root once gentle-pi is removed from settings.json", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScriptDeclaringGentlePi(gentleAiScript);
+	writePiScriptEditingSettingsOnRemove(f.piScript);
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript };
+
+	const setupResult = run(env, ["setup"]);
+	assert.equal(setupResult.status, 0, setupResult.stderr);
+	const settings = JSON.parse(readFileSync(join(f.gentleShellHome, "settings.json"), "utf8"));
+	assert.deepEqual(settings.packages, []);
+
+	const result = run(env, ["--mode", "rpc"]);
+	assert.equal(result.status, 0, result.stderr);
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, [
+		"-e",
+		packageRoot,
+		"--theme",
+		join(packageRoot, "themes"),
+		"--skill",
+		join(packageRoot, "skills"),
+		"--prompt-template",
+		join(packageRoot, "prompts"),
+		"--mode",
+		"rpc",
+	]);
 });
 
 test("gentle-shell setup propagates a non-zero pi remove exit code with an actionable message", (t) => {
@@ -912,6 +1072,7 @@ test("first launch auto-provisions the isolated home, writes the marker, then la
 	const config = JSON.parse(readFileSync(join(f.home, ".gentle-shell", "config.json"), "utf8"));
 	const homeKey = realpathSync(f.gentleShellHome);
 	assert.equal(config.provisioned[homeKey].gentleAi, "3.6.0");
+	assert.equal(config.provisioned[homeKey].gentlePi, ownGentlePiVersion());
 	assert.equal(typeof config.provisioned[homeKey].at, "string");
 	assert.equal(existsSync(join(f.gentleShellHome, ".gentle-shell-setup.lock")), false);
 });
@@ -952,6 +1113,62 @@ test("a changed gentle-ai pin re-runs the flow and updates the marker", (t) => {
 	const config = JSON.parse(readFileSync(join(f.home, ".gentle-shell", "config.json"), "utf8"));
 	const homeKey = realpathSync(f.gentleShellHome);
 	assert.equal(config.provisioned[homeKey].gentleAi, "3.6.1");
+	assert.equal(config.provisioned[homeKey].gentlePi, ownGentlePiVersion());
+});
+
+// A marker written before gentle-pi version tracking existed (S8) has no
+// `gentlePi` field: needsProvisioning must never trust that omission as a
+// match, so the next launch re-provisions and backfills the field.
+test("a marker without a gentlePi field re-runs the flow and backfills it", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	const counterPath = join(f.root, "gentle-ai-runs.log");
+	writeGentleAiScriptCountingRuns(gentleAiScript, counterPath);
+	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" });
+
+	const first = run(env, []);
+	assert.equal(first.status, 0, first.stderr);
+	assert.equal(readFileSync(counterPath, "utf8").trim().split("\n").length, 1);
+
+	const configPath = join(f.home, ".gentle-shell", "config.json");
+	const homeKey = realpathSync(f.gentleShellHome);
+	const staleConfig = JSON.parse(readFileSync(configPath, "utf8"));
+	delete staleConfig.provisioned[homeKey].gentlePi;
+	writeFileSync(configPath, JSON.stringify(staleConfig));
+
+	const second = run(env, []);
+	assert.equal(second.status, 0, second.stderr);
+	assert.equal(readFileSync(counterPath, "utf8").trim().split("\n").length, 2, "gentle-ai must re-run once the marker predates gentlePi tracking");
+
+	const config = JSON.parse(readFileSync(configPath, "utf8"));
+	assert.equal(config.provisioned[homeKey].gentleAi, "3.6.0");
+	assert.equal(config.provisioned[homeKey].gentlePi, ownGentlePiVersion());
+});
+
+test("a changed gentle-pi version re-runs the flow and prints the gentle-pi-changed line", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	const counterPath = join(f.root, "gentle-ai-runs.log");
+	writeGentleAiScriptCountingRuns(gentleAiScript, counterPath);
+	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" });
+
+	const first = run(env, []);
+	assert.equal(first.status, 0, first.stderr);
+
+	const configPath = join(f.home, ".gentle-shell", "config.json");
+	const homeKey = realpathSync(f.gentleShellHome);
+	const staleConfig = JSON.parse(readFileSync(configPath, "utf8"));
+	staleConfig.provisioned[homeKey].gentlePi = "0.0.0-previous-launcher";
+	writeFileSync(configPath, JSON.stringify(staleConfig));
+
+	const second = run(env, []);
+	assert.equal(second.status, 0, second.stderr);
+	assert.match(second.stderr, new RegExp(`gentle-shell: gentle-pi changed \\(0\\.0\\.0-previous-launcher -> ${ownGentlePiVersion().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\): updating`));
+	assert.doesNotMatch(second.stderr, /gentle-ai pin changed/);
+
+	assert.equal(readFileSync(counterPath, "utf8").trim().split("\n").length, 2);
+	const config = JSON.parse(readFileSync(configPath, "utf8"));
+	assert.equal(config.provisioned[homeKey].gentlePi, ownGentlePiVersion());
 });
 
 test("a failing auto-provision flow warns, still launches pi, and writes no marker", (t) => {
