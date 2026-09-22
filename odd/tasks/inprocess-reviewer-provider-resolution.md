@@ -111,10 +111,15 @@ narrow seam (pre-existing, follow-up issue).
   error and would invite retries that can never succeed. The existing branch keeps its message and its
   absent evidence byte-for-byte; the new branch carries its own message plus
   `{ provider, api }` evidence so the two causes are distinguishable in logs.
-- **Env-API-key delta is a real risk, not a theoretical one.** compat wraps every dispatch in
-  `withEnvApiKey(model, options)`; `provider.streamSimple` does not. A builtin provider authenticated
-  purely by an env var with no stored credential is rescued by compat today and would not be after
-  this change. It gets its own test.
+- **Env-API-key delta: settled in IRP-4 as redundant, not a regression.** compat wraps every dispatch
+  in `withEnvApiKey(model, options)` and `provider.streamSimple` does not, but that wrapper cannot
+  rescue anything this module has not already been handed: `getApiKeyAndHeaders` runs first, and pi's
+  own auth resolution reads the same `process.env` through the same variable names before returning.
+  The earlier "a builtin provider authenticated purely by an env var with no stored credential is
+  rescued by compat today" reading is wrong — that provider resolves an `apiKey` through the registry.
+  See "Settled: the env-API-key delta" below for the evidence. The case still gets its own tests,
+  because the module's *own* contract (never invent an `apiKey`, never read `process.env`) is worth
+  pinning on both dispatch paths regardless of what pi-ai does upstream.
 - **Do not upgrade the local pi runtime for this change.** `getProvider` is present across the whole
   supported range (verified on 0.85.1 locally, and on 0.86.1 and 0.87.0 from the published
   declarations), so the fix needs no upgrade. Staying on 0.85.1 is deliberate: it is the declared peer
@@ -139,7 +144,7 @@ narrow seam (pre-existing, follow-up issue).
       `provider.streamSimple(...).result()`, keep `deps.complete` as the no-`getProvider` fallback.
 - [x] IRP-3 — RED/GREEN: the incoherence guard (`getProvider` present, returns `undefined` for a
       resolved model) refuses with a typed code instead of falling back.
-- [ ] IRP-4 — RED/GREEN: lock the env-API-key behavior for a provider with no stored credential, so
+- [x] IRP-4 — RED/GREEN: lock the env-API-key behavior for a provider with no stored credential, so
       the `withEnvApiKey` delta is a decision on record rather than a silent regression.
 - [x] IRP-5 — Correct the module header: "Only `find` and `getApiKeyAndHeaders` are needed here"
       (`:25-26`) is now false, and "no extension hooks" (`:12`) must state that it excludes
@@ -245,6 +250,35 @@ PR remain the user's decision.
   Second, narrower point for IRP-4: compat reads `getEnvApiKey(model.provider, options?.env)`, and this
   module's narrow seam already drops the real registry's `env` field, so even today's compat path falls
   back to ambient `process.env` rather than registry-resolved env.
+  **Superseded by IRP-4:** the first claim is false — see "Settled: the env-API-key delta". The second
+  claim stands and is a pre-existing gap on both paths.
+
+- IRP-4 (2026-09-21), `tests/inprocess-reviewer.test.ts` only (+113/−0); **no production file was
+  touched**, because Part A proved there is no regression to correct.
+- IRP-4 TDD sequence, all foreground:
+  - Baseline, before any edit: `node --experimental-strip-types --test tests/inprocess-reviewer.test.ts`
+    → `tests 33 / pass 33 / fail 0`.
+  - The three new tests passed on first run (`tests 36 / pass 36 / fail 0`): the module already honored
+    the contract, so there was no natural RED. Rather than claim one, a **mutation probe** proved the
+    tests are not vacuous — `lib/inprocess-reviewer.ts:269` was temporarily changed to
+    `...(auth.apiKey === undefined ? { apiKey: process.env.OPENAI_API_KEY } : { apiKey: auth.apiKey })`,
+    i.e. exactly the `withEnvApiKey` behavior the superseded reading would have demanded. Observed:
+    `tests 36 / pass 33 / fail 3`, all three new tests failing on their own assertion —
+    `the module must not invent an apiKey the registry did not resolve, nor read one from the ambient
+    environment` / `the fallback path must not invent an apiKey either; compat's own withEnvApiKey is
+    pi-ai's business, not this module's` / `neither path may carry an apiKey the registry did not
+    resolve`, each `true !== false`. The mutation was reverted with `git checkout --` and the same
+    command returned to `tests 36 / pass 36 / fail 0`.
+- IRP-4 verification: `node --experimental-strip-types --test tests/review-host-relay.test.ts`
+  → `tests 43 / pass 43 / fail 0`. `pnpm run typecheck` → `types: 196 recorded diagnostic(s), no
+  regressions; 3 file/code pair(s) improved`, byte-identical to the IRP-1/2/3/5 run. `pnpm test`
+  → exit 0, `tests 3003 / pass 2965 / fail 0 / skipped 38` (+3 against the IRP-1/2/3/5 run of 3000/2962,
+  exactly the three new tests), plus the provider contract mirror check and the runtime harness.
+- The new tests set and restore a single synthetic `OPENAI_API_KEY` placeholder around the call, the
+  established save/mutate/restore pattern already used in `tests/gentle-ai.test.ts` and
+  `tests/model-routing-authority.test.ts`. The value is asserted **absent** from the forwarded options,
+  never printed, and it is the variable name compat would read for the default fake model's provider,
+  which is what makes the assertion mean something.
 
 ## Audit: is the incoherence guard reachable?
 
@@ -276,6 +310,85 @@ explicitly rejected: it would reintroduce exactly the extension-provider blindne
 resolvers already read `process.env` through the auth context and `getApiKeyAndHeaders` runs before
 the call. IRP-4 settles it with a test, not by picking a side.
 
+## Settled: the env-API-key delta
+
+**The audit was right; the implementer's "real regression window" reading was wrong.** For a builtin
+provider whose only credential is an environment variable and which has no stored credential,
+`getApiKeyAndHeaders` returns `{ ok: true, apiKey }` — it resolves the key itself. `withEnvApiKey`
+therefore has nothing left to rescue on that path, because compat's injection is conditional on
+`options.apiKey` being absent or blank (`@earendil-works/pi-ai/dist/compat.js:145-152`), and it is
+not absent.
+
+Read path, from the installed bytes:
+
+- `@earendil-works/pi-coding-agent/dist/core/model-registry.js:30-46` — `getApiKeyAndHeaders` calls
+  `this.runtime.getAuth(model)` and returns `apiKey: resolution.auth.apiKey` (`:42`) whenever that
+  resolves. Only when it resolves nothing (`:33`) does it fall through to the compatibility config
+  and return `{ ok: true, headers }` with no key (`:38`).
+- `@earendil-works/pi-coding-agent/dist/core/model-runtime.js:339-342` — `getAuth` delegates to
+  `this.models.getAuth(...)`, where `this.models` is `createModels({ credentials, modelsStore })`
+  (`:71`) with **no** `authContext` override.
+- `@earendil-works/pi-ai/dist/models.js:33` — with no override, the auth context defaults to
+  `defaultProviderAuthContext()`; `:275-281` routes `getAuth` into `resolveProviderAuth`.
+- `@earendil-works/pi-ai/dist/auth/resolve.js:51-54` — the ambient branch: with no stored credential
+  it calls the provider's `ApiKeyAuth.resolve` with `credential: undefined`.
+- `@earendil-works/pi-ai/dist/auth/helpers.js:21-26` — `envApiKeyAuth` then loops the provider's env
+  var names and returns `{ auth: { apiKey: value } }` for the first one set.
+- `@earendil-works/pi-ai/dist/auth/context.js:19-24` — that `ctx.env(name)` is `process.env[name]`.
+- `@earendil-works/pi-ai/dist/providers/openai.js:10` declares
+  `envApiKeyAuth("OpenAI API key", ["OPENAI_API_KEY"])`, the same name compat's map carries at
+  `dist/env-api-keys.js:77`. Sampled matches across the catalog: `groq.js:10`/`GROQ_API_KEY`,
+  `google.js:10`/`GEMINI_API_KEY`, `huggingface.js:10`/`HF_TOKEN`,
+  `github-copilot.js:14`/`COPILOT_GITHUB_TOKEN`, `deepseek.js:10`/`DEEPSEEK_API_KEY`.
+
+Runtime confirmation (throwaway probe against the installed package, deleted afterwards; it asserted
+only on presence/absence and variable names, never on any value, and it scrubbed every candidate name
+from its own environment first so no real credential was consulted). For each of the 38
+provider/env-var pairs in compat's map (`dist/env-api-keys.js:63-111`), it set that one synthetic
+variable, built a `Models` with the builtin providers and an empty credential store, and compared
+`models.getAuth(model)` against `getEnvApiKey(provider)`:
+
+- **36 of 38 resolved an `apiKey` through the registry**, each reporting `source` equal to the very
+  env var compat would have read.
+- The two apparent divergences were both Cloudflare, and both were an artifact of the probe setting
+  only `CLOUDFLARE_API_KEY`: Cloudflare auth also requires the account id (and the gateway id for the
+  gateway provider), `dist/providers/cloudflare-auth.js:20-32`. With the full set:
+  `cloudflare-workers-ai` resolves `apiKey` normally, and `cloudflare-ai-gateway` resolves
+  header-only auth (`cf-aig-authorization`, plus explicit `Authorization: null` / `x-api-key: null`)
+  — i.e. the registry deliberately authenticates it by header.
+
+Answers to the three questions, precisely:
+
+1. **It returns an `apiKey`.** `{ ok: true }` with no key happens only when `getAuth` resolves
+   nothing at all (env var unset — in which case compat finds nothing either) or when the provider
+   authenticates by header rather than by key.
+2. **No other mechanism is needed, because the key is already there.** In the two header-auth cases
+   the credential travels as `headers`, which this module forwards. There is no case where the
+   request leaves unauthenticated under the composed provider but authenticated under compat.
+3. **Same names, slightly different order, and the registry is the stronger of the two.** For
+   `anthropic`, compat deliberately skips `ANTHROPIC_AUTH_TOKEN` (`dist/env-api-keys.js:67-68,123`)
+   and takes the first of `ANTHROPIC_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`; pi's resolver checks
+   `ANTHROPIC_AUTH_TOKEN` first and turns it into an `Authorization: Bearer` header
+   (`dist/providers/anthropic.js:21-27`) before falling through to the same two key vars. Probed:
+   with only `ANTHROPIC_AUTH_TOKEN` set, the registry resolves header auth and compat's
+   `getEnvApiKey` finds nothing — the registry is strictly more capable. The one shape difference
+   that favors compat is degenerate: a blank-but-set variable. `ctx.env` requires
+   `trim().length > 0` (`dist/auth/context.js:23`) while `getProviderEnvValue` is plain truthiness
+   (`dist/utils/provider-env.js:37-42`), so a whitespace-only `OPENAI_API_KEY` yields no registry
+   auth but would have been injected verbatim by compat (probed: `registryResolved=false`,
+   `compatGetEnvApiKeyFound=true`). That "rescue" ships whitespace as a credential and 401s; losing
+   it is not a regression.
+
+**Consequence: no production change.** `lib/inprocess-reviewer.ts` was not touched for IRP-4. Adding
+an env-key fallback would have contradicted the module's "never reads `process.env`" contract
+(`:179`) to solve a problem that does not exist.
+
+**Residual, pre-existing and unchanged by this task:** the narrow seam drops the registry's `env`
+field (`model-registry.js:45`), which `cloudflareStreams` needs to materialize the account/gateway
+placeholders in the model `baseUrl` (`dist/providers/cloudflare-stream.js:5-9`). Cloudflare models are
+therefore undispatchable through this module on **both** paths, before and after this change. Same
+follow-up bucket as the dropped `baseUrl`, not a regression introduced here.
+
 ## Native review boundary
 
 Receipt-driven development is **on** (decided by global). Per work-unit commit:
@@ -291,5 +404,8 @@ The next reviewed boundary becomes the base for whatever follows the slice.
 
 ## Next step
 
-IRP-4: lock the env-API-key behavior for a provider that resolves `ok: true` with no `apiKey`, so the
-`withEnvApiKey` delta recorded above becomes a decision on record instead of a silent regression.
+IRP-6: run the maintainer matrix (`pnpm run test:maintainer`) and record it alongside the focused,
+relay, typecheck and full-suite results already captured for IRP-1/2/3/5 and IRP-4, closing the
+verification task. IRP-7 (the e2e from a real pi session against `claude-bridge/*`) remains the only
+check that exercises a real composed provider; every result above comes from fakes plus static and
+runtime reads of the installed pi packages.
