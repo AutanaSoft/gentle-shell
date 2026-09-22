@@ -916,8 +916,9 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		rddProjectOverride = false;
 	};
 	const refreshRddMode = (ctx: ExtensionContext, options: { invalidate?: boolean; polling?: boolean } = {}) => {
-		if (!ctx.hasUI || currentContext !== ctx || rddReader === null) return;
+		if (rddReader === null || currentContext !== ctx) return;
 		if (options.polling && rddPollInFlight) return;
+		if (!ctx.hasUI) return;
 		const cwd = ctx.cwd;
 		const sessionId = ctx.sessionManager.getSessionId();
 		if (!options.polling) rddAbort?.abort();
@@ -937,15 +938,20 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			if (generation === rddGeneration) rddPollInFlight = false;
 		});
 	};
-	const startRddPolling = (ctx: ExtensionContext) => {
+	const startRddPolling = () => {
 		if (rddReader === null) return;
 		const pollMs = deps.rddPollMs ?? positiveMs(env.GENTLE_PI_SHELL_RDD_POLL_MS, RDD_POLL_DEFAULT_MS);
-		rddPoll = setInterval(() => refreshRddMode(ctx, { polling: true, invalidate: true }), pollMs);
+		rddPoll = setInterval(() => {
+			const ctx = currentContext;
+			if (!ctx) return;
+			refreshRddMode(ctx, { polling: true, invalidate: true });
+		}, pollMs);
 		rddPoll.unref();
 	};
 	pi.events.on(RDD_MODE_STATUS_CHANGED, (data) => {
+		const ctx = currentContext;
 		const cwd = (data as { cwd?: string } | undefined)?.cwd;
-		if (currentContext && cwd === currentContext.cwd) refreshRddMode(currentContext, { invalidate: true });
+		if (ctx && cwd === ctx.cwd) refreshRddMode(ctx, { invalidate: true });
 	});
 	const applyChanges = (ctx: ExtensionContext, model: ChangesModel) => {
 		const fingerprint = changesFingerprint(model);
@@ -1043,7 +1049,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		});
 		void refreshUsage(ctx, true);
 		refreshRddMode(ctx);
-		startRddPolling(ctx);
+		startRddPolling();
 		const ownsPrompt = installPrompt(
 			ctx,
 			(created) => {
@@ -1068,7 +1074,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		applyChanges(ctx, tracker.model);
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
-		if (currentContext === ctx) resetRddState();
+		if (currentContext === ctx) {
+			currentContext = undefined;
+			resetRddState();
+		}
 		pendingQueuedText = undefined;
 		prompt?.dispose();
 		prompt = undefined;
@@ -1079,7 +1088,6 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		registry?.close();
 		registry = undefined;
 		changes = undefined;
-		currentContext = undefined;
 		unsubscribeWorktrees();
 	});
 	const openChanges = async (ctx: ExtensionContext) => {

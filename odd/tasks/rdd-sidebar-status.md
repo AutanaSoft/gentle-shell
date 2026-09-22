@@ -4,7 +4,7 @@
 - Repository: `gentle-pi`
 - Branch: `feat/shell-rdd-status-v2`
 - Base: `main` / `upstream/main` at `cf1fdb65c267d9fbdad2c48f6c9e008f3f91d7a3`
-- Status: implementation and automated verification complete; live visual acceptance pending
+- Status: stale-context crash correction implemented and verified; live visual acceptance pending
 - Source plan: `work-items/active/feat/938-shell-rdd-status/implementation-plan.md`
 - Related issue: `#938`
 - Route: delegated direct; each implementation task crosses the multi-file writer trigger
@@ -106,7 +106,7 @@ Presentation rules:
 - Event subscriptions are extension-lifetime resources; session shutdown clears session state and timers without removing the shared subscription.
 - Keep production code, tests, and rationale together in reviewable work units.
 - Preserve unrelated behavior and existing user changes.
-- No implementation, test mutation, commit, push, PR, or release begins until the user approves this ledger.
+- The user approved the stale-context crash correction on the development clone; push, PR, merge, release, and production-clone changes remain separate decisions.
 
 ## Authorized edit surfaces
 
@@ -287,12 +287,46 @@ The task that owns a behavior runs its focused commands. Full-suite, runtime-mod
     - Perform interactive visual confirmation in fullscreen and compact layouts when a live Pi host is available; otherwise leave it explicitly pending for the user.
   - Completion evidence: focused suites passed (RDD reader 23/23, parity 22/22, renderer/layout 67/67, Shell lifecycle 99/99, risk assessment 64/64); typecheck passed with 196 baseline diagnostics and no regressions; full suite passed 2,939 tests with 38 skipped and only the pre-existing unchanged runtime-harness assertion failing; runtime-module parity and `git diff --check` passed. Live fullscreen/compact visual acceptance remains explicitly pending for an interactive Pi host.
 
-- [ ] **RSS-6 — Integrate current main and effective-profile downstream state**
-  - Merge `main` at `b6188bef` into the feature branch and verify the updated candidate.
-  - Push `feat/shell-rdd-status-v2` after successful verification and native review.
-  - Integrate the verified branch into `downstream/main`, combining effective-profile snapshots with RDD state in `extensions/gentle-shell.ts`.
-  - Preserve both lifecycle cleanup paths, independent invalidation, and structured profile/RDD model projection.
-  - Run focused Shell/RDD tests, typecheck, conflict-marker checks, and whitespace validation before publishing `downstream/main`.
+- [x] **RSS-6 — Integrate current main and effective-profile downstream state**
+  - Completion evidence: merged updated `main` into the feature branch and pushed it at `a78a5a35`; integrated the verified branch with effective-profile behavior in `downstream/main` at `71a2c81b`; focused integration verification passed 348/348; native review approved and acknowledged.
+
+- [x] **RSS-7 — Prevent stale ExtensionContext access in RDD polling**
+  - Route: delegated writer; production and regression-test changes trigger mandatory multi-file delegation.
+  - Allowed surfaces:
+    - `extensions/gentle-shell.ts`
+    - `tests/gentle-shell.test.ts`
+    - `odd/tasks/rdd-sidebar-status.md`
+  - RED:
+    - Add a context double whose `hasUI`, `cwd`, and `sessionManager` getters throw after invalidation.
+    - Capture a queued polling callback, close or replace its session, invalidate the old context, and prove the callback currently throws.
+    - Observed before production edits: `node --experimental-strip-types --test tests/gentle-shell.test.ts` reported 108 passing and 1 failing test; `assert.doesNotThrow` failed with `Error: stale ExtensionContext getter: hasUI` from `refreshRddMode` at `extensions/gentle-shell.ts:919`, reached by the queued callback at line 943.
+  - GREEN:
+    - Make polling resolve `currentContext` per tick instead of closing over a session context.
+    - Check reader availability and context identity before accessing `ctx.hasUI` or other protected properties.
+    - Clear the shared current-context reference before resetting RDD state during shutdown.
+    - Snapshot and validate the current context in the RDD change listener.
+    - Observed after the focused production fix: the focused Shell suite passed 109/109.
+  - Triangulate/refactor:
+    - Prove queued ticks and late async results from old sessions are inert.
+    - Prove replacement sessions still poll normally without overlapping reads or stale renders.
+    - Preserve generation, abort, memoization, coalescing, and extension-lifetime listener behavior.
+    - Observed lifecycle triangulation: the expanded focused Shell suite passed 110/110, including replacement-session polling, no overlapping reads, and no stale UI renders.
+  - Focused checks:
+
+    ```bash
+    node --experimental-strip-types --test tests/gentle-shell.test.ts
+    pnpm run typecheck
+    pnpm test
+    git diff --check
+    ```
+
+  - Verification evidence:
+    - `node --experimental-strip-types --test tests/gentle-shell.test.ts`: 110/110 passed.
+    - `pnpm run typecheck`: passed with 196 recorded baseline diagnostics, no regressions, and 3 improved diagnostic pairs.
+    - `pnpm test`: 2,975 passed and 38 skipped before the known unchanged runtime-harness assertion at `tests/runtime-harness.mjs:537` (`the real primary hook must stop a second distinct direct file`); the provider contract mirror check passed. `tests/runtime-harness.mjs` and `extensions/gentle-ai.ts` are unchanged from the current base.
+    - `git diff --check`: passed.
+  - Work-unit commit proposal: `fix(shell): avoid stale context access in RDD polling`.
+  - Source plan: `work-items/active/feat/938-shell-rdd-status/stale-context-crash-fix-plan.md`.
 
 ## Acceptance criteria
 
@@ -332,7 +366,9 @@ The task that owns a behavior runs its focused commands. Full-suite, runtime-mod
 | RSS-2 | Complete | RED/GREEN parity 22/22; reader 23/23; typecheck passed | `6d62903c` | Approved and acknowledged; two non-blocking readability suggestions recorded |
 | RSS-3 | Complete | RED/GREEN renderer and layout 67/67; typecheck passed | `77da142c` | Approved and acknowledged |
 | RSS-4 | Complete | RED/GREEN lifecycle 99/99; renderer/layout 67/67; typecheck passed | `2c5fc150` | Approved and acknowledged; six non-blocking advisory findings recorded |
-| RSS-5 | Complete with recorded exceptions | Focused and full verification recorded; pre-existing harness failure and live visual check pending | This closeout commit | Approved and acknowledged; one non-blocking readability suggestion recorded |
+| RSS-5 | Complete with recorded exceptions | Focused and full verification recorded; pre-existing harness failure and live visual check pending | `47529cda` / `e0737558` | Approved and acknowledged; one non-blocking readability suggestion recorded |
+| RSS-6 | Complete | Integration verification passed 348/348 | `a78a5a35`, downstream `71a2c81b` | Approved and acknowledged |
+| RSS-7 | Complete | RED observed (`hasUI` stale-context throw); GREEN 109/109; triangulation and parent spot check 110/110; typecheck and whitespace passed; full suite retained the known unchanged runtime-harness assertion | Pending work-unit commit | Native four-lens review approved and acknowledged |
 
 ## Decisions and rationale
 
@@ -343,4 +379,4 @@ The task that owns a behavior runs its focused commands. Full-suite, runtime-mod
 
 ## Next step
 
-Run live fullscreen and compact visual acceptance in an interactive Pi host when available. No push, PR, merge, or release is authorized.
+Create the RSS-7 work-unit commit, assess its committed range, and retain live fullscreen/compact acceptance as pending. Do not modify the `gentle-shell` production clone. Push, PR, merge, release, and production deployment remain unauthorized.

@@ -192,6 +192,31 @@ function fakeContext(options: { hasUI?: boolean; entries?: unknown[]; oauth?: bo
 	return { ctx, ui, overlayReady };
 }
 
+function invalidatableContext(cwd = "/repo"): { ctx: ExtensionContext; ui: FakeUi; overlayReady: Promise<void>; invalidate(): void } {
+	const context = fakeContext();
+	const ctx = context.ctx as ExtensionContext & { hasUI: boolean; cwd: string; sessionManager: ExtensionContext["sessionManager"] };
+	ctx.cwd = cwd;
+	const activeHasUI = ctx.hasUI;
+	const activeCwd = ctx.cwd;
+	const activeSessionManager = ctx.sessionManager;
+	let invalidated = false;
+	Object.defineProperties(ctx, {
+		hasUI: { configurable: true, get: () => {
+			if (invalidated) throw new Error("stale ExtensionContext getter: hasUI");
+			return activeHasUI;
+		} },
+		cwd: { configurable: true, get: () => {
+			if (invalidated) throw new Error("stale ExtensionContext getter: cwd");
+			return activeCwd;
+		} },
+		sessionManager: { configurable: true, get: () => {
+			if (invalidated) throw new Error("stale ExtensionContext getter: sessionManager");
+			return activeSessionManager;
+		} },
+	});
+	return { ...context, invalidate: () => { invalidated = true; } };
+}
+
 function assistantEntry(usage: { input: number; output: number; cost: number }) {
 	return {
 		type: "message",
@@ -365,6 +390,76 @@ test("RDD polling is bounded and coalesced, and late aborted results cannot win"
 	await fire(handlers, "session_shutdown", ctx);
 	intervals[0]!();
 	assert.equal(pending.length, 3, "shutdown stops the polling timer");
+});
+
+test("queued RDD ticks leave an invalidated old context inert", async (t) => {
+	const intervals: Array<() => void> = [];
+	t.mock.method(globalThis, "setInterval", (callback: () => void) => {
+		intervals.push(callback);
+		return { unref() {} } as unknown as NodeJS.Timeout;
+	});
+	let reads = 0;
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { rddModeReader: { reviewMode: async () => {
+		reads += 1;
+		return rddStatus("on");
+	} }, rddPollMs: 5 });
+	const old = invalidatableContext("/stale-rdd-context");
+	await fire(handlers, "session_start", old.ctx);
+	assert.equal(intervals.length, 1);
+	await fire(handlers, "session_shutdown", old.ctx);
+	old.invalidate();
+	const readsBeforeQueuedTick = reads;
+	assert.doesNotThrow(() => intervals[0]!(), "a queued tick must not access the invalidated old context");
+	assert.equal(reads, readsBeforeQueuedTick, "the queued old tick must not begin another read");
+});
+
+test("replacement sessions poll through the current context without stale renders", async (t) => {
+	const intervals: Array<() => void> = [];
+	t.mock.method(globalThis, "setInterval", (callback: () => void) => {
+		intervals.push(callback);
+		return { unref() {} } as unknown as NodeJS.Timeout;
+	});
+	const pending: Array<ReturnType<typeof deferred<NativeReviewModeResult>>> = [];
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { rddModeReader: { reviewMode: () => {
+		const result = deferred<NativeReviewModeResult>();
+		pending.push(result);
+		return result.promise;
+	} }, rddPollMs: 5 });
+	const first = invalidatableContext("/rdd-replacement-context");
+	await fire(handlers, "session_start", first.ctx);
+	await fire(handlers, "session_shutdown", first.ctx);
+	first.invalidate();
+
+	const second = fakeContext();
+	(second.ctx as unknown as { cwd: string }).cwd = "/rdd-replacement-context";
+	(second.ctx.sessionManager as unknown as { getSessionId(): string }).getSessionId = () => "replacement-rdd-session";
+	let secondRenders = 0;
+	const secondTui = { terminal: { rows: 40, columns: 160 }, requestRender: () => { secondRenders += 1; } };
+	await fire(handlers, "session_start", second.ctx);
+	const secondFooter = (second.ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => { render(width: number): string[] })(secondTui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+	assert.equal(pending.length, 2, "the replacement session starts its own authoritative read");
+	intervals[0]!();
+	assert.equal(pending.length, 2, "a queued old tick must not overlap the replacement read");
+	pending[1]!.resolve(rddStatus("on"));
+	await settleRdd();
+	assert.match(secondFooter.render(160).join("\n"), /RDD: ON/);
+	const rendersAfterReplacement = secondRenders;
+
+	intervals[0]!();
+	assert.equal(pending.length, 3, "the queued callback polls the current replacement context");
+	pending[2]!.resolve(rddStatus("off"));
+	await settleRdd();
+	assert.match(secondFooter.render(160).join("\n"), /RDD: OFF/);
+	assert.ok(secondRenders > rendersAfterReplacement, "the replacement result renders in the replacement UI");
+	const rendersAfterCurrentResult = secondRenders;
+
+	pending[0]!.resolve(rddStatus("off", "clone_local"));
+	await settleRdd();
+	assert.match(secondFooter.render(160).join("\n"), /RDD: OFF/);
+	assert.equal(secondRenders, rendersAfterCurrentResult, "the old session result cannot render into the replacement UI");
+	await fire(handlers, "session_shutdown", second.ctx);
 });
 
 test("RDD event handling survives a second session while old-session results remain inert", async () => {
