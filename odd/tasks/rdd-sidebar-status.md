@@ -4,7 +4,7 @@
 - Repository: `gentle-pi`
 - Branch: `feat/shell-rdd-status-v2`
 - Base: `main` / `upstream/main` at `cf1fdb65c267d9fbdad2c48f6c9e008f3f91d7a3`
-- Status: stale-context crash correction implemented and verified; live visual acceptance pending
+- Status: RSS-8 implemented and independently verified; known unchanged runtime-harness failure and live lifecycle verification pending
 - Source plan: `work-items/active/feat/938-shell-rdd-status/implementation-plan.md`
 - Related issue: `#938`
 - Route: delegated direct; each implementation task crosses the multi-file writer trigger
@@ -106,7 +106,7 @@ Presentation rules:
 - Event subscriptions are extension-lifetime resources; session shutdown clears session state and timers without removing the shared subscription.
 - Keep production code, tests, and rationale together in reviewable work units.
 - Preserve unrelated behavior and existing user changes.
-- The user approved the stale-context crash correction on the development clone; push, PR, merge, release, and production-clone changes remain separate decisions.
+- RSS-7's stale-context correction was approved on the development clone; RSS-8 addresses the residual race and was implemented under explicit user authorization. Push, PR, merge, release, and production-clone changes remain separate decisions.
 
 ## Authorized edit surfaces
 
@@ -328,6 +328,34 @@ The task that owns a behavior runs its focused commands. Full-suite, runtime-mod
   - Work-unit commit proposal: `fix(shell): avoid stale context access in RDD polling`.
   - Source plan: `work-items/active/feat/938-shell-rdd-status/stale-context-crash-fix-plan.md`.
 
+- [x] **RSS-8 — Eliminate residual stale-context races with plain-data session snapshots**
+  - Status: Implemented and independently verified with recorded exceptions. Preserve RSS-7 as completed historical evidence; this task addresses the residual ordering that recurred after `e95db48a`.
+  - Route: delegated writer; the planned production and regression-test changes trigger mandatory multi-file delegation.
+  - Design:
+    - During active `session_start`, while the context is valid, synchronously capture one immutable plain-data RDD session snapshot containing only a unique session token/generation identifier, `cwd`, `sessionId`, and UI eligibility. Do not retain an operational `ExtensionContext` for polling, event handling, or late-result work.
+    - Polling ticks, shared `RDD_MODE_STATUS_CHANGED` event handling, and late promise continuations must use the immutable snapshot and other plain RDD state only. They must never dereference `ExtensionContext`, including `hasUI`, `cwd`, or `sessionManager`.
+    - Bind status reads and the render host to the same session token, validate that token before every state or render write, and clear any old footer/render host when a session starts or is replaced before installing the new host.
+    - During shutdown, clear the RDD session state before reset or cancellation. Preserve request generation, abort handling, coalescing, memo invalidation, and the extension-lifetime event listener behavior.
+    - A redundant native status read before lifecycle cleanup can be harmless because no lifecycle signal may yet have cleared the plain snapshot. The required invariants are no stale context access and no stale or cross-session state or render write, not necessarily zero reads before cleanup.
+  - Strict TDD RED cases:
+    - Use context doubles whose `hasUI`, `cwd`, and `sessionManager` getters throw after invalidation.
+    - Reproduce invalidation before shutdown followed by a queued polling tick; dispatch a stale event after invalidation; and resolve a deferred result while the old context is stale.
+    - Replace a session before the new footer/render host is installed and assert no uncaught throw or rejection and no stale state or render.
+    - Preserve the existing coalescing, replacement-session, and event tests. Do not require no reader call before cleanup when the runtime provides no lifecycle signal.
+  - Observed RED: before production edits, the focused Shell suite reported 110 passing and 4 failing RSS-8 regressions: stale `hasUI` on a queued poll, stale `cwd` on the active-cwd event, stale `sessionManager` with an unhandled deferred-result rejection, and one stale old-host render.
+  - Observed GREEN: after the snapshot and token-bound host implementation, the focused Shell suite passed 114/114; the four RSS-8 regressions passed alongside the existing coalescing, replacement-session, late-result, and event-listener coverage.
+  - Triangulation/refactor: the focused suite preserved the prior 110 lifecycle checks while covering invalidation-before-cleanup, stale events, deferred results, and replacement before footer installation; the implementation keeps generation, abort, coalescing, memo invalidation, polling, and extension-lifetime listener behavior.
+  - Verification plan:
+    - Focused Shell lifecycle test: `node --experimental-strip-types --test tests/gentle-shell.test.ts`.
+    - Typecheck: `pnpm run typecheck`.
+    - Full suite: `pnpm test`.
+    - Diff check: `git diff --check`.
+    - Live `/reload`, `/new`, `/resume`, and `/fork` check with at least one polling interval; confirm Pi remains active, no stale render/state appears, and the replacement session continues to update.
+    - Record the existing runtime-harness exception only if it is still present when implementation is later verified; do not pre-record it as current evidence.
+  - Source plan: `work-items/active/feat/938-shell-rdd-status/stale-context-crash-fix-plan.md`, whose former workaround is explicitly incomplete and superseded by this plain-data snapshot design.
+  - Work-unit commit proposal: `fix(shell): eliminate stale context access with session snapshots`.
+  - Completion evidence: implementation and strict-TDD focused verification are complete. Independent verification confirmed the focused Shell suite passed 114/114, `pnpm run typecheck` passed with 196 recorded baseline diagnostics, no regressions, and 3 improved diagnostic pairs, and `git diff --check` passed. `pnpm test` reached 2,979 passing and 38 skipped tests before the known unchanged runtime-harness assertion at `tests/runtime-harness.mjs:537` (`the real primary hook must stop a second distinct direct file`); `tests/runtime-harness.mjs` is not modified by this candidate. Live `/reload`, `/new`, `/resume`, and `/fork` verification remains pending in an interactive Pi host.
+
 ## Acceptance criteria
 
 - Native `status.effective` is the only source for `ON` or `OFF`.
@@ -351,7 +379,8 @@ The task that owns a behavior runs its focused commands. Full-suite, runtime-mod
 
 - Forecast: approximately 460–670 authored changed lines across production and tests.
 - The approximately 400-line guideline is advisory per task but triggers the selected `ask-on-risk` delivery decision for accumulated branch delivery.
-- Expected work units: four implementation commits plus a verification closeout update.
+- Expected work units: four implementation commits plus the RSS-8 corrective unit and a verification closeout update.
+- RSS-8 is implemented as one corrective work unit; its focused, typecheck, full-suite exception, whitespace, and independent-verification evidence are recorded above.
 - Proposed slice 1: authoritative reader plus mutation invalidation, approximately 180–270 lines.
 - Proposed slice 2: pure rendering plus Shell lifecycle, approximately 280–400 lines.
 - If the lifecycle unit alone exceeds the guideline, separate pure rendering from lifecycle rather than reduce tests, documentation, or clarity.
@@ -369,6 +398,7 @@ The task that owns a behavior runs its focused commands. Full-suite, runtime-mod
 | RSS-5 | Complete with recorded exceptions | Focused and full verification recorded; pre-existing harness failure and live visual check pending | `47529cda` / `e0737558` | Approved and acknowledged; one non-blocking readability suggestion recorded |
 | RSS-6 | Complete | Integration verification passed 348/348 | `a78a5a35`, downstream `71a2c81b` | Approved and acknowledged |
 | RSS-7 | Complete | RED observed (`hasUI` stale-context throw); GREEN 109/109; triangulation, parent spot check, and independent verification 110/110; typecheck and whitespace passed; full suite retained the known unchanged runtime-harness assertion | `e95db48a` | Committed-range four-lens review approved and acknowledged |
+| RSS-8 | Complete with recorded exceptions | RED 110+4 failures; GREEN and independent focused verification 114/114; typecheck and whitespace passed; full suite retained the unchanged runtime-harness assertion; live lifecycle check pending | — | Pending native review |
 
 ## Decisions and rationale
 
@@ -379,4 +409,4 @@ The task that owns a behavior runs its focused commands. Full-suite, runtime-mod
 
 ## Next step
 
-Run live fullscreen and compact visual acceptance in an interactive Pi host when available. Do not modify the `gentle-shell` production clone. Push, PR, merge, release, and production deployment remain unauthorized.
+Run native review for the RSS-8 candidate, then perform live `/reload`, `/new`, `/resume`, and `/fork` verification in an interactive Pi host when available. Do not modify the `gentle-shell` production clone. Commit, push, PR, merge, release, and production deployment remain unauthorized.

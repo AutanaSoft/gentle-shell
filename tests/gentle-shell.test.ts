@@ -462,6 +462,95 @@ test("replacement sessions poll through the current context without stale render
 	await fire(handlers, "session_shutdown", second.ctx);
 });
 
+test("RDD queued polling stays inert when context invalidates before shutdown cleanup", async (t) => {
+	const intervals: Array<() => void> = [];
+	t.mock.method(globalThis, "setInterval", (callback: () => void) => {
+		intervals.push(callback);
+		return { unref() {} } as unknown as NodeJS.Timeout;
+	});
+	const pending: Array<ReturnType<typeof deferred<NativeReviewModeResult>>> = [];
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { rddModeReader: { reviewMode: () => {
+		const result = deferred<NativeReviewModeResult>();
+		pending.push(result);
+		return result.promise;
+	} }, rddPollMs: 5 });
+	const stale = invalidatableContext("/rdd-invalid-before-shutdown");
+	await fire(handlers, "session_start", stale.ctx);
+	assert.equal(intervals.length, 1);
+	pending[0]!.resolve(rddStatus("on"));
+	await settleRdd();
+	stale.invalidate();
+	assert.doesNotThrow(() => intervals[0]!(), "a queued tick must not dereference an invalidated context");
+});
+
+test("RDD active-cwd events stay inert after context invalidation before cleanup", async (t) => {
+	const pending: Array<ReturnType<typeof deferred<NativeReviewModeResult>>> = [];
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { rddModeReader: { reviewMode: () => {
+		const result = deferred<NativeReviewModeResult>();
+		pending.push(result);
+		return result.promise;
+	} }, rddPollMs: 60_000 });
+	const stale = invalidatableContext("/rdd-event-after-invalidation");
+	await fire(handlers, "session_start", stale.ctx);
+	const renders: number[] = [];
+	(stale.ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => unknown)({ requestRender: () => renders.push(1) }, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+	stale.invalidate();
+	assert.doesNotThrow(() => pi.events.emit("gentle-pi:rdd-mode-status-changed", { cwd: "/rdd-event-after-invalidation" }), "an active-cwd event must not read a stale context");
+	assert.equal(renders.length, 0, "an event cannot render synchronously before its authoritative read settles");
+});
+
+test("RDD deferred results do not create an unhandled rejection when the context becomes stale", async (t) => {
+	const pending: Array<ReturnType<typeof deferred<NativeReviewModeResult>>> = [];
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { rddModeReader: { reviewMode: () => {
+		const result = deferred<NativeReviewModeResult>();
+		pending.push(result);
+		return result.promise;
+	} }, rddPollMs: 60_000 });
+	const stale = invalidatableContext("/rdd-deferred-stale-context");
+	await fire(handlers, "session_start", stale.ctx);
+	const renders: number[] = [];
+	(stale.ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => unknown)({ requestRender: () => renders.push(1) }, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+	const unhandled: unknown[] = [];
+	const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+	process.on("unhandledRejection", onUnhandled);
+	stale.invalidate();
+	pending[0]!.resolve(rddStatus("on"));
+	await settleRdd();
+	process.off("unhandledRejection", onUnhandled);
+	assert.deepEqual(unhandled, [], "a stale context must not turn a late result into an unhandled rejection");
+	assert.ok(renders.length <= 1, "the stale result must not render repeatedly");
+});
+
+test("RDD replacement retires the old render host before the new footer is installed", async (t) => {
+	const pending: Array<ReturnType<typeof deferred<NativeReviewModeResult>>> = [];
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { rddModeReader: { reviewMode: () => {
+		const result = deferred<NativeReviewModeResult>();
+		pending.push(result);
+		return result.promise;
+	} }, rddPollMs: 60_000 });
+	const first = invalidatableContext("/rdd-render-host-replacement");
+	await fire(handlers, "session_start", first.ctx);
+	let oldRenders = 0;
+	const oldFooter = (first.ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => { render(width: number): string[] })({ requestRender: () => { oldRenders += 1; } }, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+	first.invalidate();
+	const replacement = fakeContext();
+	(replacement.ctx as unknown as { cwd: string }).cwd = "/rdd-render-host-replacement";
+	(replacement.ctx.sessionManager as unknown as { getSessionId(): string }).getSessionId = () => "replacement-render-session";
+	await fire(handlers, "session_start", replacement.ctx);
+	assert.equal(pending.length, 2, "the replacement read starts before its footer factory is installed");
+	pending[1]!.resolve(rddStatus("on"));
+	await settleRdd();
+	assert.equal(oldRenders, 0, "the old footer host must not receive replacement-session renders");
+	const newFooter = (replacement.ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => { render(width: number): string[] })({ requestRender() {} }, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+	assert.match(newFooter.render(160).join("\n"), /RDD: ON/);
+	void oldFooter;
+	await fire(handlers, "session_shutdown", replacement.ctx);
+});
+
 test("RDD event handling survives a second session while old-session results remain inert", async () => {
 	const pending: Array<ReturnType<typeof deferred<NativeReviewModeResult>>> = [];
 	const { pi, handlers } = fakePi();

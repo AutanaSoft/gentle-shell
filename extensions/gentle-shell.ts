@@ -49,6 +49,10 @@ interface ShellRenderHost {
 	invalidateSidebar?(): void;
 }
 
+interface RddRenderHost extends ShellRenderHost {
+	readonly rddToken: symbol;
+}
+
 interface ShellBarComponent {
 	render(width: number): string[];
 	invalidate(): void;
@@ -733,6 +737,14 @@ const USAGE_REFRESH_MS = 5 * 60_000;
 const RDD_POLL_DEFAULT_MS = 30_000;
 const RDD_MODE_STATUS_CHANGED = "gentle-pi:rdd-mode-status-changed";
 
+interface RddSessionSnapshot {
+	readonly token: symbol;
+	readonly generation: number;
+	readonly cwd: string;
+	readonly sessionId: string;
+	readonly hasUI: boolean;
+}
+
 // The Codex usage endpoint is what the Codex CLI itself reads. The OAuth
 // token pi already holds carries the account id; nothing else is sent.
 export async function fetchCodexUsage(token: string | undefined, fetchFn: typeof fetch, now: number): Promise<ProviderUsage | undefined> {
@@ -791,7 +803,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	// the extension that owns them registers one on pi.events; see the
 	// USAGE_SOURCE_EVENT subscription below.
 	const usageSources = new UsageSourceRegistry();
-	let renderHost: ShellRenderHost | undefined;
+	let renderHost: RddRenderHost | undefined;
 	// The 5-minute rule is per provider: one provider's fetch cannot leave the
 	// next one waiting for an interval it never used.
 	const usageFetchedAt = new Map<string, number>();
@@ -894,6 +906,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	let changes: SessionChanges | undefined;
 	let registry: SessionWorktreeRegistry | undefined;
 	let currentContext: ExtensionContext | undefined;
+	let activeRddSession: RddSessionSnapshot | undefined;
+	let rddSessionGeneration = 0;
 	let shown = "";
 	let rddMode: RddMode = "unknown";
 	let rddProjectOverride = false;
@@ -915,43 +929,56 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		rddMode = "unknown";
 		rddProjectOverride = false;
 	};
-	const refreshRddMode = (ctx: ExtensionContext, options: { invalidate?: boolean; polling?: boolean } = {}) => {
-		if (rddReader === null || currentContext !== ctx) return;
+	const retireRddSession = () => {
+		activeRddSession = undefined;
+		renderHost = undefined;
+	};
+	const refreshRddMode = (session: RddSessionSnapshot, options: { invalidate?: boolean; polling?: boolean } = {}) => {
+		if (rddReader === null || activeRddSession !== session || !session.hasUI) return;
 		if (options.polling && rddPollInFlight) return;
-		if (!ctx.hasUI) return;
-		const cwd = ctx.cwd;
-		const sessionId = ctx.sessionManager.getSessionId();
 		if (!options.polling) rddAbort?.abort();
 		rddPollInFlight = true;
 		const abort = new AbortController();
 		rddAbort = abort;
 		const generation = ++rddGeneration;
-		if (options.invalidate) invalidateRddModeStatus(cwd);
-		void readRddModeStatus(rddReader, cwd, abort.signal).then((status) => {
-			if (generation !== rddGeneration || abort.signal.aborted || currentContext !== ctx || ctx.sessionManager.getSessionId() !== sessionId || ctx.cwd !== cwd) return;
+		if (options.invalidate) invalidateRddModeStatus(session.cwd);
+		void readRddModeStatus(rddReader, session.cwd, abort.signal).then((status) => {
+			if (
+				activeRddSession !== session ||
+				activeRddSession?.token !== session.token ||
+				activeRddSession?.generation !== session.generation ||
+				generation !== rddGeneration ||
+				abort.signal.aborted
+			) return;
 			if (rddMode === status.mode && rddProjectOverride === status.projectOverride) return;
 			rddMode = status.mode;
 			rddProjectOverride = status.projectOverride;
-			renderHost?.invalidateSidebar?.();
-			renderHost?.requestRender();
-		}).finally(() => {
+			const host = renderHost;
+			if (host?.rddToken !== session.token) return;
+			try {
+				host.invalidateSidebar?.();
+				host.requestRender();
+			} catch {
+				// A host can be retired by Pi while a read is settling.
+			}
+		}).catch(() => undefined).finally(() => {
 			if (generation === rddGeneration) rddPollInFlight = false;
 		});
 	};
 	const startRddPolling = () => {
-		if (rddReader === null) return;
+		if (rddReader === null || !activeRddSession?.hasUI) return;
 		const pollMs = deps.rddPollMs ?? positiveMs(env.GENTLE_PI_SHELL_RDD_POLL_MS, RDD_POLL_DEFAULT_MS);
 		rddPoll = setInterval(() => {
-			const ctx = currentContext;
-			if (!ctx) return;
-			refreshRddMode(ctx, { polling: true, invalidate: true });
+			const session = activeRddSession;
+			if (!session || !session.hasUI) return;
+			refreshRddMode(session, { polling: true, invalidate: true });
 		}, pollMs);
 		rddPoll.unref();
 	};
 	pi.events.on(RDD_MODE_STATUS_CHANGED, (data) => {
-		const ctx = currentContext;
+		const session = activeRddSession;
 		const cwd = (data as { cwd?: string } | undefined)?.cwd;
-		if (ctx && cwd === ctx.cwd) refreshRddMode(ctx, { invalidate: true });
+		if (session?.hasUI && cwd === session.cwd) refreshRddMode(session, { invalidate: true });
 	});
 	const applyChanges = (ctx: ExtensionContext, model: ChangesModel) => {
 		const fingerprint = changesFingerprint(model);
@@ -987,20 +1014,30 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	});
 	pi.on("session_start", async (_event, ctx) => {
 		registry?.close();
+		retireRddSession();
 		resetRddState();
+		const session: RddSessionSnapshot = {
+			token: Symbol("rdd-session"),
+			generation: ++rddSessionGeneration,
+			cwd: ctx.cwd,
+			sessionId: ctx.sessionManager.getSessionId(),
+			hasUI: ctx.hasUI,
+		};
+		activeRddSession = session;
 		currentContext = ctx;
 		changes = undefined;
 		registry = new SessionWorktreeRegistry(pi, ctx.sessionManager, ctx.cwd, deps.resolveWorktree);
 		registry.start();
-		if (!ctx.hasUI) return;
+		if (!session.hasUI) return;
 		changes = new SessionChanges(ctx.sessionManager.getSessionId(), ctx.sessionManager.getEntries());
 		const tracker = changes;
 		ctx.ui.setFooter((tui, theme, footerData) => {
-			renderHost = { requestRender: () => tui.requestRender(), invalidateSidebar: () => invalidateSidebar(tui) };
+			const host: RddRenderHost = { rddToken: session.token, requestRender: () => tui.requestRender(), invalidateSidebar: () => invalidateSidebar(tui) };
+			if (activeRddSession === session) renderHost = host;
 			const bottom = createShellBarComponent(
 				pi,
 				ctx,
-				renderHost,
+				host,
 				theme,
 				footerData,
 				() => tracker.model.files.length,
@@ -1045,10 +1082,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				},
 			});
 			const uninstall = installSidebar(tui, theme);
-			return { ...part, dispose() { disposeHeader(); uninstall(); part.dispose(); } };
+			return { ...part, dispose() { if (renderHost === host) renderHost = undefined; disposeHeader(); uninstall(); part.dispose(); } };
 		});
 		void refreshUsage(ctx, true);
-		refreshRddMode(ctx);
+		refreshRddMode(session);
 		startRddPolling();
 		const ownsPrompt = installPrompt(
 			ctx,
@@ -1076,6 +1113,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	pi.on("session_shutdown", (_event, ctx) => {
 		if (currentContext === ctx) {
 			currentContext = undefined;
+			retireRddSession();
 			resetRddState();
 		}
 		pendingQueuedText = undefined;
