@@ -149,7 +149,7 @@ narrow seam (pre-existing, follow-up issue).
 - [x] IRP-5 — Correct the module header: "Only `find` and `getApiKeyAndHeaders` are needed here"
       (`:25-26`) is now false, and "no extension hooks" (`:12`) must state that it excludes
       tool/skill/prompt hooks, not extension-registered providers.
-- [ ] IRP-6 — Verify: focused tests, `pnpm test`, `pnpm run typecheck`, and the maintainer matrix
+- [x] IRP-6 — Verify: focused tests, `pnpm test`, `pnpm run typecheck`, and the maintainer matrix
       (`pnpm run test:maintainer`) with observed results recorded below.
 - [ ] IRP-7 — E2E from pi: a real RDD lens routed to `claude-bridge/*` completes and is admitted.
 - [ ] IRP-8 — PR upstream against `Gentleman-Programming/gentle-shell`, linking #1304, #1190, #757,
@@ -388,6 +388,27 @@ field (`model-registry.js:45`), which `cloudflareStreams` needs to materialize t
 placeholders in the model `baseUrl` (`dist/providers/cloudflare-stream.js:5-9`). Cloudflare models are
 therefore undispatchable through this module on **both** paths, before and after this change. Same
 follow-up bucket as the dropped `baseUrl`, not a regression introduced here.
+
+## IRP-6 verification (parent-observed, on `eb96a6c0`)
+
+- `pnpm run test:maintainer` — `tests 34 / pass 29 / fail 0 / skipped 5`. The matrix that prompted the
+  original concern passes: `registerFauxProvider` injects into pi-ai compat's registry, and the
+  maintainer fakes carry no `getProvider`, so they take the `deps.complete` fallback exactly as the
+  optional-member design intended. `armed positive-lens: runMatrix completes end-to-end through the
+  in-process reviewer registry against a stub gentle-ai binary` passes. The 5 skips are pre-existing
+  and env-gated (`GENTLE_PI_MAINTAINER_BASELINE_BINARY`, `GENTLE_PI_MAINTAINER_CAPABLE_BINARY`,
+  `provider-relay.maintest.ts:18-32`); they require maintainer-supplied binaries this machine does not
+  have and are unrelated to this change.
+- `pnpm test` — `tests 3003 / pass 2965 / fail 0 / skipped 38`, plus
+  `gentle-pi provider contract mirror check passed (contract 1.2.0, 9 bundle entries, 2 generated
+  baselines)`. Baseline before this change was 3000/2962; the +3 are the IRP-4 tests.
+- `pnpm run test:harness` — exit 0 (run separately so the exit code was not masked by a pipe).
+- `pnpm run typecheck` — exit 0, `196 recorded diagnostic(s), no regressions; 3 file/code pair(s)
+  improved`. Byte-identical to the pre-change run.
+
+Every acceptance criterion except the e2e one is now met. What remains unproven is only what fakes
+cannot prove: that a real extension provider satisfies `streamSimple(...).result()` at runtime. That is
+IRP-7.
 
 ## Native review boundary
 
