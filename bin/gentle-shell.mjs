@@ -247,10 +247,15 @@ function readRawConfig(configPath) {
 	return parseRawLauncherConfig(readJsonIfExists(configPath));
 }
 
+// Atomic (temp file in the same directory, then rename): a crash or kill
+// mid-write must never leave config.json truncated or partially written,
+// since it also carries the S7 provisioning marker every plain launch reads.
 function writeRawConfig(configPath, config) {
 	const configDir = dirname(configPath);
 	if (!existsSync(configDir)) mkdirSync(configDir, { recursive: true, mode: 0o700 });
-	writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+	const tempPath = join(configDir, `.${basenameOf(configPath)}.gentle-shell-${process.pid}.tmp`);
+	writeFileSync(tempPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+	renameSync(tempPath, configPath);
 }
 
 function loadConfig() {
@@ -323,11 +328,19 @@ function resolveSetupGentleAiInstaller() {
 // child's stdio inherited. A `signal` on the result (rather than folding it
 // into a plain non-zero exit) lets a caller skip printing remediation advice
 // for a process this launcher itself killed — never a real failure to
-// diagnose.
-function spawnAndWait(command, args, env, stdio) {
+// diagnose. `timeoutMs`, when given, kills the child and resolves with
+// `timedOut: true` instead of waiting forever on a hung gentle-ai/pi
+// invocation; only the automatic first-run flow passes it (see
+// AUTO_SETUP_CHILD_TIMEOUT_MS below) — manual `setup` never times out.
+function spawnAndWait(command, args, env, stdio, timeoutMs) {
 	return new Promise((resolve) => {
 		const launchPlan = planSpawn({ command, args, platform: process.platform });
 		const child = spawn(launchPlan.command, launchPlan.args, { stdio, env, shell: launchPlan.shell });
+		let timedOut = false;
+		const timer = timeoutMs !== undefined ? setTimeout(() => {
+			timedOut = true;
+			child.kill("SIGTERM");
+		}, timeoutMs) : undefined;
 		const signalHandlers = ["SIGINT", "SIGTERM", "SIGHUP"].map((signal) => {
 			const handler = () => child.kill(signal);
 			process.on(signal, handler);
@@ -335,6 +348,7 @@ function spawnAndWait(command, args, env, stdio) {
 		});
 		const cleanup = () => {
 			for (const [signal, handler] of signalHandlers) process.removeListener(signal, handler);
+			if (timer !== undefined) clearTimeout(timer);
 		};
 		child.on("error", (error) => {
 			cleanup();
@@ -342,6 +356,10 @@ function spawnAndWait(command, args, env, stdio) {
 		});
 		child.on("exit", (code, signal) => {
 			cleanup();
+			if (timedOut) {
+				resolve({ ok: false, exitCode: 1, timedOut: true });
+				return;
+			}
 			if (signal) {
 				resolve({ ok: false, exitCode: signalExitCode(signal), signal });
 				return;
@@ -401,29 +419,6 @@ function buildSetupEnv(home, runtime) {
 	};
 }
 
-// Provisions `home` with everything `gentle-ai install --agent pi` installs
-// into a regular Pi, by spawning the package-local pinned gentle-ai binary
-// (never a PATH `gentle-ai`) with PI_CODING_AGENT_DIR/GENTLE_PI_AGENT_HOME set
-// to `home.dir` and the resolved pi runtime's directory prepended to PATH, so
-// gentle-ai's own preflight finds `pi` even when it is bundled or given
-// through GENTLE_SHELL_PI, then removes any conflicting package it declared
-// (see runSetupConflictCleanup below). `home` and `runtime` are resolved by
-// the caller exactly as a normal run resolves them (including the
-// isolated/--home bootstrap and the pi version gate). Precondition: the
-// package-local gentle-ai pin must be at least MIN_SETUP_GENTLE_AI_VERSION —
-// the first release that honors PI_CODING_AGENT_DIR here — or this refuses
-// to spawn it, since an older pin would silently provision the caller's real
-// ~/.pi/agent.
-//
-// Returns {ok, exitCode, message?} instead of exiting the process: the
-// manual `setup` subcommand (handleSetupCommand) exits on the result, and
-// the automatic first-run flow (maybeAutoProvisionHome, S7) warns and
-// continues the launch on failure instead. `stdio` is threaded through to
-// both child spawns unchanged (see spawnAndWait and
-// ensurePackageLocalGentleAi above) — "inherit" for a manual `setup`, or
-// `["ignore", 2, 2]` in auto mode so every child's stdout/stderr lands on
-// this launcher's own stderr and its real stdout stays clean for `--mode
-// rpc`/`-p` consumers.
 // The shared Pi persona file gentle-ai writes on every install, regardless
 // of the target home: its own PiPersonaConfigPath always resolves against
 // the OS home, never PI_CODING_AGENT_DIR (gentle-ai internal/components/persona/inject.go),
@@ -543,7 +538,48 @@ function restoreManagedAssetDigestField(path, originalText) {
 	return true;
 }
 
-async function runSetupFlow(home, runtime, { dryRun, stdio }) {
+// Never let a snapshot/restore step itself abort setup: a persona.json or
+// state.json this launcher cannot read or write for an unexpected reason
+// (EACCES, ENOSPC, a path that turned into a directory, ...) must not crash
+// `gentle-shell setup` or block the automatic first-run flow from still
+// launching pi — it only means that one file's shared-state protection did
+// not apply this run. `label` and `path` identify what failed to the user;
+// the caller decides what "safe" default to fall back to.
+function safely(label, path, fallback, fn) {
+	try {
+		return fn();
+	} catch (error) {
+		process.stderr.write(`gentle-shell: could not ${label} at ${path} (${error.message}); continuing\n`);
+		return fallback;
+	}
+}
+
+// Provisions `home` with everything `gentle-ai install --agent pi` installs
+// into a regular Pi, by spawning the package-local pinned gentle-ai binary
+// (never a PATH `gentle-ai`) with PI_CODING_AGENT_DIR/GENTLE_PI_AGENT_HOME set
+// to `home.dir` and the resolved pi runtime's directory prepended to PATH, so
+// gentle-ai's own preflight finds `pi` even when it is bundled or given
+// through GENTLE_SHELL_PI, then removes any conflicting package it declared
+// (see runPostInstallCleanup below). `home` and `runtime` are resolved by
+// the caller exactly as a normal run resolves them (including the
+// isolated/--home bootstrap and the pi version gate). Precondition: the
+// package-local gentle-ai pin must be at least MIN_SETUP_GENTLE_AI_VERSION —
+// the first release that honors PI_CODING_AGENT_DIR here — or this refuses
+// to spawn it, since an older pin would silently provision the caller's real
+// ~/.pi/agent.
+//
+// Returns {ok, exitCode, message?} instead of exiting the process: the
+// manual `setup` subcommand (handleSetupCommand) exits on the result, and
+// the automatic first-run flow (maybeAutoProvisionHome, S7) warns and
+// continues the launch on failure instead. `stdio` is threaded through to
+// both child spawns unchanged (see spawnAndWait and
+// ensurePackageLocalGentleAi above) — "inherit" for a manual `setup`, or
+// `["ignore", 2, 2]` in auto mode so every child's stdout/stderr lands on
+// this launcher's own stderr and its real stdout stays clean for `--mode
+// rpc`/`-p` consumers. `timeoutMs` is threaded into every child this flow
+// spawns (see spawnAndWait's own doc comment) — manual `setup` never passes
+// it, so it never times out; the automatic flow does (S9).
+async function runSetupFlow(home, runtime, { dryRun, stdio, timeoutMs }) {
 	const pinnedVersion = resolveSetupGentleAiPin();
 	if (!isSetupCapablePin(pinnedVersion)) {
 		return {
@@ -562,28 +598,31 @@ async function runSetupFlow(home, runtime, { dryRun, stdio }) {
 	const setupArgs = ["install", "--agent", "pi", "--scope", "global", ...(dryRun ? ["--dry-run"] : [])];
 	const env = buildSetupEnv(home, runtime);
 	const personaPath = sharedPersonaPath();
-	const personaSnapshot = snapshotFile(personaPath);
+	const personaSnapshot = safely("snapshot your Pi persona file", personaPath, undefined, () => snapshotFile(personaPath));
 	const statePath = sharedGentleAiStatePath();
-	const originalStateText = readParsableJsonText(statePath);
+	const originalStateText = safely("read your Gentle AI state file", statePath, undefined, () => readParsableJsonText(statePath));
 	let installResult;
 	try {
-		installResult = await spawnAndWait(binaryPath, setupArgs, env, stdio);
+		installResult = await spawnAndWait(binaryPath, setupArgs, env, stdio, timeoutMs);
 	} finally {
-		if (restoreFile(personaSnapshot)) {
+		if (personaSnapshot !== undefined && safely("restore your Pi persona file", personaPath, false, () => restoreFile(personaSnapshot))) {
 			process.stderr.write(`gentle-shell: kept your Pi persona unchanged (gentle-ai rewrote ${personaPath}; tracked upstream)\n`);
 		}
-		if (restoreManagedAssetDigestField(statePath, originalStateText)) {
+		if (safely("restore your Gentle AI managed-asset record", statePath, false, () => restoreManagedAssetDigestField(statePath, originalStateText))) {
 			process.stderr.write(
 				`gentle-shell: kept your Gentle AI managed-asset record unchanged (the pinned gentle-ai rewrote ${statePath}; tracked upstream)\n`,
 			);
 		}
+	}
+	if (installResult.timedOut) {
+		return { ok: false, exitCode: 1, message: `gentle-shell: gentle-ai install timed out after 15 minutes` };
 	}
 	if (installResult.error) {
 		return { ok: false, exitCode: 1, message: `Could not start the gentle-ai binary: ${installResult.error.message}` };
 	}
 	if (!installResult.ok) return installResult;
 
-	return runPostInstallCleanup(home, runtime, dryRun, stdio);
+	return runPostInstallCleanup(home, runtime, dryRun, stdio, timeoutMs);
 }
 
 // The stderr line printed once `source` is actually removed from `home`.
@@ -620,7 +659,7 @@ function postInstallWouldRemoveMessage(source) {
 // the run (e.g. the isolated-home bootstrap), never what the skipped
 // install would have declared; report every known removal source
 // unconditionally instead of reading settings.json at all.
-async function runPostInstallCleanup(home, runtime, dryRun, stdio) {
+async function runPostInstallCleanup(home, runtime, dryRun, stdio, timeoutMs) {
 	if (dryRun) {
 		for (const source of POST_INSTALL_REMOVAL_SOURCES) {
 			process.stderr.write(`${postInstallWouldRemoveMessage(source)}\n`);
@@ -630,18 +669,21 @@ async function runPostInstallCleanup(home, runtime, dryRun, stdio) {
 	const settingsText = readJsonIfExists(join(home.dir, "settings.json"));
 	const removals = postInstallRemovals(settingsText);
 	if (removals.length === 0) return { ok: true, exitCode: 0 };
-	return removePostInstallSources(removals, 0, home, runtime, stdio);
+	return removePostInstallSources(removals, 0, home, runtime, stdio, timeoutMs);
 }
 
 // Removes each declared post-install source in turn via the resolved pi
 // runtime itself (never gentle-ai), stopping at the first failure so its
 // exit code and actionable message are not masked by a later removal.
-async function removePostInstallSources(sources, index, home, runtime, stdio) {
+async function removePostInstallSources(sources, index, home, runtime, stdio, timeoutMs) {
 	if (index >= sources.length) return { ok: true, exitCode: 0 };
 	const source = sources[index];
 	process.stderr.write(`${postInstallRemovingMessage(source, home)}\n`);
 	const env = buildSetupEnv(home, runtime);
-	const result = await spawnAndWait(runtime.command, [...runtime.args, "remove", source], env, stdio);
+	const result = await spawnAndWait(runtime.command, [...runtime.args, "remove", source], env, stdio, timeoutMs);
+	if (result.timedOut) {
+		return { ok: false, exitCode: 1, message: `gentle-shell: pi remove ${source} timed out after 15 minutes` };
+	}
 	if (result.error) {
 		return { ok: false, exitCode: 1, message: `Could not run the pi runtime to remove ${source}: ${result.error.message}` };
 	}
@@ -650,7 +692,7 @@ async function removePostInstallSources(sources, index, home, runtime, stdio) {
 		const remediation = [...homeSelectorFlags(home).map(shellQuote), "remove", source].join(" ");
 		return { ok: false, exitCode: result.exitCode, message: `gentle-shell: could not remove ${source}; run \`gentle-shell ${remediation}\` before starting` };
 	}
-	return removePostInstallSources(sources, index + 1, home, runtime, stdio);
+	return removePostInstallSources(sources, index + 1, home, runtime, stdio, timeoutMs);
 }
 
 // CLI entry for `gentle-shell [home selectors] setup [--dry-run]`: parses
@@ -675,6 +717,34 @@ async function handleSetupCommand(commandArgs, home, runtime) {
 const AUTO_SETUP_OPT_OUT_ENV = "GENTLE_SHELL_NO_AUTO_SETUP";
 const SETUP_LOCK_STALE_MS = 15 * 60 * 1000;
 
+// gentle-shell never auto-provisions a home it does not itself own: the
+// dedicated isolated home is always owned outright, but a `--home <path>` (or
+// a persisted `home <path>` config) can just as easily name the user's real
+// pi agent directory, or any other pre-existing, unrelated directory. Only a
+// path home that is new (does not exist yet) or empty — or one this launcher
+// has already provisioned before, per the config marker — is fair game;
+// everything else (R1-001) is left alone with a one-time hint instead.
+function defaultPiAgentDir() {
+	return process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
+}
+
+function printForeignHomeHint(home, reason) {
+	const remediation = [...homeSelectorFlags(home).map(shellQuote), "setup"].join(" ");
+	process.stderr.write(`gentle-shell: ${home.dir} ${reason}; run \`gentle-shell ${remediation}\` to provision it\n`);
+}
+
+// `homeHadContentBeforeBootstrap` must be read by the caller (main, below)
+// before the isolated/--home bootstrap runs: that bootstrap itself creates
+// and seeds a brand-new directory (settings.json with tuiMode), so checking
+// directory contents from inside this function would always see that seeded
+// file and wrongly call a genuinely fresh home "foreign".
+function homeIsForeign(home, previousEntry, homeHadContentBeforeBootstrap) {
+	if (home.mode !== "path") return false; // the isolated home is always owned
+	if (previousEntry !== undefined) return false; // already provisioned by gentle-shell before; trust the marker
+	if (safeRealpath(home.dir) === safeRealpath(defaultPiAgentDir())) return true; // never touch pi's own default home, even if empty
+	return homeHadContentBeforeBootstrap;
+}
+
 // Guards concurrent first-run auto-provisioning of the same home: an
 // exclusive create (`wx`) fails when the lock already exists. A lock file
 // younger than SETUP_LOCK_STALE_MS means another gentle-shell process is (or
@@ -682,10 +752,20 @@ const SETUP_LOCK_STALE_MS = 15 * 60 * 1000;
 // auto-provisioning entirely rather than racing gentle-ai's own installer;
 // the existing lock is left untouched since this run never owned it. An
 // older lock is stale — a previous run crashed or was killed before its
-// `finally` released it — so it is removed here and acquisition retried.
-// Any unexpected fs error (permissions, a vanished lock between the EEXIST
-// and the stat, …) must never block the launch, so it resolves to "proceed"
-// rather than failing closed.
+// `finally` released it — so it is removed here, but only after re-stating
+// it immediately before the removal to confirm it is *still* stale at that
+// exact moment: a concurrent process may have refreshed it (or removed and
+// recreated it) between the first check and now, and a lock a racing process
+// just legitimately acquired must never be deleted out from under it. If the
+// post-removal retry `wx` create itself then fails (another process won the
+// race to recreate it first), this run simply skips provisioning rather than
+// looping. Any unexpected fs error (permissions, a vanished lock between the
+// EEXIST and a stat, …) must never block the launch, so it resolves to
+// "proceed" rather than failing closed.
+function lockAgeMs(lockPath) {
+	return Date.now() - statSync(lockPath).mtimeMs;
+}
+
 function acquireSetupLock(lockPath) {
 	try {
 		closeSync(openSync(lockPath, "wx"));
@@ -694,7 +774,7 @@ function acquireSetupLock(lockPath) {
 		if (error.code !== "EEXIST") return true;
 		let age;
 		try {
-			age = Date.now() - statSync(lockPath).mtimeMs;
+			age = lockAgeMs(lockPath);
 		} catch {
 			return true;
 		}
@@ -704,12 +784,24 @@ function acquireSetupLock(lockPath) {
 			);
 			return false;
 		}
+		let ageNow;
+		try {
+			ageNow = lockAgeMs(lockPath);
+		} catch {
+			return false;
+		}
+		if (ageNow < SETUP_LOCK_STALE_MS) return false;
 		try {
 			rmSync(lockPath, { force: true });
 		} catch {
 			return false;
 		}
-		return acquireSetupLock(lockPath);
+		try {
+			closeSync(openSync(lockPath, "wx"));
+			return true;
+		} catch {
+			return false;
+		}
 	}
 }
 
@@ -722,6 +814,20 @@ function releaseSetupLock(lockPath) {
 	}
 }
 
+// Ceiling for every child this flow spawns (S9): a hung pinned gentle-ai or
+// pi invocation must never hang a plain `gentle-shell` launch forever.
+// Test/development only: GENTLE_SHELL_AUTO_SETUP_TIMEOUT_MS overrides the
+// 15-minute ceiling so a test can exercise it without actually waiting;
+// documented as test/development-only in docs/readme-reference.md. Manual
+// `setup` never passes a timeout at all (see handleSetupCommand).
+const AUTO_SETUP_CHILD_TIMEOUT_MS = 15 * 60 * 1000;
+
+function resolveAutoSetupTimeoutMs() {
+	const override = process.env.GENTLE_SHELL_AUTO_SETUP_TIMEOUT_MS;
+	const parsed = override !== undefined && override.length > 0 ? Number(override) : undefined;
+	return parsed !== undefined && Number.isFinite(parsed) ? parsed : AUTO_SETUP_CHILD_TIMEOUT_MS;
+}
+
 // Runs the same flow as `gentle-shell setup` automatically before a plain
 // launch, for an isolated or `--home <path>` home that was never provisioned
 // or was provisioned with a different gentle-ai pin (S7). Never runs for
@@ -729,23 +835,37 @@ function releaseSetupLock(lockPath) {
 // pi subcommand (the caller only calls this when args.piSubcommand is
 // undefined) — see main() below. Never blocks the launch: a failure (an
 // older pin, a missing binary the self-heal could not recover, a non-zero
-// gentle-ai or pi exit) only warns and lets the plain launch continue with
-// today's injection behavior, to retry automatically on a later run.
-async function maybeAutoProvisionHome(home, runtime) {
-	if (process.env[AUTO_SETUP_OPT_OUT_ENV] === "1") return;
+// gentle-ai or pi exit, a timeout) only warns and lets the plain launch
+// continue with today's injection behavior, to retry automatically on a
+// later run — except an interrupt (SIGINT/SIGTERM/SIGHUP) reaching the
+// spawned child, which returns `{ exitCode }` instead so the caller (main,
+// below) exits the whole launcher immediately without starting pi (S9): the
+// user asked this process to stop, not to fall back to a plain launch.
+// Returns undefined to mean "continue the launch normally".
+async function maybeAutoProvisionHome(home, runtime, { homeHadContentBeforeBootstrap }) {
+	if (process.env[AUTO_SETUP_OPT_OUT_ENV] === "1") return undefined;
 
 	const configPath = resolveConfigPath();
 	const homeKey = safeRealpath(home.dir);
 	const pin = resolveSetupGentleAiPin();
 	const gentlePiVersion = ownPackageVersion();
 	const beforeConfig = readRawConfig(configPath);
-	if (!needsProvisioning(beforeConfig, homeKey, pin, gentlePiVersion)) return;
+	if (!needsProvisioning(beforeConfig, homeKey, pin, gentlePiVersion)) return undefined;
+
+	const previous = provisionedEntry(beforeConfig, homeKey);
+	if (homeIsForeign(home, previous, homeHadContentBeforeBootstrap)) {
+		const reason =
+			safeRealpath(home.dir) === safeRealpath(defaultPiAgentDir())
+				? "is pi's own default agent home; gentle-shell never auto-provisions it"
+				: "already has content and was not set up by gentle-shell";
+		printForeignHomeHint(home, reason);
+		return undefined;
+	}
 
 	const lockPath = join(home.dir, ".gentle-shell-setup.lock");
-	if (!acquireSetupLock(lockPath)) return;
+	if (!acquireSetupLock(lockPath)) return undefined;
 
 	try {
-		const previous = provisionedEntry(beforeConfig, homeKey);
 		if (previous === undefined) {
 			process.stderr.write(
 				`gentle-shell: first run in ${home.dir}: installing the Gentle AI companion packages (one time; set ${AUTO_SETUP_OPT_OUT_ENV}=1 to skip)\n`,
@@ -768,16 +888,19 @@ async function maybeAutoProvisionHome(home, runtime) {
 			}
 		}
 
-		const result = await runSetupFlow(home, runtime, { dryRun: false, stdio: ["ignore", 2, 2] });
+		const result = await runSetupFlow(home, runtime, { dryRun: false, stdio: ["ignore", 2, 2], timeoutMs: resolveAutoSetupTimeoutMs() });
+		if (result.signal) return { exitCode: result.exitCode };
 		if (!result.ok) {
 			const remediation = [...homeSelectorFlags(home).map(shellQuote), "setup"].join(" ");
 			process.stderr.write(
 				`gentle-shell: automatic setup failed (exit ${result.exitCode}); starting anyway and retrying next run. Run \`gentle-shell ${remediation}\` to see the full output.\n`,
 			);
-			return;
+			if (result.message !== undefined) process.stderr.write(`${result.message}\n`);
+			return undefined;
 		}
 
 		writeRawConfig(configPath, recordProvisioned(readRawConfig(configPath), homeKey, pin, gentlePiVersion, new Date().toISOString()));
+		return undefined;
 	} finally {
 		releaseSetupLock(lockPath);
 	}
@@ -823,6 +946,20 @@ async function main() {
 		process.exit(0);
 	}
 
+	// Home-ownership signal for auto-provisioning (S9, homeIsForeign): must be
+	// read before the isolated-home bootstrap below creates and seeds a
+	// brand-new --home directory with its own settings.json — after that
+	// bootstrap runs, "did this home already have content" can no longer be
+	// answered by looking at the directory.
+	let homeHadContentBeforeBootstrap = false;
+	if (existsSync(home.dir)) {
+		try {
+			homeHadContentBeforeBootstrap = readdirSync(home.dir).length > 0;
+		} catch {
+			homeHadContentBeforeBootstrap = false;
+		}
+	}
+
 	// Isolated-home bootstrap: only on a home gentle-shell has not seen before
 	// (link never bootstraps — it reuses the user's own pi agent home as-is).
 	if ((home.mode === "isolated" || home.mode === "path") && !existsSync(home.dir)) {
@@ -843,10 +980,27 @@ async function main() {
 	// (`gentle-shell install/remove/list/...`) — argv[0] must stay the bare
 	// subcommand for pi to dispatch it, same reason the declaration/take-over
 	// block below skips it. Must run before that block reads settings.json,
-	// so a freshly provisioned home's npm:gentle-pi declaration is honored by
-	// this same launch instead of only starting from the next one.
+	// so that block sees settings.json exactly as this same auto-provision run
+	// (if any) left it — notably with any npm:gentle-pi declaration already
+	// removed again by runPostInstallCleanup, since the home never actually
+	// keeps that declaration — instead of reading stale pre-setup content
+	// within the same launch. Never lets an unexpected failure here (fs
+	// errors, a lock, a malformed config) block the launch itself (R4): any
+	// throw is caught and only warned about, exactly like an ordinary
+	// setup-flow failure.
 	if ((home.mode === "isolated" || home.mode === "path") && args.piSubcommand === undefined) {
-		await maybeAutoProvisionHome(home, runtime);
+		let autoProvisionResult;
+		try {
+			autoProvisionResult = await maybeAutoProvisionHome(home, runtime, { homeHadContentBeforeBootstrap });
+		} catch (error) {
+			process.stderr.write(`gentle-shell: automatic setup failed unexpectedly (${error.message}); starting anyway and retrying next run.\n`);
+			autoProvisionResult = undefined;
+		}
+		// Only an interrupt reaching the spawned child (SIGINT/SIGTERM/SIGHUP)
+		// returns a result here: the user asked this process to stop, so it
+		// exits with the same signal-derived code instead of falling through
+		// to launch pi.
+		if (autoProvisionResult !== undefined) process.exit(autoProvisionResult.exitCode);
 	}
 
 	const packageRootExplicit = args.packageRoot !== undefined;

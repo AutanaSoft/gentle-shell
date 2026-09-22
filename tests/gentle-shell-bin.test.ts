@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
 	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	realpathSync,
 	rmSync,
@@ -1424,6 +1425,242 @@ test("a stale lock (older than 15 minutes) is removed and auto-provisioning proc
 	assert.equal(result.status, 0, result.stderr);
 	assert.equal(readFileSync(counterPath, "utf8").trim().split("\n").length, 1);
 	assert.equal(existsSync(lockPath), false, "the lock must be released once the flow completes");
+});
+
+// --- auto-provisioning only touches homes gentle-shell owns (R1-001) -------
+
+test("a --home pointing at an existing non-empty, unmarked directory is never auto-provisioned", (t) => {
+	const f = fixture(t);
+	const target = join(f.root, "existing-pi-home");
+	mkdirSync(target, { recursive: true });
+	writeFileSync(join(target, "settings.json"), JSON.stringify({}));
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	const counterPath = join(f.root, "gentle-ai-runs.log");
+	writeGentleAiScriptCountingRuns(gentleAiScript, counterPath);
+	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" });
+
+	const result = run(env, ["--home", target, "--mode", "rpc"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(existsSync(counterPath), false, "gentle-ai must never run against a foreign, unmarked home");
+	assert.match(
+		result.stderr,
+		new RegExp(`gentle-shell: ${target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} already has content and was not set up by gentle-shell`),
+	);
+	assert.match(result.stderr, new RegExp(`run \`gentle-shell --home ${target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} setup\` to provision it`));
+});
+
+test("an empty or nonexistent --home is still auto-provisioned", (t) => {
+	const f = fixture(t);
+	const target = join(f.root, "brand-new-home");
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	const counterPath = join(f.root, "gentle-ai-runs.log");
+	writeGentleAiScriptCountingRuns(gentleAiScript, counterPath);
+	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" });
+
+	const result = run(env, ["--home", target, "--mode", "rpc"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(readFileSync(counterPath, "utf8").trim().split("\n").length, 1, "a fresh --home must still be auto-provisioned");
+});
+
+test("a --home equal to pi's own default agent home is never auto-provisioned, even when empty", (t) => {
+	const f = fixture(t);
+	const defaultPiHome = join(f.home, ".pi", "agent");
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	const counterPath = join(f.root, "gentle-ai-runs.log");
+	writeGentleAiScriptCountingRuns(gentleAiScript, counterPath);
+	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" });
+
+	const result = run(env, ["--home", defaultPiHome, "--mode", "rpc"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(existsSync(counterPath), false, "gentle-ai must never run against pi's own default agent home");
+	assert.match(result.stderr, /never auto-provisions it/);
+});
+
+// --- auto-provisioning interrupts, resilience, timeouts, atomic writes -----
+
+// Waits until `child`'s stderr has emitted a line matching `pattern`, so a
+// test can send a signal only once the flow has actually started (never
+// racing the signal against the child process not existing yet).
+function waitForStderrMatch(child, pattern) {
+	return new Promise((resolve, reject) => {
+		let buffer = "";
+		const onData = (chunk) => {
+			buffer += chunk.toString("utf8");
+			if (pattern.test(buffer)) {
+				child.stderr.off("data", onData);
+				resolve(buffer);
+			}
+		};
+		child.stderr.on("data", onData);
+		child.once("error", reject);
+	});
+}
+
+function waitForExit(child: ReturnType<typeof spawn>): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+	return new Promise((resolve) => {
+		child.once("exit", (code, signal) => resolve({ code, signal }));
+	});
+}
+
+function delay(ms) {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+test("SIGINT during automatic provisioning kills the child and exits 130 without launching pi", async (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai-sleep.mjs");
+	writeFileSync(gentleAiScript, ["#!/usr/bin/env node", "await new Promise((resolve) => setTimeout(resolve, 20000));", "process.exit(0);", ""].join("\n"));
+	chmodSync(gentleAiScript, 0o755);
+	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" });
+
+	const child = spawn(process.execPath, [binPath, "--mode", "rpc", "-p", "hi"], { env, stdio: ["ignore", "pipe", "pipe"] });
+	let stdout = "";
+	child.stdout.on("data", (chunk) => {
+		stdout += chunk.toString("utf8");
+	});
+	t.after(() => {
+		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+	});
+
+	await waitForStderrMatch(child, /provisioning/);
+	// Seeing the "provisioning" line only proves the message was written, not
+	// that the child spawn and its signal-forwarding listeners (registered a
+	// couple of synchronous statements later, inside spawnAndWait) are fully
+	// set up on the other side of this OS pipe yet; a short settle avoids
+	// racing the signal against that relay, exactly as a real interactive
+	// Ctrl-C (tens of milliseconds of human reaction time at least) never does.
+	await delay(150);
+	child.kill("SIGINT");
+	const { code, signal } = await waitForExit(child);
+
+	assert.equal(signal, null, "the launcher process itself must exit normally, not be killed by the signal");
+	assert.equal(code, 130);
+	assert.equal(stdout.trim(), "", "pi must never launch once an auto-provision spawn was interrupted");
+});
+
+test(
+	"an unexpected error writing the provisioning marker (e.g. an unwritable config directory) still launches pi",
+	{ skip: process.platform === "win32" ? "chmod-based write restriction is not portable to Windows" : false },
+	(t) => {
+		const f = fixture(t);
+		// The config.json path itself does not exist yet (loadConfig's and
+		// maybeAutoProvisionHome's own initial read both tolerate ENOENT, so
+		// they succeed normally and reach the install); only its parent
+		// directory is read+execute but not write, which lets writeRawConfig's
+		// later mkdirSync — run only after a successful install, when it
+		// writes the S7 marker — fail with EACCES instead of silently
+		// succeeding. This isolates the failure to the write step inside
+		// maybeAutoProvisionHome, the one this fix wraps in try/catch.
+		const restrictedRoot = join(f.root, "locked-config-root");
+		mkdirSync(restrictedRoot, { recursive: true });
+		const configPath = join(restrictedRoot, ".gentle-shell", "config.json");
+		chmodSync(restrictedRoot, 0o500);
+		// No permission restore needed: restrictedRoot stays empty (its own
+		// .gentle-shell subdirectory never gets created), and removing an
+		// empty directory only requires write permission on its *parent*
+		// (f.root, unaffected), not on the directory's own mode.
+
+		const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+		writeGentleAiScript(gentleAiScript);
+		const env = enableAutoProvision({
+			...f.env,
+			GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript,
+			GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0",
+			GENTLE_SHELL_CONFIG: configPath,
+		});
+
+		const result = run(env, ["--mode", "rpc", "-p", "hi"]);
+		assert.equal(result.status, 0, result.stderr);
+		assert.match(result.stderr, /gentle-shell: automatic setup failed unexpectedly/);
+		const payload = JSON.parse(result.stdout);
+		assert.deepEqual(payload.args.slice(-4), ["--mode", "rpc", "-p", "hi"]);
+	},
+);
+
+test("a persona snapshot read failure is a non-fatal warning in both manual and automatic modes", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScript(gentleAiScript);
+	// A directory where persona.json should be: readFileSync throws EISDIR
+	// (not ENOENT), the exact non-fatal case snapshotFile must not propagate.
+	const personaPath = personaPathFor(f);
+	mkdirSync(personaPath, { recursive: true });
+
+	const manual = run({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript }, ["setup"]);
+	assert.equal(manual.status, 0, manual.stderr);
+	assert.match(manual.stderr, /gentle-shell: could not snapshot your Pi persona file/);
+
+	const auto = run(
+		enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.1" }),
+		["--mode", "rpc", "-p", "hi"],
+	);
+	assert.equal(auto.status, 0, auto.stderr);
+	assert.match(auto.stderr, /gentle-shell: could not snapshot your Pi persona file/);
+	const payload = JSON.parse(auto.stdout);
+	assert.deepEqual(payload.args.slice(-4), ["--mode", "rpc", "-p", "hi"]);
+});
+
+test("automatic setup failure includes the underlying message on the line after the generic failure line", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScript(gentleAiScript);
+	// A pin below MIN_SETUP_GENTLE_AI_VERSION makes runSetupFlow fail early
+	// with a concrete `message`, before ever spawning the stub.
+	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.5.0" });
+
+	const result = run(env, ["--mode", "rpc"]);
+	assert.equal(result.status, 0, result.stderr);
+	const lines = result.stderr.trim().split("\n");
+	const failureIndex = lines.findIndex((line) => /gentle-shell: automatic setup failed/.test(line));
+	assert.notEqual(failureIndex, -1, result.stderr);
+	assert.match(lines[failureIndex + 1], /gentle-shell: setup needs the package-local gentle-ai v3\.6\.0 or newer \(pinned: 3\.5\.0\)/);
+});
+
+test("a hung child during automatic provisioning is killed after the timeout ceiling, treated as a failure, and pi still launches", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai-sleep.mjs");
+	writeFileSync(gentleAiScript, ["#!/usr/bin/env node", "await new Promise((resolve) => setTimeout(resolve, 60000));", "process.exit(0);", ""].join("\n"));
+	chmodSync(gentleAiScript, 0o755);
+	const env = enableAutoProvision({
+		...f.env,
+		GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript,
+		GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0",
+		GENTLE_SHELL_AUTO_SETUP_TIMEOUT_MS: "300",
+	});
+
+	const started = Date.now();
+	const result = run(env, ["--mode", "rpc", "-p", "hi"]);
+	const elapsed = Date.now() - started;
+	assert.equal(result.status, 0, result.stderr);
+	assert.ok(elapsed < 15000, `expected the hung child to be killed quickly, took ${elapsed}ms`);
+	assert.match(result.stderr, /gentle-shell: automatic setup failed/);
+	assert.match(result.stderr, /timed out after 15 minutes/);
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args.slice(-4), ["--mode", "rpc", "-p", "hi"]);
+});
+
+test("manual setup never times out even past the auto-mode ceiling override", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai-sleep.mjs");
+	writeFileSync(gentleAiScript, ["#!/usr/bin/env node", "await new Promise((resolve) => setTimeout(resolve, 300));", "process.exit(0);", ""].join("\n"));
+	chmodSync(gentleAiScript, 0o755);
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_AUTO_SETUP_TIMEOUT_MS: "50" };
+
+	const result = run(env, ["setup"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.doesNotMatch(result.stderr, /timed out/);
+});
+
+test("the provisioning marker write leaves no stray temp file behind", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScriptCountingRuns(gentleAiScript, join(f.root, "gentle-ai-runs.log"));
+	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" });
+
+	const result = run(env, []);
+	assert.equal(result.status, 0, result.stderr);
+	const configDir = join(f.home, ".gentle-shell");
+	assert.deepEqual(readdirSync(configDir), ["config.json"]);
 });
 
 // --- --package-root silently ignored in a declared non-link home ----------
