@@ -29,6 +29,27 @@ const taggedTheme: ShellBarTheme = {
 	},
 };
 
+type ThemeCall =
+	| { kind: "fg"; color: string; text: string }
+	| { kind: "bold"; text: string };
+
+function recordingTheme(): { theme: ShellBarTheme; calls: ThemeCall[] } {
+	const calls: ThemeCall[] = [];
+	return {
+		calls,
+		theme: {
+			fg(color: string, text: string) {
+				calls.push({ kind: "fg", color, text });
+				return `<fg:${color}>${text}</fg:${color}>`;
+			},
+			bold(text: string) {
+				calls.push({ kind: "bold", text });
+				return `<bold>${text}</bold>`;
+			},
+		},
+	};
+}
+
 const plainTheme: ShellBarTheme = {
 	fg(_color: string, value: string) {
 		return value;
@@ -263,6 +284,35 @@ test("sidebar places exactly one RDD line in Project before session and profile"
 	assert.equal((text.match(/Review RDD:/g) ?? []).length, 1);
 	assert.doesNotMatch(text, /\nReview\n/);
 	assert.ok(text.indexOf("Integrations") < text.indexOf("opaque integration"));
+});
+
+test("sidebar paints RDD labels, values, and project metadata by role", () => {
+	for (const { mode, projectOverride, valueText, hasProjectSuffix } of [
+		{ mode: "on" as const, projectOverride: false, valueText: "ON", hasProjectSuffix: false },
+		{ mode: "off" as const, projectOverride: true, valueText: "OFF", hasProjectSuffix: true },
+		{ mode: "unknown" as const, projectOverride: true, valueText: "?", hasProjectSuffix: false },
+	]) {
+		const { theme, calls } = recordingTheme();
+		renderShellSidebarBar(model({ rddMode: mode, rddProjectOverride: projectOverride }), theme, 80);
+		const wholeText = `Review RDD: ${valueText}${hasProjectSuffix ? " · Project" : ""}`;
+		const rddCalls = calls.filter((call) => [
+			"Review",
+			"RDD:",
+			valueText,
+			`<bold>${valueText}</bold>`,
+			"· Project",
+			wholeText,
+			`<bold>${wholeText}</bold>`,
+		].includes(call.text));
+		const expected: ThemeCall[] = [
+			{ kind: "fg", color: "muted", text: "Review" },
+			{ kind: "fg", color: "text", text: "RDD:" },
+			{ kind: "bold", text: valueText },
+			{ kind: "fg", color: "text", text: `<bold>${valueText}</bold>` },
+			...(hasProjectSuffix ? [{ kind: "fg" as const, color: "muted", text: "· Project" }] : []),
+		];
+		assert.deepEqual(rddCalls, expected, `${mode} RDD segments must use label/value roles`);
+	}
 });
 
 test("compact RDD is ordered before opaque statuses and drops whole before truncation", () => {

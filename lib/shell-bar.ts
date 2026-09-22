@@ -147,6 +147,16 @@ function costSegment(costTotal: number, subscription: boolean, theme: ShellBarTh
 
 export type RddStatusPresentation = "fullscreen" | "compact";
 
+function rddValueText(mode: ShellBarModel["rddMode"]): "ON" | "OFF" | "?" {
+	if (mode === "on") return "ON";
+	if (mode === "off") return "OFF";
+	return "?";
+}
+
+function rddProjectOverrideApplies(mode: ShellBarModel["rddMode"], projectOverride: boolean | undefined): boolean {
+	return (mode === "on" || mode === "off") && projectOverride === true;
+}
+
 // This renderer intentionally consumes only the lifecycle-projected model
 // state. It neither reads native status nor changes review-mode configuration.
 export function renderRddStatus(
@@ -154,9 +164,9 @@ export function renderRddStatus(
 	projectOverride: boolean | undefined,
 	presentation: RddStatusPresentation,
 ): string {
-	if (mode !== "on" && mode !== "off") return presentation === "fullscreen" ? "Review RDD: ?" : "RDD: ?";
-	const value = mode.toUpperCase();
-	const suffix = presentation === "fullscreen" && projectOverride ? " · Project" : "";
+	const value = rddValueText(mode);
+	if (value === "?") return presentation === "fullscreen" ? "Review RDD: ?" : "RDD: ?";
+	const suffix = presentation === "fullscreen" && rddProjectOverrideApplies(mode, projectOverride) ? " · Project" : "";
 	return presentation === "fullscreen" ? `Review RDD: ${value}${suffix}` : `RDD: ${value}`;
 }
 
@@ -208,7 +218,7 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 	const label = (text: string) => theme.fg(ROLE.LABEL, text);
 	const changes = model.changes;
 	const branch = model.branch ? `${label("Branch")} ${value(model.branch)}` : "";
-	const rdd = value(renderRddStatus(model.rddMode, model.rddProjectOverride, "fullscreen"));
+	const rdd = `${label("Review")} ${theme.fg(ROLE.VALUE, "RDD:")} ${value(rddValueText(model.rddMode))}${rddProjectOverrideApplies(model.rddMode, model.rddProjectOverride) ? ` ${label("· Project")}` : ""}`;
 	// Pre-wrap values before indenting so Unicode/ANSI continuation lines keep
 	// the same inset without consuming the card's right border.
 	const innerWidth = cardInnerWidth(width);

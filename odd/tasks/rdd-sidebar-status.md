@@ -4,7 +4,7 @@
 - Repository: `gentle-pi`
 - Branch: `feat/shell-rdd-status-v2`
 - Base: `main` / `upstream/main` at `cf1fdb65c267d9fbdad2c48f6c9e008f3f91d7a3`
-- Status: RSS-8 implemented and independently verified; known unchanged runtime-harness failure and live lifecycle verification pending
+- Status: RSS-9 implemented and independently verified; known unchanged runtime-harness failure and live lifecycle verification pending
 - Source plan: `work-items/active/feat/938-shell-rdd-status/implementation-plan.md`
 - Related issue: `#938`
 - Route: delegated direct; each implementation task crosses the multi-file writer trigger
@@ -356,6 +356,28 @@ The task that owns a behavior runs its focused commands. Full-suite, runtime-mod
   - Work-unit commit proposal: `fix(shell): eliminate stale context access with session snapshots`.
   - Completion evidence: implementation and strict-TDD focused verification are complete. Independent verification confirmed the focused Shell suite passed 114/114, `pnpm run typecheck` passed with 196 recorded baseline diagnostics, no regressions, and 3 improved diagnostic pairs, and `git diff --check` passed. `pnpm test` reached 2,979 passing and 38 skipped tests before the known unchanged runtime-harness assertion at `tests/runtime-harness.mjs:537` (`the real primary hook must stop a second distinct direct file`); `tests/runtime-harness.mjs` is not modified by this candidate. Live `/reload`, `/new`, `/resume`, and `/fork` verification remains pending in an interactive Pi host.
 
+- [x] **RSS-9 — Align fullscreen RDD sidebar roles**
+  - Route: delegated direct implementation; the multi-file behavior and regression test crossed the mandatory writer trigger.
+  - Scope:
+    - Keep `renderRddStatus` textual output and compact RDD rendering unchanged.
+    - Paint `Review` with muted `ROLE.LABEL`; `RDD:` with text `ROLE.VALUE`; `ON|OFF|?` with bold text `ROLE.VALUE`; and `· Project` with muted `ROLE.LABEL` only for known project-local modes.
+    - Preserve exact spacing, Project ordering, width wrapping, ANSI integrity, and unknown-mode behavior.
+  - RED:
+    - Refined the recording-theme regression to distinguish `Review`, `RDD:`, the bold value, and the optional project suffix across ON, OFF, and unknown fullscreen states.
+    - Observed before the production edit: `node --experimental-strip-types --test tests/shell-bar.test.ts tests/shell-sidebar-layout.test.ts` reported 67 passing and 1 failing test; the failure showed no separate `Review` muted or `RDD:` text-role call because the candidate still painted the whole `Review RDD:` prefix with `ROLE.LABEL`.
+  - GREEN:
+    - Split the fullscreen line into muted `Review`, text-role `RDD:`, bold text-role value, and conditional muted project suffix; compact and pure textual renderers were unchanged.
+    - Observed after implementation: `node --experimental-strip-types --test tests/shell-bar.test.ts tests/shell-sidebar-layout.test.ts` passed 68/68.
+  - Triangulate/refactor:
+    - The focused suite retained coverage for ON/OFF/unknown textual contracts, compact ordering and removal, legacy models, ANSI/Unicode width bounds, exact breakpoints, and sidebar ordering.
+    - Kept the implementation to a minimal role-segmentation change; no changes were made to lifecycle, native status, or review behavior.
+  - Verification:
+    - `node --experimental-strip-types --test tests/shell-bar.test.ts tests/shell-sidebar-layout.test.ts`: 68/68 passed.
+    - `pnpm run typecheck`: passed with 196 recorded baseline diagnostics, no regressions, and 3 improved diagnostic pairs.
+    - `git diff --check`: passed.
+  - Work-unit commit proposal: `fix(shell): align RDD sidebar color roles`.
+  - Completion evidence: strict-TDD RED/GREEN and focused verification are complete; parent-owned review and commit remain pending.
+
 ## Acceptance criteria
 
 - Native `status.effective` is the only source for `ON` or `OFF`.
@@ -399,6 +421,7 @@ The task that owns a behavior runs its focused commands. Full-suite, runtime-mod
 | RSS-6 | Complete | Integration verification passed 348/348 | `a78a5a35`, downstream `71a2c81b` | Approved and acknowledged |
 | RSS-7 | Complete | RED observed (`hasUI` stale-context throw); GREEN 109/109; triangulation, parent spot check, and independent verification 110/110; typecheck and whitespace passed; full suite retained the known unchanged runtime-harness assertion | `e95db48a` | Committed-range four-lens review approved and acknowledged |
 | RSS-8 | Complete with recorded exceptions | RED 110+4 failures; GREEN and independent focused verification 114/114; typecheck and whitespace passed; full suite retained the unchanged runtime-harness assertion; live lifecycle check pending | — | Pending native review |
+| RSS-9 | Complete | RED 67/68 with `RDD:` still inside the muted prefix; GREEN and focused verification 68/68; typecheck and whitespace passed | — | Parent-owned review pending |
 
 ## Decisions and rationale
 
