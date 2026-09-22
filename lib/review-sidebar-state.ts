@@ -58,7 +58,7 @@ export function reviewSidebarSnapshot(operation: string, details: unknown): Revi
 	// An inspect/status call can finish host-mediated consent and return an
 	// answer-consent result. Interpret the returned operation, not the input.
 	const start = ["start", "answer-consent", "select-intended-untracked"].includes(String(data.operation)) &&
-		(result.action === "created" || result.action === "resumed");
+		(result.action === "created" || result.action === "resumed" || result.action === "replayed");
 	if (!capture && !status && !start) return snapshot(data.status === "blocked" ? "unavailable" : "unknown");
 	const state = capture ? closure.state : status ? record(result.authority).state : result.state;
 	if (state === "invalidated") return snapshot("invalidated");
@@ -66,7 +66,8 @@ export function reviewSidebarSnapshot(operation: string, details: unknown): Revi
 	if (status && (result.action === "recover" || transition.kind === "stop")) return snapshot("unavailable");
 	if (status && result.action === "start") return snapshot("ready");
 	if (state === "approved") return snapshot("approved");
-	if (state === "reviewing" || state === "validating") return snapshot("reviewing");
+	// Completed native results show lifecycle state, not active capture execution.
+	if (state === "reviewing" || state === "validating") return snapshot("in_review");
 	return snapshot("unknown");
 }
 

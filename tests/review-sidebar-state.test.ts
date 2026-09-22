@@ -7,7 +7,7 @@ import { reviewSidebarSnapshot } from "../lib/review-sidebar-state.ts";
 // Display contract only: lifecycle evidence must be normalized by the producer,
 // never inferred from a successful tool execution by the renderer.
 const theme: ShellBarTheme = { fg: (_color, text) => text, bold: (text) => text };
-type ReviewDisplay = { state: "reviewing" | "approved" | "closed" | "unavailable"; scope: string };
+type ReviewDisplay = { state: "reviewing" | "in_review" | "approved" | "closed" | "unavailable"; scope: string };
 function model(review?: ReviewDisplay): ShellBarModel & { review?: ReviewDisplay } {
 	return {
 		cwd: "/repo",
@@ -33,8 +33,8 @@ test("RDD maps explicit native evidence conservatively without parsing opaque bi
 			authority: { state }, projection: { paths }, next_transition: { kind: "collect" },
 		},
 	});
-	assert.deepEqual(reviewSidebarSnapshot("status", nativeStatus("reviewing")), { state: "reviewing", scope: "app.ts +2" });
-	for (const [state, expected] of [["approved", "approved"], ["correction_required", "correction"], ["invalidated", "invalidated"], ["validating", "reviewing"]] as const) {
+	assert.deepEqual(reviewSidebarSnapshot("status", nativeStatus("reviewing")), { state: "in_review", scope: "app.ts +2" });
+	for (const [state, expected] of [["approved", "approved"], ["correction_required", "correction"], ["invalidated", "invalidated"], ["validating", "in_review"]] as const) {
 		assert.equal(reviewSidebarSnapshot("status", nativeStatus(state)).state, expected);
 	}
 	const closure = { status: "closed", outcome: "native-last-event-closure", closure: { schema: "gentle-ai.review-last-event-closure/v1", state: "approved" } };
@@ -54,7 +54,7 @@ test("RDD maps explicit native evidence conservatively without parsing opaque bi
 	assert.deepEqual(reviewSidebarSnapshot("inspect", {
 		operation: "answer-consent", result: { action: "created", state: "reviewing" },
 		actor_binding: { candidate_paths: ["lib/app.ts"] },
-	}), { state: "reviewing", scope: "app.ts" });
+	}), { state: "in_review", scope: "app.ts" });
 	assert.equal(reviewSidebarSnapshot("status", nativeStatus("reviewing", ["src\\app.ts"])).scope, "app.ts");
 	assert.equal(reviewSidebarSnapshot("status", { ...nativeStatus("approved"), native_failure: {} }).state, "unavailable");
 	assert.equal(reviewSidebarSnapshot("status", { result: { ...nativeStatus("approved").result, next_transition: { kind: "stop" } } }).state, "unavailable");
@@ -64,6 +64,42 @@ test("RDD maps explicit native evidence conservatively without parsing opaque bi
 	assert.deepEqual(reviewSidebarSnapshot("status", { status: "closed", collectBinding: "opaque", title: "Invented title" }), { state: "unknown", scope: "Candidate scope unavailable" });
 });
 
+
+for (const action of ["created", "resumed", "replayed"]) {
+	test(`RDD treats ${action} START results as pending review, not active execution`, () => {
+		for (const operation of ["start", "answer-consent", "select-intended-untracked"]) {
+			for (const state of ["reviewing", "validating"]) {
+				assert.deepEqual(reviewSidebarSnapshot(operation, {
+					operation, result: { action, state },
+					actor_binding: { candidate_paths: ["lib/app.ts"] },
+				}), { state: "in_review", scope: "app.ts" });
+			}
+		}
+	});
+}
+
+test("RDD completed STATUS evidence does not imply capture execution", () => {
+	for (const state of ["reviewing", "validating"]) {
+		for (const kind of ["collect", "execute"]) {
+			const snapshot = reviewSidebarSnapshot("status", {
+				result: {
+					schema: "gentle-ai.review-integration.status/v9",
+					authority: { state }, projection: { paths: ["lib/app.ts"] },
+					next_transition: { kind },
+				},
+			});
+			assert.deepEqual(snapshot, { state: "in_review", scope: "app.ts" });
+			const pending = renderShellSidebarBar({ ...model(), review: snapshot }, theme, 46).join("\n");
+			assert.match(pending, /In review/);
+			assert.doesNotMatch(pending, /Reviewing/);
+		}
+	}
+	// The future publisher owns execution evidence; this slice only renders its
+	// explicit display state, never inferring it from a completed native result.
+	const active = renderShellSidebarBar(model({ state: "reviewing", scope: "app.ts" }), theme, 46).join("\n");
+	assert.match(active, /Reviewing/);
+	assert.doesNotMatch(active, /In review/);
+});
 
 test("RDD stays hidden without current-session evidence and occupies one group between Changes and Integrations", () => {
 	assert.doesNotMatch(renderShellSidebarBar(model(), theme, 46).join("\n"), /RDD/);
