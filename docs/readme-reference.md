@@ -179,13 +179,13 @@ Classical direct-archive behavior is compatibility-tested with an identified
 upstream development build, not presented as a published fix or version bump.
 The complete classical flow awaits a compatible published native version; this
 change does not bump the pin. Ordinary attempt governance and research/planning simplification remain separate
-work under [SDD parity #1051](https://github.com/Gentleman-Programming/gentle-pi/issues/1051).
+work under [SDD parity #1051](https://github.com/Gentleman-Programming/gentle-shell/issues/1051).
 
 ### Pi compatibility
 
 The current package requires Pi 0.85.1 or newer (development tests pin 0.85.1). Use the latest Pi release; gentle-pi does not update your installed Pi automatically. Children, including any `GENTLE_PI_AGENTS_PI` override, must emit `agent_settled`: `agent_end` records a run's output but is not completion because retries or queued continuations may follow.
 
-The [`v2.6.0` release](https://github.com/Gentleman-Programming/gentle-pi/releases/tag/v2.6.0) adds persistent registered worktrees and grouped `/gentle:changes` views; fuller workspace interaction details are in the [Gentle Shell reference](gentle-shell.md). It also adds named atomic `/gentle:profiles`, parent-confirmed native SDD preflight transport, native review intended-untracked selection and provider continuations, and opt-in custom ask responses. Pi recognizes its global Git-managed package path; subsystems install with explicit recovery guidance when npm lifecycle work was skipped. Windows keeps child consoles hidden and fixes ownership mode; Gentle Todo keeps the next pending task visible when collapsed.
+The [`v2.6.0` release](https://github.com/Gentleman-Programming/gentle-shell/releases/tag/v2.6.0) added persistent registered worktrees and grouped `/gentle:changes` views; fuller workspace interaction details are in the [Gentle Shell reference](gentle-shell.md). It also adds named atomic `/gentle:profiles`, parent-confirmed native SDD preflight transport, native review intended-untracked selection and provider continuations, and opt-in custom ask responses. Pi recognizes its global Git-managed package path; subsystems install with explicit recovery guidance when npm lifecycle work was skipped. Windows keeps child consoles hidden and fixes ownership mode; Gentle Todo keeps the next pending task visible when collapsed.
 
 ### Install-time fullscreen
 
@@ -426,7 +426,7 @@ Reconciliation is intentionally narrow: native code may quarantine only the boun
 
 Native lifecycle status remains informational. VALIDATE does not authorize delivery; commit, push, PR, and release commands follow ordinary repository policy. Recovery grants no new budget, and legacy graph bundle export/import is retired.
 
-This is the post-U8 boundary, not the final architecture. [Issue #191](https://github.com/Gentleman-Programming/gentle-pi/issues/191) is the immediate final unit in this same delivery: extract the remaining Pi command-projection and lifecycle-gate surface from `review-transaction.ts`, repoint runtime enforcement, then delete only dependencies proven unreachable without weakening graph-v1 Judgment Day. The branch-wide High-tier 4R runs after that extraction, before the single size-exception PR.
+This is the post-U8 boundary, not the final architecture. [Issue #191](https://github.com/Gentleman-Programming/gentle-shell/issues/191) is the immediate final unit in this same delivery: extract the remaining Pi command-projection and lifecycle-gate surface from `review-transaction.ts`, repoint runtime enforcement, then delete only dependencies proven unreachable without weakening graph-v1 Judgment Day. The branch-wide High-tier 4R runs after that extraction, before the single size-exception PR.
 
 ### Review Lens Selection (architecture reference)
 
@@ -1189,10 +1189,10 @@ tag="v${version}"
 git fetch --no-tags origin "refs/tags/${tag}"
 test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$(git rev-parse "${tag}^{commit}")"
 gh workflow run publish.yml \
-  --repo Gentleman-Programming/gentle-pi \
+  --repo Gentleman-Programming/gentle-shell \
   --ref main \
   -f tag="${tag}"
-gh run watch <run-id> --repo Gentleman-Programming/gentle-pi --exit-status
+gh run watch <run-id> --repo Gentleman-Programming/gentle-shell --exit-status
 npm view gentle-pi@<version> version --registry=https://registry.npmjs.org/
 npm dist-tag ls gentle-pi --registry=https://registry.npmjs.org/
 ```
