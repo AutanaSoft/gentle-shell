@@ -168,11 +168,14 @@ const looseExtensionFs = {
 };
 
 // A loose extensions directory that is itself a self-contained extension —
-// its own index.ts/index.js, or a package.json declaring a non-empty
-// "pi.extensions" manifest — is passed through as a single -e <dir> instead
-// of being broken into per-file entries: pi's own module loader (jiti)
-// resolves that case directly, exactly as it would for any other explicitly
-// configured package path.
+// a package.json declaring a non-empty "pi.extensions" manifest — is passed
+// through as a single -e <dir> instead of being broken into per-file
+// entries: pi's own module loader (jiti) resolves that case directly,
+// exactly as it would for any other explicitly configured package path. A
+// root-level index.ts/index.js is deliberately NOT treated as that same
+// marker: pi's own discovery loads it as just another loose file, so
+// collapsing the whole directory on its presence silently dropped sibling
+// loose files like extra.ts (R4-loose-index-collapses-sibling-extensions).
 function readPiManifestExtensions(dir) {
 	try {
 		const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
@@ -184,8 +187,7 @@ function readPiManifestExtensions(dir) {
 
 function looseDirHasOwnEntryPoint(dir) {
 	const manifestExtensions = readPiManifestExtensions(dir);
-	if (manifestExtensions !== undefined && manifestExtensions.length > 0) return true;
-	return existsSync(join(dir, "index.ts")) || existsSync(join(dir, "index.js"));
+	return manifestExtensions !== undefined && manifestExtensions.length > 0;
 }
 
 // Resolves one candidate loose-extensions directory (<agentDir>/extensions or
@@ -316,7 +318,7 @@ async function main() {
 		});
 		if (takeOver) {
 			const skip = declaration ?? { kind: "path", dir: realEffectivePackageRoot };
-			const injections = otherPackageInjections({ settingsText, agentDir: home.dir, skip, isDirectory });
+			const injections = otherPackageInjections({ settingsText, agentDir: home.dir, skip, isDirectory, realpath: safeRealpath });
 			otherPackagePaths = injections.paths;
 			for (const warning of injections.warnings) process.stderr.write(`${warning}\n`);
 			// --no-extensions drops pi's normal settings-driven extension

@@ -474,6 +474,17 @@ export interface OtherPackageInjectionsInput {
 	// string resolution (most existing unit tests) does not need to supply
 	// a filesystem stub.
 	isDirectory?: (dir: string) => boolean;
+	// Realpath resolver applied to a settings path entry's resolved
+	// directory before comparing it against `skip`. bin/gentle-shell.mjs's
+	// --package-root take-over passes `skip.dir` as an already-realpath'd
+	// directory; without also realpath'ing the settings entry here, a
+	// settings path entry reaching that same physical directory through a
+	// symlink is not recognised as the package being taken over and gets
+	// re-injected as a second, redundant -e for it
+	// (R4-forced-root-symlink-double-injection). Defaults to identity so
+	// this function stays pure and existing callers keep comparing raw
+	// strings.
+	realpath?: (dir: string) => string;
 }
 
 export interface OtherPackageInjections {
@@ -504,6 +515,7 @@ export function otherPackageInjections(input: OtherPackageInjectionsInput): Othe
 	const packages = parseSettingsPackages(input.settingsText);
 	if (packages === undefined) return { paths, warnings };
 	const isDirectory = input.isDirectory ?? (() => true);
+	const realpath = input.realpath ?? ((dir: string) => dir);
 
 	for (const entry of packages) {
 		const source = entrySource(entry);
@@ -518,7 +530,16 @@ export function otherPackageInjections(input: OtherPackageInjectionsInput): Othe
 		if (kind === "npm" && npmSourceDeclaresGentlePi(source)) continue;
 		if (kind === "path") {
 			const dir = resolvePath(input.agentDir, source);
-			if (input.skip.kind === "path" && dir === input.skip.dir) continue;
+			// Compared through realpath on BOTH sides (not the raw resolved
+			// strings): skip.dir may already be a realpath itself
+			// (bin/gentle-shell.mjs's --package-root take-over) or may not be
+			// (a plain settings.json declaration), so only comparing one side
+			// through realpath would break whichever case does not match that
+			// assumption. Realpath'ing both keeps the exact-match case
+			// (skip.dir derived from the very same source) trivially correct
+			// while also recognising a settings entry that reaches the same
+			// physical directory as skip through a symlink.
+			if (input.skip.kind === "path" && realpath(dir) === realpath(input.skip.dir)) continue;
 		}
 
 		if (kind === "git") {

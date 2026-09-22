@@ -482,6 +482,17 @@ export function decideTakeOver(input                     )          {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
 function entryFilterKeys(entry         )           {
 	if (entry === null || typeof entry !== "object") return [];
 	const record = entry                           ;
@@ -505,6 +516,7 @@ export function otherPackageInjections(input                             )      
 	const packages = parseSettingsPackages(input.settingsText);
 	if (packages === undefined) return { paths, warnings };
 	const isDirectory = input.isDirectory ?? (() => true);
+	const realpath = input.realpath ?? ((dir        ) => dir);
 
 	for (const entry of packages) {
 		const source = entrySource(entry);
@@ -519,7 +531,16 @@ export function otherPackageInjections(input                             )      
 		if (kind === "npm" && npmSourceDeclaresGentlePi(source)) continue;
 		if (kind === "path") {
 			const dir = resolvePath(input.agentDir, source);
-			if (input.skip.kind === "path" && dir === input.skip.dir) continue;
+			// Compared through realpath on BOTH sides (not the raw resolved
+			// strings): skip.dir may already be a realpath itself
+			// (bin/gentle-shell.mjs's --package-root take-over) or may not be
+			// (a plain settings.json declaration), so only comparing one side
+			// through realpath would break whichever case does not match that
+			// assumption. Realpath'ing both keeps the exact-match case
+			// (skip.dir derived from the very same source) trivially correct
+			// while also recognising a settings entry that reaches the same
+			// physical directory as skip through a symlink.
+			if (input.skip.kind === "path" && realpath(dir) === realpath(input.skip.dir)) continue;
 		}
 
 		if (kind === "git") {

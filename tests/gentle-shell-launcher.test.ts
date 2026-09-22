@@ -816,6 +816,29 @@ test("otherPackageInjections keeps a declared package directory that isDirectory
 	assert.deepEqual(result.warnings, []);
 });
 
+test("otherPackageInjections excludes a settings path entry that resolves via realpath to the same physical directory as a realpath'd skip (R4-forced-root-symlink-double-injection)", () => {
+	const linkOtherDir = join("/agent", "link-other");
+	const result = otherPackageInjections({
+		settingsText: '{"packages":["link-other","npm:some-other"]}',
+		agentDir: "/agent",
+		// skip.dir mirrors bin/gentle-shell.mjs's --package-root case, where
+		// it is already the realpath of the effective package root.
+		skip: { kind: "path", dir: "/real/other" },
+		realpath: (dir) => (dir === linkOtherDir ? "/real/other" : dir),
+	});
+	assert.deepEqual(result.paths, [join("/agent", "npm", "node_modules", "some-other")]);
+	assert.deepEqual(result.warnings, []);
+});
+
+test("otherPackageInjections keeps comparing raw strings when no realpath resolver is provided (default stays pure)", () => {
+	const result = otherPackageInjections({
+		settingsText: '{"packages":["link-other","npm:some-other"]}',
+		agentDir: "/agent",
+		skip: { kind: "path", dir: "/real/other" },
+	});
+	assert.deepEqual(result.paths, [join("/agent", "link-other"), join("/agent", "npm", "node_modules", "some-other")]);
+});
+
 test("otherPackageInjections defaults to including every declared package when isDirectory is not provided (existing callers keep pure string resolution)", () => {
 	const result = otherPackageInjections({
 		settingsText: '{"packages":["npm:some-other","npm:gentle-pi"]}',
