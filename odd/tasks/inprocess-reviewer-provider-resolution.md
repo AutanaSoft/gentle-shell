@@ -492,8 +492,26 @@ Receipt-driven development is **on** (decided by global). Per work-unit commit:
 
 The next reviewed boundary becomes the base for whatever follows the slice.
 
+## IRP-8 audit (2026-09-22): blocked on the issue gate
+
+- Rebased onto `upstream/main` at `ba985f50` (gentle-pi 3.5.0, 28 commits ahead of the old base)
+  with no conflicts; none of those commits touch `lib/inprocess-reviewer.ts`,
+  `tests/inprocess-reviewer.test.ts` or `lib/review-host-relay.ts`, and none reference #1304. After
+  the rebase: focused 36/36, relay 43/43, `pnpm test` 3174/3136 pass/0 fail/38 skipped, typecheck
+  byte-identical (196 recorded, no regressions).
+- **Issue gate not met.** #1304 carries no `status:approved` label (nor do #1190, #757, #831). The
+  branch-pr policy and the PR validation workflow both require it, so the PR is not opened yet. Two
+  independent reproductions with root cause are already on the issue (salgozino, marky1987). Next
+  humane action: ask a maintainer for approval on #1304, then open the PR.
+- **Conflicting authority line: PR #1318** (`fix/1307-deepseek-relay-retry`, carlosmoradev, based
+  on the same `b6188bef`). It wraps the very `deps.complete(...)` line this fix replaces in a bounded
+  retry loop and edits the same test file; `git merge-tree` reports content conflicts in both files.
+  The two are causally independent (retry policy vs dispatch target), so neither supersedes the
+  other: whichever lands second rebases, and the retry loop must wrap the composed-provider call,
+  not only the fallback. Named in the PR body so the maintainer sequences them.
+
 ## Next step
 
-IRP-8: open the PR upstream against `Gentleman-Programming/gentle-shell` linking #1304, #1190, #757
+IRP-8: once #1304 is `status:approved`, push the branch and open the PR upstream against `Gentleman-Programming/gentle-shell` linking #1304, #1190, #757
 and #831, naming the design-bug framing, and listing the four advisory findings from the slice-close
 review as follow-up candidates. Every acceptance criterion, including the e2e one, is now met.
