@@ -72,25 +72,15 @@ function multiSelectRoundOptions(question: QuestionData, toggled: readonly boole
 }
 
 /**
- * Resolves one multiSelect question by looping `ctx.ui.select` over toggle
- * rounds, bounded to `options.length + 1` rounds (every option once, plus
- * Done). Returns `undefined` on cancellation.
+ * Hard bound on toggle rounds so a misbehaving or chatty host cannot spin
+ * this loop forever. Untoggling an option must not shrink the effective
+ * budget below what toggling it on would allow, so the bound is a flat
+ * round count rather than one tied to `options.length`.
  */
-async function askMultiSelect(
-	ctx: Pick<ExtensionContext, "ui">,
-	question: QuestionData,
-): Promise<AnswerRow | undefined> {
-	const toggled = question.options.map(() => false);
-	const maxRounds = question.options.length + 1;
-	for (let round = 0; round < maxRounds; round++) {
-		const roundOptions = multiSelectRoundOptions(question, toggled);
-		const picked = await ctx.ui.select(`${question.header}: ${question.question}`, roundOptions);
-		if (picked === undefined) return undefined;
-		const pickedIndex = roundOptions.indexOf(picked);
-		if (pickedIndex === -1 || pickedIndex === question.options.length) break; // Done, or an unrecognised answer
-		toggled[pickedIndex] = !toggled[pickedIndex];
-		if (toggled.every(Boolean)) break;
-	}
+const MULTI_SELECT_ROUND_CAP = 32;
+
+/** Committed multiSelect answer from the current toggle state (explicit Done, or every option toggled on). */
+function finishMultiSelect(question: QuestionData, toggled: readonly boolean[]): AnswerRow {
 	return {
 		questionIndex: -1, // overwritten by the caller with the question's position
 		question: question.question,
@@ -98,6 +88,31 @@ async function askMultiSelect(
 		answer: null,
 		selected: question.options.filter((_choiceOption, index) => toggled[index]).map((choiceOption) => choiceOption.label),
 	};
+}
+
+/**
+ * Resolves one multiSelect question by looping `ctx.ui.select` over toggle
+ * rounds, bounded by `MULTI_SELECT_ROUND_CAP`. Returns `undefined` on
+ * cancellation, and also when the cap is hit without an explicit Done: a
+ * partial toggle state must never commit silently.
+ */
+async function askMultiSelect(
+	ctx: Pick<ExtensionContext, "ui">,
+	question: QuestionData,
+): Promise<AnswerRow | undefined> {
+	const toggled = question.options.map(() => false);
+	for (let round = 0; round < MULTI_SELECT_ROUND_CAP; round++) {
+		const roundOptions = multiSelectRoundOptions(question, toggled);
+		const picked = await ctx.ui.select(`${question.header}: ${question.question}`, roundOptions);
+		if (picked === undefined) return undefined;
+		const pickedIndex = roundOptions.indexOf(picked);
+		if (pickedIndex === -1 || pickedIndex === question.options.length) return finishMultiSelect(question, toggled); // Done, or an unrecognised answer
+		toggled[pickedIndex] = !toggled[pickedIndex];
+		if (toggled.every(Boolean)) return finishMultiSelect(question, toggled);
+	}
+	// The safety cap was spent without an explicit Done: refuse to commit a
+	// partial selection silently and cancel instead.
+	return undefined;
 }
 
 /** Resolves one single-select question through `ctx.ui.select`. Returns `undefined` on cancellation. */

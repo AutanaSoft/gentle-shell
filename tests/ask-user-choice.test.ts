@@ -535,9 +535,16 @@ test("ask_user_choice stays unavailable on a plain rpc host without the interact
 	);
 });
 
+/** Expected `gentle-pi:ask-user-choice:blocked` sequence around one RPC-dialog turn. */
+const RPC_BLOCKED_SEQUENCE = [
+	{ channel: "gentle-pi:ask-user-choice:blocked", data: { active: true } },
+	{ channel: "gentle-pi:ask-user-choice:blocked", data: { active: false } },
+];
+
 test("ask_user_choice resolves a selection through RPC dialogs on an interactive host", async (t) => {
 	withInteractiveHostEnv(t);
-	const { tool } = registerChoiceTool();
+	const registration = registerChoiceTool();
+	const { tool } = registration;
 	const { ctx, selectCalls } = rpcHostContext([options[1]!.label]);
 
 	const result = await tool.execute("call", { question: "Proceed?", options }, new AbortController().signal, undefined, ctx);
@@ -547,11 +554,13 @@ test("ask_user_choice resolves a selection through RPC dialogs on an interactive
 	assert.deepEqual(selectCalls[0]?.options, [options[0]!.label, options[1]!.label]);
 	assert.deepEqual(result.details.selection, { value: options[1]!.value, label: options[1]!.label, index: 2 });
 	assert.equal(result.content[0]?.text, `User selected: 2. ${options[1]!.label} (value: ${options[1]!.value})`);
+	assert.deepEqual(registration.emittedEvents(), RPC_BLOCKED_SEQUENCE);
 });
 
 test("ask_user_choice resolves an Other… custom response through ctx.ui.input on an interactive host", async (t) => {
 	withInteractiveHostEnv(t);
-	const { tool } = registerChoiceTool();
+	const registration = registerChoiceTool();
+	const { tool } = registration;
 	const { ctx, selectCalls, inputCalls } = rpcHostContext(["Other…"], ["a free-form reply"]);
 
 	const result = await tool.execute("call", { question: "Explain?", options, allowCustomResponse: true }, new AbortController().signal, undefined, ctx);
@@ -561,27 +570,32 @@ test("ask_user_choice resolves an Other… custom response through ctx.ui.input 
 	assert.equal(inputCalls[0]?.title, "Explain?");
 	assert.deepEqual(result.details, { question: "Explain?", options, customResponse: "a free-form reply" });
 	assert.equal(result.content[0]?.text, "User responded: a free-form reply");
+	assert.deepEqual(registration.emittedEvents(), RPC_BLOCKED_SEQUENCE);
 });
 
 test("ask_user_choice cancels through RPC dialogs like the TUI path when select returns undefined", async (t) => {
 	withInteractiveHostEnv(t);
-	const { tool } = registerChoiceTool();
+	const registration = registerChoiceTool();
+	const { tool } = registration;
 	const { ctx } = rpcHostContext([undefined]);
 
 	const result = await tool.execute("call", { question: "Proceed?", options }, new AbortController().signal, undefined, ctx);
 
 	assert.deepEqual(result.details, { question: "Proceed?", options, cancelled: true });
 	assert.equal(result.content[0]?.text, "User cancelled the choice");
+	assert.deepEqual(registration.emittedEvents(), RPC_BLOCKED_SEQUENCE, "the blocked lifecycle must still balance on a cancel");
 });
 
 test("ask_user_choice cancels through RPC dialogs when the Other… input is cancelled", async (t) => {
 	withInteractiveHostEnv(t);
-	const { tool } = registerChoiceTool();
+	const registration = registerChoiceTool();
+	const { tool } = registration;
 	const { ctx } = rpcHostContext(["Other…"], [undefined]);
 
 	const result = await tool.execute("call", { question: "Explain?", options, allowCustomResponse: true }, new AbortController().signal, undefined, ctx);
 
 	assert.deepEqual(result.details, { question: "Explain?", options, cancelled: true });
+	assert.deepEqual(registration.emittedEvents(), RPC_BLOCKED_SEQUENCE, "the blocked lifecycle must still balance on a cancel");
 });
 
 test("ask_user_choice emits a private balanced lifecycle around selection and cancellation", async () => {
