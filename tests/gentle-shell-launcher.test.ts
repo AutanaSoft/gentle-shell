@@ -10,6 +10,7 @@ import {
 	buildPiInvocation,
 	checkPeerVersionPin,
 	checkPiVersion,
+	conflictingSetupPackages,
 	decideTakeOver,
 	describeVersion,
 	discoverLooseExtensionEntries,
@@ -626,6 +627,59 @@ test("settingsDeclareGentlePi is false for a path package entry, even one that r
 	// declarations, matching its pre-existing behaviour before path detection
 	// was added via findGentlePiDeclaration.
 	assert.equal(settingsDeclareGentlePi('{"packages":["../../work/gentle-pi"]}'), false);
+});
+
+// --- conflictingSetupPackages -----------------------------------------------
+//
+// gentle-ai's managed Pi stack (gentle-ai #4820, gentle-shell #1277) still
+// installs npm:@juicesharp/rpiv-ask-user-question, which conflicts with
+// gentle-pi's own first-party ask_user_question tool: Pi refuses two
+// providers for the same tool name. Until the gentle-ai fix lands, this pure
+// helper tells `gentle-shell setup` which declared packages it must remove
+// after provisioning a home.
+
+test("conflictingSetupPackages is empty when settings text is undefined", () => {
+	assert.deepEqual(conflictingSetupPackages(undefined), []);
+});
+
+test("conflictingSetupPackages is empty for invalid JSON", () => {
+	assert.deepEqual(conflictingSetupPackages("not json"), []);
+});
+
+test("conflictingSetupPackages is empty when packages is absent", () => {
+	assert.deepEqual(conflictingSetupPackages("{}"), []);
+});
+
+test("conflictingSetupPackages detects a bare npm:@juicesharp/rpiv-ask-user-question string entry", () => {
+	assert.deepEqual(conflictingSetupPackages('{"packages":["npm:@juicesharp/rpiv-ask-user-question"]}'), [
+		"npm:@juicesharp/rpiv-ask-user-question",
+	]);
+});
+
+test("conflictingSetupPackages detects a versioned entry and returns the canonical unversioned source", () => {
+	assert.deepEqual(conflictingSetupPackages('{"packages":["npm:@juicesharp/rpiv-ask-user-question@1.2.3"]}'), [
+		"npm:@juicesharp/rpiv-ask-user-question",
+	]);
+});
+
+test("conflictingSetupPackages detects a versioned object source entry", () => {
+	assert.deepEqual(conflictingSetupPackages('{"packages":[{"source":"npm:@juicesharp/rpiv-ask-user-question@1.2.3"}]}'), [
+		"npm:@juicesharp/rpiv-ask-user-question",
+	]);
+});
+
+test("conflictingSetupPackages is empty when packages lists unrelated entries", () => {
+	assert.deepEqual(conflictingSetupPackages('{"packages":["npm:gentle-pi","npm:some-other-package"]}'), []);
+});
+
+test("conflictingSetupPackages dedupes a duplicated declaration and preserves declaration order", () => {
+	const settingsText =
+		'{"packages":["npm:some-other","npm:@juicesharp/rpiv-ask-user-question@1.0.0","npm:@juicesharp/rpiv-ask-user-question@2.0.0"]}';
+	assert.deepEqual(conflictingSetupPackages(settingsText), ["npm:@juicesharp/rpiv-ask-user-question"]);
+});
+
+test("conflictingSetupPackages ignores a path entry that happens to share the package name", () => {
+	assert.deepEqual(conflictingSetupPackages('{"packages":["./local-ask-user-question"]}'), []);
 });
 
 // --- findGentlePiDeclaration -------------------------------------------------

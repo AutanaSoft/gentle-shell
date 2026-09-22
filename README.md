@@ -226,7 +226,7 @@ gentle-shell --link
 gentle-shell setup
 ```
 
-`gentle-shell setup` installs the same companion packages gentle-ai provisions into a regular Pi, into this home only.
+`gentle-shell setup` installs the same companion packages gentle-ai provisions into a regular Pi, into this home only, then removes the one package that conflicts with gentle-pi's own `ask_user_question` tool (gentle-ai #4820).
 
 ```bash
 # Make --link the default

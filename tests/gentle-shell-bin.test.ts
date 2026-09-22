@@ -34,13 +34,26 @@ function fixture(t: test.TestContext) {
 	return { root, home, gentleShellHome, piScript, env };
 }
 
-function writePiScript(path: string, version: string) {
+// `removeExitCode` controls only the `pi remove ...` branch exercised by the
+// setup-subcommand conflict-cleanup tests below; every other pi invocation
+// (including the version probe) keeps exiting 0, unchanged for every
+// existing caller that does not pass it.
+function writePiScript(path: string, version: string, removeExitCode = 0) {
 	writeFileSync(
 		path,
 		[
 			"#!/usr/bin/env node",
 			"const args = process.argv.slice(2);",
 			`if (args.includes("--version")) { console.log(${JSON.stringify(version)}); process.exit(0); }`,
+			"if (args[0] === 'remove') {",
+			"  console.log(JSON.stringify({",
+			"    args,",
+			"    PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,",
+			"    GENTLE_PI_AGENT_HOME: process.env.GENTLE_PI_AGENT_HOME,",
+			"    PATH: process.env.PATH,",
+			"  }));",
+			`  process.exit(${removeExitCode});`,
+			"}",
 			"console.log(JSON.stringify({",
 			"  args,",
 			"  PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,",
@@ -74,6 +87,33 @@ function writeGentleAiScript(path: string, exitCode = 0) {
 			"  GENTLE_PI_AGENT_HOME: process.env.GENTLE_PI_AGENT_HOME,",
 			"  PATH: process.env.PATH,",
 			"}));",
+			`process.exit(${exitCode});`,
+			"",
+		].join("\n"),
+	);
+	chmodSync(path, 0o755);
+}
+
+// Test/development-only stub for the setup subcommand's gentle-ai binary,
+// simulating the real gentle-ai's managed Pi stack declaring the conflicting
+// npm:@juicesharp/rpiv-ask-user-question package (gentle-ai #4820,
+// gentle-shell #1277) into the provisioned home's settings.json, the same
+// file the isolated-home bootstrap already created before `setup` spawns
+// this stub. Its own stdout line ends with "\n" so a test can tell it apart
+// from a later `pi remove` line on the same inherited stdout.
+function writeGentleAiScriptDeclaringConflict(path: string, exitCode = 0) {
+	writeFileSync(
+		path,
+		[
+			"#!/usr/bin/env node",
+			"import { readFileSync, writeFileSync } from 'node:fs';",
+			"import { join } from 'node:path';",
+			"const args = process.argv.slice(2);",
+			"const settingsPath = join(process.env.PI_CODING_AGENT_DIR, 'settings.json');",
+			"const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));",
+			"settings.packages = ['npm:@juicesharp/rpiv-ask-user-question@1.2.3'];",
+			"writeFileSync(settingsPath, JSON.stringify(settings));",
+			"process.stdout.write(JSON.stringify({ args }) + '\\n');",
 			`process.exit(${exitCode});`,
 			"",
 		].join("\n"),
@@ -390,6 +430,82 @@ test("gentle-shell setup proceeds when the reported pin is exactly 3.6.0", (t) =
 	assert.equal(result.status, 0, result.stderr);
 	const payload = JSON.parse(result.stdout);
 	assert.deepEqual(payload.args, ["install", "--agent", "pi", "--scope", "global"]);
+});
+
+// --- setup subcommand conflict cleanup (gentle-ai #4820 / gentle-shell #1277) ---
+//
+// gentle-ai's managed Pi stack still installs npm:@juicesharp/rpiv-ask-user-question,
+// which conflicts with gentle-pi's own first-party ask_user_question tool
+// (Pi refuses two providers for the same tool name). Until the gentle-ai fix
+// lands, `gentle-shell setup` removes the conflicting package itself once it
+// finds gentle-ai declared it in the provisioned home's settings.json.
+
+test("gentle-shell setup removes the conflicting ask-user-question package gentle-ai declared", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScriptDeclaringConflict(gentleAiScript);
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript };
+
+	const result = run(env, ["setup"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(
+		result.stderr,
+		/gentle-shell: removing npm:@juicesharp\/rpiv-ask-user-question from .+: gentle-pi ships ask_user_question and Pi refuses two providers \(gentle-ai #4820\)/,
+	);
+
+	const lines = result.stdout.trim().split("\n").filter((line) => line.length > 0);
+	assert.equal(lines.length, 2, result.stdout);
+	assert.deepEqual(JSON.parse(lines[0]).args, ["install", "--agent", "pi", "--scope", "global"]);
+	const removePayload = JSON.parse(lines[1]);
+	assert.deepEqual(removePayload.args, ["remove", "npm:@juicesharp/rpiv-ask-user-question"]);
+	assert.equal(removePayload.PI_CODING_AGENT_DIR, f.gentleShellHome);
+	assert.equal(removePayload.GENTLE_PI_AGENT_HOME, f.gentleShellHome);
+	assert.ok(removePayload.PATH.startsWith(`${dirname(f.piScript)}${delimiter}`), removePayload.PATH);
+});
+
+test("gentle-shell setup runs no pi remove when gentle-ai did not declare the conflicting package", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScript(gentleAiScript);
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript };
+
+	const result = run(env, ["setup"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.doesNotMatch(result.stderr, /removing npm:/);
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, ["install", "--agent", "pi", "--scope", "global"]);
+});
+
+test("gentle-shell setup --dry-run prints the pending removal without running pi remove", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScriptDeclaringConflict(gentleAiScript);
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript };
+
+	const result = run(env, ["setup", "--dry-run"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stderr, /gentle-shell: setup would then remove npm:@juicesharp\/rpiv-ask-user-question \(gentle-ai #4820\)/);
+	assert.doesNotMatch(result.stderr, /gentle-shell: removing/);
+
+	const lines = result.stdout.trim().split("\n").filter((line) => line.length > 0);
+	assert.equal(lines.length, 1, result.stdout);
+	assert.deepEqual(JSON.parse(lines[0]).args, ["install", "--agent", "pi", "--scope", "global", "--dry-run"]);
+});
+
+test("gentle-shell setup propagates a non-zero pi remove exit code with an actionable message", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScriptDeclaringConflict(gentleAiScript);
+	const failingPiScript = join(f.root, "fake-pi-remove-fails.mjs");
+	writePiScript(failingPiScript, "0.85.1", 7);
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_PI: failingPiScript };
+
+	const result = run(env, ["setup"]);
+	assert.equal(result.status, 7);
+	assert.match(
+		result.stderr,
+		/gentle-shell: could not remove npm:@juicesharp\/rpiv-ask-user-question; run `gentle-shell remove npm:@juicesharp\/rpiv-ask-user-question` before starting/,
+	);
 });
 
 // --- --package-root silently ignored in a declared non-link home ----------

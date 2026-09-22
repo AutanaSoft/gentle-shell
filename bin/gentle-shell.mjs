@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import {
 	buildPiInvocation,
 	checkPiVersion,
+	conflictingSetupPackages,
 	decideTakeOver,
 	describeVersion,
 	discoverLooseExtensionEntries,
@@ -291,12 +292,7 @@ async function handleSetupCommand(commandArgs, home, runtime) {
 	process.stderr.write(`gentle-shell: provisioning ${home.dir} with the gentle-ai companion packages\n`);
 
 	const setupArgs = ["install", "--agent", "pi", "--scope", "global", ...(dryRun ? ["--dry-run"] : [])];
-	const env = {
-		...process.env,
-		PI_CODING_AGENT_DIR: home.dir,
-		GENTLE_PI_AGENT_HOME: home.dir,
-		PATH: `${dirname(runtime.command)}${delimiter}${process.env.PATH ?? ""}`,
-	};
+	const env = buildSetupEnv(home, runtime);
 
 	const launchPlan = planSpawn({ command: binaryPath, args: setupArgs, platform: process.platform });
 	const child = spawn(launchPlan.command, launchPlan.args, { stdio: "inherit", env, shell: launchPlan.shell });
@@ -305,7 +301,85 @@ async function handleSetupCommand(commandArgs, home, runtime) {
 	}
 	child.on("error", (error) => fail(`Could not start the gentle-ai binary: ${error.message}`, 1));
 	child.on("exit", (code, signal) => {
-		process.exit(signal ? signalExitCode(signal) : (code ?? 1));
+		if (signal) {
+			process.exit(signalExitCode(signal));
+			return;
+		}
+		const exitCode = code ?? 1;
+		if (exitCode !== 0) {
+			process.exit(exitCode);
+			return;
+		}
+		handleSetupConflictCleanup(home, runtime, dryRun);
+	});
+}
+
+// Shared env for both the gentle-ai install spawn above and the pi remove
+// cleanup spawn below: PI_CODING_AGENT_DIR/GENTLE_PI_AGENT_HOME point both
+// at the resolved home, and the resolved pi runtime's directory is prepended
+// to PATH so gentle-ai's (or pi's own) preflight finds `pi` even when it is
+// bundled or given through GENTLE_SHELL_PI.
+function buildSetupEnv(home, runtime) {
+	return {
+		...process.env,
+		PI_CODING_AGENT_DIR: home.dir,
+		GENTLE_PI_AGENT_HOME: home.dir,
+		PATH: `${dirname(runtime.command)}${delimiter}${process.env.PATH ?? ""}`,
+	};
+}
+
+// Runs once the gentle-ai install spawned by handleSetupCommand above has
+// exited 0: gentle-ai's managed Pi stack still installs
+// npm:@juicesharp/rpiv-ask-user-question, which conflicts with gentle-pi's
+// own first-party ask_user_question tool (Pi refuses two providers for the
+// same tool name; gentle-ai #4820, gentle-shell #1277). The gentle-ai fix
+// lands separately, so setup removes it from the just-provisioned home
+// itself, unless this is a --dry-run (which only reports what it would do).
+function handleSetupConflictCleanup(home, runtime, dryRun) {
+	const settingsText = readJsonIfExists(join(home.dir, "settings.json"));
+	const conflicting = conflictingSetupPackages(settingsText);
+	if (conflicting.length === 0) {
+		process.exit(0);
+		return;
+	}
+	if (dryRun) {
+		for (const source of conflicting) {
+			process.stderr.write(`gentle-shell: setup would then remove ${source} (gentle-ai #4820)\n`);
+		}
+		process.exit(0);
+		return;
+	}
+	removeConflictingSetupPackages(conflicting, 0, home, runtime);
+}
+
+// Removes each conflicting package in turn via the resolved pi runtime
+// itself (never gentle-ai), stopping at the first failure so its exit code
+// and actionable message are not masked by a later removal.
+function removeConflictingSetupPackages(sources, index, home, runtime) {
+	if (index >= sources.length) {
+		process.exit(0);
+		return;
+	}
+	const source = sources[index];
+	process.stderr.write(
+		`gentle-shell: removing ${source} from ${home.dir}: gentle-pi ships ask_user_question and Pi refuses two providers (gentle-ai #4820)\n`,
+	);
+	const env = buildSetupEnv(home, runtime);
+	const launchPlan = planSpawn({ command: runtime.command, args: [...runtime.args, "remove", source], platform: process.platform });
+	const child = spawn(launchPlan.command, launchPlan.args, { stdio: "inherit", env, shell: launchPlan.shell });
+	child.on("error", (error) => fail(`Could not run the pi runtime to remove ${source}: ${error.message}`, 1));
+	child.on("exit", (code, signal) => {
+		if (signal) {
+			process.exit(signalExitCode(signal));
+			return;
+		}
+		const exitCode = code ?? 1;
+		if (exitCode !== 0) {
+			process.stderr.write(`gentle-shell: could not remove ${source}; run \`gentle-shell remove ${source}\` before starting\n`);
+			process.exit(exitCode);
+			return;
+		}
+		removeConflictingSetupPackages(sources, index + 1, home, runtime);
 	});
 }
 

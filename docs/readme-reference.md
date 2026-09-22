@@ -305,6 +305,8 @@ Requires the package-local gentle-ai pin at v3.6.0 or newer — the pin that add
 
 Once `gentle-shell setup` installs `npm:gentle-pi` into the home's `settings.json`, the launcher stops injecting its own copy there (see "Loading the package" below) — the home behaves like a regular Pi agent home with gentle-pi installed, and `gentle-shell update npm:gentle-pi` updates it like any other package.
 
+Once gentle-ai exits 0, `setup` also removes `npm:@juicesharp/rpiv-ask-user-question` from the home if gentle-ai declared it: that package conflicts with gentle-pi's own first-party `ask_user_question` tool, and Pi refuses to load two providers for the same tool name (tracked upstream as gentle-ai #4820); `--dry-run` only reports the pending removal instead of running it.
+
 **Known limitation**: gentle-ai always writes its persona file to the shared `~/.pi/gentle-ai/persona.json` without honoring `PI_CODING_AGENT_DIR`, so the persona is shared across every home `gentle-shell setup` provisions, not per-home.
 
 **Test/development only**: `GENTLE_SHELL_GENTLE_AI_BIN` overrides which gentle-ai executable `setup` runs, bypassing the pinned package-local resolution. `GENTLE_SHELL_GENTLE_AI_PIN` overrides the pin version `setup` checks against `MIN_SETUP_GENTLE_AI_VERSION` (3.6.0), independent of `GENTLE_SHELL_GENTLE_AI_BIN`. Both exist for the test suite and for exercising a different gentle-ai build/pin; end users never need them.

@@ -433,6 +433,41 @@ export function settingsDeclareGentlePi(settingsText: string | undefined): boole
 	return packages.some(packageEntryDeclaresGentlePi);
 }
 
+// gentle-ai's own managed Pi stack still installs
+// npm:@juicesharp/rpiv-ask-user-question, which conflicts with gentle-pi's
+// first-party ask_user_question tool: Pi tool names are exclusive, so a
+// second provider for the same name fails the whole load (see
+// extensions/ask-user-question.ts). Tracked upstream as gentle-ai #4820 and
+// gentle-shell #1277; the gentle-ai fix lands separately, so `gentle-shell
+// setup` (bin/gentle-shell.mjs) must remove it from the provisioned home
+// itself. One entry today; kept as a table so a future conflicting package
+// only needs a new row here.
+const CONFLICTING_SETUP_PACKAGES: readonly { readonly name: string; readonly source: string }[] = [
+	{ name: "@juicesharp/rpiv-ask-user-question", source: "npm:@juicesharp/rpiv-ask-user-question" },
+];
+
+// Scans a settings.json `packages` list (same string/object-source parsing
+// as settingsDeclareGentlePi/findGentlePiDeclaration above) for any entry
+// whose npm package name matches CONFLICTING_SETUP_PACKAGES, at any version
+// spec. Returns each match's canonical unversioned source, deduped, in the
+// order those packages first appear in `packages` — never the declared
+// (possibly versioned) source text, since the caller always removes the
+// bare package.
+export function conflictingSetupPackages(settingsText: string | undefined): string[] {
+	const packages = parseSettingsPackages(settingsText);
+	if (packages === undefined) return [];
+
+	const found: string[] = [];
+	for (const entry of packages) {
+		const source = entrySource(entry);
+		if (source === undefined || packageSourceKind(source) !== "npm") continue;
+		const name = npmPackageName(source);
+		const conflict = CONFLICTING_SETUP_PACKAGES.find((candidate) => candidate.name === name);
+		if (conflict !== undefined && !found.includes(conflict.source)) found.push(conflict.source);
+	}
+	return found;
+}
+
 export type GentlePiDeclaration = { kind: "npm" } | { kind: "path"; dir: string };
 
 export interface FindGentlePiDeclarationOptions {
