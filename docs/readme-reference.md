@@ -251,6 +251,10 @@ gentle-shell home [link|isolated|<path>]
 
 `gentle-shell home` alone prints the effective mode and directory (`<mode> <dir>`) without persisting anything. `gentle-shell home link`, `gentle-shell home isolated`, or `gentle-shell home <path>` persists that choice to `~/.gentle-shell/config.json` as `{"home": "link" | "isolated" | "<path>"}`, so a later plain `gentle-shell` picks it up; a flag on a given invocation still overrides the persisted config without rewriting it.
 
+### Managing packages
+
+`gentle-shell install npm:<pkg>`, `gentle-shell remove ...`, `gentle-shell list`, `gentle-shell update ...`, `gentle-shell config`, and `gentle-shell auth ...` run pi's own commands against the resolved home — the `--isolated` home by default, or your own pi home with `--link`. A launcher flag before the subcommand (`--link`, `--isolated`, `--home <path>`) still selects which home the subcommand runs against. Running `gentle-shell install npm:gentle-pi` inside the isolated home is unnecessary: the launcher already loads the Gentle Shell package itself (see "Loading the package" below).
+
 ### pi runtime resolution
 
 1. `GENTLE_SHELL_PI` — path to a pi executable, when set to a non-empty value.
@@ -270,7 +274,7 @@ If none resolve, `gentle-shell` exits 1 naming all three options. Once a runtime
 
 ### Loading the package
 
-Unless the target home's `settings.json` already lists `npm:gentle-pi` in its `packages` array (checked only for `--link`), every invocation injects `-e <package root> --theme <root>/themes --skill <root>/skills --prompt-template <root>/prompts` ahead of the forwarded arguments, so the Gentle Shell extensions, themes, skills, and prompt templates load without a separate `pi install`. Isolated and `--home <path>` homes never declare the package, so they always get the injection.
+Unless the target home's `settings.json` already lists `npm:gentle-pi` in its `packages` array (checked only for `--link`), every invocation injects `-e <package root> --theme <root>/themes --skill <root>/skills --prompt-template <root>/prompts` ahead of the forwarded arguments, so the Gentle Shell extensions, themes, skills, and prompt templates load without a separate `pi install`. Isolated and `--home <path>` homes never declare the package, so they always get the injection — except when the forwarded arguments start with one of pi's own subcommands (`install`, `remove`, `uninstall`, `update`, `list`, `config`, `auth`): pi dispatches those on `argv[0]` before it parses any flags, so the injection is skipped entirely and pi sees the bare subcommand, e.g. `gentle-shell install npm:x` runs exactly `pi install npm:x`.
 
 ### First run in an isolated or custom home
 

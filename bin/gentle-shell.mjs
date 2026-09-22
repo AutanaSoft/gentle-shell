@@ -177,6 +177,7 @@ async function main() {
 		packageRoot,
 		settingsDeclareGentlePi: home.mode === "link" ? linkDeclaresGentlePi : false,
 		passthrough: args.passthrough,
+		piSubcommand: args.piSubcommand,
 		baseEnv: process.env,
 	});
 
