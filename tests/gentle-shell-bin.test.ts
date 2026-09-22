@@ -94,6 +94,46 @@ function writeGentleAiScript(path: string, exitCode = 0) {
 	chmodSync(path, 0o755);
 }
 
+// Test/development-only stub for setup's self-heal installer seam
+// (GENTLE_SHELL_GENTLE_AI_INSTALLER): writes a working gentle-ai stub at
+// process.env.GENTLE_SHELL_GENTLE_AI_BIN — the same path setup itself
+// resolved the missing binary from — so "the installer created the pinned
+// binary" is provable by setup's own retry check finding it, exactly like a
+// real `node scripts/install-gentle-ai.mjs` run would leave a real binary at
+// gentleAiBinaryPath().
+function writeInstallerScriptThatCreatesTheBinary(path: string) {
+	writeFileSync(
+		path,
+		[
+			"#!/usr/bin/env node",
+			"import { writeFileSync, chmodSync, mkdirSync } from 'node:fs';",
+			"import { dirname } from 'node:path';",
+			"const target = process.env.GENTLE_SHELL_GENTLE_AI_BIN;",
+			"mkdirSync(dirname(target), { recursive: true });",
+			"writeFileSync(target, [",
+			"  '#!/usr/bin/env node',",
+			"  'const args = process.argv.slice(2);',",
+			"  'process.stdout.write(JSON.stringify({ args, PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR, GENTLE_PI_AGENT_HOME: process.env.GENTLE_PI_AGENT_HOME, PATH: process.env.PATH }));',",
+			"  'process.exit(0);',",
+			"  '',",
+			"].join('\\n'));",
+			"chmodSync(target, 0o755);",
+			"process.exit(0);",
+			"",
+		].join("\n"),
+	);
+	chmodSync(path, 0o755);
+}
+
+// Test/development-only stub for setup's self-heal installer seam that
+// deliberately never creates the binary, simulating a real installer run
+// that failed (e.g. a network or verification failure) — setup's retry
+// check must still find the binary missing afterward.
+function writeInstallerScriptThatFails(path: string) {
+	writeFileSync(path, ["#!/usr/bin/env node", "process.stderr.write('simulated installer failure\\n');", "process.exit(1);", ""].join("\n"));
+	chmodSync(path, 0o755);
+}
+
 // Test/development-only stub for the setup subcommand's gentle-ai binary,
 // simulating the real gentle-ai's managed Pi stack declaring the conflicting
 // npm:@juicesharp/rpiv-ask-user-question package (gentle-ai #4820,
@@ -384,15 +424,75 @@ test("gentle-shell setup passes through the gentle-ai exit code", (t) => {
 	assert.equal(result.status, 3);
 });
 
-test("gentle-shell setup exits 1 with an actionable message when the pinned gentle-ai binary is missing", (t) => {
+// --- setup subcommand's self-heal for a missing package-local binary -------
+//
+// `npm install -g <tarball>` on a machine whose npm config disables lifecycle
+// scripts (`ignore-scripts=true`) never runs the package's own postinstall,
+// so .gentle-ai/v<pin>/gentle-ai is missing even though the package itself
+// installed fine. `gentle-shell setup` self-heals by running the installer
+// in place before giving up. GENTLE_SHELL_GENTLE_AI_INSTALLER is a
+// test/development-only override for the installer script path, next to
+// GENTLE_SHELL_GENTLE_AI_BIN; documented as test/development-only in
+// docs/readme-reference.md.
+
+test("gentle-shell setup installs the missing package-local gentle-ai via the installer seam and then continues", (t) => {
 	const f = fixture(t);
 	const missingBinary = join(f.root, "does-not-exist", "gentle-ai");
-	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: missingBinary };
+	const installerScript = join(f.root, "fake-installer-creates-binary.mjs");
+	writeInstallerScriptThatCreatesTheBinary(installerScript);
+	const env = {
+		...f.env,
+		GENTLE_SHELL_GENTLE_AI_BIN: missingBinary,
+		GENTLE_SHELL_GENTLE_AI_INSTALLER: installerScript,
+		GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0",
+	};
+
+	const result = run(env, ["setup"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(
+		result.stderr,
+		/gentle-shell: the package-local gentle-ai v3\.6\.0 is missing \(npm lifecycle scripts may be disabled\); installing it now/,
+	);
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, ["install", "--agent", "pi", "--scope", "global"]);
+	assert.equal(payload.PI_CODING_AGENT_DIR, f.gentleShellHome);
+	assert.equal(payload.GENTLE_PI_AGENT_HOME, f.gentleShellHome);
+});
+
+test("gentle-shell setup exits 1 with an actionable message when the pinned gentle-ai binary is still missing after the installer runs", (t) => {
+	const f = fixture(t);
+	const missingBinary = join(f.root, "does-not-exist", "gentle-ai");
+	const installerScript = join(f.root, "fake-installer-fails.mjs");
+	writeInstallerScriptThatFails(installerScript);
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: missingBinary, GENTLE_SHELL_GENTLE_AI_INSTALLER: installerScript };
+
+	const result = run(env, ["setup"]);
+	assert.equal(result.status, 1);
+	assert.match(result.stderr, /gentle-shell: the package-local gentle-ai v.+ is missing \(npm lifecycle scripts may be disabled\); installing it now/);
+	assert.match(result.stderr, /package-local-binary-missing/);
+	assert.match(result.stderr, new RegExp(missingBinary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("gentle-shell setup skips the self-heal install and exits 1 when GENTLE_PI_SKIP_GENTLE_AI_INSTALL is set", (t) => {
+	const f = fixture(t);
+	const missingBinary = join(f.root, "does-not-exist", "gentle-ai");
+	// This installer would prove itself by creating the binary if it ever ran;
+	// it must not run at all when the skip variable is set.
+	const installerScript = join(f.root, "installer-should-not-run.mjs");
+	writeInstallerScriptThatCreatesTheBinary(installerScript);
+	const env = {
+		...f.env,
+		GENTLE_SHELL_GENTLE_AI_BIN: missingBinary,
+		GENTLE_SHELL_GENTLE_AI_INSTALLER: installerScript,
+		GENTLE_PI_SKIP_GENTLE_AI_INSTALL: "1",
+	};
 
 	const result = run(env, ["setup"]);
 	assert.equal(result.status, 1);
 	assert.match(result.stderr, /package-local-binary-missing/);
-	assert.match(result.stderr, new RegExp(missingBinary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+	assert.match(result.stderr, /GENTLE_PI_SKIP_GENTLE_AI_INSTALL/);
+	assert.doesNotMatch(result.stderr, /installing it now/);
+	assert.equal(existsSync(missingBinary), false);
 });
 
 // --- setup subcommand's gentle-ai pin gate (R3/R4 advisory findings) -------
@@ -537,6 +637,30 @@ test("gentle-shell setup --home <dir> includes --home <dir> in the failing-remov
 		result.stderr,
 		new RegExp(
 			`gentle-shell: could not remove npm:@juicesharp/rpiv-ask-user-question; run \`gentle-shell --home ${target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} remove npm:@juicesharp/rpiv-ask-user-question\` before starting`,
+		),
+	);
+});
+
+// A --home path containing a space (or another shell metacharacter) must be
+// single-quoted in the remediation command, or a copy-pasted
+// `gentle-shell --home <dir> remove <source>` silently splits into extra
+// shell words instead of naming the actual home setup provisioned
+// (gentle-shell #1277 follow-up).
+test("gentle-shell setup shell-quotes a --home path containing a space in the failing-removal remediation command", (t) => {
+	const f = fixture(t);
+	const target = join(f.root, "custom home");
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScriptDeclaringConflict(gentleAiScript);
+	const failingPiScript = join(f.root, "fake-pi-remove-fails.mjs");
+	writePiScript(failingPiScript, "0.85.1", 7);
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_PI: failingPiScript };
+
+	const result = run(env, ["--home", target, "setup"]);
+	assert.equal(result.status, 7);
+	assert.match(
+		result.stderr,
+		new RegExp(
+			`gentle-shell: could not remove npm:@juicesharp/rpiv-ask-user-question; run \`gentle-shell --home '${target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}' remove npm:@juicesharp/rpiv-ask-user-question\` before starting`,
 		),
 	);
 });

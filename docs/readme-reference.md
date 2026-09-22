@@ -299,7 +299,7 @@ It resolves the home and the pi runtime exactly as a normal run does (including 
 <package>/.gentle-ai/v<version>/gentle-ai install --agent pi --scope global [--dry-run]
 ```
 
-with `PI_CODING_AGENT_DIR` and `GENTLE_PI_AGENT_HOME` set to the resolved home, and the resolved pi runtime's directory prepended to `PATH`, so gentle-ai's own preflight finds `pi` even when it is bundled or given through `GENTLE_SHELL_PI`. `--dry-run` is forwarded to gentle-ai unchanged. Output streams straight through (`stdio: "inherit"`), and `gentle-shell setup` exits with gentle-ai's own exit code. A missing package-local gentle-ai binary exits 1 with an actionable message instead of failing to spawn.
+with `PI_CODING_AGENT_DIR` and `GENTLE_PI_AGENT_HOME` set to the resolved home, and the resolved pi runtime's directory prepended to `PATH`, so gentle-ai's own preflight finds `pi` even when it is bundled or given through `GENTLE_SHELL_PI`. `--dry-run` is forwarded to gentle-ai unchanged. Output streams straight through (`stdio: "inherit"`), and `gentle-shell setup` exits with gentle-ai's own exit code. If the package-local gentle-ai binary is missing, `setup` installs it itself (by running its own `scripts/install-gentle-ai.mjs` postinstall) before giving up — the postinstall never runs when `npm install`'s lifecycle scripts were disabled (for example under `ignore-scripts=true`) — unless `GENTLE_PI_SKIP_GENTLE_AI_INSTALL=1`, in which case it exits 1 with the same actionable message it always did.
 
 Requires the package-local gentle-ai pin at v3.6.0 or newer — the pin that adds `PI_CODING_AGENT_DIR` support to `gentle-ai install`. `setup` enforces this before spawning anything: an older pinned gentle-ai ignores that variable and would silently install into `~/.pi/agent` instead of the target home, so `setup` exits 1 with `gentle-shell: setup needs the package-local gentle-ai v3.6.0 or newer (pinned: <version>); this build cannot provision a home without touching ~/.pi/agent` instead of spawning it.
 
@@ -309,7 +309,7 @@ Once gentle-ai exits 0, `setup` also removes `npm:@juicesharp/rpiv-ask-user-ques
 
 **Known limitation**: gentle-ai always writes its persona file to the shared `~/.pi/gentle-ai/persona.json` without honoring `PI_CODING_AGENT_DIR`, so the persona is shared across every home `gentle-shell setup` provisions, not per-home.
 
-**Test/development only**: `GENTLE_SHELL_GENTLE_AI_BIN` overrides which gentle-ai executable `setup` runs, bypassing the pinned package-local resolution. `GENTLE_SHELL_GENTLE_AI_PIN` overrides the pin version `setup` checks against `MIN_SETUP_GENTLE_AI_VERSION` (3.6.0), independent of `GENTLE_SHELL_GENTLE_AI_BIN`. Both exist for the test suite and for exercising a different gentle-ai build/pin; end users never need them.
+**Test/development only**: `GENTLE_SHELL_GENTLE_AI_BIN` overrides which gentle-ai executable `setup` runs, bypassing the pinned package-local resolution. `GENTLE_SHELL_GENTLE_AI_PIN` overrides the pin version `setup` checks against `MIN_SETUP_GENTLE_AI_VERSION` (3.6.0), independent of `GENTLE_SHELL_GENTLE_AI_BIN`. `GENTLE_SHELL_GENTLE_AI_INSTALLER` overrides the script path `setup` runs to self-heal a missing package-local binary, instead of the real `scripts/install-gentle-ai.mjs`. All three exist for the test suite and for exercising a different gentle-ai build/pin/installer; end users never need them.
 
 ### pi runtime resolution
 

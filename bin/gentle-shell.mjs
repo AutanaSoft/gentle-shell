@@ -31,6 +31,7 @@ import {
 	planSpawn,
 	resolveHome,
 	resolvePiRuntime,
+	shellQuote,
 } from "../runtime/gentle-shell-launcher.mjs";
 import { GENTLE_AI_VERSION, gentleAiBinaryPath, PackageLocalGentleAiBinaryMissingError } from "../runtime/gentle-ai-binary.mjs";
 import { installIsolatedTuiModeSetting } from "../scripts/install-tui-mode-setting.mjs";
@@ -257,6 +258,49 @@ function resolveSetupGentleAiPin() {
 	return override !== undefined && override.length > 0 ? override : GENTLE_AI_VERSION;
 }
 
+const SKIP_GENTLE_AI_INSTALL_ENV = "GENTLE_PI_SKIP_GENTLE_AI_INSTALL";
+
+// Test/development-only override for the setup subcommand's self-heal
+// installer script path. Lets a test point at a stub installer (one that
+// creates the stub binary, or deliberately doesn't) instead of running the
+// real node scripts/install-gentle-ai.mjs, whose supply-chain integrity
+// checks (and real network download) a test cannot cheaply satisfy. Never
+// consulted outside `setup`; see docs/readme-reference.md.
+function resolveSetupGentleAiInstaller() {
+	const override = process.env.GENTLE_SHELL_GENTLE_AI_INSTALLER;
+	return override !== undefined && override.length > 0 ? override : join(packageRoot, "scripts", "install-gentle-ai.mjs");
+}
+
+// Self-heals a missing package-local gentle-ai binary before `setup` gives
+// up on it. `npm install -g <tarball>` on a machine whose npm config
+// disables lifecycle scripts (`ignore-scripts=true`, this maintainer's own
+// machine included) never runs the package's own postinstall
+// (scripts/install-gentle-ai.mjs), so .gentle-ai/v<pin>/gentle-ai is missing
+// even though the package itself installed fine. Running that same
+// installer here recovers it: it downloads the pinned, sha256-verified
+// release asset, exactly as postinstall would have. Skipped when
+// GENTLE_PI_SKIP_GENTLE_AI_INSTALL is "1" — the same variable that already
+// controls whether real postinstall provisioning runs (see
+// docs/readme-reference.md) — in which case today's plain missing-binary
+// failure is kept, with the variable named in the message. Exits the
+// process (never returns) when the binary is still missing afterward.
+function ensurePackageLocalGentleAi(binaryPath, pinnedVersion) {
+	if (existsSync(binaryPath)) return;
+	if (process.env[SKIP_GENTLE_AI_INSTALL_ENV] === "1") {
+		fail(
+			`${new PackageLocalGentleAiBinaryMissingError(binaryPath).message} (${SKIP_GENTLE_AI_INSTALL_ENV} is set; not installing it automatically)`,
+			1,
+		);
+	}
+	process.stderr.write(
+		`gentle-shell: the package-local gentle-ai v${pinnedVersion} is missing (npm lifecycle scripts may be disabled); installing it now\n`,
+	);
+	const installerPath = resolveSetupGentleAiInstaller();
+	const result = spawnSync(process.execPath, [installerPath], { stdio: "inherit" });
+	if (result.error) fail(`Could not run the gentle-ai installer at ${installerPath}: ${result.error.message}`, 1);
+	if (!existsSync(binaryPath)) fail(new PackageLocalGentleAiBinaryMissingError(binaryPath).message, 1);
+}
+
 // Provisions `home` with everything `gentle-ai install --agent pi` installs
 // into a regular Pi, by spawning the package-local pinned gentle-ai binary
 // (never a PATH `gentle-ai`) with PI_CODING_AGENT_DIR/GENTLE_PI_AGENT_HOME set
@@ -287,9 +331,7 @@ async function handleSetupCommand(commandArgs, home, runtime) {
 	}
 
 	const binaryPath = resolveSetupGentleAiBinary();
-	if (!existsSync(binaryPath)) {
-		fail(new PackageLocalGentleAiBinaryMissingError(binaryPath).message, 1);
-	}
+	ensurePackageLocalGentleAi(binaryPath, pinnedVersion);
 
 	process.stderr.write(`gentle-shell: provisioning ${home.dir} with the gentle-ai companion packages\n`);
 
@@ -381,7 +423,7 @@ function removeConflictingSetupPackages(sources, index, home, runtime) {
 		}
 		const exitCode = code ?? 1;
 		if (exitCode !== 0) {
-			const remediation = [...homeSelectorFlags(home), "remove", source].join(" ");
+			const remediation = [...homeSelectorFlags(home).map(shellQuote), "remove", source].join(" ");
 			process.stderr.write(`gentle-shell: could not remove ${source}; run \`gentle-shell ${remediation}\` before starting\n`);
 			process.exit(exitCode);
 			return;

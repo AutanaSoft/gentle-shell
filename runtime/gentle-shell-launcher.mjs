@@ -880,6 +880,20 @@ export function quoteForCmdExe(token        )         {
 	return `"${token.replace(/"/g, '\\"')}"`;
 }
 
+const POSIX_SHELL_SPECIAL_CHARS = /[\s"'`\\$&|;<>(){}*?[\]!#~]/;
+
+// POSIX/bash single-quote shell quoting for a copy-pasteable command
+// bin/gentle-shell.mjs prints to stderr (e.g. the setup remediation
+// command): wraps a token in single quotes when it is empty or contains
+// whitespace or a shell metacharacter, escaping an embedded single quote as
+// `'\''` (close quote, escaped literal quote, reopen quote) — inside single
+// quotes nothing else needs escaping, unlike cmd.exe's `"`-based quoting
+// (quoteForCmdExe above).
+export function shellQuote(value        )         {
+	if (value.length > 0 && !POSIX_SHELL_SPECIAL_CHARS.test(value)) return value;
+	return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
 
 
 

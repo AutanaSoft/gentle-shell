@@ -29,6 +29,7 @@ import {
 	resolveHome,
 	resolvePiRuntime,
 	settingsDeclareGentlePi,
+	shellQuote,
 	type PackageJsonPeerShape,
 	type ParsedLauncherArgs,
 	type ResolvedHome,
@@ -1479,6 +1480,26 @@ test("quoteForCmdExe quotes a token with a space and escapes an inner double quo
 
 test("quoteForCmdExe quotes an empty token", () => {
 	assert.equal(quoteForCmdExe(""), '""');
+});
+
+// --- shellQuote ---------------------------------------------------------------
+//
+// Used by bin/gentle-shell.mjs to build the copy-pasteable
+// `gentle-shell <home selector> remove <source>` remediation command it
+// prints after a failed conflicting-package removal: an unquoted --home
+// <dir> containing a space would silently split into two shell words if
+// copy-pasted (gentle-shell #1277 follow-up).
+
+test("shellQuote leaves a plain token unchanged", () => {
+	assert.equal(shellQuote("/Users/alan/.gentle-shell/agent"), "/Users/alan/.gentle-shell/agent");
+});
+
+test("shellQuote single-quotes a token containing a space", () => {
+	assert.equal(shellQuote("/Users/alan/custom home"), "'/Users/alan/custom home'");
+});
+
+test("shellQuote escapes an embedded single quote as '\\''", () => {
+	assert.equal(shellQuote("a'b"), "'a'\\''b'");
 });
 
 // --- describeVersion / helpText ----------------------------------------------
