@@ -310,6 +310,39 @@ function writeGentleAiScriptRewritingPersona(path: string, exitCode = 0) {
 	chmodSync(path, 0o755);
 }
 
+// Test/development-only stub for the setup subcommand's gentle-ai binary
+// that also rewrites the shared `$HOME/.gentle-ai/state.json` the way the
+// real gentle-ai does on every install: it changes managed_asset_digest (the
+// field this fix restores) and one unrelated field (installed_agents), so a
+// test can prove the digest gets restored while the unrelated field is left
+// exactly as the child wrote it. `create` controls whether it merges into an
+// existing state.json or writes a brand-new one (for the "no pre-existing
+// file" case, where the stub's file must be left alone entirely).
+function writeGentleAiScriptRewritingManagedAssetDigest(path: string, opts: { digest?: string; create?: boolean } = {}, exitCode = 0) {
+	const digest = opts.digest ?? "digest-from-pinned-gentle-ai";
+	const create = opts.create ?? false;
+	writeFileSync(
+		path,
+		[
+			"#!/usr/bin/env node",
+			"import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';",
+			"import { homedir } from 'node:os';",
+			"import { join } from 'node:path';",
+			"const stateDir = join(homedir(), '.gentle-ai');",
+			"mkdirSync(stateDir, { recursive: true });",
+			"const statePath = join(stateDir, 'state.json');",
+			`const create = ${JSON.stringify(create)};`,
+			"const state = !create && existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : {};",
+			`state.managed_asset_digest = ${JSON.stringify(digest)};`,
+			"state.installed_agents = [...(state.installed_agents || []), 'claude'];",
+			"writeFileSync(statePath, JSON.stringify(state, null, 2) + '\\n');",
+			`process.exit(${exitCode});`,
+			"",
+		].join("\n"),
+	);
+	chmodSync(path, 0o755);
+}
+
 test("--help exits 0 and prints usage", (t) => {
 	const f = fixture(t);
 	const result = run(f.env, ["--help"]);
@@ -1034,6 +1067,111 @@ test("automatic first-run provisioning also restores the persona file gentle-ai 
 	assert.equal(result.status, 0, result.stderr);
 	assert.equal(readFileSync(personaPath, "utf8"), originalBytes);
 	assert.match(result.stderr, /gentle-shell: kept your Pi persona unchanged/);
+});
+
+// --- managed-asset digest snapshot/restore ----------------------------------
+//
+// gentle-ai tracks whether its own binary's managed-asset bundle matches the
+// shared `~/.gentle-ai/state.json`'s managed_asset_digest field, regardless
+// of which home it was installing into. The pinned package-local gentle-ai
+// this setup flow spawns writes its own digest into that same shared file,
+// so afterward the user's own (unrelated, on-PATH) gentle-ai reports its
+// managed assets as outdated and demands `gentle-ai sync`, even though
+// nothing about the user's install changed. `setup` restores just that field
+// afterward — never the whole file, unlike persona.json, since state.json
+// also carries fields (like installed_agents) the pinned gentle-ai is
+// supposed to update.
+
+function stateJsonPathFor(f: { home: string }) {
+	return join(f.home, ".gentle-ai", "state.json");
+}
+
+test("gentle-shell setup restores managed_asset_digest while keeping other state.json fields as the child left them", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScriptRewritingManagedAssetDigest(gentleAiScript, { digest: "digest-from-pinned-gentle-ai" });
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript };
+
+	const statePath = stateJsonPathFor(f);
+	mkdirSync(dirname(statePath), { recursive: true });
+	writeFileSync(statePath, `${JSON.stringify({ managed_asset_digest: "users-own-digest", installed_agents: ["pi"] }, null, 2)}\n`);
+
+	const result = run(env, ["setup"]);
+	assert.equal(result.status, 0, result.stderr);
+	const state = JSON.parse(readFileSync(statePath, "utf8"));
+	assert.equal(state.managed_asset_digest, "users-own-digest");
+	assert.deepEqual(state.installed_agents, ["pi", "claude"]);
+	assert.match(
+		result.stderr,
+		new RegExp(
+			`gentle-shell: kept your Gentle AI managed-asset record unchanged \\(the pinned gentle-ai rewrote ${statePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}; tracked upstream\\)`,
+		),
+	);
+});
+
+test("gentle-shell setup prints no managed-asset notice when the digest is unchanged", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScriptRewritingManagedAssetDigest(gentleAiScript, { digest: "same-digest" });
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript };
+
+	const statePath = stateJsonPathFor(f);
+	mkdirSync(dirname(statePath), { recursive: true });
+	writeFileSync(statePath, `${JSON.stringify({ managed_asset_digest: "same-digest", installed_agents: ["pi"] }, null, 2)}\n`);
+
+	const result = run(env, ["setup"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.doesNotMatch(result.stderr, /kept your Gentle AI managed-asset record unchanged/);
+});
+
+test("gentle-shell setup leaves a state.json the pinned gentle-ai created where none existed before", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScriptRewritingManagedAssetDigest(gentleAiScript, { digest: "digest-from-pinned-gentle-ai", create: true });
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript };
+
+	const statePath = stateJsonPathFor(f);
+	assert.equal(existsSync(statePath), false);
+
+	const result = run(env, ["setup"]);
+	assert.equal(result.status, 0, result.stderr);
+	const state = JSON.parse(readFileSync(statePath, "utf8"));
+	assert.equal(state.managed_asset_digest, "digest-from-pinned-gentle-ai");
+	assert.doesNotMatch(result.stderr, /kept your Gentle AI managed-asset record unchanged/);
+});
+
+test("gentle-shell setup --dry-run also restores managed_asset_digest gentle-ai rewrites", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScriptRewritingManagedAssetDigest(gentleAiScript, { digest: "digest-from-pinned-gentle-ai" });
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript };
+
+	const statePath = stateJsonPathFor(f);
+	mkdirSync(dirname(statePath), { recursive: true });
+	writeFileSync(statePath, `${JSON.stringify({ managed_asset_digest: "users-own-digest", installed_agents: ["pi"] }, null, 2)}\n`);
+
+	const result = run(env, ["setup", "--dry-run"]);
+	assert.equal(result.status, 0, result.stderr);
+	const state = JSON.parse(readFileSync(statePath, "utf8"));
+	assert.equal(state.managed_asset_digest, "users-own-digest");
+	assert.match(result.stderr, /kept your Gentle AI managed-asset record unchanged/);
+});
+
+test("automatic first-run provisioning also restores managed_asset_digest gentle-ai rewrites", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScriptRewritingManagedAssetDigest(gentleAiScript, { digest: "digest-from-pinned-gentle-ai" });
+	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" });
+
+	const statePath = stateJsonPathFor(f);
+	mkdirSync(dirname(statePath), { recursive: true });
+	writeFileSync(statePath, `${JSON.stringify({ managed_asset_digest: "users-own-digest", installed_agents: ["pi"] }, null, 2)}\n`);
+
+	const result = run(env, []);
+	assert.equal(result.status, 0, result.stderr);
+	const state = JSON.parse(readFileSync(statePath, "utf8"));
+	assert.equal(state.managed_asset_digest, "users-own-digest");
+	assert.match(result.stderr, /kept your Gentle AI managed-asset record unchanged/);
 });
 
 // --- automatic first-run provisioning (S7) ---------------------------------

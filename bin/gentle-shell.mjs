@@ -49,6 +49,7 @@ import {
 	recordProvisioned,
 	resolveHome,
 	resolvePiRuntime,
+	restoreJsonField,
 	shellQuote,
 } from "../runtime/gentle-shell-launcher.mjs";
 import { GENTLE_AI_VERSION, gentleAiBinaryPath, PackageLocalGentleAiBinaryMissingError } from "../runtime/gentle-ai-binary.mjs";
@@ -484,6 +485,64 @@ function basenameOf(path) {
 	return parts[parts.length - 1];
 }
 
+// gentle-ai records the running binary's managed-asset bundle digest in the
+// shared `~/.gentle-ai/state.json`, field managed_asset_digest (gentle-ai
+// internal/cli/run.go, internal/state/state.go), regardless of which home it
+// was installing into — same shared-file-outside-PI_CODING_AGENT_DIR problem
+// as sharedPersonaPath above. The pinned package-local gentle-ai this setup
+// flow spawns writes its own digest there, so afterward the user's own
+// (unrelated, on-PATH) gentle-ai reports its managed assets as outdated and
+// demands `gentle-ai sync`, even though nothing about the user's install
+// changed. Unlike persona.json, state.json also carries fields the pinned
+// gentle-ai is supposed to update (for example installed_agents), so this
+// restores only the managed_asset_digest field via restoreJsonField
+// (lib/gentle-shell-launcher.ts) instead of snapshotting the whole file. See
+// docs/readme-reference.md's setup "Known limitation".
+function sharedGentleAiStatePath() {
+	return join(homedir(), ".gentle-ai", "state.json");
+}
+
+const MANAGED_ASSET_DIGEST_FIELD = "managed_asset_digest";
+
+// Reads state.json's raw text before the gentle-ai spawn that might rewrite
+// it, tolerating a missing or unparsable file by returning undefined: unlike
+// snapshotFile (persona.json above), there is nothing worth restoring later
+// in that case, so the caller skips the restore step entirely rather than
+// treating "missing" as its own snapshot state.
+function readParsableJsonText(path) {
+	const text = readJsonIfExists(path);
+	if (text === undefined) return undefined;
+	try {
+		JSON.parse(text);
+	} catch {
+		return undefined;
+	}
+	return text;
+}
+
+// Restores managed_asset_digest in state.json after the gentle-ai spawn.
+// Deliberately does NOT delete or otherwise touch a state.json the child
+// created where none existed before (unlike restoreFile's whole-file
+// persona.json handling): state.json is the user's own gentle-ai global
+// state file, not something gentle-shell owns end-to-end, so removing one
+// the tool just created would destroy state fields unrelated to this fix —
+// `originalText` is undefined for that case (see readParsableJsonText
+// above), and this returns early without reading or writing anything.
+// Returns true when it actually wrote a restored file, so the caller prints
+// exactly one notice.
+function restoreManagedAssetDigestField(path, originalText) {
+	if (originalText === undefined) return false;
+	const currentText = readJsonIfExists(path);
+	if (currentText === undefined) return false;
+	const restoredText = restoreJsonField(originalText, currentText, MANAGED_ASSET_DIGEST_FIELD);
+	if (restoredText === undefined) return false;
+	const mode = statSync(path).mode & 0o777;
+	const tempPath = join(dirname(path), `.${basenameOf(path)}.gentle-shell-restore-${process.pid}.tmp`);
+	writeFileSync(tempPath, restoredText, { mode });
+	renameSync(tempPath, path);
+	return true;
+}
+
 async function runSetupFlow(home, runtime, { dryRun, stdio }) {
 	const pinnedVersion = resolveSetupGentleAiPin();
 	if (!isSetupCapablePin(pinnedVersion)) {
@@ -504,12 +563,19 @@ async function runSetupFlow(home, runtime, { dryRun, stdio }) {
 	const env = buildSetupEnv(home, runtime);
 	const personaPath = sharedPersonaPath();
 	const personaSnapshot = snapshotFile(personaPath);
+	const statePath = sharedGentleAiStatePath();
+	const originalStateText = readParsableJsonText(statePath);
 	let installResult;
 	try {
 		installResult = await spawnAndWait(binaryPath, setupArgs, env, stdio);
 	} finally {
 		if (restoreFile(personaSnapshot)) {
 			process.stderr.write(`gentle-shell: kept your Pi persona unchanged (gentle-ai rewrote ${personaPath}; tracked upstream)\n`);
+		}
+		if (restoreManagedAssetDigestField(statePath, originalStateText)) {
+			process.stderr.write(
+				`gentle-shell: kept your Gentle AI managed-asset record unchanged (the pinned gentle-ai rewrote ${statePath}; tracked upstream)\n`,
+			);
 		}
 	}
 	if (installResult.error) {

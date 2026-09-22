@@ -1008,6 +1008,77 @@ export function planSpawn(input                )            {
 	return { command, args, shell: false };
 }
 
+// --- JSON field restore --------------------------------------------------
+
+// Detects the indentation unit and trailing-newline presence of a JSON text,
+// so restoreJsonField below can re-serialize as close to the original
+// formatting as practical instead of imposing its own. `indent` is
+// `undefined` for compact (no-whitespace) JSON, matching what
+// `JSON.stringify(value)` (no third argument) produces.
+function detectJsonFormatting(text        )                                                           {
+	const match = text.match(/\{\r?\n([ \t]+)/);
+	return { indent: match ? match[1] : undefined, trailingNewline: text.endsWith("\n") };
+}
+
+function jsonValuesEqual(a         , b         )          {
+	return JSON.stringify(a) === JSON.stringify(b);
+}
+
+// Pure JSON merge: restores `field` in `currentText` back to whatever it was
+// in `originalText`, keeping every other field exactly as `currentText` left
+// it, and formatting the result to match `originalText`'s indentation and
+// trailing newline. Used by bin/gentle-shell.mjs's setup flow to restore
+// `managed_asset_digest` in the user's shared `~/.gentle-ai/state.json` after
+// the pinned gentle-ai spawn rewrites it (the same shared-file problem
+// persona.json has — see sharedPersonaPath/snapshotFile/restoreFile in
+// bin/gentle-shell.mjs — but state.json also carries fields the pinned
+// gentle-ai is supposed to update, like installed_agents, so this restores
+// only the one field instead of the whole file).
+//
+// Returns the new text, or `undefined` when either text fails to parse as a
+// JSON object, or the field's presence and value are already identical on
+// both sides (nothing to restore). Never called by the caller when
+// `originalText` comes from a file that did not exist before the spawn —
+// there is nothing to restore a nonexistent file back to.
+export function restoreJsonField(originalText        , currentText        , field        )                     {
+	let originalValue         ;
+	let currentValue         ;
+	try {
+		originalValue = JSON.parse(originalText);
+		currentValue = JSON.parse(currentText);
+	} catch {
+		return undefined;
+	}
+	if (
+		typeof originalValue !== "object" ||
+		originalValue === null ||
+		Array.isArray(originalValue) ||
+		typeof currentValue !== "object" ||
+		currentValue === null ||
+		Array.isArray(currentValue)
+	) {
+		return undefined;
+	}
+	const originalObj = originalValue                           ;
+	const currentObj = currentValue                           ;
+	const hadField = Object.prototype.hasOwnProperty.call(originalObj, field);
+	const hasFieldNow = Object.prototype.hasOwnProperty.call(currentObj, field);
+	const unchanged = hadField === hasFieldNow && (!hadField || jsonValuesEqual(originalObj[field], currentObj[field]));
+	if (unchanged) return undefined;
+
+	let restored                         ;
+	if (hadField) {
+		restored = { ...currentObj, [field]: originalObj[field] };
+	} else {
+		restored = { ...currentObj };
+		delete restored[field];
+	}
+
+	const { indent, trailingNewline } = detectJsonFormatting(originalText);
+	const serialized = JSON.stringify(restored, null, indent);
+	return trailingNewline ? `${serialized}\n` : serialized;
+}
+
 // --- reporting ---------------------------------------------------------------
 
 

@@ -32,6 +32,7 @@ import {
 	recordProvisioned,
 	resolveHome,
 	resolvePiRuntime,
+	restoreJsonField,
 	settingsDeclareGentlePi,
 	shellQuote,
 	type PackageJsonPeerShape,
@@ -1579,6 +1580,65 @@ test("quoteForCmdExe quotes a token with a space and escapes an inner double quo
 
 test("quoteForCmdExe quotes an empty token", () => {
 	assert.equal(quoteForCmdExe(""), '""');
+});
+
+// --- restoreJsonField ---------------------------------------------------------
+//
+// Pure JSON merge used by bin/gentle-shell.mjs's setup flow to restore a
+// single field of `~/.gentle-ai/state.json` (managed_asset_digest) after the
+// pinned gentle-ai spawn rewrites it, the same way the whole-file
+// snapshot/restore already protects `~/.pi/gentle-ai/persona.json` — but
+// scoped to one field, since state.json also carries fields the pinned
+// gentle-ai is supposed to update (gentle-shell #<managed-asset-digest>).
+
+test("restoreJsonField restores a changed field and keeps every other field untouched", () => {
+	const original = `${JSON.stringify({ managed_asset_digest: "abc123", installed_agents: ["pi"] }, null, 2)}\n`;
+	const current = `${JSON.stringify({ managed_asset_digest: "def456", installed_agents: ["pi", "claude"] }, null, 2)}\n`;
+	const result = restoreJsonField(original, current, "managed_asset_digest");
+	assert.equal(result, `${JSON.stringify({ managed_asset_digest: "abc123", installed_agents: ["pi", "claude"] }, null, 2)}\n`);
+});
+
+test("restoreJsonField deletes the field when it was absent before", () => {
+	const original = `${JSON.stringify({ installed_agents: ["pi"] }, null, 2)}\n`;
+	const current = `${JSON.stringify({ managed_asset_digest: "def456", installed_agents: ["pi"] }, null, 2)}\n`;
+	const result = restoreJsonField(original, current, "managed_asset_digest");
+	assert.equal(result, `${JSON.stringify({ installed_agents: ["pi"] }, null, 2)}\n`);
+});
+
+test("restoreJsonField returns undefined when the field is unchanged", () => {
+	const original = `${JSON.stringify({ managed_asset_digest: "abc123", installed_agents: ["pi"] }, null, 2)}\n`;
+	const current = `${JSON.stringify({ managed_asset_digest: "abc123", installed_agents: ["pi", "claude"] }, null, 2)}\n`;
+	assert.equal(restoreJsonField(original, current, "managed_asset_digest"), undefined);
+});
+
+test("restoreJsonField returns undefined when the field stays absent on both sides", () => {
+	const original = `${JSON.stringify({ installed_agents: ["pi"] }, null, 2)}\n`;
+	const current = `${JSON.stringify({ installed_agents: ["pi", "claude"] }, null, 2)}\n`;
+	assert.equal(restoreJsonField(original, current, "managed_asset_digest"), undefined);
+});
+
+test("restoreJsonField returns undefined for invalid original JSON", () => {
+	const result = restoreJsonField("not json", '{"managed_asset_digest":"def456"}', "managed_asset_digest");
+	assert.equal(result, undefined);
+});
+
+test("restoreJsonField returns undefined for invalid current JSON", () => {
+	const result = restoreJsonField('{"managed_asset_digest":"abc123"}', "not json", "managed_asset_digest");
+	assert.equal(result, undefined);
+});
+
+test("restoreJsonField preserves 2-space indentation and a trailing newline detected from the original text", () => {
+	const original = '{\n  "managed_asset_digest": "abc123"\n}\n';
+	const current = '{"managed_asset_digest":"def456","installed_agents":["pi"]}';
+	const result = restoreJsonField(original, current, "managed_asset_digest");
+	assert.equal(result, `${JSON.stringify({ managed_asset_digest: "abc123", installed_agents: ["pi"] }, null, 2)}\n`);
+});
+
+test("restoreJsonField matches compact formatting (no indent, no trailing newline) when the original had none", () => {
+	const original = '{"managed_asset_digest":"abc123"}';
+	const current = '{"managed_asset_digest":"def456","installed_agents":["pi"]}';
+	const result = restoreJsonField(original, current, "managed_asset_digest");
+	assert.equal(result, '{"managed_asset_digest":"abc123","installed_agents":["pi"]}');
 });
 
 // --- shellQuote ---------------------------------------------------------------
