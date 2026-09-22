@@ -63,6 +63,8 @@ export function parseLauncherArgs(argv          )                     {
 	let help = false;
 	let version = false;
 	let error                    ;
+	let command                             ;
+	let commandArgs           = [];
 	let piSubcommand                          ;
 	const passthrough           = [];
 
@@ -132,6 +134,18 @@ export function parseLauncherArgs(argv          )                     {
 			i += 1;
 			continue;
 		}
+		// Unlike `home`, `setup` is not restricted to argv[0]: it accepts the
+		// home selectors (--link, --isolated, --home <dir>) ahead of it, same
+		// as a pi subcommand would, so it provisions whichever home those
+		// selectors resolve to. It is only recognised as the FIRST non-flag
+		// token — once a pi subcommand (or any other passthrough token) has
+		// already started, a later "setup" is just an ordinary passthrough
+		// argument, same as "home" is.
+		if (arg === "setup" && command === undefined && passthrough.length === 0) {
+			command = "setup";
+			commandArgs = argv.slice(i + 1);
+			break;
+		}
 		if (passthrough.length === 0 && isPiSubcommand(arg)) {
 			piSubcommand = arg;
 		}
@@ -148,7 +162,7 @@ export function parseLauncherArgs(argv          )                     {
 		}
 	}
 
-	return { link, isolated, home, packageRoot, help, version, command: undefined, commandArgs: [], passthrough, piSubcommand, error };
+	return { link, isolated, home, packageRoot, help, version, command, commandArgs, passthrough, piSubcommand, error };
 }
 
 // --- home resolution -------------------------------------------------------
@@ -830,6 +844,7 @@ export function helpText()         {
 	return [
 		"Usage: gentle-shell [options] [-- pi-args...]",
 		"       gentle-shell home [link|isolated|<path>]",
+		"       gentle-shell [home selectors] setup [--dry-run]",
 		"",
 		"Opens pi with the Gentle Shell package loaded, without touching your",
 		"vanilla pi installation.",
@@ -845,6 +860,10 @@ export function helpText()         {
 		"",
 		"Commands:",
 		"  home             Print or persist the effective home mode (link, isolated, or a path).",
+		"  setup            Provision the resolved home with the gentle-ai companion packages",
+		"                   (runs the package-local gentle-ai 'install --agent pi --scope global').",
+		"                   Accepts --dry-run, forwarded to gentle-ai. Accepts a home selector",
+		"                   (--link, --isolated, --home <dir>) before it.",
 		"",
 		"Managing packages:",
 		"  gentle-shell install npm:<pkg>   Run pi's own 'install' against the resolved home.",

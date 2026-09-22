@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -55,6 +55,30 @@ function writePiScript(path: string, version: string) {
 
 function run(env: NodeJS.ProcessEnv, args: string[], options: { cwd?: string } = {}) {
 	return spawnSync(process.execPath, [binPath, ...args], { encoding: "utf8", env, ...options });
+}
+
+// Test/development-only stub for the setup subcommand's gentle-ai binary:
+// records its argv and the environment gentle-shell sets around it, instead
+// of running the real package-local gentle-ai (whose supply-chain integrity
+// checks a test cannot cheaply satisfy). Pointed to via GENTLE_SHELL_GENTLE_AI_BIN,
+// documented as test/development-only in docs/readme-reference.md.
+function writeGentleAiScript(path: string, exitCode = 0) {
+	writeFileSync(
+		path,
+		[
+			"#!/usr/bin/env node",
+			"const args = process.argv.slice(2);",
+			"process.stdout.write(JSON.stringify({",
+			"  args,",
+			"  PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,",
+			"  GENTLE_PI_AGENT_HOME: process.env.GENTLE_PI_AGENT_HOME,",
+			"  PATH: process.env.PATH,",
+			"}));",
+			`process.exit(${exitCode});`,
+			"",
+		].join("\n"),
+	);
+	chmodSync(path, 0o755);
 }
 
 test("--help exits 0 and prints usage", (t) => {
@@ -185,6 +209,89 @@ test("--version prints three lines", (t) => {
 	assert.match(lines[0], /^gentle-shell /);
 	assert.match(lines[1], /^pi 0\.85\.1$/);
 	assert.match(lines[2], /^home isolated /);
+});
+
+// --- setup subcommand ------------------------------------------------------
+
+test("gentle-shell setup provisions the resolved home through the pinned gentle-ai binary", (t) => {
+	const f = fixture(t);
+	assert.equal(existsSync(f.gentleShellHome), false);
+
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScript(gentleAiScript);
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript };
+
+	const result = run(env, ["setup"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stderr, /provisioning/);
+	assert.match(result.stderr, new RegExp(f.gentleShellHome.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, ["install", "--agent", "pi", "--scope", "global"]);
+	assert.equal(payload.PI_CODING_AGENT_DIR, f.gentleShellHome);
+	assert.equal(payload.GENTLE_PI_AGENT_HOME, f.gentleShellHome);
+	assert.ok(payload.PATH.startsWith(`${dirname(f.piScript)}${delimiter}`), payload.PATH);
+
+	// Home resolution runs exactly as a normal run: the isolated home gets
+	// created with its bootstrap TUI setting, same as a plain `gentle-shell`.
+	const settings = JSON.parse(readFileSync(join(f.gentleShellHome, "settings.json"), "utf8"));
+	assert.equal(settings.tuiMode, "fullscreen");
+});
+
+test("gentle-shell setup forwards --dry-run to gentle-ai", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScript(gentleAiScript);
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript };
+
+	const result = run(env, ["setup", "--dry-run"]);
+	assert.equal(result.status, 0, result.stderr);
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, ["install", "--agent", "pi", "--scope", "global", "--dry-run"]);
+});
+
+test("gentle-shell setup accepts a home selector before it and provisions that home", (t) => {
+	const f = fixture(t);
+	const target = join(f.root, "custom-home");
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScript(gentleAiScript);
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript };
+
+	const result = run(env, ["--home", target, "setup"]);
+	assert.equal(result.status, 0, result.stderr);
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, ["install", "--agent", "pi", "--scope", "global"]);
+	assert.equal(payload.PI_CODING_AGENT_DIR, target);
+	assert.equal(payload.GENTLE_PI_AGENT_HOME, target);
+	assert.equal(existsSync(join(target, "settings.json")), true);
+});
+
+test("gentle-shell setup passes through the gentle-ai exit code", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScript(gentleAiScript, 3);
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript };
+
+	const result = run(env, ["setup"]);
+	assert.equal(result.status, 3);
+});
+
+test("gentle-shell setup exits 1 with an actionable message when the pinned gentle-ai binary is missing", (t) => {
+	const f = fixture(t);
+	const missingBinary = join(f.root, "does-not-exist", "gentle-ai");
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: missingBinary };
+
+	const result = run(env, ["setup"]);
+	assert.equal(result.status, 1);
+	assert.match(result.stderr, /package-local-binary-missing/);
+	assert.match(result.stderr, new RegExp(missingBinary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("--help mentions the setup subcommand", (t) => {
+	const f = fixture(t);
+	const result = run(f.env, ["--help"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stdout, /\bsetup\b/);
 });
 
 // --- --link takeover of a conflicting path package -----------------------

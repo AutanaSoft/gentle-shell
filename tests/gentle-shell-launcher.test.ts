@@ -146,6 +146,47 @@ test("parseLauncherArgs treats home as a plain passthrough token when it is not 
 	assert.deepEqual(parsed.passthrough, ["home"]);
 });
 
+// --- setup subcommand ----------------------------------------------------
+//
+// Unlike `home`, `setup` is not restricted to argv[0]: it accepts the home
+// selectors (--link, --isolated, --home <dir>) ahead of it, same as any pi
+// subcommand would, since setup provisions whichever home those selectors
+// resolve to.
+
+test("parseLauncherArgs recognises setup as argv[0] and captures the rest as commandArgs", () => {
+	const parsed = parseLauncherArgs(["setup"]);
+	assert.equal(parsed.command, "setup");
+	assert.deepEqual(parsed.commandArgs, []);
+	assert.deepEqual(parsed.passthrough, []);
+});
+
+test("parseLauncherArgs recognises setup after a home selector and keeps the selector", () => {
+	const parsed = parseLauncherArgs(["--isolated", "setup"]);
+	assert.equal(parsed.command, "setup");
+	assert.equal(parsed.isolated, true);
+	assert.deepEqual(parsed.commandArgs, []);
+});
+
+test("parseLauncherArgs recognises setup after --home <dir> and forwards --dry-run as commandArgs", () => {
+	const parsed = parseLauncherArgs(["--home", "/custom/path", "setup", "--dry-run"]);
+	assert.equal(parsed.command, "setup");
+	assert.equal(parsed.home, "/custom/path");
+	assert.deepEqual(parsed.commandArgs, ["--dry-run"]);
+});
+
+test("parseLauncherArgs does not set piSubcommand for the setup launcher subcommand", () => {
+	const parsed = parseLauncherArgs(["setup"]);
+	assert.equal(parsed.command, "setup");
+	assert.equal(parsed.piSubcommand, undefined);
+});
+
+test("parseLauncherArgs treats setup as a plain passthrough token once a pi subcommand already started", () => {
+	const parsed = parseLauncherArgs(["install", "setup"]);
+	assert.equal(parsed.command, undefined);
+	assert.equal(parsed.piSubcommand, "install");
+	assert.deepEqual(parsed.passthrough, ["install", "setup"]);
+});
+
 // --- pi subcommand passthrough (install/remove/uninstall/update/list/config/auth) ---
 
 test("parseLauncherArgs recognises install as a pi subcommand and keeps it in passthrough", () => {
@@ -1354,6 +1395,12 @@ test("helpText documents the launcher flags, the home subcommand, the env vars, 
 	assert.match(text, /GENTLE_SHELL_HOME/);
 	assert.match(text, /PI_CODING_AGENT_DIR/);
 	assert.match(text, /forward/i);
+});
+
+test("helpText documents the setup subcommand", () => {
+	const text = helpText();
+	assert.match(text, /\bsetup\b/);
+	assert.match(text, /--dry-run/);
 });
 
 test("helpText documents pi's own package-management subcommands", () => {

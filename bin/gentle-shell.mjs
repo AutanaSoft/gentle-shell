@@ -27,6 +27,7 @@ import {
 	resolveHome,
 	resolvePiRuntime,
 } from "../runtime/gentle-shell-launcher.mjs";
+import { gentleAiBinaryPath, PackageLocalGentleAiBinaryMissingError } from "../runtime/gentle-ai-binary.mjs";
 import { installIsolatedTuiModeSetting } from "../scripts/install-tui-mode-setting.mjs";
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -232,6 +233,60 @@ function handleHomeCommand(commandArgs) {
 	process.exit(0);
 }
 
+// Test/development-only override for the setup subcommand's gentle-ai
+// executable path. Lets a test point at a stub script (or a deliberately
+// missing path) without touching the real pinned .gentle-ai/v<version>/gentle-ai
+// install this package ships, and without needing to fake its release-asset
+// integrity manifest. Never consulted outside `setup`; see docs/readme-reference.md.
+function resolveSetupGentleAiBinary() {
+	const override = process.env.GENTLE_SHELL_GENTLE_AI_BIN;
+	return override !== undefined && override.length > 0 ? override : gentleAiBinaryPath();
+}
+
+// Provisions `home` with everything `gentle-ai install --agent pi` installs
+// into a regular Pi, by spawning the package-local pinned gentle-ai binary
+// (never a PATH `gentle-ai`) with PI_CODING_AGENT_DIR/GENTLE_PI_AGENT_HOME set
+// to `home.dir` and the resolved pi runtime's directory prepended to PATH, so
+// gentle-ai's own preflight finds `pi` even when it is bundled or given
+// through GENTLE_SHELL_PI. `home` and `runtime` are resolved by the caller
+// exactly as a normal run resolves them (including the isolated/--home
+// bootstrap and the pi version gate).
+async function handleSetupCommand(commandArgs, home, runtime) {
+	let dryRun = false;
+	for (const arg of commandArgs) {
+		if (arg === "--dry-run") {
+			dryRun = true;
+			continue;
+		}
+		fail(`Unrecognized argument for 'gentle-shell setup': ${arg}\nRun 'gentle-shell --help' for usage.`, 2);
+	}
+
+	const binaryPath = resolveSetupGentleAiBinary();
+	if (!existsSync(binaryPath)) {
+		fail(new PackageLocalGentleAiBinaryMissingError(binaryPath).message, 1);
+	}
+
+	process.stderr.write(`gentle-shell: provisioning ${home.dir} with the gentle-ai companion packages\n`);
+
+	const setupArgs = ["install", "--agent", "pi", "--scope", "global", ...(dryRun ? ["--dry-run"] : [])];
+	const env = {
+		...process.env,
+		PI_CODING_AGENT_DIR: home.dir,
+		GENTLE_PI_AGENT_HOME: home.dir,
+		PATH: `${dirname(runtime.command)}${delimiter}${process.env.PATH ?? ""}`,
+	};
+
+	const launchPlan = planSpawn({ command: binaryPath, args: setupArgs, platform: process.platform });
+	const child = spawn(launchPlan.command, launchPlan.args, { stdio: "inherit", env, shell: launchPlan.shell });
+	for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+		process.on(signal, () => child.kill(signal));
+	}
+	child.on("error", (error) => fail(`Could not start the gentle-ai binary: ${error.message}`, 1));
+	child.on("exit", (code, signal) => {
+		process.exit(signal ? signalExitCode(signal) : (code ?? 1));
+	});
+}
+
 async function main() {
 	const args = parseLauncherArgs(process.argv.slice(2));
 	if (args.error !== undefined) fail(`${args.error}\nRun 'gentle-shell --help' for usage.`, 2);
@@ -278,6 +333,11 @@ async function main() {
 		mkdirSync(home.dir, { recursive: true });
 		await installIsolatedTuiModeSetting(home.dir);
 		process.stderr.write(`gentle-shell: using a separate home at ${home.dir}. Run 'gentle-shell --link' to reuse your pi sign-ins and chats.\n`);
+	}
+
+	if (args.command === "setup") {
+		await handleSetupCommand(args.commandArgs, home, runtime);
+		return;
 	}
 
 	const packageRootExplicit = args.packageRoot !== undefined;
