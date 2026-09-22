@@ -581,31 +581,48 @@ function restoreManagedAssetDigestField(path, originalText) {
 	return true;
 }
 
-// Forces the home's own settings.json "theme" field to DEFAULT_THEME_NAME
-// after the gentle-ai spawn, but only when the home's settings had no theme
-// of their own *before* that spawn (`originalSettingsText`) — gentle-ai's
-// managed install may write its own default theme into settings.json, which
-// would otherwise silently replace Gentle Shell's own default the very first
-// time a home is provisioned. A home that already declared a theme (the
-// user's own choice, or the isolated-home bootstrap's own default from an
-// earlier run — see withIsolatedHomeDefaults in
-// scripts/install-tui-mode-setting.mjs) is left completely alone, even if
-// gentle-ai's install changes it. Unlike the persona/state restores above,
-// this is not a shared file outside the home — it is the home's own
-// settings.json, so no snapshot/restore pairing is needed, only a
-// before/after comparison via forceJsonFieldIfAbsentInOriginal. Returns true
-// when it actually wrote the file, so the caller prints exactly one notice.
+// Restores the home's own settings.json "theme" field to whatever it was
+// right before the gentle-ai spawn (`originalSettingsText`) — gentle-ai's
+// managed install may write its own theme into settings.json, which would
+// otherwise silently replace the theme Gentle Shell had going in. This is a
+// field-level snapshot/restore around the spawn, not a "only act if there
+// was no theme before" check: on a brand-new home, the isolated-home
+// bootstrap (installIsolatedTuiModeSetting, withIsolatedHomeDefaults in
+// scripts/install-tui-mode-setting.mjs) already wrote DEFAULT_THEME_NAME
+// into settings.json before this snapshot is taken, so `originalSettingsText`
+// already declares a theme there too — a check that skipped restoring
+// whenever the original had a theme would never fire on a fresh home and let
+// gentle-ai's own theme win. When the original truly declared a theme
+// (either that bootstrap default, or the user's own earlier choice),
+// whatever gentle-ai changed it to afterward is restored via the pure
+// restoreJsonField (lib/gentle-shell-launcher.ts). When the original had no
+// theme at all, there is nothing to restore, so DEFAULT_THEME_NAME is forced
+// instead via forceJsonFieldIfAbsentInOriginal, so a home still ends up
+// themed. Unlike the persona/state restores above, this is not a shared file
+// outside the home — it is the home's own settings.json, so no whole-file
+// snapshot/restore pairing is needed, only a before/after comparison.
+// Returns "restored" or "forced" when it actually wrote the file (so the
+// caller can print the matching notice), or false when nothing changed.
 function enforceDefaultThemeField(settingsPath, originalSettingsText) {
 	if (originalSettingsText === undefined) return false;
 	const currentText = readJsonIfExists(settingsPath);
 	if (currentText === undefined) return false;
-	const forcedText = forceJsonFieldIfAbsentInOriginal(originalSettingsText, currentText, "theme", DEFAULT_THEME_NAME);
-	if (forcedText === undefined) return false;
+	let originalHadTheme;
+	try {
+		const originalValue = JSON.parse(originalSettingsText);
+		originalHadTheme = typeof originalValue === "object" && originalValue !== null && !Array.isArray(originalValue) && Object.prototype.hasOwnProperty.call(originalValue, "theme");
+	} catch {
+		return false;
+	}
+	const newText = originalHadTheme
+		? restoreJsonField(originalSettingsText, currentText, "theme")
+		: forceJsonFieldIfAbsentInOriginal(originalSettingsText, currentText, "theme", DEFAULT_THEME_NAME);
+	if (newText === undefined) return false;
 	const mode = statSync(settingsPath).mode & 0o777;
 	const tempPath = join(dirname(settingsPath), `.${basenameOf(settingsPath)}.gentle-shell-restore-${process.pid}.tmp`);
-	writeFileSync(tempPath, forcedText, { mode });
+	writeFileSync(tempPath, newText, { mode });
 	renameSync(tempPath, settingsPath);
-	return true;
+	return originalHadTheme ? "restored" : "forced";
 }
 
 // Never let a snapshot/restore step itself abort setup: a persona.json or
@@ -671,11 +688,13 @@ async function runSetupFlow(home, runtime, { dryRun, stdio, timeoutMs }) {
 	const personaSnapshot = safely("snapshot your Pi persona file", personaPath, undefined, () => snapshotFile(personaPath));
 	const statePath = sharedGentleAiStatePath();
 	const originalStateText = safely("read your Gentle AI state file", statePath, undefined, () => readParsableJsonText(statePath));
-	// Default-theme enforcement (never for --link — that home is the user's
-	// own pre-existing pi agent home — and never for a --dry-run, which must
-	// write nothing): read the home's own settings.json theme before the
-	// spawn, so enforceDefaultThemeField can tell afterward whether gentle-ai
-	// itself wrote a theme into a home that had none.
+	// Theme restore (never for --link — that home is the user's own
+	// pre-existing pi agent home — and never for a --dry-run, which must
+	// write nothing): snapshot the home's own settings.json theme right
+	// before the spawn, so enforceDefaultThemeField can restore it
+	// afterward if gentle-ai's managed install changed it — whether that
+	// theme was the isolated-home bootstrap's own default or the user's own
+	// earlier choice.
 	const trackTheme = !dryRun && home.mode !== "link";
 	const settingsPath = join(home.dir, "settings.json");
 	const originalSettingsText = trackTheme ? safely("read your Pi settings file", settingsPath, undefined, () => readParsableJsonText(settingsPath)) : undefined;
@@ -691,8 +710,11 @@ async function runSetupFlow(home, runtime, { dryRun, stdio, timeoutMs }) {
 				`gentle-shell: kept your Gentle AI managed-asset record unchanged (the pinned gentle-ai rewrote ${statePath}; tracked upstream)\n`,
 			);
 		}
-		if (trackTheme && safely("apply the default Gentle Shell theme", settingsPath, false, () => enforceDefaultThemeField(settingsPath, originalSettingsText))) {
+		const themeOutcome = trackTheme ? safely("apply the default Gentle Shell theme", settingsPath, false, () => enforceDefaultThemeField(settingsPath, originalSettingsText)) : false;
+		if (themeOutcome === "forced") {
 			process.stderr.write(`gentle-shell: set the default ${DEFAULT_THEME_NAME} theme for ${home.dir} (no theme was set before this run)\n`);
+		} else if (themeOutcome === "restored") {
+			process.stderr.write(`gentle-shell: kept your Pi theme unchanged (gentle-ai rewrote ${settingsPath}; tracked upstream)\n`);
 		}
 	}
 	if (installResult.timedOut) {

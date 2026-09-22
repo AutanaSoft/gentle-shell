@@ -198,31 +198,6 @@ function writeInstallerScriptThatFails(path: string) {
 // file the isolated-home bootstrap already created before `setup` spawns
 // this stub. Its own stdout line ends with "\n" so a test can tell it apart
 // from a later `pi remove` line on the same inherited stdout.
-// Test/development-only stub for the setup subcommand's gentle-ai binary
-// that also rewrites the provisioned home's own settings.json `theme` field,
-// simulating gentle-ai's managed Pi install writing its own default theme
-// into a home that had none — the case gentle-shell's own theme-default
-// enforcement (bin/gentle-shell.mjs's runSetupFlow) must undo.
-function writeGentleAiScriptSettingTheme(path: string, theme: string, exitCode = 0) {
-	writeFileSync(
-		path,
-		[
-			"#!/usr/bin/env node",
-			"import { readFileSync, writeFileSync } from 'node:fs';",
-			"import { join } from 'node:path';",
-			"const args = process.argv.slice(2);",
-			"const settingsPath = join(process.env.PI_CODING_AGENT_DIR, 'settings.json');",
-			"const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));",
-			`settings.theme = ${JSON.stringify(theme)};`,
-			"writeFileSync(settingsPath, JSON.stringify(settings));",
-			"process.stdout.write(JSON.stringify({ args }) + '\\n');",
-			`process.exit(${exitCode});`,
-			"",
-		].join("\n"),
-	);
-	chmodSync(path, 0o755);
-}
-
 function writeGentleAiScriptDeclaringConflict(path: string, exitCode = 0) {
 	writeFileSync(
 		path,
@@ -234,6 +209,31 @@ function writeGentleAiScriptDeclaringConflict(path: string, exitCode = 0) {
 			"const settingsPath = join(process.env.PI_CODING_AGENT_DIR, 'settings.json');",
 			"const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));",
 			"settings.packages = ['npm:@juicesharp/rpiv-ask-user-question@1.2.3'];",
+			"writeFileSync(settingsPath, JSON.stringify(settings));",
+			"process.stdout.write(JSON.stringify({ args }) + '\\n');",
+			`process.exit(${exitCode});`,
+			"",
+		].join("\n"),
+	);
+	chmodSync(path, 0o755);
+}
+
+// Test/development-only stub for the setup subcommand's gentle-ai binary
+// that also rewrites the provisioned home's own settings.json `theme` field,
+// simulating gentle-ai's managed Pi install writing its own theme into
+// settings.json — the case gentle-shell's own theme-restore logic
+// (bin/gentle-shell.mjs's runSetupFlow, enforceDefaultThemeField) must undo.
+function writeGentleAiScriptSettingTheme(path: string, theme: string, exitCode = 0) {
+	writeFileSync(
+		path,
+		[
+			"#!/usr/bin/env node",
+			"import { readFileSync, writeFileSync } from 'node:fs';",
+			"import { join } from 'node:path';",
+			"const args = process.argv.slice(2);",
+			"const settingsPath = join(process.env.PI_CODING_AGENT_DIR, 'settings.json');",
+			"const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));",
+			`settings.theme = ${JSON.stringify(theme)};`,
 			"writeFileSync(settingsPath, JSON.stringify(settings));",
 			"process.stdout.write(JSON.stringify({ args }) + '\\n');",
 			`process.exit(${exitCode});`,
@@ -1844,6 +1844,42 @@ test("automatic setup replaces a theme gentle-ai wrote into a home that had none
 	assert.equal(result.status, 0, result.stderr);
 	const settings = JSON.parse(readFileSync(join(target, "settings.json"), "utf8"));
 	assert.equal(settings.theme, "Gentleman-Cute");
+});
+
+// R3-theme-enforcement-dead-on-fresh-home: on a brand-new home, the isolated
+// bootstrap (installIsolatedTuiModeSetting) already writes "theme":
+// "Gentleman-Cute" into settings.json *before* auto-provisioning's gentle-ai
+// spawn ever runs — so the snapshot runSetupFlow takes right before that
+// spawn already has a theme, and a naive "only act when the home had no
+// theme before the spawn" check would never fire, letting gentle-ai's own
+// theme silently win on every freshly bootstrapped home.
+test("automatic setup restores the bootstrapped default theme when gentle-ai overwrites it on a fresh home", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai-sets-theme.mjs");
+	writeGentleAiScriptSettingTheme(gentleAiScript, "kanagawa");
+	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" });
+
+	const result = run(env, ["--mode", "rpc"]);
+	assert.equal(result.status, 0, result.stderr);
+	const settings = JSON.parse(readFileSync(join(f.gentleShellHome, "settings.json"), "utf8"));
+	assert.equal(settings.theme, "Gentleman-Cute");
+});
+
+test("automatic setup restores the home's own theme when gentle-ai overwrites it", (t) => {
+	const f = fixture(t);
+	const target = join(f.root, "themed-home-to-restore");
+	mkdirSync(target, { recursive: true });
+	writeFileSync(join(target, "settings.json"), JSON.stringify({ tuiMode: "fullscreen", theme: "dracula" }));
+	writeFileSync(join(target, ".gentle-shell-home"), JSON.stringify({ createdBy: "gentle-shell", version: ownGentlePiVersion() }));
+
+	const gentleAiScript = join(f.root, "fake-gentle-ai-sets-theme.mjs");
+	writeGentleAiScriptSettingTheme(gentleAiScript, "kanagawa");
+	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" });
+
+	const result = run(env, ["--home", target, "--mode", "rpc"]);
+	assert.equal(result.status, 0, result.stderr);
+	const settings = JSON.parse(readFileSync(join(target, "settings.json"), "utf8"));
+	assert.equal(settings.theme, "dracula");
 });
 
 // --- --package-root silently ignored in a declared non-link home ----------
