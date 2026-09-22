@@ -300,10 +300,48 @@ test("ask_user_question multiSelect finishes once every option is toggled withou
 
 	const result = await run(tool, { questions }, ctx);
 
-	assert.equal(selectCalls.length, 2, "bounded to options.length + 1 rounds, but finished early once fully toggled");
+	assert.equal(selectCalls.length, 2, "bounded by the safety cap, but finished early once fully toggled");
 	assert.deepEqual(result.details.answers, [
 		{ questionIndex: 0, question: "Pick?", kind: "multi", answer: null, selected: ["One", "Two"] },
 	]);
+});
+
+test("ask_user_question multiSelect toggle/untoggle/toggle sequence still selects correctly after Done", async (t) => {
+	withInteractiveHostEnv(t);
+	const { tool } = registerQuestionTool();
+	const questions = [
+		{ question: "Pick?", header: "Pick", options: [option("One"), option("Two")], multiSelect: true },
+	];
+	// Toggle One on, then off, then on again, then explicit Done: four rounds,
+	// one more than the old options.length + 1 = 3 round bound, so an
+	// un-toggle must never count against the loop's budget.
+	const { ctx, selectCalls } = rpcHostContext(["[ ] One", "[x] One", "[ ] One", "Done"]);
+
+	const result = await run(tool, { questions }, ctx);
+
+	assert.equal(selectCalls.length, 4);
+	assert.deepEqual(result.details.answers, [
+		{ questionIndex: 0, question: "Pick?", kind: "multi", answer: null, selected: ["One"] },
+	]);
+});
+
+test("ask_user_question multiSelect cancels once the safety cap is hit without Done", async (t) => {
+	withInteractiveHostEnv(t);
+	const { tool } = registerQuestionTool();
+	const questions = [
+		{ question: "Pick?", header: "Pick", options: [option("One"), option("Two")], multiSelect: true },
+	];
+	// Toggle only "One" back and forth forever: "Two" never toggles, so the
+	// loop never auto-finishes, and Done is never picked. It must hit the
+	// hard safety cap and refuse to commit whatever was toggled at that point.
+	const selectAnswers = Array.from({ length: 32 }, (_, round) => (round % 2 === 0 ? "[ ] One" : "[x] One"));
+	const { ctx, selectCalls } = rpcHostContext(selectAnswers);
+
+	const result = await run(tool, { questions }, ctx);
+
+	assert.equal(selectCalls.length, 32, "every round of the safety cap must be spent before giving up");
+	assert.equal(result.content[0]?.text, "User cancelled the questionnaire");
+	assert.deepEqual(result.details, { cancelled: true });
 });
 
 test("ask_user_question cancels through RPC dialogs like the TUI path when select returns undefined", async (t) => {
