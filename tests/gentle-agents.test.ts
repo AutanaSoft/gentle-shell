@@ -442,6 +442,33 @@ for (const scenario of [
 	});
 }
 
+test("gentle-agents notifies once, deduplicated, when the RPC activity publisher's setWidget throws", async (t) => {
+	const h = fakePi();
+	const runtime = deps();
+	const scheduler = fakeScheduler();
+	runtime.deps.schedule = scheduler.schedule;
+	runtime.deps.env = { PATH: "/bin", GENTLE_SHELL_INTERACTIVE_HOST: "1" };
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	Object.assign(ctx, { mode: "rpc", hasUI: true });
+	const notify = t.mock.method(ctx.ui, "notify");
+	// Only the publisher's array-shaped push fails; the TUI card's own
+	// component-factory push (`showWidget`) must stay untouched.
+	ctx.ui.setWidget = ((_key: string, content: unknown) => {
+		if (Array.isArray(content)) throw new Error("boom");
+	}) as typeof ctx.ui.setWidget;
+
+	await h.fire("session_start", ctx);
+	scheduler.flushAll(); // the publisher's own start-time frame fails: one notify
+
+	await h.tools.get("subagent_run")!.execute("control", { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
+	scheduler.flushAll(); // a second flush with the same recurring failure must not notify again
+
+	assert.equal(notify.mock.callCount(), 1, "the same recurring setWidget failure is deduplicated to one notify per session");
+	assert.match(String(notify.mock.calls[0]?.arguments[0]), /boom/);
+	assert.equal(notify.mock.calls[0]?.arguments[1], "warning");
+});
+
 test("all nine subagent registrations own their transcript shell", () => {
 	const { pi, tools } = fakePi();
 	gentleAgents(pi, {}, deps().deps);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import askUserQuestion from "../extensions/ask-user-question.ts";
+import askUserQuestion, { askMultiSelect } from "../extensions/ask-user-question.ts";
 
 /** Plain theme fake: identity styling keeps rendered assertions readable. */
 interface Theme {
@@ -340,6 +340,43 @@ test("ask_user_question multiSelect cancels once the safety cap is hit without D
 	const result = await run(tool, { questions }, ctx);
 
 	assert.equal(selectCalls.length, 32, "every round of the safety cap must be spent before giving up");
+	assert.equal(result.content[0]?.text, "User cancelled the questionnaire");
+	assert.deepEqual(result.details, { cancelled: true });
+});
+
+test("askMultiSelect scales its round cap so a 40-option question can toggle every option and still reach Done", async () => {
+	// The shipped `ask_user_question` tool schema caps authored options at 4
+	// (`lib/questionnaire/schema.ts`'s `MAX_OPTIONS`), so this exercises
+	// `askMultiSelect` directly rather than through the schema-validated tool,
+	// the same way a future caller with more options would.
+	const labels = Array.from({ length: 40 }, (_, index) => `Option ${index + 1}`);
+	const question = { question: "Pick?", header: "Pick", options: labels.map((label) => option(label)), multiSelect: true };
+	// Toggle the first 39 options on, one per round, then an explicit Done:
+	// 40 rounds total, past the old flat 32-round cap but inside the new
+	// `Math.max(32, options.length + 2)` = 42 bound.
+	const toggleAnswers = labels.slice(0, 39).map((label) => `[ ] ${label}`);
+	const { ctx, selectCalls } = rpcHostContext([...toggleAnswers, "Done"]);
+
+	const answer = await askMultiSelect(ctx as never, question as never);
+
+	assert.equal(selectCalls.length, 40, "every toggle plus the explicit Done fits inside the scaled cap");
+	assert.deepEqual(answer, { questionIndex: -1, question: "Pick?", kind: "multi", answer: null, selected: labels.slice(0, 39) });
+});
+
+test("ask_user_question multiSelect cancels on an unrecognised host answer instead of committing a partial state", async (t) => {
+	withInteractiveHostEnv(t);
+	const { tool } = registerQuestionTool();
+	const questions = [
+		{ question: "Pick?", header: "Pick", options: [option("One"), option("Two")], multiSelect: true },
+	];
+	// "One" gets toggled on first, then the host answers with something that
+	// matches none of the current round's options: the loop must cancel the
+	// whole questionnaire, never commit the partial "One" toggle.
+	const { ctx, selectCalls } = rpcHostContext(["[ ] One", "not a real option"]);
+
+	const result = await run(tool, { questions }, ctx);
+
+	assert.equal(selectCalls.length, 2);
 	assert.equal(result.content[0]?.text, "User cancelled the questionnaire");
 	assert.deepEqual(result.details, { cancelled: true });
 });

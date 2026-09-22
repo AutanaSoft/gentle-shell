@@ -20,6 +20,10 @@ const PROMPT_LIMIT = 200;
 /** Tool args/output can be arbitrarily large; bound each independently. */
 const TOOL_ARGS_LIMIT = 500;
 const TOOL_OUTPUT_LIMIT = 500;
+/** Text/thinking/note thread item text can be arbitrarily large (a whole streamed reply); bound it too. */
+const TEXT_ITEM_LIMIT = 2000;
+/** Summary fields that can carry a long, freeform diagnostic or step name. */
+const SUMMARY_FIELD_LIMIT = 500;
 /** Thread items kept per task in one push, most recent last. */
 const DEFAULT_THREAD_ITEMS = 40;
 /** Total payload bound before shrinking kicks in. */
@@ -100,24 +104,24 @@ function projectThreadItem(item: ThreadItem): RpcThreadItem {
 			output: truncate(item.output, TOOL_OUTPUT_LIMIT),
 		};
 	}
-	return { kind: item.kind, text: item.text };
+	return { kind: item.kind, text: truncate(item.text, TEXT_ITEM_LIMIT) };
 }
 
 function projectTaskSummary(task: TaskRecord): RpcTaskSummary {
 	return {
 		id: task.id,
 		agent: task.agent,
-		label: task.label,
+		label: truncate(task.label, SUMMARY_FIELD_LIMIT),
 		prompt: truncate(task.prompt, PROMPT_LIMIT),
 		status: task.status,
 		createdAt: task.createdAt,
 		startedAt: task.startedAt,
 		endedAt: task.endedAt,
-		lastStep: task.lastStep,
+		lastStep: truncate(task.lastStep, SUMMARY_FIELD_LIMIT),
 		lastActivityAt: task.lastActivityAt,
 		turns: task.turns,
 		toolCalls: task.toolCalls,
-		error: task.error,
+		error: task.error === null ? null : truncate(task.error, SUMMARY_FIELD_LIMIT),
 	};
 }
 
@@ -185,10 +189,13 @@ function lastFinishedIndex(tasks: readonly RpcTask[]): number {
 
 /**
  * Serializes `activity` as one JSON line, shrinking it under `maxBytes` when
- * needed: first halve every task's kept thread items (repeatedly, down to
- * one item each), then empty finished tasks' threads, then drop whole
- * finished tasks (oldest-finished first). Never throws; a payload nothing
- * can shrink further is returned as-is, oversized.
+ * needed, in order: first halve every task's kept thread items (repeatedly,
+ * down to one item each), then empty finished tasks' threads, then drop
+ * whole finished tasks (oldest-finished first, by `endedAt`), and finally --
+ * once only active (running/waiting/queued) tasks with one item each
+ * remain -- empty every remaining task's thread too, emitting a
+ * summary-only payload. Never throws; a payload nothing can shrink further
+ * is returned as-is, oversized.
  */
 export function encodeActivityLines(activity: RpcActivity, maxBytes: number = DEFAULT_MAX_BYTES): string[] {
 	let working = activity;
@@ -209,6 +216,14 @@ export function encodeActivityLines(activity: RpcActivity, maxBytes: number = DE
 		const dropIndex = lastFinishedIndex(working.tasks);
 		if (dropIndex === -1) break;
 		working = { ...working, tasks: working.tasks.filter((_task, index) => index !== dropIndex) };
+		line = JSON.stringify(working);
+	}
+
+	// Last resort: every finished task is already dropped, but the
+	// remaining active tasks' single-item threads still don't fit. No
+	// summary itself is ever dropped -- only its thread.
+	while (byteLength(line) > maxBytes && working.tasks.some((task) => task.thread.items.length > 0)) {
+		working = { ...working, tasks: working.tasks.map((task) => ({ ...task, thread: { ...task.thread, items: [] } })) };
 		line = JSON.stringify(working);
 	}
 

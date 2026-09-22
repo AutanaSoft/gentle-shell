@@ -479,6 +479,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	let sessions: ExtensionContext["sessionManager"] | undefined;
 	let presence: PresencePublisher | undefined;
 	let rpcActivityPublisher: RpcActivityPublisher | undefined;
+	// Messages already surfaced to the user this session through the RPC
+	// activity publisher's `onError`, so a recurring push failure (the
+	// coalescing window retries every burst) notifies at most once per
+	// session instead of flooding the UI. Reset on every `session_start`.
+	let notifiedRpcActivityErrors: Set<string> | undefined;
 	const overlays = new Set<AgentsView>();
 	const publishActivity = () => {
 		if (!sessions) return;
@@ -1459,6 +1464,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// factory push, ignored by pi's RPC transport since it is not an array.
 		rpcActivityPublisher?.stop();
 		rpcActivityPublisher = undefined;
+		notifiedRpcActivityErrors = new Set();
 		if (ctx.hasUI && isInteractiveRpcHost(ctx.mode, deps.env)) {
 			rpcActivityPublisher = createRpcActivityPublisher({
 				store,
@@ -1466,6 +1472,12 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				now: deps.now,
 				schedule: deps.schedule,
 				parentSessionId: activeSessionId(),
+				onError: (error) => {
+					const message = `Gentle Agents activity push failed: ${error instanceof Error ? error.message : String(error)}`;
+					if (notifiedRpcActivityErrors?.has(message)) return;
+					notifiedRpcActivityErrors?.add(message);
+					ctx.ui.notify(message, "warning");
+				},
 			});
 			rpcActivityPublisher.start();
 		}
