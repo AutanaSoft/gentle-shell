@@ -435,7 +435,6 @@ export function findGentlePiDeclaration(settingsText: string | undefined, opts: 
 
 export interface DecideTakeOverInput {
 	declaration: GentlePiDeclaration | undefined;
-	packageRoot: string;
 	realPackageRoot: string;
 	// realpath of the declared path dir, when declaration.kind === "path".
 	// Falls back to the raw declared dir when the caller could not realpath
@@ -464,6 +463,17 @@ export interface OtherPackageInjectionsInput {
 	// from the result, since it is injected separately as the launcher's
 	// own packageRoot.
 	skip: GentlePiDeclaration;
+	// Existence check for each resolved package directory, injected so this
+	// function stays pure and unit-testable without a real filesystem. A
+	// declared package whose directory does not exist (a hand-edited
+	// settings.json, a failed or interrupted `pi install`, or an npm store
+	// laid out somewhere other than <agentDir>/npm/node_modules) is skipped
+	// with a warning instead of being handed to pi as an unresolvable `-e`,
+	// which pi's module loader fails on with "Cannot find module" (R3-001).
+	// Defaults to always-true so a caller that only cares about the pure
+	// string resolution (most existing unit tests) does not need to supply
+	// a filesystem stub.
+	isDirectory?: (dir: string) => boolean;
 }
 
 export interface OtherPackageInjections {
@@ -493,6 +503,7 @@ export function otherPackageInjections(input: OtherPackageInjectionsInput): Othe
 	const warnings: string[] = [];
 	const packages = parseSettingsPackages(input.settingsText);
 	if (packages === undefined) return { paths, warnings };
+	const isDirectory = input.isDirectory ?? (() => true);
 
 	for (const entry of packages) {
 		const source = entrySource(entry);
@@ -524,7 +535,12 @@ export function otherPackageInjections(input: OtherPackageInjectionsInput): Othe
 			);
 		}
 
-		paths.push(kind === "npm" ? join(input.agentDir, "npm", "node_modules", npmPackageName(source)) : resolvePath(input.agentDir, source));
+		const dir = kind === "npm" ? join(input.agentDir, "npm", "node_modules", npmPackageName(source)) : resolvePath(input.agentDir, source);
+		if (!isDirectory(dir)) {
+			warnings.push(`gentle-shell: skipping declared package "${source}": ${dir} is not a directory`);
+			continue;
+		}
+		paths.push(dir);
 	}
 	return { paths, warnings };
 }
@@ -651,8 +667,12 @@ export interface PiInvocation {
 	env: Record<string, string | undefined>;
 }
 
+function packageRootAssetArgs(packageRoot: string): string[] {
+	return ["--theme", join(packageRoot, "themes"), "--skill", join(packageRoot, "skills"), "--prompt-template", join(packageRoot, "prompts")];
+}
+
 function packageRootInjectionArgs(packageRoot: string): string[] {
-	return ["-e", packageRoot, "--theme", join(packageRoot, "themes"), "--skill", join(packageRoot, "skills"), "--prompt-template", join(packageRoot, "prompts")];
+	return ["-e", packageRoot, ...packageRootAssetArgs(packageRoot)];
 }
 
 // Four cases, checked in this order — `piSubcommand` first, then `takeOver`:
@@ -704,7 +724,15 @@ export function buildPiInvocation(input: BuildPiInvocationInput): PiInvocation {
 			injected.add(entry);
 			args.push("-e", entry);
 		}
-		args.push(...packageRootInjectionArgs(input.packageRoot));
+		// R3-003: the launcher's own package root must also be checked
+		// against the dedupe set instead of being appended unconditionally,
+		// or a settings package/loose entry that resolves to the same
+		// directory as --package-root would be injected twice.
+		if (!injected.has(input.packageRoot)) {
+			injected.add(input.packageRoot);
+			args.push("-e", input.packageRoot);
+		}
+		args.push(...packageRootAssetArgs(input.packageRoot));
 	} else if (input.declaration === undefined) {
 		args.push(...packageRootInjectionArgs(input.packageRoot));
 	}

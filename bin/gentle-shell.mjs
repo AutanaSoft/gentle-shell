@@ -145,7 +145,13 @@ const looseExtensionFs = {
 		let names;
 		try {
 			names = readdirSync(dir);
-		} catch {
+		} catch (error) {
+			// resolveLooseExtensionEntries only calls this once isDirectory(dir)
+			// has already confirmed the directory exists, so a failure here (for
+			// example EACCES) is a real read failure, not a missing directory.
+			// Warn instead of silently dropping every loose extension it would
+			// have contributed (R4-loose-extension-enumeration-fails-silently).
+			process.stderr.write(`gentle-shell: could not read loose extension directory ${dir}: ${error.message} (skipping)\n`);
 			return [];
 		}
 		return names.map((name) => {
@@ -274,6 +280,14 @@ async function main() {
 
 	const packageRootExplicit = args.packageRoot !== undefined;
 	const effectivePackageRoot = packageRootExplicit ? resolvePath(args.packageRoot) : packageRoot;
+	// R4-forced-package-root-unvalidated / R3-005: an unvalidated --package-root
+	// forces a take-over (dropping normal extension discovery via
+	// --no-extensions) and then hands pi -e/--theme/--skill/--prompt-template
+	// flags pointing at directories that do not exist, turning an operator typo
+	// into an obscure pi loader failure instead of a clear launcher error.
+	if (packageRootExplicit && !isDirectory(effectivePackageRoot)) {
+		fail(`--package-root ${args.packageRoot} does not exist or is not a directory.`, 2);
+	}
 
 	let declaration;
 	let takeOver = false;
@@ -296,14 +310,13 @@ async function main() {
 		const realDeclaredDir = declaration?.kind === "path" ? safeRealpath(declaration.dir) : undefined;
 		takeOver = decideTakeOver({
 			declaration,
-			packageRoot: effectivePackageRoot,
 			realPackageRoot: realEffectivePackageRoot,
 			realDeclaredDir,
 			packageRootExplicit,
 		});
 		if (takeOver) {
 			const skip = declaration ?? { kind: "path", dir: realEffectivePackageRoot };
-			const injections = otherPackageInjections({ settingsText, agentDir: home.dir, skip });
+			const injections = otherPackageInjections({ settingsText, agentDir: home.dir, skip, isDirectory });
 			otherPackagePaths = injections.paths;
 			for (const warning of injections.warnings) process.stderr.write(`${warning}\n`);
 			// --no-extensions drops pi's normal settings-driven extension

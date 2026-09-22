@@ -205,6 +205,11 @@ test("--link takes over a path-declared conflicting gentle-pi: --no-extensions, 
 	mkdirSync(otherGentlePiDir, { recursive: true });
 	writeFileSync(join(otherGentlePiDir, "package.json"), JSON.stringify({ name: "gentle-pi" }));
 
+	// "npm:some-other" must actually be installed under
+	// <agentDir>/npm/node_modules for it to be re-injected (R3-001): a
+	// declared-but-missing package dir is now skipped with a warning instead.
+	mkdirSync(join(piAgentDir, "npm", "node_modules", "some-other"), { recursive: true });
+
 	const settingsPath = join(piAgentDir, "settings.json");
 	const settingsText = JSON.stringify({ packages: ["npm:some-other", "../other-gentle-pi"] });
 	writeFileSync(settingsPath, settingsText);
@@ -317,6 +322,9 @@ test("--package-root forces a takeover even with no gentle-pi declaration at all
 	const f = fixture(t);
 	const piAgentDir = join(f.root, "pi-agent");
 	mkdirSync(piAgentDir, { recursive: true });
+	// "npm:some-other" must actually be installed under
+	// <agentDir>/npm/node_modules for it to be re-injected (R3-001).
+	mkdirSync(join(piAgentDir, "npm", "node_modules", "some-other"), { recursive: true });
 	const settingsPath = join(piAgentDir, "settings.json");
 	const settingsText = JSON.stringify({ packages: ["npm:some-other"] });
 	writeFileSync(settingsPath, settingsText);
@@ -484,6 +492,139 @@ test("--link take-over omits -e flags for loose extension dirs that do not exist
 	assert.deepEqual(payload.args, ["--no-extensions", "-e", packageRoot, "--theme", join(packageRoot, "themes"), "--skill", join(packageRoot, "skills"), "--prompt-template", join(packageRoot, "prompts")]);
 });
 
+// --- R3-001/R4-takeover-injects-unverified-package-dirs -------------------
+//
+// A settings.json package that is declared but not actually installed on
+// disk (hand-edited file, a failed or interrupted `pi install`, an npm store
+// laid out anywhere other than <agentDir>/npm/node_modules) must not be
+// handed to pi as an unresolvable -e: pi's module loader fails on it with
+// "Cannot find module", which would break every take-over launch against a
+// partially-installed home. It is filtered the same way loose extension
+// candidates already are, with one stderr warning naming the source and the
+// resolved path, and the launch still succeeds.
+
+test("--link take-over skips a declared package directory that is not installed, warns, and still launches; an installed one is still injected", (t) => {
+	const f = fixture(t);
+	const piAgentDir = join(f.root, "pi-agent");
+	mkdirSync(piAgentDir, { recursive: true });
+
+	const otherGentlePiDir = join(f.root, "other-gentle-pi");
+	mkdirSync(otherGentlePiDir, { recursive: true });
+	writeFileSync(join(otherGentlePiDir, "package.json"), JSON.stringify({ name: "gentle-pi" }));
+
+	// "npm:some-other" is declared but never installed under
+	// <agentDir>/npm/node_modules, so its resolved directory does not exist.
+	// "npm:installed-other" IS installed, so it must still be injected.
+	const installedOtherDir = join(piAgentDir, "npm", "node_modules", "installed-other");
+	mkdirSync(installedOtherDir, { recursive: true });
+
+	const settingsPath = join(piAgentDir, "settings.json");
+	const settingsText = JSON.stringify({ packages: ["npm:some-other", "npm:installed-other", "../other-gentle-pi"] });
+	writeFileSync(settingsPath, settingsText);
+
+	const env = { ...f.env, PI_CODING_AGENT_DIR: piAgentDir };
+	const result = run(env, ["--link", "--mode", "rpc"], { cwd: f.root });
+	assert.equal(result.status, 0, result.stderr);
+
+	assert.match(result.stderr, /skipping declared package "npm:some-other"/);
+	assert.match(result.stderr, /is not a directory/);
+
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, [
+		"--no-extensions",
+		"-e",
+		installedOtherDir,
+		"-e",
+		packageRoot,
+		"--theme",
+		join(packageRoot, "themes"),
+		"--skill",
+		join(packageRoot, "skills"),
+		"--prompt-template",
+		join(packageRoot, "prompts"),
+		"--mode",
+		"rpc",
+	]);
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsText);
+});
+
+test("--link take-over injects the launcher's own package root once when --package-root names a directory settings also declare as a plain path entry", (t) => {
+	const f = fixture(t);
+	const piAgentDir = join(f.root, "pi-agent");
+	mkdirSync(piAgentDir, { recursive: true });
+
+	const forcedRoot = join(f.root, "forced-root");
+	mkdirSync(forcedRoot, { recursive: true });
+
+	const settingsPath = join(piAgentDir, "settings.json");
+	// The forced root is also declared as an ordinary (non-gentle-pi) path
+	// package, so otherPackageInjections would resolve it to the same
+	// directory as --package-root.
+	const settingsText = JSON.stringify({ packages: ["../forced-root"] });
+	writeFileSync(settingsPath, settingsText);
+
+	const env = { ...f.env, PI_CODING_AGENT_DIR: piAgentDir };
+	const result = run(env, ["--link", "--package-root", forcedRoot], { cwd: f.root });
+	assert.equal(result.status, 0, result.stderr);
+
+	const payload = JSON.parse(result.stdout);
+	const eFlags = payload.args.filter((arg: string, index: number) => payload.args[index - 1] === "-e");
+	assert.deepEqual(eFlags, [forcedRoot]);
+	assert.deepEqual(payload.args, [
+		"--no-extensions",
+		"-e",
+		forcedRoot,
+		"--theme",
+		join(forcedRoot, "themes"),
+		"--skill",
+		join(forcedRoot, "skills"),
+		"--prompt-template",
+		join(forcedRoot, "prompts"),
+	]);
+});
+
+test("--package-root naming a directory that does not exist fails with a clear error instead of launching", (t) => {
+	const f = fixture(t);
+	const missingRoot = join(f.root, "does-not-exist");
+
+	const result = run(f.env, ["--package-root", missingRoot]);
+	assert.notEqual(result.status, 0);
+	assert.match(result.stderr, /--package-root/);
+	assert.match(result.stderr, /does not exist|not a directory/);
+});
+
+// --- R4-loose-extension-enumeration-fails-silently -------------------------
+
+test("--link take-over warns once when a loose extensions directory cannot be read, instead of failing silently", (t) => {
+	const f = fixture(t);
+	const piAgentDir = join(f.root, "pi-agent");
+	mkdirSync(piAgentDir, { recursive: true });
+
+	const otherGentlePiDir = join(f.root, "other-gentle-pi");
+	mkdirSync(otherGentlePiDir, { recursive: true });
+	writeFileSync(join(otherGentlePiDir, "package.json"), JSON.stringify({ name: "gentle-pi" }));
+
+	writeFileSync(join(piAgentDir, "settings.json"), JSON.stringify({ packages: ["../other-gentle-pi"] }));
+
+	const looseAgentExtensions = join(piAgentDir, "extensions");
+	mkdirSync(looseAgentExtensions, { recursive: true });
+	writeFileSync(join(looseAgentExtensions, "a.ts"), "export default () => {};");
+	chmodSync(looseAgentExtensions, 0o000);
+
+	const env = { ...f.env, PI_CODING_AGENT_DIR: piAgentDir };
+	const result = run(env, ["--link"], { cwd: f.root });
+	// Restore permissions immediately, before any assertion can throw and
+	// skip cleanup: fixture()'s own t.after (registered before this test body
+	// runs) removes f.root recursively, which requires read/execute
+	// permission on every subdirectory, including this one.
+	chmodSync(looseAgentExtensions, 0o755);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stderr, /could not read loose extension directory/);
+	assert.match(result.stderr, /extensions/);
+
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, ["--no-extensions", "-e", packageRoot, "--theme", join(packageRoot, "themes"), "--skill", join(packageRoot, "skills"), "--prompt-template", join(packageRoot, "prompts")]);
+});
 test("--link take-over treats a file named `extensions` as not a loose extension dir", (t) => {
 	const f = fixture(t);
 	const piAgentDir = join(f.root, "pi-agent");

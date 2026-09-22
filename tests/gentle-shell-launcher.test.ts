@@ -644,14 +644,14 @@ test("findGentlePiDeclaration returns the first matching declaration, path or np
 
 test("decideTakeOver is false when there is no declaration and --package-root was not requested", () => {
 	assert.equal(
-		decideTakeOver({ declaration: undefined, packageRoot: "/pkg", realPackageRoot: "/pkg", packageRootExplicit: false }),
+		decideTakeOver({ declaration: undefined, realPackageRoot: "/pkg", packageRootExplicit: false }),
 		false,
 	);
 });
 
 test("decideTakeOver is false for an npm declaration matching the launcher's own install", () => {
 	assert.equal(
-		decideTakeOver({ declaration: { kind: "npm" }, packageRoot: "/pkg", realPackageRoot: "/pkg", packageRootExplicit: false }),
+		decideTakeOver({ declaration: { kind: "npm" }, realPackageRoot: "/pkg", packageRootExplicit: false }),
 		false,
 	);
 });
@@ -660,7 +660,6 @@ test("decideTakeOver is true when a path declaration's real directory differs fr
 	assert.equal(
 		decideTakeOver({
 			declaration: { kind: "path", dir: "/other/checkout" },
-			packageRoot: "/pkg",
 			realPackageRoot: "/pkg",
 			realDeclaredDir: "/other/checkout",
 			packageRootExplicit: false,
@@ -673,7 +672,6 @@ test("decideTakeOver is false when a path declaration's real directory equals th
 	assert.equal(
 		decideTakeOver({
 			declaration: { kind: "path", dir: "/pkg-symlink" },
-			packageRoot: "/pkg",
 			realPackageRoot: "/pkg",
 			realDeclaredDir: "/pkg",
 			packageRootExplicit: false,
@@ -684,14 +682,14 @@ test("decideTakeOver is false when a path declaration's real directory equals th
 
 test("decideTakeOver is true when --package-root is explicitly requested, even for a matching npm declaration", () => {
 	assert.equal(
-		decideTakeOver({ declaration: { kind: "npm" }, packageRoot: "/pkg", realPackageRoot: "/pkg", packageRootExplicit: true }),
+		decideTakeOver({ declaration: { kind: "npm" }, realPackageRoot: "/pkg", packageRootExplicit: true }),
 		true,
 	);
 });
 
 test("decideTakeOver is true when --package-root is explicitly requested and there is no declaration", () => {
 	assert.equal(
-		decideTakeOver({ declaration: undefined, packageRoot: "/pkg", realPackageRoot: "/pkg", packageRootExplicit: true }),
+		decideTakeOver({ declaration: undefined, realPackageRoot: "/pkg", packageRootExplicit: true }),
 		true,
 	);
 });
@@ -785,6 +783,47 @@ test("otherPackageInjections skips a duplicate npm:gentle-pi entry when the decl
 		skip: { kind: "npm" },
 	});
 	assert.deepEqual(result.paths, [join("/agent", "npm", "node_modules", "some-other")]);
+});
+
+// R3-001/R4-takeover-injects-unverified-package-dirs: a declared-but-missing
+// package directory must never be handed to pi as -e (it fails at pi startup
+// with "Cannot find module"); it is filtered the same way loose extension
+// candidates are, via an injectable isDirectory predicate so this function
+// stays pure and unit-testable without a real filesystem.
+
+test("otherPackageInjections omits a declared package directory that isDirectory reports missing, and warns", () => {
+	const result = otherPackageInjections({
+		settingsText: '{"packages":["npm:missing-pkg","npm:gentle-pi"]}',
+		agentDir: "/agent",
+		skip: { kind: "npm" },
+		isDirectory: () => false,
+	});
+	assert.deepEqual(result.paths, []);
+	assert.equal(result.warnings.length, 1);
+	assert.match(result.warnings[0], /skipping declared package/);
+	assert.match(result.warnings[0], /"npm:missing-pkg"/);
+	assert.match(result.warnings[0], /is not a directory/);
+});
+
+test("otherPackageInjections keeps a declared package directory that isDirectory reports present", () => {
+	const result = otherPackageInjections({
+		settingsText: '{"packages":["npm:installed-pkg","npm:gentle-pi"]}',
+		agentDir: "/agent",
+		skip: { kind: "npm" },
+		isDirectory: (dir) => dir === join("/agent", "npm", "node_modules", "installed-pkg"),
+	});
+	assert.deepEqual(result.paths, [join("/agent", "npm", "node_modules", "installed-pkg")]);
+	assert.deepEqual(result.warnings, []);
+});
+
+test("otherPackageInjections defaults to including every declared package when isDirectory is not provided (existing callers keep pure string resolution)", () => {
+	const result = otherPackageInjections({
+		settingsText: '{"packages":["npm:some-other","npm:gentle-pi"]}',
+		agentDir: "/agent",
+		skip: { kind: "npm" },
+	});
+	assert.deepEqual(result.paths, [join("/agent", "npm", "node_modules", "some-other")]);
+	assert.deepEqual(result.warnings, []);
 });
 
 // --- buildPiInvocation -------------------------------------------------------
@@ -1076,6 +1115,38 @@ test("buildPiInvocation dedupes loose extension entries against other-package pa
 		"/shared/dup.ts",
 		"-e",
 		"/agent/extensions/a.ts",
+		"-e",
+		"/pkg",
+		"--theme",
+		join("/pkg", "themes"),
+		"--skill",
+		join("/pkg", "skills"),
+		"--prompt-template",
+		join("/pkg", "prompts"),
+	]);
+});
+
+// R3-003: the launcher's own package root must also be checked against the
+// dedupe set, not just appended unconditionally after the two loops — this
+// is reachable when --package-root names a directory that settings also
+// declare as a non-gentle-pi path entry.
+test("buildPiInvocation dedupes the launcher's own package root against an other-package path that resolves to the same directory", () => {
+	const built = buildPiInvocation({
+		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
+		home: linkHome,
+		packageRoot: "/pkg",
+		declaration: { kind: "path", dir: "/other/checkout" },
+		takeOver: true,
+		otherPackagePaths: [join("/agent", "npm", "node_modules", "some-other"), "/pkg"],
+		passthrough: [],
+		baseEnv: {},
+	});
+	const eFlags = built.args.filter((arg, index) => built.args[index - 1] === "-e");
+	assert.deepEqual(eFlags, [join("/agent", "npm", "node_modules", "some-other"), "/pkg"]);
+	assert.deepEqual(built.args, [
+		"--no-extensions",
+		"-e",
+		join("/agent", "npm", "node_modules", "some-other"),
 		"-e",
 		"/pkg",
 		"--theme",

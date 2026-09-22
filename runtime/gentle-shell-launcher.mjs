@@ -447,7 +447,6 @@ export function findGentlePiDeclaration(settingsText                    , opts  
 
 
 
-
 export function decideTakeOver(input                     )          {
 	if (input.packageRootExplicit) return true;
 	if (input.declaration === undefined) return false;
@@ -457,6 +456,17 @@ export function decideTakeOver(input                     )          {
 }
 
 // --- other-package injection planning --------------------------------------
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -494,6 +504,7 @@ export function otherPackageInjections(input                             )      
 	const warnings           = [];
 	const packages = parseSettingsPackages(input.settingsText);
 	if (packages === undefined) return { paths, warnings };
+	const isDirectory = input.isDirectory ?? (() => true);
 
 	for (const entry of packages) {
 		const source = entrySource(entry);
@@ -525,7 +536,12 @@ export function otherPackageInjections(input                             )      
 			);
 		}
 
-		paths.push(kind === "npm" ? join(input.agentDir, "npm", "node_modules", npmPackageName(source)) : resolvePath(input.agentDir, source));
+		const dir = kind === "npm" ? join(input.agentDir, "npm", "node_modules", npmPackageName(source)) : resolvePath(input.agentDir, source);
+		if (!isDirectory(dir)) {
+			warnings.push(`gentle-shell: skipping declared package "${source}": ${dir} is not a directory`);
+			continue;
+		}
+		paths.push(dir);
 	}
 	return { paths, warnings };
 }
@@ -652,8 +668,12 @@ export function discoverLooseExtensionEntries(dir        , fs                  )
 
 
 
+function packageRootAssetArgs(packageRoot        )           {
+	return ["--theme", join(packageRoot, "themes"), "--skill", join(packageRoot, "skills"), "--prompt-template", join(packageRoot, "prompts")];
+}
+
 function packageRootInjectionArgs(packageRoot        )           {
-	return ["-e", packageRoot, "--theme", join(packageRoot, "themes"), "--skill", join(packageRoot, "skills"), "--prompt-template", join(packageRoot, "prompts")];
+	return ["-e", packageRoot, ...packageRootAssetArgs(packageRoot)];
 }
 
 // Four cases, checked in this order — `piSubcommand` first, then `takeOver`:
@@ -705,7 +725,15 @@ export function buildPiInvocation(input                        )               {
 			injected.add(entry);
 			args.push("-e", entry);
 		}
-		args.push(...packageRootInjectionArgs(input.packageRoot));
+		// R3-003: the launcher's own package root must also be checked
+		// against the dedupe set instead of being appended unconditionally,
+		// or a settings package/loose entry that resolves to the same
+		// directory as --package-root would be injected twice.
+		if (!injected.has(input.packageRoot)) {
+			injected.add(input.packageRoot);
+			args.push("-e", input.packageRoot);
+		}
+		args.push(...packageRootAssetArgs(input.packageRoot));
 	} else if (input.declaration === undefined) {
 		args.push(...packageRootInjectionArgs(input.packageRoot));
 	}
