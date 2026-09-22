@@ -368,7 +368,7 @@ The task that owns a behavior runs its focused commands. Full-suite, runtime-mod
 | RSS-4 | Complete | RED/GREEN lifecycle 99/99; renderer/layout 67/67; typecheck passed | `2c5fc150` | Approved and acknowledged; six non-blocking advisory findings recorded |
 | RSS-5 | Complete with recorded exceptions | Focused and full verification recorded; pre-existing harness failure and live visual check pending | `47529cda` / `e0737558` | Approved and acknowledged; one non-blocking readability suggestion recorded |
 | RSS-6 | Complete | Integration verification passed 348/348 | `a78a5a35`, downstream `71a2c81b` | Approved and acknowledged |
-| RSS-7 | Complete | RED observed (`hasUI` stale-context throw); GREEN 109/109; triangulation and parent spot check 110/110; typecheck and whitespace passed; full suite retained the known unchanged runtime-harness assertion | Pending work-unit commit | Native four-lens review approved and acknowledged |
+| RSS-7 | Complete | RED observed (`hasUI` stale-context throw); GREEN 109/109; triangulation, parent spot check, and independent verification 110/110; typecheck and whitespace passed; full suite retained the known unchanged runtime-harness assertion | `e95db48a` | Committed-range four-lens review approved and acknowledged |
 
 ## Decisions and rationale
 
@@ -379,4 +379,4 @@ The task that owns a behavior runs its focused commands. Full-suite, runtime-mod
 
 ## Next step
 
-Create the RSS-7 work-unit commit, assess its committed range, and retain live fullscreen/compact acceptance as pending. Do not modify the `gentle-shell` production clone. Push, PR, merge, release, and production deployment remain unauthorized.
+Run live fullscreen and compact visual acceptance in an interactive Pi host when available. Do not modify the `gentle-shell` production clone. Push, PR, merge, release, and production deployment remain unauthorized.
