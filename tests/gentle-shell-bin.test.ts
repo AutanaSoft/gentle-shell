@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,8 +53,8 @@ function writePiScript(path: string, version: string) {
 	chmodSync(path, 0o755);
 }
 
-function run(env: NodeJS.ProcessEnv, args: string[]) {
-	return spawnSync(process.execPath, [binPath, ...args], { encoding: "utf8", env });
+function run(env: NodeJS.ProcessEnv, args: string[], options: { cwd?: string } = {}) {
+	return spawnSync(process.execPath, [binPath, ...args], { encoding: "utf8", env, ...options });
 }
 
 test("--help exits 0 and prints usage", (t) => {
@@ -192,7 +192,7 @@ test("--link takes over a path-declared conflicting gentle-pi: --no-extensions, 
 	writeFileSync(settingsPath, settingsText);
 
 	const env = { ...f.env, PI_CODING_AGENT_DIR: piAgentDir };
-	const result = run(env, ["--link", "--mode", "rpc"]);
+	const result = run(env, ["--link", "--mode", "rpc"], { cwd: f.root });
 	assert.equal(result.status, 0, result.stderr);
 
 	assert.match(result.stderr, /taking over gentle-pi from/);
@@ -232,7 +232,7 @@ test("--link does not take over a git-sourced other package: it is skipped with 
 	writeFileSync(settingsPath, JSON.stringify({ packages: ["git:github.com/foo/bar", "../other-gentle-pi"] }));
 
 	const env = { ...f.env, PI_CODING_AGENT_DIR: piAgentDir };
-	const result = run(env, ["--link"]);
+	const result = run(env, ["--link"], { cwd: f.root });
 	assert.equal(result.status, 0, result.stderr);
 	assert.match(result.stderr, /skipping git-sourced package/);
 
@@ -252,7 +252,7 @@ test("--package-root forces a takeover even when settings already declare a matc
 	mkdirSync(forcedRoot, { recursive: true });
 
 	const env = { ...f.env, PI_CODING_AGENT_DIR: piAgentDir };
-	const result = run(env, ["--link", "--package-root", forcedRoot]);
+	const result = run(env, ["--link", "--package-root", forcedRoot], { cwd: f.root });
 	assert.equal(result.status, 0, result.stderr);
 	assert.match(result.stderr, /taking over gentle-pi from npm:gentle-pi/);
 
@@ -269,4 +269,134 @@ test("--package-root forces a takeover even when settings already declare a matc
 		join(forcedRoot, "prompts"),
 	]);
 	assert.equal(readFileSync(settingsPath, "utf8"), settingsText);
+});
+
+test("--package-root forces a takeover even with no gentle-pi declaration at all: --no-extensions and the other packages are still injected", (t) => {
+	const f = fixture(t);
+	const piAgentDir = join(f.root, "pi-agent");
+	mkdirSync(piAgentDir, { recursive: true });
+	const settingsPath = join(piAgentDir, "settings.json");
+	const settingsText = JSON.stringify({ packages: ["npm:some-other"] });
+	writeFileSync(settingsPath, settingsText);
+
+	const forcedRoot = join(f.root, "forced-root");
+	mkdirSync(forcedRoot, { recursive: true });
+
+	const env = { ...f.env, PI_CODING_AGENT_DIR: piAgentDir };
+	const result = run(env, ["--link", "--package-root", forcedRoot], { cwd: f.root });
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stderr, /taking over gentle-pi from the requested package root/);
+
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, [
+		"--no-extensions",
+		"-e",
+		join(piAgentDir, "npm", "node_modules", "some-other"),
+		"-e",
+		forcedRoot,
+		"--theme",
+		join(forcedRoot, "themes"),
+		"--skill",
+		join(forcedRoot, "skills"),
+		"--prompt-template",
+		join(forcedRoot, "prompts"),
+	]);
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsText);
+});
+
+// --- loose extension dirs re-injected during a take-over ------------------
+//
+// Regression coverage for R4-003/R3-003: --no-extensions drops pi's normal
+// settings-driven extension discovery, which also happens to be how pi finds
+// loose (non-package) extensions under <agentDir>/extensions and the
+// project-local <cwd>/.pi/extensions. A take-over must re-inject both as
+// explicit -e flags, or a maintainer's own extensions silently stop loading.
+
+test("--link take-over re-injects loose extension dirs from <agentDir>/extensions and the project-local .pi/extensions", (t) => {
+	const f = fixture(t);
+	const piAgentDir = join(f.root, "pi-agent");
+	mkdirSync(piAgentDir, { recursive: true });
+
+	const otherGentlePiDir = join(f.root, "other-gentle-pi");
+	mkdirSync(otherGentlePiDir, { recursive: true });
+	writeFileSync(join(otherGentlePiDir, "package.json"), JSON.stringify({ name: "gentle-pi" }));
+
+	const settingsPath = join(piAgentDir, "settings.json");
+	const settingsText = JSON.stringify({ packages: ["../other-gentle-pi"] });
+	writeFileSync(settingsPath, settingsText);
+
+	const looseAgentExtensions = join(piAgentDir, "extensions");
+	mkdirSync(looseAgentExtensions, { recursive: true });
+
+	const projectDir = join(f.root, "project");
+	const looseProjectExtensions = join(projectDir, ".pi", "extensions");
+	mkdirSync(looseProjectExtensions, { recursive: true });
+	// The launcher derives this dir from process.cwd() inside the spawned
+	// child, which resolves symlinks (e.g. macOS's /tmp -> /private/tmp);
+	// realpath the expectation the same way so the two agree everywhere.
+	const resolvedLooseProjectExtensions = join(realpathSync(projectDir), ".pi", "extensions");
+
+	const env = { ...f.env, PI_CODING_AGENT_DIR: piAgentDir };
+	const result = run(env, ["--link", "--mode", "rpc"], { cwd: projectDir });
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stderr, /taking over gentle-pi from/);
+
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, [
+		"--no-extensions",
+		"-e",
+		looseAgentExtensions,
+		"-e",
+		resolvedLooseProjectExtensions,
+		"-e",
+		packageRoot,
+		"--theme",
+		join(packageRoot, "themes"),
+		"--skill",
+		join(packageRoot, "skills"),
+		"--prompt-template",
+		join(packageRoot, "prompts"),
+		"--mode",
+		"rpc",
+	]);
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsText);
+});
+
+test("--link take-over omits -e flags for loose extension dirs that do not exist", (t) => {
+	const f = fixture(t);
+	const piAgentDir = join(f.root, "pi-agent");
+	mkdirSync(piAgentDir, { recursive: true });
+
+	const otherGentlePiDir = join(f.root, "other-gentle-pi");
+	mkdirSync(otherGentlePiDir, { recursive: true });
+	writeFileSync(join(otherGentlePiDir, "package.json"), JSON.stringify({ name: "gentle-pi" }));
+
+	writeFileSync(join(piAgentDir, "settings.json"), JSON.stringify({ packages: ["../other-gentle-pi"] }));
+
+	const env = { ...f.env, PI_CODING_AGENT_DIR: piAgentDir };
+	const result = run(env, ["--link"], { cwd: f.root });
+	assert.equal(result.status, 0, result.stderr);
+
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, ["--no-extensions", "-e", packageRoot, "--theme", join(packageRoot, "themes"), "--skill", join(packageRoot, "skills"), "--prompt-template", join(packageRoot, "prompts")]);
+});
+
+test("--link take-over treats a file named `extensions` as not a loose extension dir", (t) => {
+	const f = fixture(t);
+	const piAgentDir = join(f.root, "pi-agent");
+	mkdirSync(piAgentDir, { recursive: true });
+
+	const otherGentlePiDir = join(f.root, "other-gentle-pi");
+	mkdirSync(otherGentlePiDir, { recursive: true });
+	writeFileSync(join(otherGentlePiDir, "package.json"), JSON.stringify({ name: "gentle-pi" }));
+
+	writeFileSync(join(piAgentDir, "settings.json"), JSON.stringify({ packages: ["../other-gentle-pi"] }));
+	writeFileSync(join(piAgentDir, "extensions"), "not a directory");
+
+	const env = { ...f.env, PI_CODING_AGENT_DIR: piAgentDir };
+	const result = run(env, ["--link"], { cwd: f.root });
+	assert.equal(result.status, 0, result.stderr);
+
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, ["--no-extensions", "-e", packageRoot, "--theme", join(packageRoot, "themes"), "--skill", join(packageRoot, "skills"), "--prompt-template", join(packageRoot, "prompts")]);
 });

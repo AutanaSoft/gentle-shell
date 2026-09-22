@@ -712,6 +712,30 @@ test("otherPackageInjections tolerates undefined or malformed settings text", ()
 	assert.deepEqual(otherPackageInjections({ settingsText: "not json", agentDir: "/agent", skip: { kind: "npm" } }), { paths: [], warnings: [] });
 });
 
+test("otherPackageInjections skips every gentle-pi entry, not only the one matching the declaration kind", () => {
+	const declaredDir = join("/agent", "..", "..", "work", "gentle-pi");
+	const result = otherPackageInjections({
+		// The declaration being taken over is the path entry, but settings
+		// also carries a second, unrelated npm:gentle-pi entry: both must be
+		// excluded, not just the one matching skip.kind, or the npm entry
+		// would get re-injected as an "other package" and double-load gentle-pi.
+		settingsText: '{"packages":["npm:some-other","../../work/gentle-pi","npm:gentle-pi"]}',
+		agentDir: "/agent",
+		skip: { kind: "path", dir: declaredDir },
+	});
+	assert.deepEqual(result.paths, [join("/agent", "npm", "node_modules", "some-other")]);
+	assert.deepEqual(result.warnings, []);
+});
+
+test("otherPackageInjections skips a duplicate npm:gentle-pi entry when the declaration being taken over is itself npm", () => {
+	const result = otherPackageInjections({
+		settingsText: '{"packages":["npm:some-other","npm:gentle-pi","npm:gentle-pi@1.2.3"]}',
+		agentDir: "/agent",
+		skip: { kind: "npm" },
+	});
+	assert.deepEqual(result.paths, [join("/agent", "npm", "node_modules", "some-other")]);
+});
+
 // --- buildPiInvocation -------------------------------------------------------
 
 const linkHome: ResolvedHome = { mode: "link", dir: "/pi/agent", source: "flag" };
@@ -836,6 +860,92 @@ test("buildPiInvocation takes over with --package-root even for a matching npm d
 		"--prompt-template",
 		join("/forced/root", "prompts"),
 	]);
+});
+
+test("buildPiInvocation takes over with --package-root even when there is no declaration at all (takeOver wins over the plain no-declaration branch)", () => {
+	const built = buildPiInvocation({
+		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
+		home: linkHome,
+		packageRoot: "/forced/root",
+		declaration: undefined,
+		takeOver: true,
+		otherPackagePaths: [join("/agent", "npm", "node_modules", "some-other")],
+		passthrough: [],
+		baseEnv: {},
+	});
+	assert.deepEqual(built.args, [
+		"--no-extensions",
+		"-e",
+		join("/agent", "npm", "node_modules", "some-other"),
+		"-e",
+		"/forced/root",
+		"--theme",
+		join("/forced/root", "themes"),
+		"--skill",
+		join("/forced/root", "skills"),
+		"--prompt-template",
+		join("/forced/root", "prompts"),
+	]);
+});
+
+test("buildPiInvocation injects loose extension dirs during a takeover, after other package dirs and before the launcher's own root", () => {
+	const built = buildPiInvocation({
+		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
+		home: linkHome,
+		packageRoot: "/pkg",
+		declaration: { kind: "path", dir: "/other/checkout" },
+		takeOver: true,
+		otherPackagePaths: [join("/agent", "npm", "node_modules", "some-other")],
+		looseExtensionDirs: ["/agent/extensions", join("/project", ".pi", "extensions")],
+		passthrough: ["--mode", "rpc"],
+		baseEnv: {},
+	});
+	assert.deepEqual(built.args, [
+		"--no-extensions",
+		"-e",
+		join("/agent", "npm", "node_modules", "some-other"),
+		"-e",
+		"/agent/extensions",
+		"-e",
+		join("/project", ".pi", "extensions"),
+		"-e",
+		"/pkg",
+		"--theme",
+		join("/pkg", "themes"),
+		"--skill",
+		join("/pkg", "skills"),
+		"--prompt-template",
+		join("/pkg", "prompts"),
+		"--mode",
+		"rpc",
+	]);
+});
+
+test("buildPiInvocation omits loose extension dir flags when the list is empty or not provided", () => {
+	const withoutField = buildPiInvocation({
+		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
+		home: linkHome,
+		packageRoot: "/pkg",
+		declaration: { kind: "path", dir: "/other/checkout" },
+		takeOver: true,
+		otherPackagePaths: [],
+		passthrough: [],
+		baseEnv: {},
+	});
+	assert.deepEqual(withoutField.args, ["--no-extensions", "-e", "/pkg", "--theme", join("/pkg", "themes"), "--skill", join("/pkg", "skills"), "--prompt-template", join("/pkg", "prompts")]);
+
+	const withEmptyField = buildPiInvocation({
+		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
+		home: linkHome,
+		packageRoot: "/pkg",
+		declaration: { kind: "path", dir: "/other/checkout" },
+		takeOver: true,
+		otherPackagePaths: [],
+		looseExtensionDirs: [],
+		passthrough: [],
+		baseEnv: {},
+	});
+	assert.deepEqual(withEmptyField.args, withoutField.args);
 });
 
 // --- planSpawn / quoteForCmdExe ----------------------------------------------

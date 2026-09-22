@@ -474,7 +474,12 @@ export function otherPackageInjections(input: OtherPackageInjectionsInput): Othe
 		if (source === undefined) continue;
 		const kind = packageSourceKind(source);
 
-		if (kind === "npm" && npmSourceDeclaresGentlePi(source) && input.skip.kind === "npm") continue;
+		// Skip every gentle-pi entry unconditionally, not only the one
+		// matching `skip`'s kind: settings can carry more than one gentle-pi
+		// declaration (for example an npm:gentle-pi entry alongside the path
+		// declaration actually being taken over), and re-injecting any of
+		// them as an "other package" would double-load gentle-pi extensions.
+		if (kind === "npm" && npmSourceDeclaresGentlePi(source)) continue;
 		if (kind === "path") {
 			const dir = resolvePath(input.agentDir, source);
 			if (input.skip.kind === "path" && dir === input.skip.dir) continue;
@@ -514,6 +519,12 @@ export interface BuildPiInvocationInput {
 	// Directories for every OTHER settings package, from otherPackageInjections.
 	// Only consulted when takeOver is true.
 	otherPackagePaths: string[];
+	// Directories for loose, settings-independent extensions that normal pi
+	// discovery would otherwise have picked up from <agentDir>/extensions and
+	// the project-local <cwd>/.pi/extensions before --no-extensions drops
+	// that discovery. Only consulted when takeOver is true; the caller
+	// decides which directories actually exist.
+	looseExtensionDirs?: string[];
 	passthrough: string[];
 	baseEnv: Record<string, string | undefined>;
 }
@@ -528,28 +539,39 @@ function packageRootInjectionArgs(packageRoot: string): string[] {
 	return ["-e", packageRoot, "--theme", join(packageRoot, "themes"), "--skill", join(packageRoot, "skills"), "--prompt-template", join(packageRoot, "prompts")];
 }
 
-// Three cases:
-//   - No declaration: inject this launcher's own packageRoot, exactly as
-//     when nothing else in settings loads gentle-pi.
-//   - Declaration and not takeOver: no injection at all — the target
-//     settings already load a gentle-pi the launcher accepts as-is (the
-//     `--link` case with a pi-managed install matching this launcher).
-//   - Declaration and takeOver: the target settings declare a *different*
-//     gentle-pi. `--no-extensions` drops normal settings-driven extension
-//     discovery, an explicit `-e <dir>` is added for every OTHER settings
+// Three cases, `takeOver` checked first: a forced takeover (from an explicit
+// --package-root) must win even when there is no declaration to report, or
+// the plain branch would silently drop --no-extensions and the other-package
+// injections while bin/gentle-shell.mjs still prints the "taking over"
+// message — the bug this ordering fixes.
+//   - takeOver: the target settings declare a *different* gentle-pi, or
+//     --package-root forced a takeover regardless of any declaration.
+//     `--no-extensions` drops normal settings-driven extension discovery, so
+//     it is replaced by an explicit `-e <dir>` for every OTHER settings
 //     package (skills/prompts/themes for those packages still load through
 //     ordinary settings discovery, which --no-extensions does not affect),
-//     and this launcher's own packageRoot is injected last so it wins.
+//     then an explicit `-e <dir>` for every loose extension directory normal
+//     discovery would otherwise have found under <agentDir>/extensions and
+//     the project-local .pi/extensions, and finally this launcher's own
+//     packageRoot injected last so it wins any conflict.
+//   - Not takeOver, no declaration: inject this launcher's own packageRoot,
+//     exactly as when nothing else in settings loads gentle-pi.
+//   - Not takeOver, with a declaration: no injection at all — the target
+//     settings already load a gentle-pi the launcher accepts as-is (the
+//     `--link` case with a pi-managed install matching this launcher).
 export function buildPiInvocation(input: BuildPiInvocationInput): PiInvocation {
 	const args = [...input.runtime.args];
 
-	if (input.declaration === undefined) {
-		args.push(...packageRootInjectionArgs(input.packageRoot));
-	} else if (input.takeOver) {
+	if (input.takeOver) {
 		args.push("--no-extensions");
 		for (const otherPath of input.otherPackagePaths) {
 			args.push("-e", otherPath);
 		}
+		for (const looseDir of input.looseExtensionDirs ?? []) {
+			args.push("-e", looseDir);
+		}
+		args.push(...packageRootInjectionArgs(input.packageRoot));
+	} else if (input.declaration === undefined) {
 		args.push(...packageRootInjectionArgs(input.packageRoot));
 	}
 

@@ -4,7 +4,7 @@
 // resolution, pi resolution order, the version gate, and the pi invocation —
 // lives in that pure, unit-tested module; this file only wires it to the real
 // process, filesystem, and child process.
-import { accessSync, constants as fsConstants, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { constants as osConstants, homedir } from "node:os";
 import { delimiter, dirname, join, resolve as resolvePath } from "node:path";
@@ -122,6 +122,17 @@ function safeRealpath(path) {
 	}
 }
 
+// Used to filter the loose extension dirs a take-over re-injects: a missing
+// path, or one that is not a directory (for example a stray file named
+// "extensions"), is silently excluded rather than passed to pi as -e.
+function isDirectory(path) {
+	try {
+		return statSync(path).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
 function loadConfig() {
 	const configPath = launcherConfigPath(homedir());
 	const text = readJsonIfExists(configPath);
@@ -207,6 +218,7 @@ async function main() {
 	let declaration;
 	let takeOver = false;
 	let otherPackagePaths = [];
+	let looseExtensionDirs = [];
 
 	// Only --link can read another gentle-pi declaration out of a real
 	// settings.json; isolated and --home homes never declare one, so they
@@ -229,6 +241,12 @@ async function main() {
 			const injections = otherPackageInjections({ settingsText, agentDir: home.dir, skip });
 			otherPackagePaths = injections.paths;
 			for (const warning of injections.warnings) process.stderr.write(`${warning}\n`);
+			// --no-extensions drops pi's normal settings-driven extension
+			// discovery, which also covers loose (non-package) extensions
+			// under <agentDir>/extensions and the project-local
+			// <cwd>/.pi/extensions; re-inject both explicitly so a
+			// take-over does not silently stop loading them.
+			looseExtensionDirs = [join(home.dir, "extensions"), join(process.cwd(), ".pi", "extensions")].filter(isDirectory);
 			const declaredFrom = declaration === undefined ? "the requested package root" : declaration.kind === "npm" ? "npm:gentle-pi" : declaration.dir;
 			process.stderr.write(`gentle-shell: taking over gentle-pi from ${declaredFrom} for this run (settings unchanged).\n`);
 		}
@@ -244,6 +262,7 @@ async function main() {
 		declaration,
 		takeOver,
 		otherPackagePaths,
+		looseExtensionDirs,
 		passthrough: args.passthrough,
 		baseEnv: process.env,
 	});
