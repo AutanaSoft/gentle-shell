@@ -690,7 +690,7 @@ test("--package-root naming a directory that does not exist fails with a clear e
 
 // --- R4-loose-extension-enumeration-fails-silently -------------------------
 
-test("--link take-over warns once when a loose extensions directory cannot be read, instead of failing silently", (t) => {
+test("--link take-over warns once when a loose extensions directory cannot be read, instead of failing silently", { skip: process.platform === "win32" || process.getuid?.() === 0 ? "mode bits do not block readdir here" : false }, (t) => {
 	const f = fixture(t);
 	const piAgentDir = join(f.root, "pi-agent");
 	mkdirSync(piAgentDir, { recursive: true });
