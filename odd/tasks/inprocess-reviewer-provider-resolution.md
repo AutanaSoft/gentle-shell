@@ -151,7 +151,7 @@ narrow seam (pre-existing, follow-up issue).
       tool/skill/prompt hooks, not extension-registered providers.
 - [x] IRP-6 — Verify: focused tests, `pnpm test`, `pnpm run typecheck`, and the maintainer matrix
       (`pnpm run test:maintainer`) with observed results recorded below.
-- [ ] IRP-7 — E2E from pi: a real RDD lens routed to `claude-bridge/*` completes and is admitted.
+- [x] IRP-7 — E2E from pi: a real RDD lens routed to `claude-bridge/*` completes and is admitted.
 - [ ] IRP-8 — PR upstream against `Gentleman-Programming/gentle-shell`, linking #1304, #1190, #757,
       #831, and naming the design-bug framing so the failure class does not return through a third door.
 
@@ -437,6 +437,44 @@ because a live session already holds the previously loaded module — and a revi
 
 To roll back: `cd ~/.pi/agent/npm && npm install gentle-pi@3.3.0`.
 
+## IRP-7 result (2026-09-22): e2e passed
+
+New pi session (not `/reload`) on the installed `gentle-pi-3.3.0-e8f20fda` build, host model
+`claude-bridge/claude-fable-5-1`, lens routing from `~/.pi/gentle-ai/models.json`
+(`review-reliability` → `claude-bridge/claude-opus-5`).
+
+- Candidate: committed range `b6188bef..0f4b59e2` on `fix/inprocess-reviewer-provider-resolution`
+  (target `sha256:f3eccf13…`, 3 paths, 695 changed lines, tier **medium**, one lens).
+- Lineage `review-a8874051b62f9776`: START → STATUS `collect` → `gentle_review_capture_group`
+  forecast (`pi_host_relay`, 1 model run) → acknowledged run → `state: approved`,
+  `submitted_reviewers: 1`, prompt 60,980 bytes, result 8,110 bytes → acknowledge-approved,
+  authority burned. No `No API provider registered for api: claude-bridge` anywhere.
+- Negative control that makes the run meaningful: `~/.pi/agent/auth.json` holds no provider
+  credentials and no `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` is set. pi-ai's compat path had nothing
+  to fall back to, so the only route that could have completed this lens is the extension-registered
+  provider reached through `registry.getProvider(...).streamSimple(...).result()`.
+- Advisory findings (non-blocking, review approved): `R3-getprovider-unguarded`
+  (`lib/inprocess-reviewer.ts:216`, suggestion), `R3-provider-key-indistinguishable`
+  (`tests/inprocess-reviewer.test.ts:503`, warning), `R3-provider-path-failure-untested`
+  (`lib/inprocess-reviewer.ts:295`, warning), `R3-seam-contract-comment-contradicts`
+  (`lib/inprocess-reviewer.ts:30`, suggestion). The last one was fixed right after the review (the
+  seam header now says `find`/`getApiKeyAndHeaders` are required and `getProvider` is optional and
+  selects the dispatch path); the other three are candidates for the PR description or a follow-up,
+  not for reopening this candidate.
+
+Environment blocker found and cleared on the way (not a defect of this fix):
+
+- `review start`/`status` stopped with `managed_assets_outdated` and `gentle-ai sync --agent pi` did
+  not clear it. Root cause: `~/.gentle-ai/state.json` was being rewritten back to
+  `installed_binary_version: 3.3.0` after every sync by the **PATH** `gentle-ai` (3.3.0 at
+  `~/.local/bin`), invoked by the Claude Code hooks in `~/.claude/settings.json` that pi-claude-bridge
+  honors through the Claude Agent SDK. The gentle-pi managed binary is 3.4.0, so the two fought over
+  the state file.
+- Fix applied: `~/.local/bin/gentle-ai` replaced with the managed 3.4.0 binary (sha256 `309d9aaf…`,
+  identical to `.gentle-ai/v3.4.0/gentle-ai`); the 3.3.0 copy is kept at
+  `~/.local/bin/gentle-ai-3.3.0.bak`. A full `gentle-ai sync` then left `state.json` at 3.4.0 and it
+  stayed there. Roll back with `mv ~/.local/bin/gentle-ai-3.3.0.bak ~/.local/bin/gentle-ai`.
+
 ## Native review boundary
 
 Receipt-driven development is **on** (decided by global). Per work-unit commit:
@@ -448,12 +486,14 @@ Receipt-driven development is **on** (decided by global). Per work-unit commit:
   STATUS runs at slice close (after IRP-4 and IRP-6), not per commit. Outcome so far:
   **deferred to slice**.
 
+- Slice close (2026-09-22): lineage `review-a8874051b62f9776` over `b6188bef..0f4b59e2`, tier
+  medium, `review-reliability` via `pi_host_relay`, **approved and acknowledged**, authority burned.
+  Four advisory findings recorded under "IRP-7 result". Outcome: **approved**.
+
 The next reviewed boundary becomes the base for whatever follows the slice.
 
 ## Next step
 
-IRP-6: run the maintainer matrix (`pnpm run test:maintainer`) and record it alongside the focused,
-relay, typecheck and full-suite results already captured for IRP-1/2/3/5 and IRP-4, closing the
-verification task. IRP-7 (the e2e from a real pi session against `claude-bridge/*`) remains the only
-check that exercises a real composed provider; every result above comes from fakes plus static and
-runtime reads of the installed pi packages.
+IRP-8: open the PR upstream against `Gentleman-Programming/gentle-shell` linking #1304, #1190, #757
+and #831, naming the design-bug framing, and listing the four advisory findings from the slice-close
+review as follow-up candidates. Every acceptance criterion, including the e2e one, is now met.
