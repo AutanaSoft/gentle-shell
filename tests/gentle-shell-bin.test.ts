@@ -173,6 +173,74 @@ test("--link skips injection and leaves settings.json byte-identical when it alr
 	assert.equal(existsSync(join(piAgentDir, ".gentle-shell")), false);
 });
 
+// --- injection skip for isolated/--home homes once they declare gentle-pi (S3) ---
+//
+// `gentle-shell setup` installs npm:gentle-pi into the home's settings.json;
+// once that declaration exists, isolated and --home homes must stop
+// injecting the launcher's own copy on top of it, the same way --link
+// already does. Homes without a declaration keep the plain injection.
+
+test("an isolated home whose settings.json declares npm:gentle-pi gets no injection", (t) => {
+	const f = fixture(t);
+	mkdirSync(f.gentleShellHome, { recursive: true });
+	writeFileSync(join(f.gentleShellHome, "settings.json"), JSON.stringify({ packages: ["npm:gentle-pi@3.5.1"], tuiMode: "fullscreen" }));
+
+	const result = run(f.env, ["--mode", "rpc"]);
+	assert.equal(result.status, 0, result.stderr);
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, ["--mode", "rpc"]);
+	assert.equal(payload.PI_CODING_AGENT_DIR, f.gentleShellHome);
+});
+
+test("an isolated home whose settings.json does not declare gentle-pi keeps the plain injection", (t) => {
+	const f = fixture(t);
+	mkdirSync(f.gentleShellHome, { recursive: true });
+	writeFileSync(join(f.gentleShellHome, "settings.json"), JSON.stringify({ tuiMode: "fullscreen" }));
+
+	const result = run(f.env, ["--mode", "rpc"]);
+	assert.equal(result.status, 0, result.stderr);
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, [
+		"-e",
+		packageRoot,
+		"--theme",
+		join(packageRoot, "themes"),
+		"--skill",
+		join(packageRoot, "skills"),
+		"--prompt-template",
+		join(packageRoot, "prompts"),
+		"--mode",
+		"rpc",
+	]);
+});
+
+test("an isolated home whose settings.json declares a path-based gentle-pi takes over, same as --link", (t) => {
+	const f = fixture(t);
+	mkdirSync(f.gentleShellHome, { recursive: true });
+	const otherGentlePiDir = join(f.root, "other-gentle-pi");
+	mkdirSync(otherGentlePiDir, { recursive: true });
+	writeFileSync(join(otherGentlePiDir, "package.json"), JSON.stringify({ name: "gentle-pi" }));
+	writeFileSync(join(f.gentleShellHome, "settings.json"), JSON.stringify({ packages: ["../other-gentle-pi"], tuiMode: "fullscreen" }));
+
+	const result = run(f.env, ["--mode", "rpc"], { cwd: f.root });
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stderr, /taking over gentle-pi from/);
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, [
+		"--no-extensions",
+		"-e",
+		packageRoot,
+		"--theme",
+		join(packageRoot, "themes"),
+		"--skill",
+		join(packageRoot, "skills"),
+		"--prompt-template",
+		join(packageRoot, "prompts"),
+		"--mode",
+		"rpc",
+	]);
+});
+
 test("gentle-shell list forwards to pi as a bare subcommand, with no injected extension flags", (t) => {
 	const f = fixture(t);
 	const result = run(f.env, ["list"]);

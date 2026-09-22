@@ -356,16 +356,26 @@ async function main() {
 	let otherPackagePaths = [];
 	let looseExtensionEntries = [];
 
-	// Only --link can read another gentle-pi declaration out of a real
-	// settings.json; isolated and --home homes never declare one, so they
-	// always get the plain injection (declaration stays undefined) unless
-	// --package-root itself forces a take-over below. A pi subcommand skips
-	// this whole block: buildPiInvocation ignores takeOver/declaration once
-	// piSubcommand is set, and running the take-over/loose-dir discovery
-	// anyway would still print a misleading "taking over gentle-pi..."
-	// message (and otherPackageInjections warnings) for a plain
-	// `gentle-shell install npm:x` that never actually takes anything over.
-	if (home.mode === "link" && args.piSubcommand === undefined) {
+	// Every mode consults the home's own settings.json for a gentle-pi
+	// declaration, not just --link: `gentle-shell setup` installs
+	// npm:gentle-pi into an isolated or --home home's settings.json, and once
+	// that declaration exists the launcher must stop injecting its own copy
+	// on top of it (buildPiInvocation skips injection whenever a declaration
+	// is present and there is no take-over). A path declaration in a
+	// non-link home follows the same take-over rules as --link. A home
+	// without any declaration keeps the plain injection, unchanged.
+	//
+	// --package-root only forces a take-over in --link mode: an isolated or
+	// --home target has no pre-existing pi installation to defer to, so
+	// forcing --no-extensions there would just strip its own settings-driven
+	// discovery for no benefit (see the "gated on link mode" bin test). A pi
+	// subcommand skips this whole block: buildPiInvocation ignores
+	// takeOver/declaration once piSubcommand is set, and running the
+	// take-over/loose-dir discovery anyway would still print a misleading
+	// "taking over gentle-pi..." message (and otherPackageInjections
+	// warnings) for a plain `gentle-shell install npm:x` that never actually
+	// takes anything over.
+	if (args.piSubcommand === undefined) {
 		const settingsText = readJsonIfExists(join(home.dir, "settings.json"));
 		declaration = findGentlePiDeclaration(settingsText, { agentDir: home.dir, readPackageName });
 		const realEffectivePackageRoot = safeRealpath(effectivePackageRoot);
@@ -374,7 +384,7 @@ async function main() {
 			declaration,
 			realPackageRoot: realEffectivePackageRoot,
 			realDeclaredDir,
-			packageRootExplicit,
+			packageRootExplicit: home.mode === "link" && packageRootExplicit,
 		});
 		if (takeOver) {
 			const skip = declaration ?? { kind: "path", dir: realEffectivePackageRoot };
@@ -399,9 +409,6 @@ async function main() {
 			);
 		}
 	}
-	// Isolated and --home homes have no declaration to take over: declaration
-	// stays undefined and buildPiInvocation injects effectivePackageRoot the
-	// same way it always has, --package-root included.
 
 	const invocation = buildPiInvocation({
 		runtime,
