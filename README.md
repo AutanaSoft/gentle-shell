@@ -219,7 +219,14 @@ gentle-shell
 gentle-shell --link
 ```
 
-`gentle-shell` alone starts in its own home, `~/.gentle-shell/agent`. `gentle-shell --link` reuses `~/.pi/agent` as-is.
+`gentle-shell` alone starts in its own home, `~/.gentle-shell/agent`, and sets that home up on first run — no separate step. Gentle Shell keeps its own home with the Gentle AI companion packages and no conflicting plugins; gentle-pi itself always stays this launcher's own copy, never one installed into the home; your pi install is untouched. That home also defaults to the Gentleman-Cute theme unless you set your own. `gentle-shell --link` reuses `~/.pi/agent` as-is, is never auto-provisioned, and never has its theme touched.
+
+```bash
+# Re-run provisioning by hand, e.g. to see the full install output
+gentle-shell setup
+```
+
+`gentle-shell setup` installs the same companion packages gentle-ai provisions into a regular Pi, into this home only, then removes the one package that conflicts with gentle-pi's own `ask_user_question` tool (gentle-ai #4820). The first `gentle-shell` launch in a home already runs this automatically; `setup` is for re-running it by hand. See **[First run](docs/readme-reference.md#first-run-in-an-isolated-or-custom-home)** for the opt-out (`GENTLE_SHELL_NO_AUTO_SETUP=1`) and failure behavior.
 
 ```bash
 # Make --link the default

@@ -63,6 +63,8 @@ export function parseLauncherArgs(argv          )                     {
 	let help = false;
 	let version = false;
 	let error                    ;
+	let command                             ;
+	let commandArgs           = [];
 	let piSubcommand                          ;
 	const passthrough           = [];
 
@@ -132,6 +134,18 @@ export function parseLauncherArgs(argv          )                     {
 			i += 1;
 			continue;
 		}
+		// Unlike `home`, `setup` is not restricted to argv[0]: it accepts the
+		// home selectors (--link, --isolated, --home <dir>) ahead of it, same
+		// as a pi subcommand would, so it provisions whichever home those
+		// selectors resolve to. It is only recognised as the FIRST non-flag
+		// token — once a pi subcommand (or any other passthrough token) has
+		// already started, a later "setup" is just an ordinary passthrough
+		// argument, same as "home" is.
+		if (arg === "setup" && command === undefined && passthrough.length === 0) {
+			command = "setup";
+			commandArgs = argv.slice(i + 1);
+			break;
+		}
 		if (passthrough.length === 0 && isPiSubcommand(arg)) {
 			piSubcommand = arg;
 		}
@@ -148,7 +162,7 @@ export function parseLauncherArgs(argv          )                     {
 		}
 	}
 
-	return { link, isolated, home, packageRoot, help, version, command: undefined, commandArgs: [], passthrough, piSubcommand, error };
+	return { link, isolated, home, packageRoot, help, version, command, commandArgs, passthrough, piSubcommand, error };
 }
 
 // --- home resolution -------------------------------------------------------
@@ -201,6 +215,20 @@ export function resolveHome(input                  )               {
 	return { mode: "isolated", dir: isolatedDir(env, homedir), source: "default" };
 }
 
+// The flags that reproduce `home`'s resolved mode on a later `gentle-shell
+// <flags> ...` invocation — used by remediation messages (e.g. "run
+// `gentle-shell <flags> remove <source>`") so they point at the exact home
+// setup provisioned instead of silently defaulting to the isolated home.
+// Mirrors the three ResolvedHome modes one-to-one: "link" needs --link
+// (PI_CODING_AGENT_DIR-derived dirs aren't reproducible as a literal path),
+// "path" needs its --home <dir>, and "isolated" needs nothing since it's
+// gentle-shell's own default when no selector is given.
+export function homeSelectorFlags(home              )           {
+	if (home.mode === "link") return ["--link"];
+	if (home.mode === "path") return ["--home", home.dir];
+	return [];
+}
+
 export function launcherConfigPath(homedir        )         {
 	return join(homedir, ".gentle-shell", "config.json");
 }
@@ -227,6 +255,88 @@ export function parseLauncherConfig(text        )                             {
 	if (home === "link") return { mode: "link" };
 	if (home === "isolated") return { mode: "isolated" };
 	return { mode: "path", dir: home };
+}
+
+// --- provisioning marker (S7 auto-provision) --------------------------------
+
+// Raw config.json shape as actually stored on disk: a plain object that may
+// carry `home` (see LauncherConfig above), `provisioned`, and any other key
+// a future feature adds. Unlike parseLauncherConfig's discriminated
+// LauncherConfig, these helpers operate on (and return) the whole object so
+// a write never drops a field it does not itself understand — notably
+// another home's provisioned marker when `gentle-shell home ...` persists a
+// mode change.
+
+
+// Tolerant like parseLauncherConfig: a missing, malformed, or foreign
+// config.json resolves to an empty object rather than throwing, so a caller
+// can always merge into (and write back) whatever it finds.
+export function parseRawLauncherConfig(text                    )                    {
+	if (text === undefined) return {};
+	let parsed         ;
+	try {
+		parsed = JSON.parse(text);
+	} catch {
+		return {};
+	}
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+	return parsed                     ;
+}
+
+
+
+
+
+
+
+
+
+
+function isProvisionedEntry(value         )                            {
+	if (typeof value !== "object" || value === null) return false;
+	const record = value                           ;
+	if (typeof record.gentleAi !== "string" || typeof record.at !== "string") return false;
+	return record.gentlePi === undefined || typeof record.gentlePi === "string";
+}
+
+// Tolerant read of config.provisioned: a missing, non-object, or malformed
+// map (or a malformed individual entry) is dropped rather than thrown, same
+// tolerance policy as parseLauncherConfig above.
+function provisionedMap(config                   )                                   {
+	const value = config.provisioned;
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+	const map                                   = {};
+	for (const [key, entry] of Object.entries(value                           )) {
+		if (isProvisionedEntry(entry)) map[key] = entry;
+	}
+	return map;
+}
+
+// The provisioning record for `homeDir` (the caller passes a realpath, so
+// two different-looking paths to the same home never diverge), or undefined
+// when that home has never been auto- or manually provisioned.
+export function provisionedEntry(config                   , homeDir        )                               {
+	return provisionedMap(config)[homeDir];
+}
+
+// True when `homeDir` has never been provisioned, was provisioned with a
+// gentle-ai pin other than `pin`, or was provisioned against a gentle-pi
+// other than `gentlePiVersion` (the running launcher's own version, from its
+// package.json) — the signal bin/gentle-shell.mjs uses to decide whether a
+// plain launch should run the setup flow automatically before starting pi.
+// A marker written before gentle-pi version tracking existed has no
+// `gentlePi` field, which never strictly-equals a real version string, so it
+// always counts as needing provisioning too — see ProvisionedEntry above.
+export function needsProvisioning(config                   , homeDir        , pin        , gentlePiVersion        )          {
+	const entry = provisionedEntry(config, homeDir);
+	return entry === undefined || entry.gentleAi !== pin || entry.gentlePi !== gentlePiVersion;
+}
+
+// Returns a new config object recording `homeDir` as provisioned at `pin`
+// and `gentlePiVersion`, preserving every other key — including every other
+// home's provisioned entry — unchanged. Never mutates `config`.
+export function recordProvisioned(config                   , homeDir        , pin        , gentlePiVersion        , now        )                    {
+	return { ...config, provisioned: { ...provisionedMap(config), [homeDir]: { gentleAi: pin, gentlePi: gentlePiVersion, at: now } } };
 }
 
 // --- pi runtime resolution ---------------------------------------------------
@@ -297,6 +407,25 @@ export function checkPiVersion(output        , minimum         = MIN_PI_VERSION)
 		return { ok: false, version, message: `pi version ${version} is older than the required minimum ${minimum}.` };
 	}
 	return { ok: true, version };
+}
+
+// --- setup subcommand's gentle-ai pin gate -----------------------------------
+
+// The first gentle-ai release that honors PI_CODING_AGENT_DIR in its own
+// `install --agent pi` provisioning. `gentle-shell setup` spawns the
+// package-local pinned gentle-ai with PI_CODING_AGENT_DIR set to the
+// resolved home; an older pin ignores that variable and silently provisions
+// the caller's real ~/.pi/agent instead, so setup must refuse to run it.
+export const MIN_SETUP_GENTLE_AI_VERSION = "3.6.0";
+
+export function isSetupCapablePin(version        , minimum         = MIN_SETUP_GENTLE_AI_VERSION)          {
+	const match = VERSION_PATTERN.exec(version);
+	if (!match) return false;
+	const minimumMatch = VERSION_PATTERN.exec(minimum);
+	if (!minimumMatch) throw new Error(`invalid minimum version "${minimum}"`);
+	const found                           = [Number(match[1]), Number(match[2]), Number(match[3])];
+	const wanted                           = [Number(minimumMatch[1]), Number(minimumMatch[2]), Number(minimumMatch[3])];
+	return compareVersions(found, wanted) >= 0;
 }
 
 // --- packaging drift guard -----------------------------------------------------
@@ -399,6 +528,61 @@ export function settingsDeclareGentlePi(settingsText                    )       
 	const packages = parseSettingsPackages(settingsText);
 	if (packages === undefined) return false;
 	return packages.some(packageEntryDeclaresGentlePi);
+}
+
+// gentle-ai's own managed Pi stack still installs
+// npm:@juicesharp/rpiv-ask-user-question, which conflicts with gentle-pi's
+// first-party ask_user_question tool: Pi tool names are exclusive, so a
+// second provider for the same name fails the whole load (see
+// extensions/ask-user-question.ts). Tracked upstream as gentle-ai #4820 and
+// gentle-shell #1277; the gentle-ai fix lands separately, so `gentle-shell
+// setup` (bin/gentle-shell.mjs) must remove it from the provisioned home
+// itself.
+//
+// gentle-ai's managed Pi stack also always declares npm:gentle-pi itself.
+// That declaration must never survive setup either, for an unrelated reason:
+// this launcher always loads its own gentle-pi (its own package root, or a
+// take-over), never the one gentle-ai's stack installs, so leaving the
+// declaration in place would silently let the home drift onto whatever
+// gentle-pi npm last installed — or, for a developer running from a source
+// checkout, onto the published npm package — instead of the running
+// launcher's own copy. See docs/readme-reference.md's "setup" section.
+//
+// Table of every package `setup` removes after gentle-ai finishes, so a
+// future addition only needs a new row here.
+const POST_INSTALL_REMOVAL_PACKAGES                                                                = [
+	{ name: "@juicesharp/rpiv-ask-user-question", source: "npm:@juicesharp/rpiv-ask-user-question" },
+	{ name: "gentle-pi", source: "npm:gentle-pi" },
+];
+
+// The known removal sources, exposed so a `--dry-run` caller can report what
+// setup would remove *if* gentle-ai's install declares it, without reading
+// settings.json itself: a dry run writes nothing, so settings.json
+// afterwards would only reflect whatever pre-existed the run, not what the
+// (skipped) install would have declared. See runPostInstallCleanup in
+// bin/gentle-shell.mjs.
+export const POST_INSTALL_REMOVAL_SOURCES                    = POST_INSTALL_REMOVAL_PACKAGES.map((entry) => entry.source);
+
+// Scans a settings.json `packages` list (same string/object-source parsing
+// as settingsDeclareGentlePi/findGentlePiDeclaration above) for any entry
+// whose npm package name matches POST_INSTALL_REMOVAL_PACKAGES, at any
+// version spec. Returns each match's canonical unversioned source, deduped,
+// in the order those packages first appear in `packages` — never the
+// declared (possibly versioned) source text, since the caller always removes
+// the bare package.
+export function postInstallRemovals(settingsText                    )           {
+	const packages = parseSettingsPackages(settingsText);
+	if (packages === undefined) return [];
+
+	const found           = [];
+	for (const entry of packages) {
+		const source = entrySource(entry);
+		if (source === undefined || packageSourceKind(source) !== "npm") continue;
+		const name = npmPackageName(source);
+		const match = POST_INSTALL_REMOVAL_PACKAGES.find((candidate) => candidate.name === name);
+		if (match !== undefined && !found.includes(match.source)) found.push(match.source);
+	}
+	return found;
 }
 
 
@@ -790,6 +974,20 @@ export function quoteForCmdExe(token        )         {
 	return `"${token.replace(/"/g, '\\"')}"`;
 }
 
+const POSIX_SHELL_SPECIAL_CHARS = /[\s"'`\\$&|;<>(){}*?[\]!#~]/;
+
+// POSIX/bash single-quote shell quoting for a copy-pasteable command
+// bin/gentle-shell.mjs prints to stderr (e.g. the setup remediation
+// command): wraps a token in single quotes when it is empty or contains
+// whitespace or a shell metacharacter, escaping an embedded single quote as
+// `'\''` (close quote, escaped literal quote, reopen quote) — inside single
+// quotes nothing else needs escaping, unlike cmd.exe's `"`-based quoting
+// (quoteForCmdExe above).
+export function shellQuote(value        )         {
+	if (value.length > 0 && !POSIX_SHELL_SPECIAL_CHARS.test(value)) return value;
+	return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
 
 
 
@@ -808,6 +1006,115 @@ export function planSpawn(input                )            {
 		return { command: [command, ...args].map(quoteForCmdExe).join(" "), args: [], shell: true };
 	}
 	return { command, args, shell: false };
+}
+
+// --- JSON field restore --------------------------------------------------
+
+// Detects the indentation unit and trailing-newline presence of a JSON text,
+// so restoreJsonField below can re-serialize as close to the original
+// formatting as practical instead of imposing its own. `indent` is
+// `undefined` for compact (no-whitespace) JSON, matching what
+// `JSON.stringify(value)` (no third argument) produces.
+function detectJsonFormatting(text        )                                                           {
+	const match = text.match(/\{\r?\n([ \t]+)/);
+	return { indent: match ? match[1] : undefined, trailingNewline: text.endsWith("\n") };
+}
+
+function jsonValuesEqual(a         , b         )          {
+	return JSON.stringify(a) === JSON.stringify(b);
+}
+
+// Pure JSON merge: restores `field` in `currentText` back to whatever it was
+// in `originalText`, keeping every other field exactly as `currentText` left
+// it, and formatting the result to match `originalText`'s indentation and
+// trailing newline. Used by bin/gentle-shell.mjs's setup flow to restore
+// `managed_asset_digest` in the user's shared `~/.gentle-ai/state.json` after
+// the pinned gentle-ai spawn rewrites it (the same shared-file problem
+// persona.json has — see sharedPersonaPath/snapshotFile/restoreFile in
+// bin/gentle-shell.mjs — but state.json also carries fields the pinned
+// gentle-ai is supposed to update, like installed_agents, so this restores
+// only the one field instead of the whole file).
+//
+// Returns the new text, or `undefined` when either text fails to parse as a
+// JSON object, or the field's presence and value are already identical on
+// both sides (nothing to restore). Never called by the caller when
+// `originalText` comes from a file that did not exist before the spawn —
+// there is nothing to restore a nonexistent file back to.
+export function restoreJsonField(originalText        , currentText        , field        )                     {
+	let originalValue         ;
+	let currentValue         ;
+	try {
+		originalValue = JSON.parse(originalText);
+		currentValue = JSON.parse(currentText);
+	} catch {
+		return undefined;
+	}
+	if (
+		typeof originalValue !== "object" ||
+		originalValue === null ||
+		Array.isArray(originalValue) ||
+		typeof currentValue !== "object" ||
+		currentValue === null ||
+		Array.isArray(currentValue)
+	) {
+		return undefined;
+	}
+	const originalObj = originalValue                           ;
+	const currentObj = currentValue                           ;
+	const hadField = Object.prototype.hasOwnProperty.call(originalObj, field);
+	const hasFieldNow = Object.prototype.hasOwnProperty.call(currentObj, field);
+	const unchanged = hadField === hasFieldNow && (!hadField || jsonValuesEqual(originalObj[field], currentObj[field]));
+	if (unchanged) return undefined;
+
+	let restored                         ;
+	if (hadField) {
+		restored = { ...currentObj, [field]: originalObj[field] };
+	} else {
+		restored = { ...currentObj };
+		delete restored[field];
+	}
+
+	const { indent, trailingNewline } = detectJsonFormatting(originalText);
+	const serialized = JSON.stringify(restored, null, indent);
+	return trailingNewline ? `${serialized}\n` : serialized;
+}
+
+// Pure JSON merge: forces `field` in `currentText` to `value`, but only when
+// `originalText` (the state from before whatever wrote `currentText`) did not
+// declare that field at all — never overriding a value the original already
+// had, in either direction. Keeps every other field exactly as `currentText`
+// left it, and formats the result to match `currentText`'s own indentation
+// and trailing newline (unlike restoreJsonField above, which matches the
+// *original*'s formatting — here `currentText` is what the other writer just
+// produced, so its own convention is respected instead of imposed on).
+// Used by bin/gentle-shell.mjs's setup flow so a home gentle-shell provisions
+// ends up with the maintainer's default theme unless the home (or the user)
+// already had an opinion about it, even when gentle-ai's own managed install
+// writes a *different* default theme into settings.json.
+//
+// Returns the new text, or `undefined` when either text fails to parse as a
+// JSON object, the original text already declared `field` (nothing to
+// force), or the current value already equals `value` (nothing to change).
+export function forceJsonFieldIfAbsentInOriginal(originalText        , currentText        , field        , value         )                     {
+	let originalValue         ;
+	let currentValue         ;
+	try {
+		originalValue = JSON.parse(originalText);
+		currentValue = JSON.parse(currentText);
+	} catch {
+		return undefined;
+	}
+	if (typeof originalValue !== "object" || originalValue === null || Array.isArray(originalValue)) return undefined;
+	if (typeof currentValue !== "object" || currentValue === null || Array.isArray(currentValue)) return undefined;
+	const originalObj = originalValue                           ;
+	const currentObj = currentValue                           ;
+	if (Object.prototype.hasOwnProperty.call(originalObj, field)) return undefined;
+	if (jsonValuesEqual(currentObj[field], value)) return undefined;
+
+	const forced = { ...currentObj, [field]: value };
+	const { indent, trailingNewline } = detectJsonFormatting(currentText);
+	const serialized = JSON.stringify(forced, null, indent);
+	return trailingNewline ? `${serialized}\n` : serialized;
 }
 
 // --- reporting ---------------------------------------------------------------
@@ -830,6 +1137,7 @@ export function helpText()         {
 	return [
 		"Usage: gentle-shell [options] [-- pi-args...]",
 		"       gentle-shell home [link|isolated|<path>]",
+		"       gentle-shell [home selectors] setup [--dry-run]",
 		"",
 		"Opens pi with the Gentle Shell package loaded, without touching your",
 		"vanilla pi installation.",
@@ -845,6 +1153,10 @@ export function helpText()         {
 		"",
 		"Commands:",
 		"  home             Print or persist the effective home mode (link, isolated, or a path).",
+		"  setup            Provision the resolved home with the gentle-ai companion packages",
+		"                   (runs the package-local gentle-ai 'install --agent pi --scope global').",
+		"                   Accepts --dry-run, forwarded to gentle-ai. Accepts a home selector",
+		"                   (--link, --isolated, --home <dir>) before it.",
 		"",
 		"Managing packages:",
 		"  gentle-shell install npm:<pkg>   Run pi's own 'install' against the resolved home.",

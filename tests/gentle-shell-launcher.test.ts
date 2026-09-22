@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
 	MIN_PI_VERSION,
+	MIN_SETUP_GENTLE_AI_VERSION,
 	PI_SUBCOMMANDS,
 	buildPiInvocation,
 	checkPeerVersionPin,
@@ -13,20 +14,31 @@ import {
 	describeVersion,
 	discoverLooseExtensionEntries,
 	findGentlePiDeclaration,
+	forceJsonFieldIfAbsentInOriginal,
 	helpText,
+	homeSelectorFlags,
+	isSetupCapablePin,
 	launcherConfigPath,
 	type LooseExtensionFsEntry,
 	missingPiMessage,
+	needsProvisioning,
 	otherPackageInjections,
 	parseLauncherArgs,
 	parseLauncherConfig,
+	parseRawLauncherConfig,
 	planSpawn,
+	postInstallRemovals,
+	provisionedEntry,
 	quoteForCmdExe,
+	recordProvisioned,
 	resolveHome,
 	resolvePiRuntime,
+	restoreJsonField,
 	settingsDeclareGentlePi,
+	shellQuote,
 	type PackageJsonPeerShape,
 	type ParsedLauncherArgs,
+	type RawLauncherConfig,
 	type ResolvedHome,
 } from "../lib/gentle-shell-launcher.ts";
 
@@ -144,6 +156,47 @@ test("parseLauncherArgs treats home as a plain passthrough token when it is not 
 	const parsed = parseLauncherArgs(["--isolated", "home"]);
 	assert.equal(parsed.command, undefined);
 	assert.deepEqual(parsed.passthrough, ["home"]);
+});
+
+// --- setup subcommand ----------------------------------------------------
+//
+// Unlike `home`, `setup` is not restricted to argv[0]: it accepts the home
+// selectors (--link, --isolated, --home <dir>) ahead of it, same as any pi
+// subcommand would, since setup provisions whichever home those selectors
+// resolve to.
+
+test("parseLauncherArgs recognises setup as argv[0] and captures the rest as commandArgs", () => {
+	const parsed = parseLauncherArgs(["setup"]);
+	assert.equal(parsed.command, "setup");
+	assert.deepEqual(parsed.commandArgs, []);
+	assert.deepEqual(parsed.passthrough, []);
+});
+
+test("parseLauncherArgs recognises setup after a home selector and keeps the selector", () => {
+	const parsed = parseLauncherArgs(["--isolated", "setup"]);
+	assert.equal(parsed.command, "setup");
+	assert.equal(parsed.isolated, true);
+	assert.deepEqual(parsed.commandArgs, []);
+});
+
+test("parseLauncherArgs recognises setup after --home <dir> and forwards --dry-run as commandArgs", () => {
+	const parsed = parseLauncherArgs(["--home", "/custom/path", "setup", "--dry-run"]);
+	assert.equal(parsed.command, "setup");
+	assert.equal(parsed.home, "/custom/path");
+	assert.deepEqual(parsed.commandArgs, ["--dry-run"]);
+});
+
+test("parseLauncherArgs does not set piSubcommand for the setup launcher subcommand", () => {
+	const parsed = parseLauncherArgs(["setup"]);
+	assert.equal(parsed.command, "setup");
+	assert.equal(parsed.piSubcommand, undefined);
+});
+
+test("parseLauncherArgs treats setup as a plain passthrough token once a pi subcommand already started", () => {
+	const parsed = parseLauncherArgs(["install", "setup"]);
+	assert.equal(parsed.command, undefined);
+	assert.equal(parsed.piSubcommand, "install");
+	assert.deepEqual(parsed.passthrough, ["install", "setup"]);
 });
 
 // --- pi subcommand passthrough (install/remove/uninstall/update/list/config/auth) ---
@@ -301,6 +354,20 @@ test("resolveHome lets a flag override a persisted config", () => {
 	assert.equal(resolved.source, "flag");
 });
 
+// --- homeSelectorFlags -----------------------------------------------------
+
+test("homeSelectorFlags reproduces --link for a link home", () => {
+	assert.deepEqual(homeSelectorFlags({ mode: "link", dir: "/home/alan/.pi/agent", source: "flag" }), ["--link"]);
+});
+
+test("homeSelectorFlags reproduces --home <dir> for a path home", () => {
+	assert.deepEqual(homeSelectorFlags({ mode: "path", dir: "/explicit/path", source: "flag" }), ["--home", "/explicit/path"]);
+});
+
+test("homeSelectorFlags is empty for the isolated default (no flags needed)", () => {
+	assert.deepEqual(homeSelectorFlags({ mode: "isolated", dir: "/home/alan/.gentle-shell/agent", source: "default" }), []);
+});
+
 // --- launcherConfigPath / parseLauncherConfig -----------------------------
 
 test("launcherConfigPath points at <homedir>/.gentle-shell/config.json", () => {
@@ -342,6 +409,98 @@ test("parseLauncherConfig tolerates a non-string home value", () => {
 
 test("parseLauncherConfig tolerates an empty home value", () => {
 	assert.equal(parseLauncherConfig('{"home":""}'), undefined);
+});
+
+// --- parseRawLauncherConfig / provisionedEntry / needsProvisioning / recordProvisioned (S7) ---
+//
+// Unlike parseLauncherConfig's discriminated LauncherConfig (home mode only),
+// these operate on the full raw config.json object so a write never drops a
+// key (like a sibling home's provisioned marker) it does not itself
+// understand.
+
+test("parseRawLauncherConfig returns an empty object for a missing file", () => {
+	assert.deepEqual(parseRawLauncherConfig(undefined), {});
+});
+
+test("parseRawLauncherConfig tolerates invalid JSON and non-object documents", () => {
+	assert.deepEqual(parseRawLauncherConfig("not json"), {});
+	assert.deepEqual(parseRawLauncherConfig("[]"), {});
+	assert.deepEqual(parseRawLauncherConfig('"link"'), {});
+});
+
+test("parseRawLauncherConfig preserves every key, not just home", () => {
+	assert.deepEqual(parseRawLauncherConfig('{"home":"link","provisioned":{"/a":{"gentleAi":"3.6.0","at":"2026-09-22T00:00:00.000Z"}}}'), {
+		home: "link",
+		provisioned: { "/a": { gentleAi: "3.6.0", at: "2026-09-22T00:00:00.000Z" } },
+	});
+});
+
+test("provisionedEntry is undefined for a home with no marker", () => {
+	assert.equal(provisionedEntry({}, "/home/alan/.gentle-shell/agent"), undefined);
+});
+
+test("provisionedEntry returns the stored record for a matching home", () => {
+	const config: RawLauncherConfig = { provisioned: { "/a": { gentleAi: "3.6.0", at: "2026-09-22T00:00:00.000Z" } } };
+	assert.deepEqual(provisionedEntry(config, "/a"), { gentleAi: "3.6.0", at: "2026-09-22T00:00:00.000Z" });
+});
+
+test("provisionedEntry tolerates a malformed provisioned map (non-object, missing fields)", () => {
+	assert.equal(provisionedEntry({ provisioned: "nope" } as unknown as RawLauncherConfig, "/a"), undefined);
+	assert.equal(provisionedEntry({ provisioned: { "/a": { gentleAi: "3.6.0" } } } as unknown as RawLauncherConfig, "/a"), undefined);
+});
+
+test("needsProvisioning is true for a home with no marker", () => {
+	assert.equal(needsProvisioning({}, "/a", "3.6.0", "3.5.1"), true);
+});
+
+test("needsProvisioning is true when the marker's pin differs from the current pin", () => {
+	const config: RawLauncherConfig = { provisioned: { "/a": { gentleAi: "3.6.0", gentlePi: "3.5.1", at: "2026-09-22T00:00:00.000Z" } } };
+	assert.equal(needsProvisioning(config, "/a", "3.6.1", "3.5.1"), true);
+});
+
+test("needsProvisioning is false when the marker's pin and gentle-pi version both match the current ones", () => {
+	const config: RawLauncherConfig = { provisioned: { "/a": { gentleAi: "3.6.0", gentlePi: "3.5.1", at: "2026-09-22T00:00:00.000Z" } } };
+	assert.equal(needsProvisioning(config, "/a", "3.6.0", "3.5.1"), false);
+});
+
+// A marker written before gentle-pi version tracking existed (S8) has no
+// `gentlePi` field at all; that omission must never equal a real running
+// version, so it always counts as needing provisioning even though the
+// gentle-ai pin itself still matches.
+test("needsProvisioning is true when the marker predates gentle-pi version tracking (no gentlePi field)", () => {
+	const config: RawLauncherConfig = { provisioned: { "/a": { gentleAi: "3.6.0", at: "2026-09-22T00:00:00.000Z" } } };
+	assert.equal(needsProvisioning(config, "/a", "3.6.0", "3.5.1"), true);
+});
+
+test("needsProvisioning is true when the marker's gentle-pi version differs from the running one, even though the pin matches", () => {
+	const config: RawLauncherConfig = { provisioned: { "/a": { gentleAi: "3.6.0", gentlePi: "3.5.0", at: "2026-09-22T00:00:00.000Z" } } };
+	assert.equal(needsProvisioning(config, "/a", "3.6.0", "3.5.1"), true);
+});
+
+test("recordProvisioned adds a marker (gentleAi, gentlePi, at) and preserves every other key, including other homes", () => {
+	const config: RawLauncherConfig = {
+		home: "isolated",
+		provisioned: { "/other": { gentleAi: "3.5.0", gentlePi: "3.4.0", at: "2026-01-01T00:00:00.000Z" } },
+	};
+	const updated = recordProvisioned(config, "/a", "3.6.0", "3.5.1", "2026-09-22T00:00:00.000Z");
+	assert.deepEqual(updated, {
+		home: "isolated",
+		provisioned: {
+			"/other": { gentleAi: "3.5.0", gentlePi: "3.4.0", at: "2026-01-01T00:00:00.000Z" },
+			"/a": { gentleAi: "3.6.0", gentlePi: "3.5.1", at: "2026-09-22T00:00:00.000Z" },
+		},
+	});
+	// Returns a new object; never mutates the input.
+	assert.deepEqual(config, {
+		home: "isolated",
+		provisioned: { "/other": { gentleAi: "3.5.0", gentlePi: "3.4.0", at: "2026-01-01T00:00:00.000Z" } },
+	});
+});
+
+test("recordProvisioned overwrites an existing marker for the same home", () => {
+	const config: RawLauncherConfig = { provisioned: { "/a": { gentleAi: "3.6.0", gentlePi: "3.5.0", at: "2026-01-01T00:00:00.000Z" } } };
+	const updated = recordProvisioned(config, "/a", "3.6.1", "3.5.1", "2026-09-22T00:00:00.000Z");
+	assert.deepEqual(updated, { provisioned: { "/a": { gentleAi: "3.6.1", gentlePi: "3.5.1", at: "2026-09-22T00:00:00.000Z" } } });
 });
 
 // --- resolvePiRuntime ------------------------------------------------------
@@ -506,6 +665,44 @@ test("checkPiVersion accepts a custom minimum", () => {
 	assert.equal(checkPiVersion("1.2.0", "1.1.0").ok, true);
 });
 
+// --- isSetupCapablePin -------------------------------------------------------
+// `gentle-shell setup` provisions a home through the package-local pinned
+// gentle-ai binary by pointing PI_CODING_AGENT_DIR at that home; only
+// gentle-ai >= 3.6.0 honors that variable in its own `install --agent pi`
+// provisioning. An older pin would silently provision the caller's real
+// ~/.pi/agent instead, so setup must refuse to spawn it.
+
+test("MIN_SETUP_GENTLE_AI_VERSION is 3.6.0", () => {
+	assert.equal(MIN_SETUP_GENTLE_AI_VERSION, "3.6.0");
+});
+
+test("isSetupCapablePin accepts a version equal to the minimum", () => {
+	assert.equal(isSetupCapablePin("3.6.0"), true);
+});
+
+test("isSetupCapablePin accepts a version above the minimum", () => {
+	assert.equal(isSetupCapablePin("3.6.1"), true);
+	assert.equal(isSetupCapablePin("4.0.0"), true);
+});
+
+test("isSetupCapablePin rejects a version below the minimum", () => {
+	assert.equal(isSetupCapablePin("3.5.1"), false);
+	assert.equal(isSetupCapablePin("3.5.9"), false);
+});
+
+test("isSetupCapablePin accepts a v-prefixed version", () => {
+	assert.equal(isSetupCapablePin("v3.6.0"), true);
+});
+
+test("isSetupCapablePin rejects unparsable input", () => {
+	assert.equal(isSetupCapablePin("not a version"), false);
+});
+
+test("isSetupCapablePin accepts a custom minimum", () => {
+	assert.equal(isSetupCapablePin("2.0.0", "2.1.0"), false);
+	assert.equal(isSetupCapablePin("2.1.0", "2.1.0"), true);
+});
+
 // --- settingsDeclareGentlePi ------------------------------------------------
 
 test("settingsDeclareGentlePi is false when settings text is undefined", () => {
@@ -545,6 +742,61 @@ test("settingsDeclareGentlePi is false for a path package entry, even one that r
 	// declarations, matching its pre-existing behaviour before path detection
 	// was added via findGentlePiDeclaration.
 	assert.equal(settingsDeclareGentlePi('{"packages":["../../work/gentle-pi"]}'), false);
+});
+
+// --- postInstallRemovals -----------------------------------------------
+//
+// gentle-ai's managed Pi stack (gentle-ai #4820, gentle-shell #1277) still
+// installs npm:@juicesharp/rpiv-ask-user-question, which conflicts with
+// gentle-pi's own first-party ask_user_question tool: Pi refuses two
+// providers for the same tool name. It also always declares npm:gentle-pi
+// itself, which must never stay in the home's settings.json: this launcher
+// always loads its own gentle-pi, so leaving that declaration in place would
+// let the home drift onto whatever gentle-pi npm installed instead. This
+// pure helper tells `gentle-shell setup` which declared packages it must
+// remove after provisioning a home, for either reason.
+
+test("postInstallRemovals is empty when settings text is undefined", () => {
+	assert.deepEqual(postInstallRemovals(undefined), []);
+});
+
+test("postInstallRemovals is empty for invalid JSON", () => {
+	assert.deepEqual(postInstallRemovals("not json"), []);
+});
+
+test("postInstallRemovals is empty when packages is absent", () => {
+	assert.deepEqual(postInstallRemovals("{}"), []);
+});
+
+test("postInstallRemovals detects a bare npm:@juicesharp/rpiv-ask-user-question string entry", () => {
+	assert.deepEqual(postInstallRemovals('{"packages":["npm:@juicesharp/rpiv-ask-user-question"]}'), ["npm:@juicesharp/rpiv-ask-user-question"]);
+});
+
+test("postInstallRemovals detects a versioned entry and returns the canonical unversioned source", () => {
+	assert.deepEqual(postInstallRemovals('{"packages":["npm:@juicesharp/rpiv-ask-user-question@1.2.3"]}'), [
+		"npm:@juicesharp/rpiv-ask-user-question",
+	]);
+});
+
+test("postInstallRemovals detects a versioned object source entry", () => {
+	assert.deepEqual(postInstallRemovals('{"packages":[{"source":"npm:@juicesharp/rpiv-ask-user-question@1.2.3"}]}'), [
+		"npm:@juicesharp/rpiv-ask-user-question",
+	]);
+});
+
+test("postInstallRemovals detects npm:gentle-pi at any version, alongside an unrelated package", () => {
+	assert.deepEqual(postInstallRemovals('{"packages":["npm:gentle-pi@3.5.1","npm:some-other-package"]}'), ["npm:gentle-pi"]);
+});
+
+test("postInstallRemovals dedupes a duplicated declaration and preserves declaration order", () => {
+	const settingsText =
+		'{"packages":["npm:gentle-pi@1.0.0","npm:@juicesharp/rpiv-ask-user-question@1.0.0","npm:@juicesharp/rpiv-ask-user-question@2.0.0"]}';
+	assert.deepEqual(postInstallRemovals(settingsText), ["npm:gentle-pi", "npm:@juicesharp/rpiv-ask-user-question"]);
+});
+
+test("postInstallRemovals ignores a path entry that happens to share the package name", () => {
+	assert.deepEqual(postInstallRemovals('{"packages":["./local-ask-user-question"]}'), []);
+	assert.deepEqual(postInstallRemovals('{"packages":["./local-gentle-pi"]}'), []);
 });
 
 // --- findGentlePiDeclaration -------------------------------------------------
@@ -1331,6 +1583,142 @@ test("quoteForCmdExe quotes an empty token", () => {
 	assert.equal(quoteForCmdExe(""), '""');
 });
 
+// --- restoreJsonField ---------------------------------------------------------
+//
+// Pure JSON merge used by bin/gentle-shell.mjs's setup flow to restore a
+// single field of `~/.gentle-ai/state.json` (managed_asset_digest) after the
+// pinned gentle-ai spawn rewrites it, the same way the whole-file
+// snapshot/restore already protects `~/.pi/gentle-ai/persona.json` — but
+// scoped to one field, since state.json also carries fields the pinned
+// gentle-ai is supposed to update (gentle-shell #<managed-asset-digest>).
+
+test("restoreJsonField restores a changed field and keeps every other field untouched", () => {
+	const original = `${JSON.stringify({ managed_asset_digest: "abc123", installed_agents: ["pi"] }, null, 2)}\n`;
+	const current = `${JSON.stringify({ managed_asset_digest: "def456", installed_agents: ["pi", "claude"] }, null, 2)}\n`;
+	const result = restoreJsonField(original, current, "managed_asset_digest");
+	assert.equal(result, `${JSON.stringify({ managed_asset_digest: "abc123", installed_agents: ["pi", "claude"] }, null, 2)}\n`);
+});
+
+test("restoreJsonField deletes the field when it was absent before", () => {
+	const original = `${JSON.stringify({ installed_agents: ["pi"] }, null, 2)}\n`;
+	const current = `${JSON.stringify({ managed_asset_digest: "def456", installed_agents: ["pi"] }, null, 2)}\n`;
+	const result = restoreJsonField(original, current, "managed_asset_digest");
+	assert.equal(result, `${JSON.stringify({ installed_agents: ["pi"] }, null, 2)}\n`);
+});
+
+test("restoreJsonField returns undefined when the field is unchanged", () => {
+	const original = `${JSON.stringify({ managed_asset_digest: "abc123", installed_agents: ["pi"] }, null, 2)}\n`;
+	const current = `${JSON.stringify({ managed_asset_digest: "abc123", installed_agents: ["pi", "claude"] }, null, 2)}\n`;
+	assert.equal(restoreJsonField(original, current, "managed_asset_digest"), undefined);
+});
+
+test("restoreJsonField returns undefined when the field stays absent on both sides", () => {
+	const original = `${JSON.stringify({ installed_agents: ["pi"] }, null, 2)}\n`;
+	const current = `${JSON.stringify({ installed_agents: ["pi", "claude"] }, null, 2)}\n`;
+	assert.equal(restoreJsonField(original, current, "managed_asset_digest"), undefined);
+});
+
+test("restoreJsonField returns undefined for invalid original JSON", () => {
+	const result = restoreJsonField("not json", '{"managed_asset_digest":"def456"}', "managed_asset_digest");
+	assert.equal(result, undefined);
+});
+
+test("restoreJsonField returns undefined for invalid current JSON", () => {
+	const result = restoreJsonField('{"managed_asset_digest":"abc123"}', "not json", "managed_asset_digest");
+	assert.equal(result, undefined);
+});
+
+test("restoreJsonField preserves 2-space indentation and a trailing newline detected from the original text", () => {
+	const original = '{\n  "managed_asset_digest": "abc123"\n}\n';
+	const current = '{"managed_asset_digest":"def456","installed_agents":["pi"]}';
+	const result = restoreJsonField(original, current, "managed_asset_digest");
+	assert.equal(result, `${JSON.stringify({ managed_asset_digest: "abc123", installed_agents: ["pi"] }, null, 2)}\n`);
+});
+
+test("restoreJsonField matches compact formatting (no indent, no trailing newline) when the original had none", () => {
+	const original = '{"managed_asset_digest":"abc123"}';
+	const current = '{"managed_asset_digest":"def456","installed_agents":["pi"]}';
+	const result = restoreJsonField(original, current, "managed_asset_digest");
+	assert.equal(result, '{"managed_asset_digest":"abc123","installed_agents":["pi"]}');
+});
+
+// --- forceJsonFieldIfAbsentInOriginal ------------------------------------------
+//
+// Pure JSON merge used by bin/gentle-shell.mjs's setup flow to make sure a
+// home gentle-shell provisions ends up with the default Gentle Shell theme
+// unless the home (or the user) already had an opinion about it — even when
+// gentle-ai's own managed install wrote a *different* default theme into
+// settings.json. Unlike restoreJsonField above (which restores a field back
+// to whatever it was originally), this only ever forces one specific value,
+// and only when the original text had no opinion on the field at all.
+
+test("forceJsonFieldIfAbsentInOriginal forces the field when the original had none and the current text disagrees", () => {
+	const original = `${JSON.stringify({ tuiMode: "fullscreen" }, null, 2)}\n`;
+	const current = `${JSON.stringify({ tuiMode: "fullscreen", theme: "kanagawa" }, null, 2)}\n`;
+	const result = forceJsonFieldIfAbsentInOriginal(original, current, "theme", "Gentleman-Cute");
+	assert.equal(result, `${JSON.stringify({ tuiMode: "fullscreen", theme: "Gentleman-Cute" }, null, 2)}\n`);
+});
+
+test("forceJsonFieldIfAbsentInOriginal forces the field when the original had none and the current text also has none", () => {
+	const original = `${JSON.stringify({ tuiMode: "fullscreen" }, null, 2)}\n`;
+	const current = `${JSON.stringify({ tuiMode: "fullscreen" }, null, 2)}\n`;
+	const result = forceJsonFieldIfAbsentInOriginal(original, current, "theme", "Gentleman-Cute");
+	assert.equal(result, `${JSON.stringify({ tuiMode: "fullscreen", theme: "Gentleman-Cute" }, null, 2)}\n`);
+});
+
+test("forceJsonFieldIfAbsentInOriginal returns undefined when the original already declared the field", () => {
+	const original = `${JSON.stringify({ tuiMode: "fullscreen", theme: "rose" }, null, 2)}\n`;
+	const current = `${JSON.stringify({ tuiMode: "fullscreen", theme: "rose" }, null, 2)}\n`;
+	assert.equal(forceJsonFieldIfAbsentInOriginal(original, current, "theme", "Gentleman-Cute"), undefined);
+});
+
+test("forceJsonFieldIfAbsentInOriginal returns undefined when the original declared the field, even if the current text changed it", () => {
+	const original = `${JSON.stringify({ tuiMode: "fullscreen", theme: "rose" }, null, 2)}\n`;
+	const current = `${JSON.stringify({ tuiMode: "fullscreen", theme: "kanagawa" }, null, 2)}\n`;
+	assert.equal(forceJsonFieldIfAbsentInOriginal(original, current, "theme", "Gentleman-Cute"), undefined);
+});
+
+test("forceJsonFieldIfAbsentInOriginal returns undefined when the current value already matches the forced value", () => {
+	const original = `${JSON.stringify({ tuiMode: "fullscreen" }, null, 2)}\n`;
+	const current = `${JSON.stringify({ tuiMode: "fullscreen", theme: "Gentleman-Cute" }, null, 2)}\n`;
+	assert.equal(forceJsonFieldIfAbsentInOriginal(original, current, "theme", "Gentleman-Cute"), undefined);
+});
+
+test("forceJsonFieldIfAbsentInOriginal returns undefined for invalid original JSON", () => {
+	assert.equal(forceJsonFieldIfAbsentInOriginal("not json", '{"theme":"kanagawa"}', "theme", "Gentleman-Cute"), undefined);
+});
+
+test("forceJsonFieldIfAbsentInOriginal returns undefined for invalid current JSON", () => {
+	assert.equal(forceJsonFieldIfAbsentInOriginal("{}", "not json", "theme", "Gentleman-Cute"), undefined);
+});
+
+test("forceJsonFieldIfAbsentInOriginal matches the current text's own indentation and trailing-newline convention, not the original's", () => {
+	const original = '{\n  "tuiMode": "fullscreen"\n}\n';
+	const current = '{"tuiMode":"fullscreen"}';
+	const result = forceJsonFieldIfAbsentInOriginal(original, current, "theme", "Gentleman-Cute");
+	assert.equal(result, '{"tuiMode":"fullscreen","theme":"Gentleman-Cute"}');
+});
+
+// --- shellQuote ---------------------------------------------------------------
+//
+// Used by bin/gentle-shell.mjs to build the copy-pasteable
+// `gentle-shell <home selector> remove <source>` remediation command it
+// prints after a failed conflicting-package removal: an unquoted --home
+// <dir> containing a space would silently split into two shell words if
+// copy-pasted (gentle-shell #1277 follow-up).
+
+test("shellQuote leaves a plain token unchanged", () => {
+	assert.equal(shellQuote("/Users/alan/.gentle-shell/agent"), "/Users/alan/.gentle-shell/agent");
+});
+
+test("shellQuote single-quotes a token containing a space", () => {
+	assert.equal(shellQuote("/Users/alan/custom home"), "'/Users/alan/custom home'");
+});
+
+test("shellQuote escapes an embedded single quote as '\\''", () => {
+	assert.equal(shellQuote("a'b"), "'a'\\''b'");
+});
+
 // --- describeVersion / helpText ----------------------------------------------
 
 test("describeVersion formats the three-line report with a found pi version", () => {
@@ -1354,6 +1742,12 @@ test("helpText documents the launcher flags, the home subcommand, the env vars, 
 	assert.match(text, /GENTLE_SHELL_HOME/);
 	assert.match(text, /PI_CODING_AGENT_DIR/);
 	assert.match(text, /forward/i);
+});
+
+test("helpText documents the setup subcommand", () => {
+	const text = helpText();
+	assert.match(text, /\bsetup\b/);
+	assert.match(text, /--dry-run/);
 });
 
 test("helpText documents pi's own package-management subcommands", () => {
