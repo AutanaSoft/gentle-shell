@@ -28,6 +28,8 @@ import { historyDir, loadHistory, loadStoredTask, pruneHistory, saveTask } from 
 import { sessionToMarkdown } from "../lib/agents-transcript.ts";
 import { AgentsView } from "../lib/agents-view.ts";
 import { PresencePublisher } from "../lib/orchestrator-presence.ts";
+import { createRpcActivityPublisher, type RpcActivityPublisher } from "../lib/agents-rpc-publisher.ts";
+import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { AGENTS_GLYPH, renderAgentsCard, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
 import { CARD_TONE, renderCard } from "../lib/shell-card.ts";
@@ -476,6 +478,12 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	let sidebarTui: TUI | undefined;
 	let sessions: ExtensionContext["sessionManager"] | undefined;
 	let presence: PresencePublisher | undefined;
+	let rpcActivityPublisher: RpcActivityPublisher | undefined;
+	// Messages already surfaced to the user this session through the RPC
+	// activity publisher's `onError`, so a recurring push failure (the
+	// coalescing window retries every burst) notifies at most once per
+	// session instead of flooding the UI. Reset on every `session_start`.
+	let notifiedRpcActivityErrors: Set<string> | undefined;
 	const overlays = new Set<AgentsView>();
 	const publishActivity = () => {
 		if (!sessions) return;
@@ -1450,12 +1458,37 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			publishActivity();
 		} catch { presence = undefined; }
 		void startSessionTransport(ctx);
+		// The desktop app's own pi process: publish live subagent state through
+		// setWidget's RPC-mode string[] path. Plain headless RPC (no variable) and
+		// TUI are untouched -- the TUI card above the editor is showWidget's own
+		// factory push, ignored by pi's RPC transport since it is not an array.
+		rpcActivityPublisher?.stop();
+		rpcActivityPublisher = undefined;
+		notifiedRpcActivityErrors = new Set();
+		if (ctx.hasUI && isInteractiveRpcHost(ctx.mode, deps.env)) {
+			rpcActivityPublisher = createRpcActivityPublisher({
+				store,
+				ui: { setWidget: (key, lines) => ctx.ui.setWidget(key, lines) },
+				now: deps.now,
+				schedule: deps.schedule,
+				parentSessionId: activeSessionId(),
+				onError: (error) => {
+					const message = `Gentle Agents activity push failed: ${error instanceof Error ? error.message : String(error)}`;
+					if (notifiedRpcActivityErrors?.has(message)) return;
+					notifiedRpcActivityErrors?.add(message);
+					ctx.ui.notify(message, "warning");
+				},
+			});
+			rpcActivityPublisher.start();
+		}
 	});
 	pi.on("session_shutdown", async () => {
 		completions.dropAll();
 		activeAgentRuns = 0;
 		presence?.dispose();
 		presence = undefined;
+		rpcActivityPublisher?.stop();
+		rpcActivityPublisher = undefined;
 		cancelClock?.();
 		for (const view of overlays) { view.handleInput("q"); view.dispose(); }
 		overlays.clear();
