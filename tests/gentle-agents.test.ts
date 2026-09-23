@@ -2173,7 +2173,7 @@ test("native spawn interception restores CommonJS and ESM exports after rejected
 	}
 });
 
-test("foreign clone tool requires consent before queueing and never enters parent Changes", async () => {
+test("foreign clone tool requires consent before queueing and never enters parent Changes", async (t) => {
 	const fixture = realpathSync(mkdtempSync(join(tmpdir(), "foreign-target-")));
 	const parent = join(fixture, "parent"), foreign = join(fixture, "foreign");
 	const template = join(fixture, "template");
@@ -2189,8 +2189,10 @@ test("foreign clone tool requires consent before queueing and never enters paren
 		runtime.deps.env = { PATH: "/bin", GENTLE_PI_CONFIG_HOME: configHome };
 		runtime.deps.resolveWorktree = resolveSessionWorktree;
 		const spawned: string[] = [];
+		const spawnEnvs: Array<Record<string, string | undefined>> = [];
 		const spawn = runtime.deps.spawn!;
-		runtime.deps.spawn = (command, args, options) => { spawned.push(options.cwd); return spawn(command, args, options); };
+		runtime.deps.spawn = (command, args, options) => { spawned.push(options.cwd); spawnEnvs.push(options.env); return spawn(command, args, options); };
+		const runnerRun = t.mock.method(AgentRunner.prototype, "run");
 		gentleAgents(h.pi, {}, runtime.deps);
 		let resolveConsent!: (answer: boolean) => void;
 		let prompts = 0;
@@ -2211,6 +2213,7 @@ test("foreign clone tool requires consent before queueing and never enters paren
 		const result = await pending;
 		await tick();
 		assert.deepEqual(spawned, [foreign]);
+		assert.equal((runnerRun.mock.calls[0]?.arguments[0] as { authorizeParentStandingReviewPermission?: unknown }).authorizeParentStandingReviewPermission, undefined, "foreign child must not receive parent review permission channel");
 		assert.equal(runtime.spawned[0]?.[runtime.spawned[0]!.indexOf("--model") + 1], "openai/foreign-model:minimal");
 		assert.equal((result.details.gentleAgents as { cwd: string }).cwd, foreign);
 		assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), []);
@@ -2223,16 +2226,30 @@ test("foreign clone tool requires consent before queueing and never enters paren
 		try {
 			process.env.GIT_DIR = join(parent, ".git");
 			process.env.GIT_WORK_TREE = parent;
+			runtime.deps.env!.GIT_DIR = join(parent, ".git");
+			runtime.deps.env!.GIT_WORK_TREE = parent;
 			const injected = await run.execute("injected-git", { agent: "explore", task: "Map with ambient Git routing", repository_root: foreign, mode: "background" }, undefined, undefined, ctx);
 			assert.equal((injected.details.gentleAgents as { cwd: string }).cwd, foreign);
 			assert.equal(prompts, 1);
+			// Drain the active child so the queued injected launch reaches the actual OS spawn.
+			runtime.children[0].emit({ type: "agent_end", messages: [] });
+			runtime.children[0].emit({ type: "agent_settled" });
+			runtime.children[0].exit(0);
+			await tick();
+			assert.equal(spawned.at(-1), foreign);
+			assert.equal(spawnEnvs.at(-1)?.GIT_DIR, undefined);
+			assert.equal(spawnEnvs.at(-1)?.GIT_WORK_TREE, undefined);
 		} finally {
+			delete runtime.deps.env!.GIT_DIR;
+			delete runtime.deps.env!.GIT_WORK_TREE;
 			if (oldGitDir === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = oldGitDir;
 			if (oldGitWorkTree === undefined) delete process.env.GIT_WORK_TREE; else process.env.GIT_WORK_TREE = oldGitWorkTree;
 		}
 		const queued = await run.execute("queued", { agent: "explore", task: "Third map", repository_root: foreign, mode: "background" }, undefined, undefined, ctx);
 		assert.equal((queued.details.gentleAgents as { cwd: string }).cwd, foreign);
-		assert.equal(runtime.children.length, 2, "later launches wait in the runner queue");
+		assert.equal(runtime.children.length, 3, "later launches wait in the runner queue");
+		await run.execute("same-clone", { agent: "explore", task: "Map parent", workspace_root: parent, mode: "background" }, undefined, undefined, ctx);
+		assert.equal(typeof (runnerRun.mock.calls.at(-1)?.arguments[0] as { authorizeParentStandingReviewPermission?: unknown }).authorizeParentStandingReviewPermission, "function", "same-clone child retains parent review permission channel");
 		const { ctx: successor } = fakeContext();
 		successor.sessionManager.getCwd = () => parent;
 		await h.fire("session_start", successor);
@@ -2242,7 +2259,7 @@ test("foreign clone tool requires consent before queueing and never enters paren
 		runtime.children[0].emit({ type: "agent_settled" });
 		runtime.children[0].exit(0);
 		await tick();
-		assert.equal(runtime.children.length, 2, "stale queued foreign task must fail before OS spawn");
+		assert.equal(runtime.children.length, 3, "stale queued foreign task must fail before OS spawn");
 		await h.fire("session_shutdown", successor);
 	} finally { rmSync(fixture, { recursive: true, force: true }); }
 });
