@@ -2449,6 +2449,7 @@ test("foreign selector rejects RPC even with UI and rejects SDD/remediation befo
 		mkdirSync(join(agentHome, ".pi", "agent", "agents"), { recursive: true });
 		writeFileSync(join(agentHome, ".pi", "agent", "agents", "explore.md"), "---\ndescription: explore\ntools: [read]\n---\nExplore");
 		writeFileSync(join(agentHome, ".pi", "agent", "agents", "sdd-apply.md"), "---\ndescription: apply\ntools: [read]\n---\nApply");
+		writeFileSync(join(agentHome, ".pi", "agent", "agents", "sdd-research.md"), "---\ndescription: research\ntools: [read]\n---\nResearch");
 		runtime.deps.home = agentHome;
 		gentleAgents(h.pi, {}, runtime.deps);
 		const { ctx, dialogs } = fakeContext();
@@ -2463,6 +2464,8 @@ test("foreign selector rejects RPC even with UI and rejects SDD/remediation befo
 		ctx.mode = "tui";
 		await assert.rejects(run.execute("remediate", { ...base, remediation: {} }, undefined, undefined, ctx), /interactive parent session/);
 		await assert.rejects(run.execute("foreign-sdd", { ...base, agent: "sdd-apply", context: PARENT_CONFIRMED_SDD_CONTEXT, sdd_change: { changeName: "alpha", workspaceRoot: foreign, phase: "apply" } }, undefined, undefined, ctx), /interactive parent session/);
+		await assert.rejects(run.execute("foreign-sdd-no-change", { ...base, agent: "sdd-research", context: PARENT_CONFIRMED_SDD_CONTEXT }, undefined, undefined, ctx), /interactive parent session/);
+		assert.equal(existsSync(join(agentHome, ".pi", "agent", "sessions")), false, "foreign SDD rejection must precede child session directory creation");
 		const childHost = fakePi();
 		gentleAgents(childHost.pi, { GENTLE_PI_AGENTS_CHILD: "1" }, runtime.deps);
 		assert.equal(childHost.tools.has("subagent_run"), false, "child-originated foreign launches have no delegation tool");

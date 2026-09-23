@@ -1084,7 +1084,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// An explicit target is validated before any queue or session-dir writes.
 		const parentIdentity = deps.resolveWorktree(parentCwd, parentCwd);
 		if (repositoryRoot !== undefined && workspaceRoot !== undefined) throw new Error("repository_root and workspace_root are mutually exclusive.");
-		if (repositoryRoot !== undefined && (sddChange || remediationIntent || deps.env.GENTLE_PI_AGENTS_CHILD === "1" || ctx.mode !== "tui" || !ctx.hasUI)) throw new Error("Foreign repository launch requires an interactive parent session without SDD or remediation.");
+		if (repositoryRoot !== undefined && (SHIPPED_SDD_AGENT_NAME_SET.has(agent.name) || sddChange || remediationIntent || deps.env.GENTLE_PI_AGENTS_CHILD === "1" || ctx.mode !== "tui" || !ctx.hasUI)) throw new Error("Foreign repository launch requires an interactive parent session without SDD or remediation.");
 		const selectedRoot = repositoryRoot ?? workspaceRoot ?? sddChange?.workspaceRoot;
 		// Preserve ordinary non-Git continuation, without admitting any new root.
 		const sameNonGitContinuation = resume !== undefined && repositoryRoot === undefined && selectedRoot === parentCwd && !parentIdentity;
