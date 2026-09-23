@@ -35,6 +35,17 @@ test("continuation after a reload cannot recreate a lost grant by prompting", as
 	assert.equal(h.calls(), 1, "a lost continuation grant must never prompt again");
 });
 
+test("same-ID session-manager replacement revokes a grant without resurrecting it on continuation", async () => {
+	const h = context(async () => true);
+	const grants = new ForeignTargetGrants();
+	await grants.authorize(h.ctx as never, target);
+	const replacement = { ...h.ctx, sessionManager: { getSessionId: () => "session-one" } };
+	assert.throws(() => grants.assertCurrent(replacement as never, target), /no longer live/);
+	await assert.rejects(grants.authorize(replacement as never, target, { continuation: true }), /grant.*lost/i);
+	assert.equal(h.calls(), 1);
+	assert.throws(() => grants.assertCurrent(h.ctx as never, target), /no longer live/);
+});
+
 test("foreign grant fails closed on no UI, decline, cancellation, and identity change during consent", async () => {
 	await assert.rejects(new ForeignTargetGrants().authorize(context().ctx as never, target), /interactive/);
 	await assert.rejects(new ForeignTargetGrants().authorize(context(async () => false).ctx as never, target), /interactive/);

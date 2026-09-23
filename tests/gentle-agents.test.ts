@@ -2178,6 +2178,7 @@ test("foreign clone tool requires consent before queueing and never enters paren
 		ctx.sessionManager.getCwd = () => parent;
 		await h.fire("session_start", ctx);
 		const run = h.tools.get("subagent_run")!;
+		assert.match(JSON.stringify(run.parameters.properties.workspace_root), /foreign clones require interactive session-scoped consent/i);
 		const pending = run.execute("foreign", { agent: "explore", task: "Map", workspace_root: foreign, mode: "background" }, undefined, undefined, ctx);
 		await tick();
 		assert.equal(prompts, 1);
@@ -2193,9 +2194,22 @@ test("foreign clone tool requires consent before queueing and never enters paren
 		const reused = await run.execute("reuse", { agent: "explore", task: "Map again", workspace_root: foreign, mode: "background" }, undefined, undefined, ctx);
 		assert.equal(prompts, 1);
 		assert.equal((reused.details.gentleAgents as { cwd: string }).cwd, foreign);
+		// Git's ambient routing must not turn an explicit foreign destination into the parent's repository.
+		const oldGitDir = process.env.GIT_DIR;
+		const oldGitWorkTree = process.env.GIT_WORK_TREE;
+		try {
+			process.env.GIT_DIR = join(parent, ".git");
+			process.env.GIT_WORK_TREE = parent;
+			const injected = await run.execute("injected-git", { agent: "explore", task: "Map with ambient Git routing", workspace_root: foreign, mode: "background" }, undefined, undefined, ctx);
+			assert.equal((injected.details.gentleAgents as { cwd: string }).cwd, foreign);
+			assert.equal(prompts, 1);
+		} finally {
+			if (oldGitDir === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = oldGitDir;
+			if (oldGitWorkTree === undefined) delete process.env.GIT_WORK_TREE; else process.env.GIT_WORK_TREE = oldGitWorkTree;
+		}
 		const queued = await run.execute("queued", { agent: "explore", task: "Third map", workspace_root: foreign, mode: "background" }, undefined, undefined, ctx);
 		assert.equal((queued.details.gentleAgents as { cwd: string }).cwd, foreign);
-		assert.equal(runtime.children.length, 2, "third launch waits in the runner queue");
+		assert.equal(runtime.children.length, 2, "later launches wait in the runner queue");
 		const { ctx: successor } = fakeContext();
 		successor.sessionManager.getCwd = () => parent;
 		await h.fire("session_start", successor);
@@ -2207,6 +2221,44 @@ test("foreign clone tool requires consent before queueing and never enters paren
 		await tick();
 		assert.equal(runtime.children.length, 2, "stale queued foreign task must fail before OS spawn");
 		await h.fire("session_shutdown", successor);
+	} finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
+test("foreign task mode waits for the child and continuation reuses its live grant", async () => {
+	const fixture = realpathSync(mkdtempSync(join(tmpdir(), "foreign-task-")));
+	const parent = join(fixture, "parent"), foreign = join(fixture, "foreign"), template = join(fixture, "template");
+	mkdirSync(template);
+	try {
+		for (const path of [parent, foreign]) execFileSync("git", ["init", "--quiet", `--template=${template}`, path]);
+		const h = fakePi(), runtime = deps();
+		runtime.deps.resolveWorktree = resolveSessionWorktree;
+		gentleAgents(h.pi, {}, runtime.deps);
+		let prompts = 0;
+		const { ctx } = fakeContext(fakeTui, async () => { prompts++; return true; });
+		ctx.sessionManager.getCwd = () => parent;
+		await h.fire("session_start", ctx);
+		let finished = false;
+		const pending = h.tools.get("subagent_run")!.execute("task", { agent: "explore", task: "Map", workspace_root: foreign, mode: "task" }, undefined, undefined, ctx).then(result => { finished = true; return result; });
+		await tick();
+		assert.equal(finished, false, "task mode waits for settlement");
+		assert.equal(runtime.children.length, 1);
+		assert.equal(prompts, 1);
+		runtime.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "mapped" }] }] });
+		runtime.children[0].emit({ type: "agent_settled" });
+		runtime.children[0].exit(0);
+		const first = await pending;
+		assert.equal((first.details.gentleAgents as { cwd: string }).cwd, foreign);
+		const taskId = (first.details.gentleAgents as { taskId: string }).taskId;
+		const continued = h.tools.get("subagent_continue")!.execute("follow-up", { task_id: taskId, prompt: "Follow up", mode: "task" }, undefined, undefined, ctx);
+		await tick();
+		assert.equal(runtime.children.length, 2);
+		assert.equal(prompts, 1, "continuation cannot prompt for a second grant");
+		runtime.children[1].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "continued" }] }] });
+		runtime.children[1].emit({ type: "agent_settled" });
+		runtime.children[1].exit(0);
+		assert.equal(((await continued).details.gentleAgents as { cwd: string }).cwd, foreign);
+		assert.equal(runtime.spawned.length, 2);
+		await h.fire("session_shutdown", ctx);
 	} finally { rmSync(fixture, { recursive: true, force: true }); }
 });
 
