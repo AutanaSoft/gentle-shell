@@ -77,8 +77,8 @@ function writeStagesFile(t: test.TestContext, stages: Array<{ name: string; comm
 
 test("direct invocation exits 1 and names the failed stage when a stage fails", (t) => {
 	const stagesPath = writeStagesFile(t, [
-		{ name: "failing-stage", command: "node -e 'process.exit(1)'" },
-		{ name: "ok-stage", command: "node -e 'process.exit(0)'" },
+		{ name: "failing-stage", command: "node -e \"process.exit(1)\"" },
+		{ name: "ok-stage", command: "node -e \"process.exit(0)\"" },
 	]);
 	const result = spawnSync(process.execPath, [runnerPath, stagesPath], { encoding: "utf8" });
 	assert.equal(result.status, 1);
@@ -88,8 +88,8 @@ test("direct invocation exits 1 and names the failed stage when a stage fails", 
 
 test("direct invocation exits 0 when every stage passes", (t) => {
 	const stagesPath = writeStagesFile(t, [
-		{ name: "first", command: "node -e 'process.exit(0)'" },
-		{ name: "second", command: "node -e 'process.exit(0)'" },
+		{ name: "first", command: "node -e \"process.exit(0)\"" },
+		{ name: "second", command: "node -e \"process.exit(0)\"" },
 	]);
 	const result = spawnSync(process.execPath, [runnerPath, stagesPath], { encoding: "utf8" });
 	assert.equal(result.status, 0);
