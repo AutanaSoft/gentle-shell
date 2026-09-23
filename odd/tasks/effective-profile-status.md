@@ -42,7 +42,7 @@ Fix GitHub issue #1176 so the fullscreen Status sidebar shows the profile that g
 - [x] T7 — Integrate updated `main` at `b6188bef`, resolve the test import conflict while preserving both subscription-usage and effective-profile coverage, verify the merged candidate, push the feature branch, then integrate it into `downstream/main`.
 - [x] T8 — Filter irrelevant profile watcher events and reuse the resolved worktree identity; preserve null-filename, ancestor creation, atomic replacement, and non-Git global behavior. Route: delegated writer (production and regression tests); checks: observed RED/GREEN focused tests, resolver/read counters, typecheck, diff check, work-unit commit.
 - [x] T9 — Remove real OS watcher/timer dependence from both fullscreen Status refresh regressions while preserving integration assertions and rebind coverage. Route: delegated writer (integration tests and narrow test seam); checks: observed RED/GREEN, focused repeat, suite, work-unit commit.
-- [ ] T10 — Clarify global-store and invalid/stale-pin fallback in the fullscreen documentation, verify consistency with reference docs, and commit the documentation work unit. Route: inline direct unless additional non-trivial files become necessary; checks: readback, markdown/diff check, work-unit commit.
+- [x] T10 — Clarify global-store and invalid/stale-pin fallback in the fullscreen documentation, verify consistency with reference docs, and commit the documentation work unit. Route: inline direct unless additional non-trivial files become necessary; checks: readback, markdown/diff check, work-unit commit.
 
 ## Acceptance criteria
 
@@ -65,9 +65,9 @@ Fix GitHub issue #1176 so the fullscreen Status sidebar shows the profile that g
 
 ## Follow-up progress
 
-- T8 complete in local commit `729bfa62`; T9 implemented and independently verified, recording its work-unit commit. T10 pending. The two new T8 tests retain 130 ms wall-clock waits, to be removed with the T9 timer refactor.
+- T8 complete in local commit `729bfa62`; T9 complete in local commit `e4bcd254`; T10 complete in the local documentation work unit. The four profile-watcher refresh tests now use injected events and a controlled clock instead of wall-clock debounce waits.
 - Current branch is ahead of `origin/fix/effective-profile-status` because of an earlier local main merge; do not silently reset, rebase, push, or use the remote PR head as the checked-out source.
-- Next: record the deterministic test work unit, clarify the fallback documentation, then run the complete suite.
+- Next: report the macOS-specific verification limit without claiming it passed; no push was performed.
 
 ## Follow-up evidence
 
@@ -82,6 +82,9 @@ Fix GitHub issue #1176 so the fullscreen Status sidebar shows the profile that g
 - T9 writer and independent verifier: `node --experimental-strip-types --test tests/gentle-shell.test.ts tests/shell-bar.test.ts` — 148 passed, 0 failed; `node scripts/check-types.mjs` — passed with 195 baseline diagnostics, no regressions; `git diff --check` passed. A new test-helper type error was corrected before the final run.
 - T9 follow-up verifier: later relevant event at t=60 resets the debounce from t=100 to t=160; focused suite 148 passed, diff check passed. Throwing watcher `close()` remains a low-priority pre-existing coverage gap outside the three review observations.
 - T9 parent spot check: `git diff --check` passed. RDD-off assessment reported high risk; separate verification found no production defect.
+- T9 commit: `e4bcd254` (`test(shell): control profile watcher events and debounce`), local only.
+- T10 docs: `docs/gentle-shell.md` and `docs/readme-reference.md` now state that an unusable local pin can reveal a valid repository declaration, and an unavailable/invalid global store hides the field. The local ignored work-item index labels its earlier draft as historical and updates its next step.
+- T10 independent full verification: `node --experimental-strip-types --test tests/gentle-shell.test.ts tests/shell-bar.test.ts tests/shell-sidebar-layout.test.ts` — 178 passed, 0 failed; `node scripts/check-types.mjs` — passed with 195 recorded diagnostics, no regressions, 4 improved pairs; `node --experimental-strip-types --test tests/*.test.ts` — 3355 passed, 0 failed, 38 skipped; `node scripts/check-provider-contract.mjs` — passed contract 1.2.0; `node --experimental-strip-types tests/runtime-harness.mjs` — exit 0; `git diff --check` — passed. Native assessment for docs was unassessable, so the separate verifier was required and completed. macOS-specific execution remains unavailable in this Linux checkout.
 
 ## Evidence
 
