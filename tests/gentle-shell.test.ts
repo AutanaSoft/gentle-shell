@@ -827,6 +827,249 @@ test("profile watchers keep the global store observable outside Git", async (t) 
 	}
 });
 
+test("atomic sibling events refresh pin and global profiles even when rename completes late", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "shell-profile-atomic-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const configHome = join(root, "config");
+	const commonDir = join(root, "clone");
+	mkdirSync(configHome);
+	mkdirSync(join(commonDir, "gentle-ai"), { recursive: true });
+	const harness = createProfileWatchHarness();
+	let disk: ShellProfileState = { name: "old", source: "local" };
+	let reads = 0;
+	let resolutions = 0;
+	let changes = 0;
+	const snapshot = createEffectiveProfileSnapshot({
+		cwd: () => root, env: { GENTLE_PI_CONFIG_HOME: configHome },
+		resolveWorktree: () => { resolutions++; return { root, commonDir }; },
+		read: () => { reads++; return disk; },
+		onChange: () => { changes++; },
+		watch: harness.watchProfile, profileRefreshClock: harness.profileRefreshClock,
+	});
+	const localDir = join(commonDir, "gentle-ai");
+	const uuid = "12345678-1234-1234-1234-123456789abc";
+	try {
+		for (const name of [".unrelated." + uuid + ".tmp", ".profile-pin.json.bad.tmp", ".profiles.json." + uuid + ".tmp"]) harness.emit(localDir, name);
+		assert.equal(harness.pendingTimers(), 0, "unrelated temp names do not schedule reads");
+		harness.emit(localDir, `.profile-pin.json.${uuid}.tmp`);
+		harness.advance(100);
+		assert.equal(snapshot.get()?.name, "old", "event can precede replacement");
+		disk = { name: "new pin", source: "local" };
+		harness.advance(1000);
+		assert.deepEqual(snapshot.get(), disk, "bounded follow-up observes a late rename");
+		assert.equal(harness.pendingTimers(), 0);
+		harness.emit(configHome, `.profiles.json.${uuid}.tmp`);
+		disk = { name: "new global", source: "global" };
+		harness.advance(1000);
+		assert.deepEqual(snapshot.get(), disk);
+		assert.equal(changes, 2);
+		assert.equal(resolutions, 1);
+		assert.equal(harness.pendingTimers(), 0);
+		assert.ok(reads <= 7, "atomic retries remain bounded");
+		harness.emit(localDir, `.profile-pin.json.${uuid}.tmp`);
+		assert.ok(harness.pendingTimers() > 0);
+		snapshot.dispose();
+		assert.equal(harness.pendingTimers(), 0, "disposal cancels delayed work");
+	} finally { snapshot.dispose(); }
+});
+
+test("a direct or null event that observes the replacement cancels stale atomic retries", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "shell-profile-atomic-target-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const configHome = join(root, "config");
+	mkdirSync(configHome);
+	const harness = createProfileWatchHarness();
+	let disk = "old";
+	let reads = 0;
+	let resolutions = 0;
+	const snapshot = createEffectiveProfileSnapshot({
+		cwd: () => root, env: { GENTLE_PI_CONFIG_HOME: configHome },
+		resolveWorktree: () => { resolutions++; throw new Error("not Git"); },
+		read: () => { reads++; return { name: disk, source: "global" }; },
+		onChange() {}, watch: harness.watchProfile, profileRefreshClock: harness.profileRefreshClock,
+	});
+	try {
+		for (const event of ["profiles.json", null]) {
+			harness.emit(configHome, ".profiles.json.12345678-1234-1234-1234-123456789abc.tmp");
+			harness.advance(100);
+			assert.equal(harness.pendingTimers(), 1, "unchanged first read schedules one retry");
+			disk = event === null ? "after null" : "after target";
+			harness.emit(configHome, event);
+			harness.advance(100);
+			assert.equal(snapshot.get()?.name, disk);
+			assert.equal(harness.pendingTimers(), 0, "observed change cancels stale retry");
+			const settledReads = reads;
+			harness.advance(2000);
+			assert.equal(reads, settledReads, "no stale retry reads after the direct refresh");
+		}
+		assert.equal(resolutions, 1);
+	} finally { snapshot.dispose(); }
+});
+
+for (const interveningEvent of ["profiles.json", null] as const) {
+	test(`atomic retry survives a pre-debounce ${interveningEvent === null ? "null" : "direct-target"} event`, (t) => {
+		const root = mkdtempSync(join(tmpdir(), "shell-profile-atomic-coalesced-"));
+		t.after(() => rmSync(root, { recursive: true, force: true }));
+		const configHome = join(root, "config");
+		mkdirSync(configHome);
+		const harness = createProfileWatchHarness();
+		let disk = "old";
+		let reads = 0;
+		let resolutions = 0;
+		const snapshot = createEffectiveProfileSnapshot({
+			cwd: () => root, env: { GENTLE_PI_CONFIG_HOME: configHome },
+			resolveWorktree: () => { resolutions++; throw new Error("not Git"); },
+			read: () => { reads++; return { name: disk, source: "global" }; },
+			onChange() {}, watch: harness.watchProfile, profileRefreshClock: harness.profileRefreshClock,
+		});
+		try {
+			harness.emit(configHome, ".profiles.json.12345678-1234-1234-1234-123456789abc.tmp");
+			harness.advance(50);
+			harness.emit(configHome, interveningEvent);
+			harness.advance(100);
+			assert.equal(snapshot.get()?.name, "old", "the first read precedes the delayed rename");
+			assert.equal(harness.pendingTimers(), 1, "coalescing preserves the atomic retry");
+			disk = "new after rename";
+			harness.advance(250);
+			assert.equal(snapshot.get()?.name, disk, "the retry observes the replacement without another event");
+			assert.equal(harness.pendingTimers(), 0);
+			const settledReads = reads;
+			harness.advance(2000);
+			assert.equal(reads, settledReads, "the completed change leaves no retry sequence");
+			assert.equal(resolutions, 1, "profile refreshes reuse cached worktree identity");
+		} finally { snapshot.dispose(); }
+	});
+}
+
+for (const interveningEvent of ["profiles.json", null] as const) {
+	test(`atomic retry timer stays singular through ${interveningEvent === null ? "null" : "direct-target"} refreshes`, (t) => {
+		const uuid = "12345678-1234-1234-1234-123456789abc";
+		const createScenario = () => {
+			const root = mkdtempSync(join(tmpdir(), "shell-profile-retry-timer-"));
+			t.after(() => rmSync(root, { recursive: true, force: true }));
+			const configHome = join(root, "config");
+			mkdirSync(configHome);
+			const harness = createProfileWatchHarness();
+			let disk = "old";
+			let reads = 0;
+			let resolutions = 0;
+			const snapshot = createEffectiveProfileSnapshot({
+				cwd: () => root, env: { GENTLE_PI_CONFIG_HOME: configHome },
+				resolveWorktree: () => { resolutions++; throw new Error("not Git"); },
+				read: () => { reads++; return { name: disk, source: "global" }; },
+				onChange() {}, watch: harness.watchProfile, profileRefreshClock: harness.profileRefreshClock,
+			});
+			return {
+				harness, snapshot,
+				setDisk: (name: string) => { disk = name; },
+				reads: () => reads,
+				resolutions: () => resolutions,
+			};
+		};
+		const startRetryWithUnchangedEvent = (scenario: ReturnType<typeof createScenario>) => {
+			scenario.harness.emit(scenario.harness.watchers[0]!.directory, `.profiles.json.${uuid}.tmp`);
+			scenario.harness.advance(100);
+			scenario.harness.emit(scenario.harness.watchers[0]!.directory, interveningEvent);
+			scenario.harness.advance(100);
+		};
+
+		const changed = createScenario();
+		startRetryWithUnchangedEvent(changed);
+		assert.equal(changed.harness.pendingTimers(), 1, "an unchanged event must not overwrite the active retry handle");
+		changed.setDisk("changed");
+		assert.equal(changed.snapshot.refresh(), true, "an explicit refresh observes the later change");
+		assert.equal(changed.harness.pendingTimers(), 0, "observing a change cancels the sole retry timer");
+		const changedReads = changed.reads();
+		changed.harness.advance(2000);
+		assert.equal(changed.reads(), changedReads, "no stale timer reads after the change");
+		assert.equal(changed.resolutions(), 1);
+		changed.snapshot.dispose();
+
+		const disposed = createScenario();
+		startRetryWithUnchangedEvent(disposed);
+		assert.equal(disposed.harness.pendingTimers(), 1);
+		disposed.snapshot.dispose();
+		assert.equal(disposed.harness.pendingTimers(), 0, "disposal cancels every outstanding retry");
+		const disposedReads = disposed.reads();
+		disposed.harness.advance(2000);
+		assert.equal(disposed.reads(), disposedReads, "disposed snapshots never read from orphaned timers");
+
+		const exhausted = createScenario();
+		exhausted.harness.emit(exhausted.harness.watchers[0]!.directory, `.profiles.json.${uuid}.tmp`);
+		exhausted.harness.advance(100);
+		exhausted.harness.emit(exhausted.harness.watchers[0]!.directory, interveningEvent);
+		exhausted.harness.advance(100);
+		assert.equal(exhausted.harness.pendingTimers(), 1);
+		for (const delay of [250, 500]) {
+			exhausted.harness.advance(delay);
+			assert.equal(exhausted.harness.pendingTimers(), 1, "each retry schedules only its single successor");
+		}
+		exhausted.harness.advance(1000);
+		assert.equal(exhausted.harness.pendingTimers(), 0, "retry exhaustion leaves no timer handle or callback");
+		assert.ok(exhausted.reads() <= 6, "coalesced retries remain bounded");
+		exhausted.setDisk("after exhaustion");
+		exhausted.harness.emit(exhausted.harness.watchers[0]!.directory, "profiles.json");
+		exhausted.harness.advance(100);
+		assert.equal(exhausted.snapshot.get()?.name, "after exhaustion");
+		const exhaustedReads = exhausted.reads();
+		exhausted.harness.advance(2000);
+		assert.equal(exhausted.reads(), exhaustedReads, "exhaustion does not leave a duplicate retry");
+		exhausted.snapshot.dispose();
+	});
+}
+
+test("a new atomic temp filename gets a fresh bounded retry window near exhaustion", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "shell-profile-new-atomic-write-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const configHome = join(root, "config");
+	mkdirSync(configHome);
+	const harness = createProfileWatchHarness();
+	let disk = "old";
+	let reads = 0;
+	const snapshot = createEffectiveProfileSnapshot({
+		cwd: () => root, env: { GENTLE_PI_CONFIG_HOME: configHome },
+		resolveWorktree: () => undefined,
+		read: () => { reads++; return { name: disk, source: "global" }; },
+		onChange() {}, watch: harness.watchProfile, profileRefreshClock: harness.profileRefreshClock,
+	});
+	const firstTemp = ".profiles.json.11111111-1111-1111-1111-111111111111.tmp";
+	const secondTemp = ".profiles.json.22222222-2222-2222-2222-222222222222.tmp";
+	try {
+		harness.emit(configHome, firstTemp);
+		harness.emit(configHome, firstTemp);
+		assert.equal(harness.pendingTimers(), 1, "same-write events coalesce into one debounce");
+		harness.advance(100);
+		harness.advance(250);
+		harness.advance(500);
+		harness.advance(950);
+		assert.equal(harness.pendingTimers(), 1, "the first write has one final retry pending at t=1800");
+
+		harness.emit(configHome, secondTemp);
+		assert.equal(harness.pendingTimers(), 1, "the new write replaces the old retry with one debounce");
+		harness.advance(100);
+		assert.equal(harness.pendingTimers(), 1, "the second write starts a fresh retry sequence");
+		disk = "second write completed";
+		harness.advance(250);
+		assert.equal(snapshot.get()?.name, disk, "the delayed second rename is observed without a final-name event");
+		assert.equal(harness.pendingTimers(), 0, "observed change cancels the fresh sequence");
+		const settledReads = reads;
+		harness.advance(2000);
+		assert.equal(reads, settledReads, "no retries remain after the profile changes");
+
+		harness.emit(configHome, ".profiles.json.33333333-3333-3333-3333-333333333333.tmp");
+		harness.advance(100);
+		harness.emit(configHome, null);
+		harness.advance(100);
+		assert.equal(harness.pendingTimers(), 1, "a null event does not duplicate the active retry");
+		snapshot.dispose();
+		assert.equal(harness.pendingTimers(), 0, "disposal cancels the active retry after a null event");
+		const disposedReads = reads;
+		harness.advance(2000);
+		assert.equal(reads, disposedReads, "no callback reads after disposal");
+		assert.ok(reads <= 8, "the separate writes retain finite retry budgets");
+	} finally { snapshot.dispose(); }
+});
+
 test("profile watcher errors close the failed watcher without retrying it", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "shell-profile-watch-error-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));

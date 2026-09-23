@@ -133,6 +133,17 @@ export function createActiveProfileReader(
 }
 
 const PROFILE_REFRESH_DEBOUNCE_MS = 100;
+const ATOMIC_REFRESH_RETRY_DELAYS_MS = [250, 500, 1000] as const;
+const ATOMIC_SIBLING_SUFFIX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/i;
+
+function isAtomicProfileSibling(filename: string, names: Set<string> | undefined): boolean {
+	if (!names) return false;
+	for (const name of names) {
+		if (name !== "profiles.json" && name !== "profile-pin.json" && name !== "profile.json") continue;
+		if (filename.startsWith(`.${name}.`) && ATOMIC_SIBLING_SUFFIX.test(filename.slice(name.length + 2))) return true;
+	}
+	return false;
+}
 
 const defaultProfileRefreshClock: ProfileRefreshClock = {
 	setTimeout: (callback, delay) => setTimeout(callback, delay),
@@ -215,6 +226,10 @@ export function createEffectiveProfileSnapshot(options: EffectiveProfileSnapshot
 	let worktreeIdentity: ReturnType<WorktreeResolver> | undefined;
 	let identityResolved = false;
 	let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+	let atomicRetryTimer: ReturnType<typeof setTimeout> | undefined;
+	let atomicRetryIndex = 0;
+	let atomicRetryFilename: string | undefined;
+	let atomicRefreshPending = false;
 	const clock = options.profileRefreshClock ?? defaultProfileRefreshClock;
 	let watchers: FSWatcher[] = [];
 	let watchedDirectories: string[] = [];
@@ -257,7 +272,21 @@ export function createEffectiveProfileSnapshot(options: EffectiveProfileSnapshot
 			try {
 				const watcher = (options.watch ?? watch)(directory, (_eventType, filename) => {
 					const names = targets.get(directory);
-					if (filename === null || filename === undefined || names?.has(filename.toString())) scheduleRefresh();
+					const named = filename?.toString();
+					if (named === undefined || names?.has(named)) scheduleRefresh();
+					else if (isAtomicProfileSibling(named, names)) {
+						// A temp event may precede rename with no subsequent target event.
+						// Coalesce bursts and sample a finite window after the first read.
+						if (named !== atomicRetryFilename) {
+							// Each writer uses a fresh UUID; duplicate events for one temp file
+							// coalesce, while a new write receives its own bounded retry window.
+							atomicRetryFilename = named;
+							atomicRetryIndex = 0;
+							if (atomicRetryTimer) clock.clearTimeout(atomicRetryTimer);
+							atomicRetryTimer = undefined;
+						}
+						scheduleRefresh(true);
+					}
 				});
 				watcher.on("error", () => {
 					if (disposed) return;
@@ -287,16 +316,35 @@ export function createEffectiveProfileSnapshot(options: EffectiveProfileSnapshot
 		// parent instead of remaining stranded on the old ancestor.
 		installWatchers(cwd);
 		if (sameProfileState(profile, next)) return false;
+		if (atomicRetryTimer) clock.clearTimeout(atomicRetryTimer);
+		atomicRetryTimer = undefined;
+		atomicRetryIndex = 0;
+		atomicRefreshPending = false;
 		profile = next;
 		options.onChange();
 		return true;
 	};
-	const scheduleRefresh = () => {
+	const scheduleAtomicRetry = () => {
+		if (disposed || !atomicRefreshPending || atomicRetryTimer) return;
+		if (atomicRetryIndex >= ATOMIC_REFRESH_RETRY_DELAYS_MS.length) {
+			atomicRefreshPending = false;
+			return;
+		}
+		const delay = ATOMIC_REFRESH_RETRY_DELAYS_MS[atomicRetryIndex++]!;
+		atomicRetryTimer = clock.setTimeout(() => {
+			atomicRetryTimer = undefined;
+			if (!refresh()) scheduleAtomicRetry();
+		}, delay);
+		atomicRetryTimer.unref();
+	};
+	const scheduleRefresh = (atomic = false) => {
 		if (disposed) return;
+		if (atomic) atomicRefreshPending = true;
 		if (refreshTimer) clock.clearTimeout(refreshTimer);
 		refreshTimer = clock.setTimeout(() => {
 			refreshTimer = undefined;
-			refresh();
+			const changed = refresh();
+			if (!changed && atomicRefreshPending) scheduleAtomicRetry();
 		}, PROFILE_REFRESH_DEBOUNCE_MS);
 		refreshTimer.unref();
 	};
@@ -309,7 +357,9 @@ export function createEffectiveProfileSnapshot(options: EffectiveProfileSnapshot
 			if (disposed) return;
 			disposed = true;
 			if (refreshTimer) clock.clearTimeout(refreshTimer);
+			if (atomicRetryTimer) clock.clearTimeout(atomicRetryTimer);
 			refreshTimer = undefined;
+			atomicRetryTimer = undefined;
 			closeWatchers();
 		},
 	};
