@@ -5,7 +5,7 @@ import { statSync, type FSWatcher, watch } from "node:fs";
 import { profilesFilePath, readProfilesFileResult } from "../lib/agent-profiles.ts";
 import { localProfilePinPath, repoProfileDeclarationPath, resolveProfilePin } from "../lib/agent-profile-pin.ts";
 import * as os from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { buildShellHeaderModel, renderShellBar, renderShellHeaderBar, renderShellHeaderRule, renderShellSidebarBar, shellEnabled, type ShellBarModel, type ShellBarTheme, type ShellProfileState } from "../lib/shell-bar.ts";
 import { CHANGE_STATUS, RootBranchLabels, renderChangesWidget, type ChangedFile, type ChangesModel, type GitRunner, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
@@ -159,25 +159,31 @@ function existingProfileWatchDirectory(path: string, floor: string): string | un
 	}
 }
 
-function effectiveProfileWatchDirectories(
-	cwd: string,
+function effectiveProfileWatchTargets(
 	env: NodeJS.ProcessEnv,
-	resolveWorktree: WorktreeResolver,
-): string[] {
+	identity: ReturnType<WorktreeResolver> | undefined,
+): Map<string, Set<string>> {
 	const configHome = env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai");
 	const paths: Array<{ path: string; floor: string }> = [
 		{ path: profilesFilePath(configHome), floor: dirname(configHome) },
 	];
-	try {
-		const identity = resolveWorktree(cwd, cwd);
+	if (identity) {
 		paths.push(
 			{ path: localProfilePinPath(identity.commonDir), floor: identity.commonDir },
 			{ path: repoProfileDeclarationPath(identity.root), floor: identity.root },
 		);
-	} catch {
-		// The global profile remains observable even outside a Git worktree.
 	}
-	return [...new Set(paths.map(({ path, floor }) => existingProfileWatchDirectory(path, floor)).filter((path): path is string => path !== undefined))];
+	const targets = new Map<string, Set<string>>();
+	for (const { path, floor } of paths) {
+		const directory = existingProfileWatchDirectory(path, floor);
+		if (!directory) continue;
+		const firstPathComponent = relative(directory, path).split(sep)[0];
+		if (!firstPathComponent || firstPathComponent === "..") continue;
+		const names = targets.get(directory) ?? new Set<string>();
+		names.add(firstPathComponent);
+		targets.set(directory, names);
+	}
+	return targets;
 }
 
 function copyProfileState(profile: ShellProfileState | undefined): ShellProfileState | undefined {
@@ -192,10 +198,27 @@ export function createEffectiveProfileSnapshot(options: EffectiveProfileSnapshot
 	let disposed = false;
 	let observedCwd = options.cwd();
 	let profile = copyProfileState(options.read(observedCwd));
+	let identityCwd: string | undefined;
+	let worktreeIdentity: ReturnType<WorktreeResolver> | undefined;
+	let identityResolved = false;
 	let refreshTimer: ReturnType<typeof setTimeout> | undefined;
 	let watchers: FSWatcher[] = [];
 	let watchedDirectories: string[] = [];
 	const failedWatchDirectories = new Set<string>();
+	// Worktree identity is stable for this snapshot's cwd; a cwd transition is the
+	// explicit invalidation event. Profile events reuse the cached result instead of Git.
+	const resolveIdentity = (cwd: string): ReturnType<WorktreeResolver> | undefined => {
+		if (!identityResolved || cwd !== identityCwd) {
+			identityCwd = cwd;
+			identityResolved = true;
+			try {
+				worktreeIdentity = options.resolveWorktree(cwd, cwd);
+			} catch {
+				worktreeIdentity = undefined;
+			}
+		}
+		return worktreeIdentity;
+	};
 
 	const closeWatchers = () => {
 		for (const watcher of watchers) {
@@ -209,7 +232,8 @@ export function createEffectiveProfileSnapshot(options: EffectiveProfileSnapshot
 		watchedDirectories = [];
 	};
 	const installWatchers = (cwd: string) => {
-		const availableDirectories = effectiveProfileWatchDirectories(cwd, options.env, options.resolveWorktree);
+		const targets = effectiveProfileWatchTargets(options.env, resolveIdentity(cwd));
+		const availableDirectories = [...targets.keys()];
 		for (const directory of failedWatchDirectories) if (!availableDirectories.includes(directory)) failedWatchDirectories.delete(directory);
 		const directories = availableDirectories.filter((directory) => !failedWatchDirectories.has(directory));
 		if (directories.length === watchedDirectories.length && directories.every((directory, index) => directory === watchedDirectories[index]) && watchers.length === directories.length) return;
@@ -217,7 +241,10 @@ export function createEffectiveProfileSnapshot(options: EffectiveProfileSnapshot
 		watchedDirectories = directories;
 		for (const directory of directories) {
 			try {
-				const watcher = (options.watch ?? watch)(directory, () => scheduleRefresh());
+				const watcher = (options.watch ?? watch)(directory, (_eventType, filename) => {
+					const names = targets.get(directory);
+					if (filename === null || filename === undefined || names?.has(filename.toString())) scheduleRefresh();
+				});
 				watcher.on("error", () => {
 					if (disposed) return;
 					failedWatchDirectories.add(directory);

@@ -624,6 +624,130 @@ test("fullscreen Status disposes profile watchers and pending refreshes with the
 	assert.equal(reads, 1, "disposed Status components must close watchers and pending refresh timers");
 });
 
+test("profile watchers filter filenames, rebind ancestors, and cache worktree identity by cwd", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "shell-profile-watch-filter-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const configHome = join(root, "config");
+	const commonDir = join(root, "clone");
+	const localWatchDirectory = join(commonDir, "gentle-ai");
+	mkdirSync(localWatchDirectory, { recursive: true });
+	const nextRoot = join(root, "next-repo");
+	const nextCommonDir = join(root, "next-clone");
+	mkdirSync(nextRoot, { recursive: true });
+	mkdirSync(join(nextCommonDir, "gentle-ai"), { recursive: true });
+	let cwd = root;
+	const resolutions: string[] = [];
+	const reads: string[] = [];
+	const records: Array<{
+		directory: string;
+		callback(eventType: string, filename: string | Buffer | null): void;
+		closed: boolean;
+	}> = [];
+	let profile: ShellProfileState | undefined = { name: "team", source: "global" };
+	let changes = 0;
+	const snapshot = createEffectiveProfileSnapshot({
+		cwd: () => cwd,
+		env: { GENTLE_PI_CONFIG_HOME: configHome },
+		resolveWorktree: (path: string) => {
+			resolutions.push(path);
+			return path === root
+				? { root, commonDir }
+				: { root: nextRoot, commonDir: nextCommonDir };
+		},
+		read: (path) => { reads.push(path!); return profile; },
+		onChange: () => { changes++; },
+		watch: ((directory: string, callback: (eventType: string, filename: string | Buffer | null) => void) => {
+			const record = { directory, callback, closed: false };
+			records.push(record);
+			return { on() { return this; }, unref() {}, close() { record.closed = true; } };
+		}) as never,
+	});
+	const activeWatcher = (directory: string) => {
+		const record = records.find((candidate) => candidate.directory === directory && !candidate.closed);
+		assert.ok(record, `expected an active watcher for ${directory}`);
+		return record;
+	};
+	const emit = (directory: string, filename: string | Buffer | null) => activeWatcher(directory).callback("change", filename);
+	const settle = () => new Promise((resolve) => setTimeout(resolve, 130));
+	try {
+		assert.deepEqual(reads, [root]);
+		assert.deepEqual(resolutions, [root], "the worktree identity is resolved once for the initial cwd");
+		for (const filename of ["index", "HEAD", ".git", "profile.json"]) emit(root, filename);
+		emit(localWatchDirectory, "index");
+		await settle();
+		assert.equal(reads.length, 1, "named unrelated files, including a matching basename in another parent, do not refresh");
+		assert.deepEqual(resolutions, [root], "unrelated watcher events do not resolve Git");
+
+		mkdirSync(configHome, { recursive: true });
+		emit(root, "config");
+		await settle();
+		assert.equal(reads.length, 2, "a shared watch directory retains the global store's next path component");
+		assert.ok(activeWatcher(configHome), "the global watcher rebinds after its ancestor is created");
+
+		mkdirSync(join(root, ".pi", "gentle-ai"), { recursive: true });
+		profile = { name: "other", source: "repo" };
+		emit(root, Buffer.from(".pi"));
+		await settle();
+		assert.equal(reads.length, 3, "creating a watched ancestor refreshes the profile");
+		assert.deepEqual(snapshot.get(), { name: "other", source: "repo" }, "the refreshed snapshot preserves the effective pin source");
+		assert.equal(changes, 1);
+		assert.ok(activeWatcher(join(root, ".pi", "gentle-ai")), "the watcher rebinds to the nearest newly created profile parent");
+		assert.deepEqual(resolutions, [root], "refreshing the same cwd reuses its worktree identity");
+
+		emit(configHome, "profile.json");
+		await settle();
+		assert.equal(reads.length, 3, "the same filename in a different parent is unrelated");
+		emit(join(root, ".pi", "gentle-ai"), "profile.json");
+		await settle();
+		assert.equal(reads.length, 4, "a watched target filename refreshes the profile");
+		assert.equal(changes, 1, "an unchanged resolved state does not notify the shell");
+		emit(localWatchDirectory, null);
+		await settle();
+		assert.equal(reads.length, 5, "an unknown filename preserves conservative refresh behavior");
+
+		cwd = nextRoot;
+		snapshot.refresh();
+		assert.deepEqual(reads, [root, root, root, root, root, nextRoot]);
+		assert.deepEqual(resolutions, [root, nextRoot], "a cwd transition resolves and caches the new worktree identity");
+		assert.ok(records.some((record) => record.directory === nextRoot && !record.closed), "watchers rebind to the new worktree");
+		assert.ok(records.some((record) => record.directory === join(root, ".pi", "gentle-ai") && record.closed), "watchers from the old worktree are closed");
+	} finally {
+		snapshot.dispose();
+	}
+});
+
+test("profile watchers keep the global store observable outside Git", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "shell-profile-global-watch-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const configHome = join(root, "config");
+	mkdirSync(configHome, { recursive: true });
+	let reads = 0;
+	let resolutions = 0;
+	let callback: ((eventType: string, filename: string | Buffer | null) => void) | undefined;
+	const snapshot = createEffectiveProfileSnapshot({
+		cwd: () => root,
+		env: { GENTLE_PI_CONFIG_HOME: configHome },
+		resolveWorktree: () => { resolutions++; throw new Error("not a Git worktree"); },
+		read: () => { reads++; return { name: "team", source: "global" }; },
+		onChange() {},
+		watch: ((directory: string, onEvent: (eventType: string, filename: string | Buffer | null) => void) => {
+			assert.equal(directory, configHome);
+			callback = onEvent;
+			return { on() { return this; }, unref() {}, close() {} };
+		}) as never,
+	});
+	try {
+		assert.equal(reads, 1);
+		assert.equal(resolutions, 1);
+		callback!("change", "profiles.json");
+		await new Promise((resolve) => setTimeout(resolve, 130));
+		assert.equal(reads, 2, "global profile changes remain observable outside Git");
+		assert.equal(resolutions, 1, "the failed worktree lookup is cached for this cwd");
+	} finally {
+		snapshot.dispose();
+	}
+});
+
 test("profile watcher errors close the failed watcher without retrying it", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "shell-profile-watch-error-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));

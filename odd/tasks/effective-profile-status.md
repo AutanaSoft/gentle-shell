@@ -21,7 +21,12 @@ Fix GitHub issue #1176 so the fullscreen Status sidebar shows the profile that g
 - Refresh the Status digest when the global profile or relevant pin state changes.
 - Preserve the compact bottom bar behavior: it does not show a profile.
 - Add focused regression coverage and update user-facing documentation if the documented semantics require clarification.
-- Keep this follow-up below 400 changed production/documentation lines and below 400 changed test lines.
+- Keep the correction reviewable without shrinking necessary tests or documentation to meet a line target.
+- Review follow-up plan: `work-items/active/fix/1176-effective-profile-status/review-follow-up-implementation-plan.md`.
+- Baseline for this follow-up: PR head `cfbdf1be`; local feature branch `8e3578c9` contains the later main merge, with the same watcher/test behavior and a changed documentation sentence.
+- TDD mode: enabled for these tasks by the user-accepted follow-up plan (RED/GREEN/TRIANGULATE/REFACTOR); exact focused runner: `node --experimental-strip-types --test tests/gentle-shell.test.ts tests/shell-bar.test.ts`.
+- RDD switch: off (clone-local; observed before implementation). Native review is not enabled for this candidate.
+- Review workload: forecast approximately 250–400 authored diff lines for T8–T10; the existing PR already exceeds 400 lines and requests `size:exception`. Delivery strategy: `exception-ok` for PR #1252, explicitly selected by the user despite its existing size-exception request. Keep task-scoped work-unit commits on this feature branch; no push/PR creation is authorized here.
 
 ## Tasks
 
@@ -35,13 +40,18 @@ Fix GitHub issue #1176 so the fullscreen Status sidebar shows the profile that g
 - [x] T5 — Integrate current `main` at `cf1fdb65`, resolve the `extensions/gentle-shell.ts` import conflict while preserving both effective-profile state and the fullscreen header rule, run focused and repository verification, and commit the integration.
 - [x] T6 — Correct review finding `R4-watch-runtime-error`: handle asynchronous `FSWatcher` errors without terminating the Pi host, add focused regression coverage, validate within the native correction budget, and commit the fix.
 - [x] T7 — Integrate updated `main` at `b6188bef`, resolve the test import conflict while preserving both subscription-usage and effective-profile coverage, verify the merged candidate, push the feature branch, then integrate it into `downstream/main`.
+- [x] T8 — Filter irrelevant profile watcher events and reuse the resolved worktree identity; preserve null-filename, ancestor creation, atomic replacement, and non-Git global behavior. Route: delegated writer (production and regression tests); checks: observed RED/GREEN focused tests, resolver/read counters, typecheck, diff check, work-unit commit.
+- [ ] T9 — Remove real OS watcher/timer dependence from both fullscreen Status refresh regressions while preserving integration assertions and rebind coverage. Route: delegated writer (integration tests and narrow test seam); checks: observed RED/GREEN, focused repeat, suite, work-unit commit.
+- [ ] T10 — Clarify global-store and invalid/stale-pin fallback in the fullscreen documentation, verify consistency with reference docs, and commit the documentation work unit. Route: inline direct unless additional non-trivial files become necessary; checks: readback, markdown/diff check, work-unit commit.
 
 ## Acceptance criteria
 
 - No valid pin: `Profile <global-active-name>`.
 - Valid clone-local pin: `Profile <effective-name> (local)`.
 - Valid repository declaration: `Profile <effective-name> (repo)`.
-- Invalid, stale, missing, or unreadable pins fall back to the global active profile without a suffix.
+- Invalid, stale, missing, or unreadable pin layers are skipped; a valid lower-priority repository declaration wins before falling back to the global active profile without a suffix.
+- Irrelevant watched-directory changes do not schedule profile refresh or synchronous Git resolution; relevant and unknown-filename changes still refresh the snapshot.
+- The two fullscreen refresh regressions use controlled watcher events and debounce timing, not OS delivery or short wall-clock deadlines.
 - A same-name transition between local and repository sources refreshes the displayed scope.
 - Local pin precedence over repository declaration remains owned by `resolveProfilePin()`.
 - Creating, changing, or removing a pin updates the fullscreen Status digest and live header without
@@ -52,6 +62,20 @@ Fix GitHub issue #1176 so the fullscreen Status sidebar shows the profile that g
   disposed with the shell component.
 - The compact bottom bar remains unchanged.
 - Focused tests, typecheck/runtime checks, complete test suite, and `git diff --check` pass or any skipped/failed check is reported.
+
+## Follow-up progress
+
+- T8 implemented and independently verified; recording its work-unit commit. T9 and T10 pending. The two new T8 tests retain 130 ms wall-clock waits, to be removed with the T9 timer refactor.
+- Current branch is ahead of `origin/fix/effective-profile-status` because of an earlier local main merge; do not silently reset, rebase, push, or use the remote PR head as the checked-out source.
+- Scoped mapping complete; next: commit T8 as one work unit, then determinize all profile watcher timing tests in T9.
+
+## Follow-up evidence
+
+- T8 RED: injected watcher tests failed before implementation: unrelated `index` event caused an extra read (`2 !== 1`); outside-Git global refresh repeated worktree lookup (`2 !== 1`).
+- T8 GREEN: two targeted tests passed after filtering by next path component and caching the watcher-side worktree identity per `cwd`.
+- T8 writer and independent verifier: `node --experimental-strip-types --test tests/gentle-shell.test.ts tests/shell-bar.test.ts` — 148 passed, 0 failed; `node scripts/check-types.mjs` — passed with 195 baseline diagnostics, no regression; `git diff --check` — passed.
+- T8 independent finding: the two new tests use 130 ms real waits against a 100 ms debounce; T9 must replace those waits too. Relevant-event Git from the separate profile reader is not measured by watcher-side counters and was intentionally not changed.
+- T8 parent spot check: `git diff --check` passed; no untracked source changes. RDD-off native assessment reported high risk; independent verifier completed with no confirmed production defect.
 
 ## Evidence
 
