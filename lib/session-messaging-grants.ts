@@ -1,5 +1,28 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { sanitizeTerminalText } from "./terminal-theme.ts";
+
+export const MESSAGING_REASON_MIN_CHARACTERS = 8;
+export const MESSAGING_REASON_MAX_UTF8_BYTES = 512;
+
+const PREVIEW_CONTROL_CHARACTER = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+
+function escapePreviewText(value: string): string {
+	return Array.from(value, (character) => {
+		if (!PREVIEW_CONTROL_CHARACTER.test(character)) return character;
+		if (character === "\r") return "\\r";
+		if (character === "\n") return "\\n";
+		if (character === "\t") return "\\t";
+		return `\\u${character.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`;
+	}).join("");
+}
+
+export function normalizeMessagingReason(value: unknown): string {
+	if (typeof value !== "string") throw new Error("Cross-orchestrator communication requires a concrete reason of at least 8 trimmed characters and at most 512 UTF-8 bytes.");
+	const reason = value.trim();
+	if (Array.from(reason).length < MESSAGING_REASON_MIN_CHARACTERS || Buffer.byteLength(value, "utf8") > MESSAGING_REASON_MAX_UTF8_BYTES) {
+		throw new Error("Cross-orchestrator communication requires a concrete reason of at least 8 trimmed characters and at most 512 UTF-8 bytes.");
+	}
+	return reason;
+}
 
 /**
  * Supported decision tokens for cross-orchestrator communication consent.
@@ -19,8 +42,8 @@ export type MessagingConsentDecision =
 export interface MessagingConsentOptions {
 	/** Outbound message payload. */
 	message: string;
-	/** Concrete reason explaining why this communication is needed. */
-	reason?: string;
+	/** Concrete caller-supplied reason explaining why this communication is needed. */
+	reason: string;
 	/** Optional abort signal for request cancellation. */
 	signal?: AbortSignal;
 }
@@ -43,7 +66,11 @@ export class SessionMessagingGrants {
 		recipient: string,
 		options: MessagingConsentOptions
 	): Promise<void> {
-		if (options.signal?.aborted) throw new Error("Cross-orchestrator message authorization aborted.");
+		const message = options.message;
+		if (typeof message !== "string" || Buffer.byteLength(message, "utf8") > 8192) throw new Error("Cross-orchestrator message is invalid.");
+		const reason = normalizeMessagingReason(options.reason);
+		const signal = options.signal;
+		if (signal?.aborted) throw new Error("Cross-orchestrator message authorization aborted.");
 		const id = ctx.sessionManager.getSessionId();
 		if (!id) throw new Error("Cross-orchestrator communication requires an active session identity.");
 		if (this.manager !== ctx.sessionManager || this.sessionId !== id) {
@@ -51,23 +78,17 @@ export class SessionMessagingGrants {
 			this.manager = ctx.sessionManager;
 			this.sessionId = id;
 		}
-		if (this.grants.get(id)?.has(recipient)) return;
-
 		if (!ctx.hasUI || typeof ctx.ui?.select !== "function") {
 			throw new Error("Cross-orchestrator communication requires interactive human consent before sending.");
 		}
+		if (this.grants.get(id)?.has(recipient)) return;
 
-		const cleanMessage = sanitizeTerminalText(options.message);
-		const cleanReason = options.reason ? sanitizeTerminalText(options.reason).trim() : undefined;
-		const reason = cleanReason && cleanReason.length > 0
-			? cleanReason
-			: `Notification from session ${id}`;
-
-		const isTruncated = cleanMessage.length > 200;
+		const previewMessage = escapePreviewText(message);
+		const isTruncated = message.length > 200;
 		const messageLabel = isTruncated
-			? `Message (${cleanMessage.length} chars, preview): ${cleanMessage.slice(0, 197)}...`
-			: `Message: ${cleanMessage}`;
-		const title = `Authorize cross-orchestrator message to ${sanitizeTerminalText(recipient)}?\nReason: ${reason}\n${messageLabel}`;
+			? `Message (${message.length} chars, preview): ${escapePreviewText(message.slice(0, 197))}...`
+			: `Message: ${previewMessage}`;
+		const title = `Authorize cross-orchestrator message to ${escapePreviewText(recipient)}?\nReason: ${escapePreviewText(reason)}\n${messageLabel}`;
 
 		const selected = await ctx.ui.select(
 			title,
@@ -76,10 +97,10 @@ export class SessionMessagingGrants {
 				MESSAGING_CONSENT_DECISIONS.ALLOW_SESSION,
 				MESSAGING_CONSENT_DECISIONS.DENY,
 			],
-			{ signal: options.signal }
+			{ signal }
 		);
 
-		if (options.signal?.aborted) throw new Error("Cross-orchestrator message authorization aborted.");
+		if (signal?.aborted) throw new Error("Cross-orchestrator message authorization aborted.");
 		if (ctx.sessionManager !== this.manager || ctx.sessionManager.getSessionId() !== id) {
 			throw new Error("Session identity changed during authorization.");
 		}

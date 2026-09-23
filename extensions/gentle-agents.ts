@@ -8,7 +8,7 @@ import { SESSION_CHANGE_RELAY } from "../lib/session-changes.ts";
 import { publishForeignSessionChange } from "../lib/session-change-capture.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, type WorktreeResolver } from "../lib/session-worktree-registry.ts";
 import { ForeignTargetGrants } from "../lib/foreign-target-grants.ts";
-import { SessionMessagingGrants } from "../lib/session-messaging-grants.ts";
+import { MESSAGING_REASON_MAX_UTF8_BYTES, MESSAGING_REASON_MIN_CHARACTERS, normalizeMessagingReason, SessionMessagingGrants } from "../lib/session-messaging-grants.ts";
 import { existsSync, mkdirSync, readFileSync, lstatSync, realpathSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -1332,20 +1332,22 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		parameters: {
 			type: "object",
 			additionalProperties: false,
-			required: ["message"],
+			required: ["message", "reason"],
 			properties: {
 				recipient_session_id: { type: "string" },
 				message: { type: "string" },
-				reason: { type: "string", description: "Concrete reason why this cross-orchestrator communication is needed." },
+				reason: { type: "string", minLength: MESSAGING_REASON_MIN_CHARACTERS, maxLength: MESSAGING_REASON_MAX_UTF8_BYTES, description: "Required concrete caller-supplied reason: at least 8 characters after trimming and at most 512 UTF-8 bytes." },
 			},
 		} as never,
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const transport = activeTransportFor(ctx);
 			const input = params as { recipient_session_id?: unknown; message?: unknown; reason?: unknown };
 			if (!transport) return text("Error: session messaging is not ready.", { error: "not ready" });
-			if (typeof input.message !== "string" || Buffer.byteLength(input.message, "utf8") > 8192) return text("Error: recipient session ID or message is invalid.", { error: "invalid input" });
-			if (input.reason !== undefined && (typeof input.reason !== "string" || Buffer.byteLength(input.reason, "utf8") > 4096)) return text("Error: recipient session ID or message is invalid.", { error: "invalid input" });
-			const reason = typeof input.reason === "string" ? input.reason : undefined;
+			const message = input.message;
+			if (typeof message !== "string" || Buffer.byteLength(message, "utf8") > 8192) return text("Error: recipient session ID or message is invalid.", { error: "invalid input" });
+			let reason: string;
+			try { reason = normalizeMessagingReason(input.reason); }
+			catch { return text("Error: recipient session ID or message is invalid; a concrete reason of at least 8 trimmed characters and at most 512 UTF-8 bytes is required.", { error: "invalid input" }); }
 			let recipient: string | undefined;
 			let activation: PresenceRecord | undefined;
 			if (input.recipient_session_id !== undefined) {
@@ -1377,13 +1379,13 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			if (recipient === undefined || !validTransportSessionId(recipient)) return text("Error: recipient session ID or message is invalid.", { error: "invalid input" });
 			if (recipient === transport.sessionId) return text("Error: cannot send a message to the active session.", { error: "self" });
 			try {
-				await messagingGrants.authorize(ctx, recipient, { message: input.message, reason, signal });
+				await messagingGrants.authorize(ctx, recipient, { message, reason, signal });
 			} catch (error) {
 				if (signal?.aborted) return text("Cross-orchestrator communication was cancelled.", { error: "cancelled" });
 				return text(`Error: ${error instanceof Error ? error.message : String(error)}`, { error: "denied" });
 			}
 			try {
-				const accepted = await transport.client.sendNotification(recipient, input.message, { signal, expectedActivation: activation, beforeConnect: () => activeTransportFor(ctx) === transport });
+				const accepted = await transport.client.sendNotification(recipient, message, { signal, expectedActivation: activation, beforeConnect: () => activeTransportFor(ctx) === transport });
 				return activeTransportFor(ctx) === transport ? text(`Message ${accepted.id} from ${transport.sessionId} to ${recipient} accepted for delivery; it is not a delivery or read receipt.`, { gentleAgents: { messageId: accepted.id, senderSessionId: transport.sessionId, recipientSessionId: recipient, state: "accepted" } }) : text("Error: session messaging is not ready.", { error: "stale" });
 			} catch {
 				return text("Error: session message was not accepted.", { error: "not accepted" });
