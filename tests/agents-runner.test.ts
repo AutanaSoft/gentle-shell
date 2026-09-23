@@ -400,6 +400,28 @@ for (const ending of ["cancel", "failure", "hook-error", "hook-async-error"] as 
 	});
 }
 
+test("a queued pre-spawn denial fails only its task and keeps the runner queue moving", async () => {
+	const h = harness({ maxConcurrency: 1 });
+	const first = h.runner.run(request());
+	let allowed = true;
+	let registered = false;
+	const denied = h.runner.run(request({ beforeSpawn: () => { if (!allowed) throw new Error("grant expired"); }, onLaunch: () => { registered = true; } }));
+	const next = h.runner.run(request());
+	await tick();
+	assert.equal(h.children.length, 1);
+	allowed = false;
+	h.children[0].emit({ type: "agent_end", messages: [] });
+	h.children[0].emit({ type: "agent_settled" });
+	h.children[0].exit(0);
+	await tick();
+	assert.equal(h.store.get(denied.id)?.status, TASK_STATUS.FAILED);
+	assert.match(h.store.get(denied.id)?.error ?? "", /grant expired/);
+	assert.equal(registered, false);
+	assert.equal(h.children.length, 2, "a later valid task still starts");
+	assert.equal(h.store.get(next.id)?.status, TASK_STATUS.RUNNING);
+	assert.ok(h.store.get(first.id));
+});
+
 test("launch registration waits for actual spawn, including queued launches, and ignores failed spawns", async () => {
 	const launches: string[] = [];
 	const spawns: Array<() => void> = [];

@@ -2153,6 +2153,122 @@ test("native spawn interception restores CommonJS and ESM exports after rejected
 	}
 });
 
+test("foreign clone tool requires consent before queueing and never enters parent Changes", async () => {
+	const fixture = realpathSync(mkdtempSync(join(tmpdir(), "foreign-target-")));
+	const parent = join(fixture, "parent"), foreign = join(fixture, "foreign");
+	const template = join(fixture, "template");
+	mkdirSync(template);
+	try {
+		for (const path of [parent, foreign]) execFileSync("git", ["init", "--quiet", `--template=${template}`, path]);
+		const configHome = join(fixture, "config");
+		mkdirSync(configHome);
+		writeFileSync(join(configHome, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, profiles: { pinned: { explore: { model: "openai/foreign-model", thinking: "minimal" } } } }));
+		mkdirSync(join(foreign, ".git", "gentle-ai"));
+		writeFileSync(join(foreign, ".git", "gentle-ai", "profile-pin.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profile_pin", version: 1, profile: "pinned" }));
+		const h = fakePi(), runtime = deps();
+		runtime.deps.env = { PATH: "/bin", GENTLE_PI_CONFIG_HOME: configHome };
+		runtime.deps.resolveWorktree = resolveSessionWorktree;
+		const spawned: string[] = [];
+		const spawn = runtime.deps.spawn!;
+		runtime.deps.spawn = (command, args, options) => { spawned.push(options.cwd); return spawn(command, args, options); };
+		gentleAgents(h.pi, {}, runtime.deps);
+		let resolveConsent!: (answer: boolean) => void;
+		let prompts = 0;
+		const { ctx } = fakeContext(fakeTui, () => { prompts++; return new Promise<boolean>(resolve => { resolveConsent = resolve; }); });
+		ctx.sessionManager.getCwd = () => parent;
+		await h.fire("session_start", ctx);
+		const run = h.tools.get("subagent_run")!;
+		const pending = run.execute("foreign", { agent: "explore", task: "Map", workspace_root: foreign, mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		assert.equal(prompts, 1);
+		assert.deepEqual(spawned, []);
+		assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), []);
+		resolveConsent(true);
+		const result = await pending;
+		await tick();
+		assert.deepEqual(spawned, [foreign]);
+		assert.equal(runtime.spawned[0]?.[runtime.spawned[0]!.indexOf("--model") + 1], "openai/foreign-model:minimal");
+		assert.equal((result.details.gentleAgents as { cwd: string }).cwd, foreign);
+		assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), []);
+		const reused = await run.execute("reuse", { agent: "explore", task: "Map again", workspace_root: foreign, mode: "background" }, undefined, undefined, ctx);
+		assert.equal(prompts, 1);
+		assert.equal((reused.details.gentleAgents as { cwd: string }).cwd, foreign);
+		const queued = await run.execute("queued", { agent: "explore", task: "Third map", workspace_root: foreign, mode: "background" }, undefined, undefined, ctx);
+		assert.equal((queued.details.gentleAgents as { cwd: string }).cwd, foreign);
+		assert.equal(runtime.children.length, 2, "third launch waits in the runner queue");
+		const { ctx: successor } = fakeContext();
+		successor.sessionManager.getCwd = () => parent;
+		await h.fire("session_start", successor);
+		assert.notEqual(successor.sessionManager, ctx.sessionManager);
+		assert.equal(successor.sessionManager.getSessionId(), ctx.sessionManager.getSessionId(), "replacement retains the same session ID");
+		runtime.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] });
+		runtime.children[0].emit({ type: "agent_settled" });
+		runtime.children[0].exit(0);
+		await tick();
+		assert.equal(runtime.children.length, 2, "stale queued foreign task must fail before OS spawn");
+		await h.fire("session_shutdown", successor);
+	} finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
+test("aborting during foreign consent cannot grant or queue a background child", async () => {
+	const fixture = realpathSync(mkdtempSync(join(tmpdir(), "foreign-abort-")));
+	const parent = join(fixture, "parent"), foreign = join(fixture, "foreign"), template = join(fixture, "template");
+	mkdirSync(template);
+	try {
+		for (const path of [parent, foreign]) execFileSync("git", ["init", "--quiet", `--template=${template}`, path]);
+		const h = fakePi(), runtime = deps();
+		runtime.deps.resolveWorktree = resolveSessionWorktree;
+		gentleAgents(h.pi, {}, runtime.deps);
+		let confirm!: (answer: boolean) => void;
+		const { ctx } = fakeContext(fakeTui, () => new Promise(resolve => { confirm = resolve; }));
+		ctx.sessionManager.getCwd = () => parent;
+		await h.fire("session_start", ctx);
+		const abort = new AbortController();
+		const pending = h.tools.get("subagent_run")!.execute("abort", { agent: "explore", task: "Map", workspace_root: foreign, mode: "background" }, abort.signal, undefined, ctx);
+		await tick();
+		abort.abort("interrupted");
+		confirm(true);
+		await assert.rejects(pending, /abort|cancel/i);
+		assert.equal(runtime.children.length, 0);
+		assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), []);
+		await h.fire("session_shutdown", ctx);
+	} finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
+test("foreign clone rejects aliases, absent UI, decline and changed session before any child starts", async () => {
+	const fixture = realpathSync(mkdtempSync(join(tmpdir(), "foreign-denials-")));
+	const parent = join(fixture, "parent"), foreign = join(fixture, "foreign"), template = join(fixture, "template");
+	mkdirSync(template);
+	try {
+		for (const path of [parent, foreign]) execFileSync("git", ["init", "--quiet", `--template=${template}`, path]);
+		const h = fakePi(), runtime = deps();
+		runtime.deps.resolveWorktree = resolveSessionWorktree;
+		gentleAgents(h.pi, {}, runtime.deps);
+		let decision!: (answer: boolean) => void;
+		const { ctx, dialogs } = fakeContext(fakeTui, () => new Promise(resolve => { decision = resolve; }));
+		ctx.sessionManager.getCwd = () => parent;
+		let id = "original";
+		ctx.sessionManager.getSessionId = () => id;
+		await h.fire("session_start", ctx);
+		const run = h.tools.get("subagent_run")!;
+		const args = (path: string) => ({ agent: "explore", task: "Map", workspace_root: path, mode: "background" });
+		await assert.rejects(run.execute("alias", args(`${foreign}/.`), undefined, undefined, ctx), /same Git clone/);
+		ctx.hasUI = false;
+		await assert.rejects(run.execute("no-ui", args(foreign), undefined, undefined, ctx), /interactive/);
+		ctx.hasUI = true;
+		const declined = run.execute("decline", args(foreign), undefined, undefined, ctx);
+		await tick(); decision(false);
+		await assert.rejects(declined, /interactive/);
+		const drift = run.execute("drift", args(foreign), undefined, undefined, ctx);
+		await tick(); id = "replacement"; decision(true);
+		await assert.rejects(drift, /identity changed/);
+		assert.equal(runtime.spawned.length, 0);
+		assert.equal(dialogs.filter(dialog => dialog.startsWith("confirm:")).length, 2);
+		assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), []);
+		await h.fire("session_shutdown", ctx);
+	} finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
 test("explicit child roots launch and continue in the actual cwd, persist without shell, and reject other clones", async () => {
 	const h = fakePi();
 	const runtime = deps();

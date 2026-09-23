@@ -166,6 +166,9 @@ export interface TaskRequest {
 	// Untrusted narrowing intent; paths come only from matching host provenance.
 	researchSelection?: unknown;
 	extensionPaths?: string[];
+	// Synchronous admission recheck at dequeue, before any OS spawn. Throws fail
+	// only this task; unlike onLaunch, it must never persist Changes evidence.
+	beforeSpawn?: () => void;
 	// Captures the originating session; invoked only after successful OS spawn.
 	onLaunch?: () => void;
 	/** Default off. Parent owns policy before opting into bounded local buffering,
@@ -489,6 +492,12 @@ export class AgentRunner {
 	// A child that cannot start (missing pi, bad cwd) fails only its task:
 	// spawn exceptions and process errors settle without uncaught host errors.
 	private launch(id: string, request: TaskRequest): void {
+		try { request.beforeSpawn?.(); }
+		catch (error) {
+			this.store.update(id, { status: TASK_STATUS.RUNNING, startedAt: this.deps.now(), lastStep: "starting" });
+			this.finish(id, TASK_STATUS.FAILED, `could not start pi: ${error instanceof Error ? error.message : String(error)}`);
+			return;
+		}
 		const detached = this.processControl.platform !== "win32";
 		const hasParentPermissionChannel = request.authorizeParentStandingReviewPermission !== undefined;
 		const permissionChannelStdio = this.processControl.platform === "win32" ? "overlapped" : "pipe";
