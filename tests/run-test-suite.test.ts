@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -93,6 +93,23 @@ test("direct invocation exits 0 when every stage passes", (t) => {
 	]);
 	const result = spawnSync(process.execPath, [runnerPath, stagesPath], { encoding: "utf8" });
 	assert.equal(result.status, 0);
+	assert.match(result.stdout ?? "", /all stages passed/);
+});
+
+test("direct invocation still runs stages when reached through a file symlink", (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "gentle-pi-run-test-suite-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const linkPath = join(dir, "runner-link.mjs");
+	try {
+		symlinkSync(runnerPath, linkPath);
+	} catch {
+		t.skip("symlinks unavailable on this filesystem");
+		return;
+	}
+	const stagesPath = writeStagesFile(t, [{ name: "only", command: "node -e \"process.exit(0)\"" }]);
+	const result = spawnSync(process.execPath, [linkPath, stagesPath], { encoding: "utf8" });
+	assert.equal(result.status, 0);
+	assert.match(result.stdout ?? "", /PASS  only/);
 	assert.match(result.stdout ?? "", /all stages passed/);
 });
 

@@ -10,20 +10,23 @@
 // POSIX and Windows CI.
 
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-export const DEFAULT_STAGES = [
+export const DEFAULT_STAGES = Object.freeze([
 	{ name: "unit-tests", command: "node --experimental-strip-types --test tests/*.test.ts" },
 	{ name: "provider-contract", command: "pnpm run check:provider-contract" },
 	{ name: "runtime-harness", command: "pnpm run test:harness" },
-];
+]);
 
 export async function runStage(stage) {
 	return await new Promise((resolve) => {
 		const child = spawn(stage.command, { shell: true, stdio: "inherit" });
 		child.on("close", (code) => resolve({ name: stage.name, code: code ?? 1 }));
-		child.on("error", () => resolve({ name: stage.name, code: 1 }));
+		child.on("error", (error) => {
+			console.error(`\n[${stage.name}] spawn failed: ${error.message}`);
+			resolve({ name: stage.name, code: 1 });
+		});
 	});
 }
 
@@ -48,9 +51,26 @@ function readStagesFromJsonPath(jsonPath) {
 	return stages;
 }
 
-if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
-	const stages = process.argv[2] ? readStagesFromJsonPath(process.argv[2]) : DEFAULT_STAGES;
-	const results = await runTestSuite(stages);
-	const failed = results.some((result) => result.code !== 0);
-	process.exitCode = failed ? 1 : 0;
+// Direct-invocation detection must survive symlinks: Node real-paths
+// `import.meta.url` but keeps `process.argv[1]` logical, so a plain equality
+// check silently no-ops the whole runner (zero stages run, exit 0) when the
+// script is reached through a file symlink.
+function isDirectRun(argv1) {
+	if (!argv1) return false;
+	try {
+		return realpathSync(argv1) === realpathSync(fileURLToPath(import.meta.url));
+	} catch {
+		return false;
+	}
+}
+
+if (isDirectRun(process.argv[1])) {
+	try {
+		const stages = process.argv[2] ? readStagesFromJsonPath(process.argv[2]) : DEFAULT_STAGES;
+		const results = await runTestSuite(stages);
+		process.exitCode = results.some((result) => result.code !== 0) ? 1 : 0;
+	} catch (error) {
+		console.error(error instanceof Error ? error.message : error);
+		process.exitCode = 1;
+	}
 }
