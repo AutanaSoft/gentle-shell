@@ -10,6 +10,7 @@
 // POSIX and Windows CI.
 
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 export const DEFAULT_STAGES = [
@@ -39,8 +40,17 @@ export async function runTestSuite(stages = DEFAULT_STAGES, { runStageImpl = run
 	return results;
 }
 
+function readStagesFromJsonPath(jsonPath) {
+	const stages = JSON.parse(readFileSync(jsonPath, "utf8"));
+	if (!Array.isArray(stages) || stages.some((stage) => typeof stage?.name !== "string" || typeof stage?.command !== "string")) {
+		throw new Error(`stages file must be an array of { name, command } objects: ${jsonPath}`);
+	}
+	return stages;
+}
+
 if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
-	const results = await runTestSuite();
+	const stages = process.argv[2] ? readStagesFromJsonPath(process.argv[2]) : DEFAULT_STAGES;
+	const results = await runTestSuite(stages);
 	const failed = results.some((result) => result.code !== 0);
 	process.exitCode = failed ? 1 : 0;
 }
