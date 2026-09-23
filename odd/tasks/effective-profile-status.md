@@ -41,7 +41,7 @@ Fix GitHub issue #1176 so the fullscreen Status sidebar shows the profile that g
 - [x] T6 — Correct review finding `R4-watch-runtime-error`: handle asynchronous `FSWatcher` errors without terminating the Pi host, add focused regression coverage, validate within the native correction budget, and commit the fix.
 - [x] T7 — Integrate updated `main` at `b6188bef`, resolve the test import conflict while preserving both subscription-usage and effective-profile coverage, verify the merged candidate, push the feature branch, then integrate it into `downstream/main`.
 - [x] T8 — Filter irrelevant profile watcher events and reuse the resolved worktree identity; preserve null-filename, ancestor creation, atomic replacement, and non-Git global behavior. Route: delegated writer (production and regression tests); checks: observed RED/GREEN focused tests, resolver/read counters, typecheck, diff check, work-unit commit.
-- [ ] T9 — Remove real OS watcher/timer dependence from both fullscreen Status refresh regressions while preserving integration assertions and rebind coverage. Route: delegated writer (integration tests and narrow test seam); checks: observed RED/GREEN, focused repeat, suite, work-unit commit.
+- [x] T9 — Remove real OS watcher/timer dependence from both fullscreen Status refresh regressions while preserving integration assertions and rebind coverage. Route: delegated writer (integration tests and narrow test seam); checks: observed RED/GREEN, focused repeat, suite, work-unit commit.
 - [ ] T10 — Clarify global-store and invalid/stale-pin fallback in the fullscreen documentation, verify consistency with reference docs, and commit the documentation work unit. Route: inline direct unless additional non-trivial files become necessary; checks: readback, markdown/diff check, work-unit commit.
 
 ## Acceptance criteria
@@ -65,9 +65,9 @@ Fix GitHub issue #1176 so the fullscreen Status sidebar shows the profile that g
 
 ## Follow-up progress
 
-- T8 implemented and independently verified; recording its work-unit commit. T9 and T10 pending. The two new T8 tests retain 130 ms wall-clock waits, to be removed with the T9 timer refactor.
+- T8 complete in local commit `729bfa62`; T9 implemented and independently verified, recording its work-unit commit. T10 pending. The two new T8 tests retain 130 ms wall-clock waits, to be removed with the T9 timer refactor.
 - Current branch is ahead of `origin/fix/effective-profile-status` because of an earlier local main merge; do not silently reset, rebase, push, or use the remote PR head as the checked-out source.
-- Scoped mapping complete; next: commit T8 as one work unit, then determinize all profile watcher timing tests in T9.
+- Next: record the deterministic test work unit, clarify the fallback documentation, then run the complete suite.
 
 ## Follow-up evidence
 
@@ -76,6 +76,12 @@ Fix GitHub issue #1176 so the fullscreen Status sidebar shows the profile that g
 - T8 writer and independent verifier: `node --experimental-strip-types --test tests/gentle-shell.test.ts tests/shell-bar.test.ts` — 148 passed, 0 failed; `node scripts/check-types.mjs` — passed with 195 baseline diagnostics, no regression; `git diff --check` — passed.
 - T8 independent finding: the two new tests use 130 ms real waits against a 100 ms debounce; T9 must replace those waits too. Relevant-event Git from the separate profile reader is not measured by watcher-side counters and was intentionally not changed.
 - T8 parent spot check: `git diff --check` passed; no untracked source changes. RDD-off native assessment reported high risk; independent verifier completed with no confirmed production defect.
+- T8 commit: `729bfa62` (`fix(shell): avoid unrelated profile watcher refreshes`), local only; user approved work-unit commits but not push.
+- T9 RED: before seam wiring six targeted watcher tests failed because injected watchers were not installed and fake-clock advances did not refresh the snapshots.
+- T9 GREEN: six targeted tests passed; original source transitions, late store creation, atomic replacement, null filenames, watcher errors, and disposal now use injected events and a per-snapshot clock. Production defaults retain Node watchers and timers.
+- T9 writer and independent verifier: `node --experimental-strip-types --test tests/gentle-shell.test.ts tests/shell-bar.test.ts` — 148 passed, 0 failed; `node scripts/check-types.mjs` — passed with 195 baseline diagnostics, no regressions; `git diff --check` passed. A new test-helper type error was corrected before the final run.
+- T9 follow-up verifier: later relevant event at t=60 resets the debounce from t=100 to t=160; focused suite 148 passed, diff check passed. Throwing watcher `close()` remains a low-priority pre-existing coverage gap outside the three review observations.
+- T9 parent spot check: `git diff --check` passed. RDD-off assessment reported high risk; separate verification found no production defect.
 
 ## Evidence
 

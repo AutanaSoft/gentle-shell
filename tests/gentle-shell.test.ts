@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import { execFileSync, execFile } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import test from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandInfo, type SourceInfo } from "@earendil-works/pi-coding-agent";
 import type { TUI, TuiMouseEvent } from "@earendil-works/pi-tui";
-import installGentleShell, { buildShellBarModel, createActiveProfileReader, createEffectiveProfileSnapshot, createShellBarComponent, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, type GentlePromptEditor } from "../extensions/gentle-shell.ts";
+import installGentleShell, { buildShellBarModel, createActiveProfileReader, createEffectiveProfileSnapshot, createShellBarComponent, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, type GentlePromptEditor, type ProfileRefreshClock, type ShellDeps } from "../extensions/gentle-shell.ts";
 import { USAGE_SOURCE_EVENT, USAGE_SOURCE_SCHEMA } from "../lib/shell-usage.ts";
 import { CHANGE_STATUS } from "../lib/shell-changes.ts";
 import { sidebarState, type SidebarRail } from "../lib/shell-sidebar.ts";
@@ -130,6 +130,64 @@ function fakePi(script: GitScript[] = [{ numstat: "", porcelain: "" }], commands
 
 async function fire(handlers: Map<string, Array<(event: unknown, ctx: ExtensionContext) => unknown>>, event: string, ctx: ExtensionContext): Promise<void> {
 	for (const handler of handlers.get(event) ?? []) await handler({}, ctx);
+}
+
+interface ProfileWatchRecord {
+	directory: string;
+	callback(eventType: string, filename: string | Buffer | null): void;
+	onError?: (error: Error) => void;
+	closed: boolean;
+	closeCalls: number;
+}
+
+function createProfileWatchHarness() {
+	let now = 0;
+	let nextTimerId = 0;
+	const timers = new Map<ReturnType<typeof setTimeout>, { due: number; callback: () => void }>();
+	const watchers: ProfileWatchRecord[] = [];
+	const profileRefreshClock: ProfileRefreshClock = {
+		setTimeout(callback, delay) {
+			const timer = { id: ++nextTimerId, unref() {} } as unknown as ReturnType<typeof setTimeout>;
+			timers.set(timer, { due: now + delay, callback });
+			return timer;
+		},
+		clearTimeout(timer) {
+			timers.delete(timer);
+		},
+	};
+	const watchProfile: NonNullable<ShellDeps["watchProfile"]> = ((directory: string, callback: ProfileWatchRecord["callback"]) => {
+		const record: ProfileWatchRecord = { directory, callback, closed: false, closeCalls: 0 };
+		watchers.push(record);
+		return {
+			on(event: string, listener: (error: Error) => void) {
+				if (event === "error") record.onError = listener;
+				return this;
+			},
+			unref() {},
+			close() {
+				record.closed = true;
+				record.closeCalls++;
+			},
+		};
+	}) as unknown as NonNullable<ShellDeps["watchProfile"]>;
+	const activeWatcher = (directory: string) => {
+		const record = watchers.find((candidate) => candidate.directory === directory && !candidate.closed);
+		assert.ok(record, `expected an active watcher for ${directory}`);
+		return record;
+	};
+	const emit = (directory: string, filename: string | Buffer | null) => activeWatcher(directory).callback("change", filename);
+	const advance = (milliseconds: number) => {
+		now += milliseconds;
+		while (true) {
+			const next = [...timers.entries()]
+				.filter(([, timer]) => timer.due <= now)
+				.sort((left, right) => left[1].due - right[1].due)[0];
+			if (!next) return;
+			timers.delete(next[0]);
+			next[1].callback();
+		}
+	};
+	return { watchers, profileRefreshClock, watchProfile, activeWatcher, emit, advance, pendingTimers: () => timers.size };
 }
 
 function fakeContext(options: { hasUI?: boolean; entries?: unknown[]; oauth?: boolean; pending?: boolean; idle?: boolean; editorFactory?: unknown; token?: string; select?: (title: string, options: string[]) => Promise<string | undefined> } = {}): { ctx: ExtensionContext; ui: FakeUi; overlayReady: Promise<void> } {
@@ -383,7 +441,12 @@ test("fullscreen Status digest follows effective pin source changes without rest
 	const repoPin = repoProfileDeclarationPath(worktreeRoot);
 	const localPin = localProfilePinPath(commonDir);
 	const { pi, handlers } = fakePi();
-	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: root, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { resolveWorktree });
+	const profileWatch = createProfileWatchHarness();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: root, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, {
+		resolveWorktree,
+		watchProfile: profileWatch.watchProfile,
+		profileRefreshClock: profileWatch.profileRefreshClock,
+	});
 	const { ctx, ui } = fakeContext();
 	await fire(handlers, "session_start", ctx);
 	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => { render(width: number): string[]; dispose(): void };
@@ -391,39 +454,40 @@ test("fullscreen Status digest follows effective pin source changes without rest
 	const component = factory(tui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
 	try {
 		const rail = sidebarState(tui as unknown as TUI).parts.get("footer") as SidebarRail;
-		const waitForProfile = async (text: string) => {
-			for (let attempt = 0; attempt < 20; attempt++) {
-				if (rail.digest!().includes(text)) return;
-				await new Promise((resolve) => setTimeout(resolve, 20));
-			}
-			assert.fail(`timed out waiting for profile ${text}`);
+		const refreshAfterEvent = (directory: string, filename: string, expectedDigest: string, rendered: RegExp) => {
+			const before = rail.digest!();
+			profileWatch.emit(directory, filename);
+			profileWatch.advance(99);
+			assert.equal(rail.digest!(), before, "the Status snapshot stays unchanged before the debounce expires");
+			profileWatch.advance(1);
+			assert.notEqual(rail.digest!(), expectedDigest, "the watcher event refreshes the Status digest after debounce");
+			assert.match(rail.render(46).join("\n"), rendered);
 		};
 		assert.match(rail.render(46).join("\n"), /Profile.*team/);
 		const beforePin = rail.digest!();
 		writeFileSync(repoPin, serializeProfilePin("other"));
-		await waitForProfile('"name":"other","source":"repo"');
+		refreshAfterEvent(dirname(repoPin), basename(repoPin), beforePin, /Profile.*other \(repo\)/);
 		assert.notEqual(rail.digest!(), beforePin, "creating a pin must invalidate the Status digest");
-		assert.match(rail.render(46).join("\n"), /Profile.*other \(repo\)/);
 		const replacement = join(root, "profile-replacement.json");
 		writeFileSync(replacement, serializeProfilePin("team"));
 		renameSync(replacement, repoPin);
-		await waitForProfile('"name":"team","source":"repo"');
-		assert.match(rail.render(46).join("\n"), /Profile.*team \(repo\)/);
+		const beforeReplacement = rail.digest!();
+		refreshAfterEvent(dirname(repoPin), basename(repoPin), beforeReplacement, /Profile.*team \(repo\)/);
 		const beforeLocal = rail.digest!();
 		writeFileSync(localPin, serializeProfilePin("team"));
-		await waitForProfile('"name":"team","source":"local"');
+		refreshAfterEvent(dirname(localPin), basename(localPin), beforeLocal, /Profile.*team \(local\)/);
 		assert.notEqual(rail.digest!(), beforeLocal, "same-profile local precedence must invalidate the Status digest");
-		assert.match(rail.render(46).join("\n"), /Profile.*team \(local\)/);
 		const beforeRepo = rail.digest!();
 		rmSync(localPin);
-		await waitForProfile('"name":"team","source":"repo"');
+		refreshAfterEvent(dirname(localPin), basename(localPin), beforeRepo, /Profile.*team \(repo\)/);
 		assert.notEqual(rail.digest!(), beforeRepo, "returning to the repository source must invalidate the Status digest");
 		const beforeRemoval = rail.digest!();
 		rmSync(repoPin);
-		await waitForProfile('"name":"team","source":"global"');
+		refreshAfterEvent(dirname(repoPin), basename(repoPin), beforeRemoval, /Profile.*team/);
 		assert.notEqual(rail.digest!(), beforeRemoval, "removing a pin must invalidate the Status digest");
 		assert.match(rail.render(46).join("\n"), /Profile.*team/);
 		assert.doesNotMatch(rail.render(46).join("\n"), /\((local|repo)\)/);
+		assert.ok(profileWatch.watchers.length > 0, "the fullscreen Status factory installs the injected watchers");
 	} finally {
 		component.dispose();
 	}
@@ -482,8 +546,11 @@ test("fullscreen Status rebinds parent watchers when a profile store appears aft
 		kind: "gentle-pi.agent_model_profiles", version: 1, active, profiles: { team: {}, other: {} },
 	});
 	const { pi, handlers } = fakePi();
+	const profileWatch = createProfileWatchHarness();
 	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, {
 		resolveWorktree: () => ({ root: worktreeRoot, commonDir }),
+		watchProfile: profileWatch.watchProfile,
+		profileRefreshClock: profileWatch.profileRefreshClock,
 	});
 	const { ctx, ui } = fakeContext();
 	await fire(handlers, "session_start", ctx);
@@ -492,21 +559,22 @@ test("fullscreen Status rebinds parent watchers when a profile store appears aft
 	const component = factory(tui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
 	try {
 		const rail = sidebarState(tui as unknown as TUI).parts.get("footer") as SidebarRail;
-		const waitForDigest = async (text: string) => {
-			for (let attempt = 0; attempt < 30; attempt++) {
-				if (rail.digest!().includes(text)) return;
-				await new Promise((resolve) => setTimeout(resolve, 20));
-			}
-			assert.fail(`timed out waiting for profile ${text}`);
-		};
 		assert.doesNotMatch(rail.render(46).join("\n"), /Profile/);
+		const oldAncestor = profileWatch.activeWatcher(join(root, "created"));
 		mkdirSync(configHome, { recursive: true });
 		writeFileSync(profilesFilePath(configHome), profileFile("team"));
-		await waitForDigest('"name":"team"');
+		profileWatch.emit(join(root, "created"), basename(configHome));
+		profileWatch.advance(99);
+		assert.doesNotMatch(rail.render(46).join("\n"), /Profile/, "the late store is not visible before the debounce expires");
+		profileWatch.advance(1);
+		assert.match(rail.render(46).join("\n"), /Profile.*team/);
+		assert.equal(oldAncestor.closed, true, "the parent watcher is retired after the store directory appears");
+		profileWatch.activeWatcher(configHome);
 		const replacement = join(root, "profile-replacement.json");
 		writeFileSync(replacement, profileFile("other"));
 		renameSync(replacement, profilesFilePath(configHome));
-		await waitForDigest('"name":"other"');
+		profileWatch.emit(configHome, basename(profilesFilePath(configHome)));
+		profileWatch.advance(100);
 		assert.match(rail.render(46).join("\n"), /Profile.*other/);
 	} finally {
 		component.dispose();
@@ -603,6 +671,7 @@ test("fullscreen Status disposes profile watchers and pending refreshes with the
 	}));
 	let reads = 0;
 	const repoPin = repoProfileDeclarationPath(worktreeRoot);
+	const profileWatch = createProfileWatchHarness();
 	const { pi, handlers } = fakePi();
 	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: root, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, {
 		resolveWorktree: () => ({ root: worktreeRoot, commonDir }),
@@ -610,6 +679,8 @@ test("fullscreen Status disposes profile watchers and pending refreshes with the
 			reads++;
 			return { name: "team", source: "global" };
 		},
+		watchProfile: profileWatch.watchProfile,
+		profileRefreshClock: profileWatch.profileRefreshClock,
 	});
 	const { ctx, ui } = fakeContext();
 	await fire(handlers, "session_start", ctx);
@@ -617,10 +688,13 @@ test("fullscreen Status disposes profile watchers and pending refreshes with the
 	const tui = { terminal: { rows: 40, columns: 160 }, requestRender() {} };
 	const component = factory(tui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
 	assert.equal(reads, 1);
+	profileWatch.emit(dirname(repoPin), basename(repoPin));
+	assert.equal(profileWatch.pendingTimers(), 1, "a relevant event has a pending debounced refresh");
 	component.dispose();
 	component.dispose();
+	assert.ok(profileWatch.watchers.every((watcher) => watcher.closed && watcher.closeCalls === 1), "footer disposal closes each watcher exactly once");
 	writeFileSync(repoPin, serializeProfilePin("other"));
-	await new Promise((resolve) => setTimeout(resolve, 180));
+	profileWatch.advance(100);
 	assert.equal(reads, 1, "disposed Status components must close watchers and pending refresh timers");
 });
 
@@ -638,11 +712,7 @@ test("profile watchers filter filenames, rebind ancestors, and cache worktree id
 	let cwd = root;
 	const resolutions: string[] = [];
 	const reads: string[] = [];
-	const records: Array<{
-		directory: string;
-		callback(eventType: string, filename: string | Buffer | null): void;
-		closed: boolean;
-	}> = [];
+	const profileWatch = createProfileWatchHarness();
 	let profile: ShellProfileState | undefined = { name: "team", source: "global" };
 	let changes = 0;
 	const snapshot = createEffectiveProfileSnapshot({
@@ -656,61 +726,70 @@ test("profile watchers filter filenames, rebind ancestors, and cache worktree id
 		},
 		read: (path) => { reads.push(path!); return profile; },
 		onChange: () => { changes++; },
-		watch: ((directory: string, callback: (eventType: string, filename: string | Buffer | null) => void) => {
-			const record = { directory, callback, closed: false };
-			records.push(record);
-			return { on() { return this; }, unref() {}, close() { record.closed = true; } };
-		}) as never,
+		watch: profileWatch.watchProfile,
+		profileRefreshClock: profileWatch.profileRefreshClock,
 	});
-	const activeWatcher = (directory: string) => {
-		const record = records.find((candidate) => candidate.directory === directory && !candidate.closed);
-		assert.ok(record, `expected an active watcher for ${directory}`);
-		return record;
-	};
-	const emit = (directory: string, filename: string | Buffer | null) => activeWatcher(directory).callback("change", filename);
-	const settle = () => new Promise((resolve) => setTimeout(resolve, 130));
+	const emit = profileWatch.emit;
 	try {
 		assert.deepEqual(reads, [root]);
 		assert.deepEqual(resolutions, [root], "the worktree identity is resolved once for the initial cwd");
 		for (const filename of ["index", "HEAD", ".git", "profile.json"]) emit(root, filename);
 		emit(localWatchDirectory, "index");
-		await settle();
+		profileWatch.advance(100);
 		assert.equal(reads.length, 1, "named unrelated files, including a matching basename in another parent, do not refresh");
 		assert.deepEqual(resolutions, [root], "unrelated watcher events do not resolve Git");
 
 		mkdirSync(configHome, { recursive: true });
 		emit(root, "config");
-		await settle();
+		profileWatch.advance(99);
+		assert.equal(reads.length, 1, "a relevant event remains debounced until the full interval");
+		profileWatch.advance(1);
 		assert.equal(reads.length, 2, "a shared watch directory retains the global store's next path component");
-		assert.ok(activeWatcher(configHome), "the global watcher rebinds after its ancestor is created");
+		profileWatch.activeWatcher(configHome);
 
 		mkdirSync(join(root, ".pi", "gentle-ai"), { recursive: true });
 		profile = { name: "other", source: "repo" };
 		emit(root, Buffer.from(".pi"));
-		await settle();
+		profileWatch.advance(100);
 		assert.equal(reads.length, 3, "creating a watched ancestor refreshes the profile");
 		assert.deepEqual(snapshot.get(), { name: "other", source: "repo" }, "the refreshed snapshot preserves the effective pin source");
 		assert.equal(changes, 1);
-		assert.ok(activeWatcher(join(root, ".pi", "gentle-ai")), "the watcher rebinds to the nearest newly created profile parent");
+		profileWatch.activeWatcher(join(root, ".pi", "gentle-ai"));
 		assert.deepEqual(resolutions, [root], "refreshing the same cwd reuses its worktree identity");
 
 		emit(configHome, "profile.json");
-		await settle();
+		profileWatch.advance(100);
 		assert.equal(reads.length, 3, "the same filename in a different parent is unrelated");
-		emit(join(root, ".pi", "gentle-ai"), "profile.json");
-		await settle();
-		assert.equal(reads.length, 4, "a watched target filename refreshes the profile");
+		const repoProfileDirectory = join(root, ".pi", "gentle-ai");
+		emit(repoProfileDirectory, "profile.json");
+		emit(repoProfileDirectory, "profile.json");
+		profileWatch.advance(99);
+		assert.equal(reads.length, 3, "repeated relevant events remain grouped before the debounce expires");
+		profileWatch.advance(1);
+		assert.equal(reads.length, 4, "a watched target filename refreshes the profile once");
 		assert.equal(changes, 1, "an unchanged resolved state does not notify the shell");
+
+		emit(repoProfileDirectory, "profile.json");
+		profileWatch.advance(60);
+		emit(repoProfileDirectory, "profile.json");
+		profileWatch.advance(40);
+		assert.equal(reads.length, 4, "a later relevant event resets the deadline, so there is no refresh at t=100");
+		profileWatch.advance(60);
+		assert.equal(reads.length, 5, "the coalesced refresh runs at t=160 from the first event");
+		assert.equal(changes, 1, "the reset-deadline refresh preserves unchanged-state notification behavior");
+
 		emit(localWatchDirectory, null);
-		await settle();
-		assert.equal(reads.length, 5, "an unknown filename preserves conservative refresh behavior");
+		profileWatch.advance(99);
+		assert.equal(reads.length, 5, "unknown-filename refreshes remain debounced");
+		profileWatch.advance(1);
+		assert.equal(reads.length, 6, "an unknown filename preserves conservative refresh behavior");
 
 		cwd = nextRoot;
 		snapshot.refresh();
-		assert.deepEqual(reads, [root, root, root, root, root, nextRoot]);
+		assert.deepEqual(reads, [root, root, root, root, root, root, nextRoot]);
 		assert.deepEqual(resolutions, [root, nextRoot], "a cwd transition resolves and caches the new worktree identity");
-		assert.ok(records.some((record) => record.directory === nextRoot && !record.closed), "watchers rebind to the new worktree");
-		assert.ok(records.some((record) => record.directory === join(root, ".pi", "gentle-ai") && record.closed), "watchers from the old worktree are closed");
+		assert.ok(profileWatch.watchers.some((record) => record.directory === nextRoot && !record.closed), "watchers rebind to the new worktree");
+		assert.ok(profileWatch.watchers.some((record) => record.directory === join(root, ".pi", "gentle-ai") && record.closed), "watchers from the old worktree are closed");
 	} finally {
 		snapshot.dispose();
 	}
@@ -723,24 +802,24 @@ test("profile watchers keep the global store observable outside Git", async (t) 
 	mkdirSync(configHome, { recursive: true });
 	let reads = 0;
 	let resolutions = 0;
-	let callback: ((eventType: string, filename: string | Buffer | null) => void) | undefined;
+	const profileWatch = createProfileWatchHarness();
 	const snapshot = createEffectiveProfileSnapshot({
 		cwd: () => root,
 		env: { GENTLE_PI_CONFIG_HOME: configHome },
 		resolveWorktree: () => { resolutions++; throw new Error("not a Git worktree"); },
 		read: () => { reads++; return { name: "team", source: "global" }; },
 		onChange() {},
-		watch: ((directory: string, onEvent: (eventType: string, filename: string | Buffer | null) => void) => {
-			assert.equal(directory, configHome);
-			callback = onEvent;
-			return { on() { return this; }, unref() {}, close() {} };
-		}) as never,
+		watch: profileWatch.watchProfile,
+		profileRefreshClock: profileWatch.profileRefreshClock,
 	});
 	try {
 		assert.equal(reads, 1);
 		assert.equal(resolutions, 1);
-		callback!("change", "profiles.json");
-		await new Promise((resolve) => setTimeout(resolve, 130));
+		assert.equal(profileWatch.watchers[0]!.directory, configHome);
+		profileWatch.emit(configHome, basename(profilesFilePath(configHome)));
+		profileWatch.advance(99);
+		assert.equal(reads, 1, "global profile changes remain debounced");
+		profileWatch.advance(1);
 		assert.equal(reads, 2, "global profile changes remain observable outside Git");
 		assert.equal(resolutions, 1, "the failed worktree lookup is cached for this cwd");
 	} finally {
@@ -751,23 +830,28 @@ test("profile watchers keep the global store observable outside Git", async (t) 
 test("profile watcher errors close the failed watcher without retrying it", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "shell-profile-watch-error-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
-	const errors: Array<(error: Error) => void> = [];
-	let closed = 0;
-	let created = 0;
+	const profileWatch = createProfileWatchHarness();
+	let reads = 0;
 	const snapshot = createEffectiveProfileSnapshot({
-		cwd: () => root, env: { GENTLE_PI_CONFIG_HOME: root }, resolveWorktree: () => ({ root, commonDir: root }), onChange() {}, read: () => undefined,
-		watch: () => {
-			created++;
-			return { on(event: string, callback: (error: Error) => void) { if (event === "error") errors.push(callback); }, unref() {}, close() { closed++; } } as never;
-		},
+		cwd: () => root,
+		env: { GENTLE_PI_CONFIG_HOME: root },
+		resolveWorktree: () => ({ root, commonDir: root }),
+		onChange() {},
+		read: () => { reads++; return undefined; },
+		watch: profileWatch.watchProfile,
+		profileRefreshClock: profileWatch.profileRefreshClock,
 	});
-	assert.doesNotThrow(() => errors[0]!(new Error("watched directory vanished")));
-	assert.equal(closed, 1, "the failed watcher is closed immediately");
-	await new Promise((resolve) => setTimeout(resolve, 130));
-	assert.equal(created, 1, "a persistent watcher failure does not create a retry loop");
+	const failedWatcher = profileWatch.watchers[0]!;
+	assert.doesNotThrow(() => failedWatcher.onError!(new Error("watched directory vanished")));
+	assert.equal(failedWatcher.closeCalls, 1, "the failed watcher is closed immediately");
+	assert.equal(profileWatch.pendingTimers(), 1, "watch errors schedule one debounced refresh");
+	profileWatch.advance(100);
+	assert.equal(reads, 2, "the scheduled error refresh still runs");
+	assert.equal(profileWatch.watchers.length, 1, "a persistent watcher failure does not create a retry loop");
 	snapshot.dispose();
-	assert.equal(closed, 1, "disposal does not close an already failed watcher again");
-	assert.doesNotThrow(() => errors[0]!(new Error("late error after disposal")));
+	assert.equal(failedWatcher.closeCalls, 1, "disposal does not close an already failed watcher again");
+	assert.doesNotThrow(() => failedWatcher.onError!(new Error("late error after disposal")));
+	assert.equal(profileWatch.pendingTimers(), 0, "late errors after disposal schedule no work");
 });
 
 test("profile reader follows store changes and rejects missing or invalid active markers", (t) => {

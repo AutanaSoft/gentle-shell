@@ -63,6 +63,11 @@ interface BuildOptions {
 
 export type DevBinaryNotice = { state: "active"; path: string; sha256: string } | { state: "invalid"; reason: string };
 
+export interface ProfileRefreshClock {
+	setTimeout(callback: () => void, delay: number): ReturnType<typeof setTimeout>;
+	clearTimeout(timer: ReturnType<typeof setTimeout>): void;
+}
+
 export interface ShellDeps {
 	activeProfile(cwd?: string): ShellProfileState | undefined;
 	fetch: typeof fetch;
@@ -70,6 +75,8 @@ export interface ShellDeps {
 	devBinary(): DevBinaryNotice | undefined;
 	resolveWorktree: WorktreeResolver;
 	gitRunner(cwd: string): GitRunner;
+	watchProfile?: typeof watch;
+	profileRefreshClock?: ProfileRefreshClock;
 }
 
 // Profile resolution is intentionally kept out of the rail digest and render path.
@@ -127,6 +134,11 @@ export function createActiveProfileReader(
 
 const PROFILE_REFRESH_DEBOUNCE_MS = 100;
 
+const defaultProfileRefreshClock: ProfileRefreshClock = {
+	setTimeout: (callback, delay) => setTimeout(callback, delay),
+	clearTimeout: (timer) => clearTimeout(timer),
+};
+
 interface EffectiveProfileSnapshot {
 	get(): ShellProfileState | undefined;
 	refresh(): boolean;
@@ -140,6 +152,7 @@ interface EffectiveProfileSnapshotOptions {
 	resolveWorktree: WorktreeResolver;
 	onChange(): void;
 	watch?: typeof watch;
+	profileRefreshClock?: ProfileRefreshClock;
 }
 
 function existingProfileWatchDirectory(path: string, floor: string): string | undefined {
@@ -202,6 +215,7 @@ export function createEffectiveProfileSnapshot(options: EffectiveProfileSnapshot
 	let worktreeIdentity: ReturnType<WorktreeResolver> | undefined;
 	let identityResolved = false;
 	let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+	const clock = options.profileRefreshClock ?? defaultProfileRefreshClock;
 	let watchers: FSWatcher[] = [];
 	let watchedDirectories: string[] = [];
 	const failedWatchDirectories = new Set<string>();
@@ -279,8 +293,8 @@ export function createEffectiveProfileSnapshot(options: EffectiveProfileSnapshot
 	};
 	const scheduleRefresh = () => {
 		if (disposed) return;
-		if (refreshTimer) clearTimeout(refreshTimer);
-		refreshTimer = setTimeout(() => {
+		if (refreshTimer) clock.clearTimeout(refreshTimer);
+		refreshTimer = clock.setTimeout(() => {
 			refreshTimer = undefined;
 			refresh();
 		}, PROFILE_REFRESH_DEBOUNCE_MS);
@@ -294,7 +308,7 @@ export function createEffectiveProfileSnapshot(options: EffectiveProfileSnapshot
 		dispose() {
 			if (disposed) return;
 			disposed = true;
-			if (refreshTimer) clearTimeout(refreshTimer);
+			if (refreshTimer) clock.clearTimeout(refreshTimer);
 			refreshTimer = undefined;
 			closeWatchers();
 		},
@@ -1148,6 +1162,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				cwd: () => ctx.sessionManager.getCwd(),
 				env,
 				resolveWorktree: deps.resolveWorktree,
+				watch: deps.watchProfile,
+				profileRefreshClock: deps.profileRefreshClock,
 				onChange: () => {
 					invalidateSidebar(tui);
 					tui.requestRender();
