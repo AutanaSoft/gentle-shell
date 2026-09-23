@@ -163,3 +163,32 @@ test("SessionMessagingGrants - sessionManager replacement revokes grants", async
 	await grants.authorize(replacedCtx as never, "peer-alpha", { message: "with new manager" });
 	assert.equal(h.calls(), 2, "sessionManager replacement must invalidate previous grants");
 });
+
+test("SessionMessagingGrants - session ID change during prompt selection rejects and records no grant", async () => {
+	const grants = new SessionMessagingGrants();
+	const h = context(async () => {
+		h.setId("session-mutated");
+		return MESSAGING_CONSENT_DECISIONS.ALLOW_SESSION;
+	});
+
+	await assert.rejects(
+		grants.authorize(h.ctx as never, "peer-alpha", { message: "concurrent" }),
+		/identity changed/i
+	);
+	assert.equal(h.calls(), 1);
+
+	// Subsequent authorization in the mutated session must prompt again
+	await grants.authorize(h.ctx as never, "peer-alpha", { message: "fresh" });
+	assert.equal(h.calls(), 2, "must prompt again because no grant was recorded for mutated session");
+});
+
+test("SessionMessagingGrants - truncates long messages with char count notice and derives default reason", async () => {
+	const grants = new SessionMessagingGrants();
+	const h = context(async () => MESSAGING_CONSENT_DECISIONS.ALLOW_ONCE);
+	const longMessage = "x".repeat(300);
+
+	await grants.authorize(h.ctx as never, "peer-long", { message: longMessage });
+	assert.equal(h.calls(), 1);
+	assert.match(h.dialogs()[0].title, /Reason: Notification from session session-1/);
+	assert.match(h.dialogs()[0].title, /Message \(300 chars, preview\): x{197}\.\.\./);
+});

@@ -1,5 +1,9 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { sanitizeTerminalText } from "./terminal-theme.ts";
 
+/**
+ * Supported decision tokens for cross-orchestrator communication consent.
+ */
 export const MESSAGING_CONSENT_DECISIONS = {
 	ALLOW_ONCE: "Allow once",
 	ALLOW_SESSION: "Allow for this session",
@@ -9,18 +13,31 @@ export const MESSAGING_CONSENT_DECISIONS = {
 export type MessagingConsentDecision =
 	(typeof MESSAGING_CONSENT_DECISIONS)[keyof typeof MESSAGING_CONSENT_DECISIONS];
 
+/**
+ * Options for requesting human authorization before outbound cross-session communication.
+ */
 export interface MessagingConsentOptions {
+	/** Outbound message payload. */
 	message: string;
+	/** Concrete reason explaining why this communication is needed. */
 	reason?: string;
+	/** Optional abort signal for request cancellation. */
 	signal?: AbortSignal;
 }
 
-// Deliberately ephemeral: in-memory only, bound to the live session identity and session manager.
+/**
+ * Ephemeral in-memory grant manager for cross-orchestrator communication.
+ * Permissions are scoped strictly to the live session identity and session manager instance.
+ */
 export class SessionMessagingGrants {
 	private readonly grants = new Map<string, Set<string>>();
 	private manager?: ExtensionContext["sessionManager"];
 	private sessionId?: string;
 
+	/**
+	 * Authorizes an outbound cross-orchestrator message to the given recipient.
+	 * Prompts the user interactively when no session-level grant exists, and fails closed otherwise.
+	 */
 	async authorize(
 		ctx: Pick<ExtensionContext, "sessionManager" | "hasUI" | "ui">,
 		recipient: string,
@@ -40,9 +57,17 @@ export class SessionMessagingGrants {
 			throw new Error("Cross-orchestrator communication requires interactive human consent before sending.");
 		}
 
-		const preview = options.message.length > 200 ? `${options.message.slice(0, 197)}...` : options.message;
-		const reasonLine = options.reason ? `Reason: ${options.reason}\n` : "";
-		const title = `Authorize cross-orchestrator message to ${recipient}?\n${reasonLine}Message: ${preview}`;
+		const cleanMessage = sanitizeTerminalText(options.message);
+		const cleanReason = options.reason ? sanitizeTerminalText(options.reason).trim() : undefined;
+		const reason = cleanReason && cleanReason.length > 0
+			? cleanReason
+			: `Notification from session ${id}`;
+
+		const isTruncated = cleanMessage.length > 200;
+		const messageLabel = isTruncated
+			? `Message (${cleanMessage.length} chars, preview): ${cleanMessage.slice(0, 197)}...`
+			: `Message: ${cleanMessage}`;
+		const title = `Authorize cross-orchestrator message to ${sanitizeTerminalText(recipient)}?\nReason: ${reason}\n${messageLabel}`;
 
 		const selected = await ctx.ui.select(
 			title,
@@ -73,6 +98,9 @@ export class SessionMessagingGrants {
 		throw new Error("Cross-orchestrator communication denied by user.");
 	}
 
+	/**
+	 * Checks whether a live session-level grant exists for the target recipient in the current session.
+	 */
 	assertCurrent(ctx: Pick<ExtensionContext, "sessionManager">, recipient: string): boolean {
 		if (
 			ctx.sessionManager !== this.manager ||

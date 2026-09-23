@@ -3651,7 +3651,7 @@ test("session transport selects a peer for outbound delivery and rejects stale c
 	const result = await h.tools.get("orchestrator_send_message")!.execute("send", { message: "hello peer" }, undefined, undefined, ctx);
 	assert.deepEqual(dialogs, [
 		"select:Select recipient orchestrator:Orchestrator alpha|Orchestrator beta",
-		"select:Authorize cross-orchestrator message to alpha?\nMessage: hello peer:Allow once|Allow for this session|Deny",
+		"select:Authorize cross-orchestrator message to alpha?\nReason: Notification from session s1\nMessage: hello peer:Allow once|Allow for this session|Deny",
 	]);
 	assert.deepEqual(sent, [{ recipient: "alpha", message: "hello peer", expectedActivation: records[0] }]);
 	assert.match(result.content[0].text, /accepted for delivery; it is not a delivery or read receipt/);
