@@ -798,7 +798,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			} else if (tool.evidence.root !== root) {
 				noteDrop("evidence-root-mismatch");
 			} else {
-				let path = tool.path.replace(/^@/, "");
+				let path = tool.path.replace(/^@/, "").replace(/[\u00a0\u2000-\u200a\u202f\u205f\u3000]/g, " ");
 				if (path === "~" || path.startsWith("~/")) path = os.homedir() + path.slice(1);
 				let resolvedPath: string | undefined;
 				try {

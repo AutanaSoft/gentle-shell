@@ -2312,16 +2312,20 @@ test("foreign child Changes require successful target-bound tool evidence, never
 		await send("failed", foreign, "failed.md", true);
 		assert.equal(h.entries.some(entry => entry.customType === "gentle-pi.session-change/v1"), false);
 		await send("accepted", foreign, "accepted.md");
+		const spacedEvidence = await childSessionChangeEvidence(foreign, "space name.md", "unicode-space", "agent output\n");
+		child.emit({ type: "tool_execution_start", toolCallId: "unicode-space", toolName: "write", args: { path: "space\u00a0name.md" } });
+		child.emit({ type: "tool_execution_end", toolCallId: "unicode-space", isError: false, result: { content: [], details: { gentleSessionChange: spacedEvidence } } });
+		await tick();
 		const editEvidence = await childSessionEditEvidence(foreign, "edited.md", "edit-accepted", "original\n", "changed\n");
 		child.emit({ type: "tool_execution_start", toolCallId: "edit-accepted", toolName: "edit", args: { path: "edited.md" } });
 		child.emit({ type: "tool_execution_end", toolCallId: "edit-accepted", isError: false, result: { content: [], details: { gentleSessionChange: editEvidence } } });
 		await tick();
 		const changes = new SessionChanges(ctx.sessionManager.getSessionId()!, h.entries);
 		assert.deepEqual(changes.worktrees.map(tree => tree.root), [foreign]);
-		assert.deepEqual(changes.model.files.map(file => file.path).sort(), ["accepted.md", "edited.md"]);
+		assert.deepEqual(changes.model.files.map(file => file.path).sort(), ["accepted.md", "edited.md", "space name.md"]);
 		assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), []);
 		assert.equal(h.events.some(event => event.name === "gentle-pi:child-session-change"), false);
-		assert.equal(h.entries.filter(entry => entry.customType === "gentle-pi.session-change/v1").length, 2);
+		assert.equal(h.entries.filter(entry => entry.customType === "gentle-pi.session-change/v1").length, 3);
 		assert.equal(changes.worktrees[0]?.model.files.find(file => file.path === "accepted.md")?.status, "added");
 		assert.equal(changes.worktrees[0]?.model.files.find(file => file.path === "edited.md")?.status, "modified");
 		mkdirSync(join(foreign, "nested"));
@@ -2330,7 +2334,7 @@ test("foreign child Changes require successful target-bound tool evidence, never
 		execFileSync("git", ["init", "--quiet", `--template=${template}`, join(foreign, "nested")]);
 		child.emit({ type: "tool_execution_end", toolCallId: "rebound", isError: false, result: { content: [], details: { gentleSessionChange: rebound } } });
 		await tick();
-		assert.equal(h.entries.filter(entry => entry.customType === "gentle-pi.session-change/v1").length, 2, "new nested Git identity must not inherit foreign target attribution");
+		assert.equal(h.entries.filter(entry => entry.customType === "gentle-pi.session-change/v1").length, 3, "new nested Git identity must not inherit foreign target attribution");
 		const stale = await childSessionChangeEvidence(foreign, "stale.md", "stale", "not attributed\n");
 		child.emit({ type: "tool_execution_start", toolCallId: "stale", toolName: "write", args: { path: "stale.md" } });
 		const { ctx: successor } = fakeContext();
@@ -2338,7 +2342,7 @@ test("foreign child Changes require successful target-bound tool evidence, never
 		await h.fire("session_start", successor);
 		child.emit({ type: "tool_execution_end", toolCallId: "stale", isError: false, result: { content: [], details: { gentleSessionChange: stale } } });
 		await tick();
-		assert.equal(h.entries.filter(entry => entry.customType === "gentle-pi.session-change/v1").length, 2, "session replacement during a tool cannot attribute its result");
+		assert.equal(h.entries.filter(entry => entry.customType === "gentle-pi.session-change/v1").length, 3, "session replacement during a tool cannot attribute its result");
 		assert.equal(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY).length, 0);
 		await h.fire("session_shutdown", successor);
 	} finally { rmSync(fixture, { recursive: true, force: true }); }
