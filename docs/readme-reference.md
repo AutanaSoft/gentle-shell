@@ -154,14 +154,14 @@ gentle-shell --link
 ### Path B: inside an existing pi
 
 ```bash
-pi install npm:gentle-pi@3.5.1
+pi install npm:gentle-pi
 ```
 
-The stable release is [`v3.5.1`](https://github.com/Gentleman-Programming/gentle-shell/releases/tag/v3.5.1). Restart Pi after installation, then run `gentle-ai sync`. That published release pairs with Gentle AI `v2.8.0` and provider contract `1.2.0`; capabilities `v2.5` are retained. The command above installs that exact published version.
+This installs the current npm release; select an explicit version if you need a reproducible pin. Restart Pi after installation, then run `gentle-ai sync`. Check the [published releases](https://github.com/Gentleman-Programming/gentle-shell/releases) for version-specific runtime and provider-contract pairing.
 
 ### Source checkout
 
-This checkout prepares `gentle-pi` `3.6.0`; it is source state, not a published release. Its package-local native runtime pin is Gentle AI `v3.7.0`, distinct from the published `v3.5.1` pairing.
+This checkout declares `gentle-pi` `3.7.0` with a package-local Gentle AI `v3.7.0` pin. Checkout metadata alone is not proof of npm publication; verify the registry version and its release workflow.
 
 The native SDD status consumer accepts both the pinned producer's legacy
 `apply`/`verify`/`remediate`/`archive` instruction record and the classical
