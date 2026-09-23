@@ -7,10 +7,10 @@ import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:p
 import { pendingReviewMutation, REVIEW_REMINDER_RECEIPT } from "../lib/review-reminder-receipt.ts";
 import { SESSION_WORKTREE_ENTRY, SESSION_WORKTREE_CHANGED, resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
-import type { SessionChangeEvidence } from "../lib/session-changes.ts";
+import { SessionChanges, type SessionChangeEvidence } from "../lib/session-changes.ts";
 import test, { after, afterEach, mock } from "node:test";
 import type { TestContext } from "node:test";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { generateUnifiedPatch, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { sidebarState } from "../lib/shell-sidebar.ts";
 import gentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, answerThroughUi, completionText, createDefaultSessionTransport, legacySubagentsInstalled, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
@@ -1605,6 +1605,26 @@ async function childSessionChangeEvidence(root: string, relPath: string, toolCal
 	return result.details.gentleSessionChange;
 }
 
+async function childSessionEditEvidence(root: string, relPath: string, toolCallId: string, before: string, after: string): Promise<SessionChangeEvidence> {
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+	const childPi = {
+		on: (key: string, fn: (event: unknown, ctx: unknown) => unknown) => handlers.set(key, fn),
+		appendEntry: () => {},
+		events: { on: () => () => {}, emit: () => {} },
+	} as unknown as ExtensionAPI;
+	const childCtx = { cwd: root, sessionManager: { getSessionId: () => "child-session", getEntries: () => [] } } as unknown as ExtensionContext;
+	installSessionChangeCapture(childPi, { GENTLE_PI_AGENTS_CHILD: "1" }, resolveSessionWorktree);
+	await handlers.get("session_start")?.({}, childCtx);
+	writeFileSync(join(root, relPath), before);
+	const event = { toolCallId, toolName: "edit", input: { path: relPath, oldText: before, newText: after } };
+	await handlers.get("tool_call")?.(event, childCtx);
+	writeFileSync(join(root, relPath), after);
+	const details = { patch: generateUnifiedPatch(relPath, before, after) };
+	const result = (await handlers.get("tool_result")?.({ ...event, isError: false, details }, childCtx)) as { details: { gentleSessionChange: SessionChangeEvidence } } | undefined;
+	assert.ok(result?.details.gentleSessionChange, "successful child edit must carry captured evidence");
+	return result.details.gentleSessionChange;
+}
+
 // C1 investigation (odd/tasks/usage-click-and-changes-attribution.md): tried
 // to reproduce the live session's "16 subagent_run calls, zero relayed"
 // evidence end to end — real repo, real git-backed resolver on both the
@@ -2151,6 +2171,346 @@ test("native spawn interception restores CommonJS and ESM exports after rejected
 			syncBuiltinESMExports();
 		}
 	}
+});
+
+test("foreign clone tool requires consent before queueing and never enters parent Changes", async (t) => {
+	const fixture = realpathSync(mkdtempSync(join(tmpdir(), "foreign-target-")));
+	const parent = join(fixture, "parent"), foreign = join(fixture, "foreign");
+	const template = join(fixture, "template");
+	mkdirSync(template);
+	try {
+		for (const path of [parent, foreign]) execFileSync("git", ["init", "--quiet", `--template=${template}`, path]);
+		const configHome = join(fixture, "config");
+		mkdirSync(configHome);
+		writeFileSync(join(configHome, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, profiles: { pinned: { explore: { model: "openai/foreign-model", thinking: "minimal" } } } }));
+		mkdirSync(join(foreign, ".git", "gentle-ai"));
+		writeFileSync(join(foreign, ".git", "gentle-ai", "profile-pin.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profile_pin", version: 1, profile: "pinned" }));
+		const h = fakePi(), runtime = deps();
+		runtime.deps.env = { PATH: "/bin", GENTLE_PI_CONFIG_HOME: configHome };
+		runtime.deps.resolveWorktree = resolveSessionWorktree;
+		const spawned: string[] = [];
+		const spawnEnvs: Array<Record<string, string | undefined>> = [];
+		const spawn = runtime.deps.spawn!;
+		runtime.deps.spawn = (command, args, options) => { spawned.push(options.cwd); spawnEnvs.push(options.env); return spawn(command, args, options); };
+		const runnerRun = t.mock.method(AgentRunner.prototype, "run");
+		gentleAgents(h.pi, {}, runtime.deps);
+		let resolveConsent!: (answer: boolean) => void;
+		let prompts = 0;
+		const { ctx } = fakeContext(fakeTui, () => { prompts++; return new Promise<boolean>(resolve => { resolveConsent = resolve; }); });
+		ctx.sessionManager.getCwd = () => parent;
+		await h.fire("session_start", ctx);
+		const run = h.tools.get("subagent_run")!;
+		assert.match(JSON.stringify(run.parameters.properties.repository_root), /interactive session-scoped consent/i);
+		await assert.rejects(run.execute("wrong-selector", { agent: "explore", task: "Map", workspace_root: foreign, mode: "background" }, undefined, undefined, ctx), /same Git clone/);
+		await assert.rejects(run.execute("both", { agent: "explore", task: "Map", workspace_root: parent, repository_root: foreign, mode: "background" }, undefined, undefined, ctx), /mutually exclusive/);
+		await assert.rejects(run.execute("both-malformed", { agent: "explore", task: "Map", workspace_root: parent, repository_root: 123, mode: "background" }, undefined, undefined, ctx), /mutually exclusive/);
+		const pending = run.execute("foreign", { agent: "explore", task: "Map", repository_root: foreign, mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		assert.equal(prompts, 1);
+		assert.deepEqual(spawned, []);
+		assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), []);
+		resolveConsent(true);
+		const result = await pending;
+		await tick();
+		assert.deepEqual(spawned, [foreign]);
+		assert.equal((runnerRun.mock.calls[0]?.arguments[0] as { authorizeParentStandingReviewPermission?: unknown }).authorizeParentStandingReviewPermission, undefined, "foreign child must not receive parent review permission channel");
+		assert.equal(runtime.spawned[0]?.[runtime.spawned[0]!.indexOf("--model") + 1], "openai/foreign-model:minimal");
+		assert.equal((result.details.gentleAgents as { cwd: string }).cwd, foreign);
+		assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), []);
+		const reused = await run.execute("reuse", { agent: "explore", task: "Map again", repository_root: foreign, mode: "background" }, undefined, undefined, ctx);
+		assert.equal(prompts, 1);
+		assert.equal((reused.details.gentleAgents as { cwd: string }).cwd, foreign);
+		// Git's ambient routing must not turn an explicit foreign destination into the parent's repository.
+		const oldGitDir = process.env.GIT_DIR;
+		const oldGitWorkTree = process.env.GIT_WORK_TREE;
+		try {
+			process.env.GIT_DIR = join(parent, ".git");
+			process.env.GIT_WORK_TREE = parent;
+			runtime.deps.env!.GIT_DIR = join(parent, ".git");
+			runtime.deps.env!.GIT_WORK_TREE = parent;
+			const injected = await run.execute("injected-git", { agent: "explore", task: "Map with ambient Git routing", repository_root: foreign, mode: "background" }, undefined, undefined, ctx);
+			assert.equal((injected.details.gentleAgents as { cwd: string }).cwd, foreign);
+			assert.equal(prompts, 1);
+			// Drain the active child so the queued injected launch reaches the actual OS spawn.
+			runtime.children[0].emit({ type: "agent_end", messages: [] });
+			runtime.children[0].emit({ type: "agent_settled" });
+			runtime.children[0].exit(0);
+			await tick();
+			assert.equal(spawned.at(-1), foreign);
+			assert.equal(spawnEnvs.at(-1)?.GIT_DIR, undefined);
+			assert.equal(spawnEnvs.at(-1)?.GIT_WORK_TREE, undefined);
+		} finally {
+			delete runtime.deps.env!.GIT_DIR;
+			delete runtime.deps.env!.GIT_WORK_TREE;
+			if (oldGitDir === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = oldGitDir;
+			if (oldGitWorkTree === undefined) delete process.env.GIT_WORK_TREE; else process.env.GIT_WORK_TREE = oldGitWorkTree;
+		}
+		const queued = await run.execute("queued", { agent: "explore", task: "Third map", repository_root: foreign, mode: "background" }, undefined, undefined, ctx);
+		assert.equal((queued.details.gentleAgents as { cwd: string }).cwd, foreign);
+		assert.equal(runtime.children.length, 3, "later launches wait in the runner queue");
+		await run.execute("same-clone", { agent: "explore", task: "Map parent", workspace_root: parent, mode: "background" }, undefined, undefined, ctx);
+		assert.equal(typeof (runnerRun.mock.calls.at(-1)?.arguments[0] as { authorizeParentStandingReviewPermission?: unknown }).authorizeParentStandingReviewPermission, "function", "same-clone child retains parent review permission channel");
+		const { ctx: successor } = fakeContext();
+		successor.sessionManager.getCwd = () => parent;
+		await h.fire("session_start", successor);
+		assert.notEqual(successor.sessionManager, ctx.sessionManager);
+		assert.equal(successor.sessionManager.getSessionId(), ctx.sessionManager.getSessionId(), "replacement retains the same session ID");
+		runtime.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] });
+		runtime.children[0].emit({ type: "agent_settled" });
+		runtime.children[0].exit(0);
+		await tick();
+		assert.equal(runtime.children.length, 3, "stale queued foreign task must fail before OS spawn");
+		await h.fire("session_shutdown", successor);
+	} finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
+test("foreign child Changes require successful target-bound tool evidence, never model claims or sibling writes", async () => {
+	const fixture = realpathSync(mkdtempSync(join(tmpdir(), "foreign-changes-")));
+	const parent = join(fixture, "parent"), foreign = join(fixture, "foreign"), sibling = join(fixture, "sibling"), template = join(fixture, "template");
+	mkdirSync(template);
+	try {
+		for (const path of [parent, foreign, sibling]) execFileSync("git", ["init", "--quiet", `--template=${template}`, path]);
+		const h = fakePi(), runtime = deps();
+		runtime.deps.resolveWorktree = resolveSessionWorktree;
+		const spawn = runtime.deps.spawn!;
+		let proveSpawn: (() => void) | undefined;
+		runtime.deps.spawn = (...args) => {
+			const child = spawn(...args);
+			const on = child.on.bind(child);
+			child.on = ((event: string, listener: () => void) => {
+				if (event === "spawn") proveSpawn = listener;
+				return on(event as "spawn", listener);
+			}) as typeof child.on;
+			return child;
+		};
+		installSessionChangeCapture(h.pi, {}, resolveSessionWorktree);
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx } = fakeContext();
+		ctx.sessionManager.getCwd = () => parent;
+		ctx.sessionManager.getEntries = (() => h.entries) as typeof ctx.sessionManager.getEntries;
+		ctx.sessionManager.getBranch = (() => h.entries) as typeof ctx.sessionManager.getBranch;
+		await h.fire("session_start", ctx);
+		const launched = await h.tools.get("subagent_run")!.execute("foreign-evidence", { agent: "explore", task: "Write", repository_root: foreign, mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		const taskId = (launched.details.gentleAgents as { taskId: string }).taskId;
+		const child = runtime.children[0];
+		const send = async (id: string, root: string, path: string, error = false, forgedRoot?: string) => {
+			const captured = await childSessionChangeEvidence(root, path, id, "agent output\n");
+			const evidence = forgedRoot ? { ...captured, root: forgedRoot } : captured;
+			child.emit({ type: "tool_execution_start", toolCallId: id, toolName: "write", args: { path } });
+			child.emit({ type: "tool_execution_end", toolCallId: id, isError: error, result: { content: [], details: { gentleSessionChange: evidence } } });
+			await tick();
+		};
+		child.emit({ type: "message_update", text: `I edited ${join(foreign, "claimed.md")}` });
+		await send("unspawned", foreign, "unspawned.md");
+		assert.equal(h.entries.some(entry => entry.customType === "gentle-pi.session-change/v1"), false, "unproven spawn cannot attribute a mutation");
+		assert.ok(proveSpawn);
+		proveSpawn();
+		await tick();
+		await send("sibling", sibling, "sibling.md");
+		await send("forged", foreign, "forged.md", false, parent);
+		await send("failed", foreign, "failed.md", true);
+		assert.equal(h.entries.some(entry => entry.customType === "gentle-pi.session-change/v1"), false);
+		await send("accepted", foreign, "accepted.md");
+		const spacedEvidence = await childSessionChangeEvidence(foreign, "space name.md", "unicode-space", "agent output\n");
+		child.emit({ type: "tool_execution_start", toolCallId: "unicode-space", toolName: "write", args: { path: "space\u00a0name.md" } });
+		child.emit({ type: "tool_execution_end", toolCallId: "unicode-space", isError: false, result: { content: [], details: { gentleSessionChange: spacedEvidence } } });
+		await tick();
+		const editEvidence = await childSessionEditEvidence(foreign, "edited.md", "edit-accepted", "original\n", "changed\n");
+		child.emit({ type: "tool_execution_start", toolCallId: "edit-accepted", toolName: "edit", args: { path: "edited.md" } });
+		child.emit({ type: "tool_execution_end", toolCallId: "edit-accepted", isError: false, result: { content: [], details: { gentleSessionChange: editEvidence } } });
+		await tick();
+		const changes = new SessionChanges(ctx.sessionManager.getSessionId()!, h.entries);
+		assert.deepEqual(changes.worktrees.map(tree => tree.root), [foreign]);
+		assert.deepEqual(changes.model.files.map(file => file.path).sort(), ["accepted.md", "edited.md", "space name.md"]);
+		assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), []);
+		assert.equal(h.events.some(event => event.name === "gentle-pi:child-session-change"), false);
+		assert.equal(h.entries.filter(entry => entry.customType === "gentle-pi.session-change/v1").length, 3);
+		assert.equal(changes.worktrees[0]?.model.files.find(file => file.path === "accepted.md")?.status, "added");
+		assert.equal(changes.worktrees[0]?.model.files.find(file => file.path === "edited.md")?.status, "modified");
+		mkdirSync(join(foreign, "nested"));
+		const rebound = await childSessionChangeEvidence(foreign, "nested/rebound.md", "rebound", "not attributed\n");
+		child.emit({ type: "tool_execution_start", toolCallId: "rebound", toolName: "write", args: { path: "nested/rebound.md" } });
+		execFileSync("git", ["init", "--quiet", `--template=${template}`, join(foreign, "nested")]);
+		child.emit({ type: "tool_execution_end", toolCallId: "rebound", isError: false, result: { content: [], details: { gentleSessionChange: rebound } } });
+		await tick();
+		assert.equal(h.entries.filter(entry => entry.customType === "gentle-pi.session-change/v1").length, 3, "new nested Git identity must not inherit foreign target attribution");
+		const stale = await childSessionChangeEvidence(foreign, "stale.md", "stale", "not attributed\n");
+		child.emit({ type: "tool_execution_start", toolCallId: "stale", toolName: "write", args: { path: "stale.md" } });
+		const { ctx: successor } = fakeContext();
+		successor.sessionManager.getCwd = () => parent;
+		await h.fire("session_start", successor);
+		child.emit({ type: "tool_execution_end", toolCallId: "stale", isError: false, result: { content: [], details: { gentleSessionChange: stale } } });
+		await tick();
+		assert.equal(h.entries.filter(entry => entry.customType === "gentle-pi.session-change/v1").length, 3, "session replacement during a tool cannot attribute its result");
+		assert.equal(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY).length, 0);
+		await h.fire("session_shutdown", successor);
+	} finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
+test("foreign task mode waits for the child and continuation reuses its live grant", async () => {
+	const fixture = realpathSync(mkdtempSync(join(tmpdir(), "foreign-task-")));
+	const parent = join(fixture, "parent"), foreign = join(fixture, "foreign"), template = join(fixture, "template");
+	mkdirSync(template);
+	try {
+		for (const path of [parent, foreign]) execFileSync("git", ["init", "--quiet", `--template=${template}`, path]);
+		const h = fakePi(), runtime = deps();
+		runtime.deps.resolveWorktree = resolveSessionWorktree;
+		const spawn = runtime.deps.spawn!;
+		runtime.deps.spawn = (...args) => {
+			const child = spawn(...args);
+			const on = child.on.bind(child);
+			child.on = ((event: string, listener: () => void) => {
+				if (event === "spawn") queueMicrotask(listener);
+				return on(event as "spawn", listener);
+			}) as typeof child.on;
+			return child;
+		};
+		gentleAgents(h.pi, {}, runtime.deps);
+		let prompts = 0;
+		const { ctx } = fakeContext(fakeTui, async () => { prompts++; return true; });
+		ctx.sessionManager.getCwd = () => parent;
+		await h.fire("session_start", ctx);
+		let finished = false;
+		const pending = h.tools.get("subagent_run")!.execute("task", { agent: "explore", task: "Map", repository_root: foreign, mode: "task" }, undefined, undefined, ctx).then(result => { finished = true; return result; });
+		await tick();
+		assert.equal(finished, false, "task mode waits for settlement");
+		assert.equal(runtime.children.length, 1);
+		assert.equal(prompts, 1);
+		runtime.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "mapped" }] }] });
+		runtime.children[0].emit({ type: "agent_settled" });
+		runtime.children[0].exit(0);
+		const first = await pending;
+		assert.equal((first.details.gentleAgents as { cwd: string }).cwd, foreign);
+		const taskId = (first.details.gentleAgents as { taskId: string }).taskId;
+		const continued = h.tools.get("subagent_continue")!.execute("follow-up", { task_id: taskId, prompt: "Follow up", mode: "task" }, undefined, undefined, ctx);
+		await tick();
+		assert.equal(runtime.children.length, 2);
+		assert.equal(prompts, 1, "continuation cannot prompt for a second grant");
+		runtime.children[1].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "continued" }] }] });
+		runtime.children[1].emit({ type: "agent_settled" });
+		runtime.children[1].exit(0);
+		assert.equal(((await continued).details.gentleAgents as { cwd: string }).cwd, foreign);
+		assert.equal(runtime.spawned.length, 2);
+		await h.fire("session_shutdown", ctx);
+	} finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
+test("aborting during foreign consent cannot grant or queue a background child", async () => {
+	const fixture = realpathSync(mkdtempSync(join(tmpdir(), "foreign-abort-")));
+	const parent = join(fixture, "parent"), foreign = join(fixture, "foreign"), template = join(fixture, "template");
+	mkdirSync(template);
+	try {
+		for (const path of [parent, foreign]) execFileSync("git", ["init", "--quiet", `--template=${template}`, path]);
+		const h = fakePi(), runtime = deps();
+		runtime.deps.resolveWorktree = resolveSessionWorktree;
+		gentleAgents(h.pi, {}, runtime.deps);
+		let confirm!: (answer: boolean) => void;
+		const { ctx } = fakeContext(fakeTui, () => new Promise(resolve => { confirm = resolve; }));
+		ctx.sessionManager.getCwd = () => parent;
+		await h.fire("session_start", ctx);
+		const abort = new AbortController();
+		const pending = h.tools.get("subagent_run")!.execute("abort", { agent: "explore", task: "Map", repository_root: foreign, mode: "background" }, abort.signal, undefined, ctx);
+		await tick();
+		abort.abort("interrupted");
+		confirm(true);
+		await assert.rejects(pending, /abort|cancel/i);
+		assert.equal(runtime.children.length, 0);
+		assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), []);
+		await h.fire("session_shutdown", ctx);
+	} finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
+test("an interactive non-Git umbrella can target an independent repository without registering it", async () => {
+	const fixture = realpathSync(mkdtempSync(join(tmpdir(), "foreign-umbrella-")));
+	const umbrella = join(fixture, "umbrella"), foreign = join(fixture, "foreign"), template = join(fixture, "template");
+	mkdirSync(umbrella); mkdirSync(template);
+	try {
+		execFileSync("git", ["init", "--quiet", `--template=${template}`, foreign]);
+		const h = fakePi(), runtime = deps();
+		runtime.deps.resolveWorktree = resolveSessionWorktree;
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx } = fakeContext();
+		ctx.sessionManager.getCwd = () => umbrella;
+		await h.fire("session_start", ctx);
+		const run = h.tools.get("subagent_run")!;
+		const launched = await run.execute("umbrella", { agent: "explore", task: "Map", repository_root: foreign, mode: "background" }, undefined, undefined, ctx);
+		assert.equal((launched.details.gentleAgents as { cwd: string }).cwd, foreign);
+		assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), []);
+		await h.fire("session_shutdown", ctx);
+	} finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
+test("foreign selector rejects RPC even with UI and rejects SDD/remediation before consent", async () => {
+	const fixture = realpathSync(mkdtempSync(join(tmpdir(), "foreign-callers-")));
+	const parent = join(fixture, "parent"), foreign = join(fixture, "foreign"), template = join(fixture, "template");
+	mkdirSync(template);
+	try {
+		for (const path of [parent, foreign]) execFileSync("git", ["init", "--quiet", `--template=${template}`, path]);
+		const h = fakePi(), runtime = deps();
+		runtime.deps.resolveWorktree = resolveSessionWorktree;
+		const agentHome = join(fixture, "agent-home");
+		mkdirSync(join(agentHome, ".pi", "agent", "agents"), { recursive: true });
+		writeFileSync(join(agentHome, ".pi", "agent", "agents", "explore.md"), "---\ndescription: explore\ntools: [read]\n---\nExplore");
+		writeFileSync(join(agentHome, ".pi", "agent", "agents", "sdd-apply.md"), "---\ndescription: apply\ntools: [read]\n---\nApply");
+		writeFileSync(join(agentHome, ".pi", "agent", "agents", "sdd-research.md"), "---\ndescription: research\ntools: [read]\n---\nResearch");
+		runtime.deps.home = agentHome;
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx, dialogs } = fakeContext();
+		ctx.sessionManager.getCwd = () => parent;
+		await h.fire("session_start", ctx);
+		ctx.mode = "rpc";
+		const run = h.tools.get("subagent_run")!;
+		const base = { agent: "explore", task: "Map", repository_root: foreign, mode: "background" };
+		await assert.rejects(run.execute("rpc", base, undefined, undefined, ctx), /interactive parent session/);
+		ctx.mode = "print";
+		await assert.rejects(run.execute("print", { ...base, mode: "task" }, undefined, undefined, ctx), /interactive parent session/);
+		ctx.mode = "tui";
+		await assert.rejects(run.execute("remediate", { ...base, remediation: {} }, undefined, undefined, ctx), /interactive parent session/);
+		await assert.rejects(run.execute("foreign-sdd", { ...base, agent: "sdd-apply", context: PARENT_CONFIRMED_SDD_CONTEXT, sdd_change: { changeName: "alpha", workspaceRoot: foreign, phase: "apply" } }, undefined, undefined, ctx), /interactive parent session/);
+		await assert.rejects(run.execute("foreign-sdd-no-change", { ...base, agent: "sdd-research", context: PARENT_CONFIRMED_SDD_CONTEXT }, undefined, undefined, ctx), /interactive parent session/);
+		assert.equal(existsSync(join(agentHome, ".pi", "agent", "sessions")), false, "foreign SDD rejection must precede child session directory creation");
+		const childHost = fakePi();
+		gentleAgents(childHost.pi, { GENTLE_PI_AGENTS_CHILD: "1" }, runtime.deps);
+		assert.equal(childHost.tools.has("subagent_run"), false, "child-originated foreign launches have no delegation tool");
+		assert.equal(dialogs.length, 0);
+		assert.equal(runtime.children.length, 0);
+		await h.fire("session_shutdown", ctx);
+	} finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
+test("foreign clone rejects aliases, absent UI, decline and changed session before any child starts", async () => {
+	const fixture = realpathSync(mkdtempSync(join(tmpdir(), "foreign-denials-")));
+	const parent = join(fixture, "parent"), foreign = join(fixture, "foreign"), template = join(fixture, "template");
+	mkdirSync(template);
+	try {
+		for (const path of [parent, foreign]) execFileSync("git", ["init", "--quiet", `--template=${template}`, path]);
+		const h = fakePi(), runtime = deps();
+		runtime.deps.resolveWorktree = resolveSessionWorktree;
+		gentleAgents(h.pi, {}, runtime.deps);
+		let decision!: (answer: boolean) => void;
+		const { ctx, dialogs } = fakeContext(fakeTui, () => new Promise(resolve => { decision = resolve; }));
+		ctx.sessionManager.getCwd = () => parent;
+		let id = "original";
+		ctx.sessionManager.getSessionId = () => id;
+		await h.fire("session_start", ctx);
+		const run = h.tools.get("subagent_run")!;
+		const args = (path: string) => ({ agent: "explore", task: "Map", repository_root: path, mode: "background" });
+		await assert.rejects(run.execute("alias", args(`${foreign}/.`), undefined, undefined, ctx), /canonical independent Git repository/);
+		ctx.hasUI = false;
+		await assert.rejects(run.execute("no-ui", args(foreign), undefined, undefined, ctx), /interactive/);
+		ctx.hasUI = true;
+		const declined = run.execute("decline", args(foreign), undefined, undefined, ctx);
+		await tick(); decision(false);
+		await assert.rejects(declined, /interactive/);
+		const drift = run.execute("drift", args(foreign), undefined, undefined, ctx);
+		await tick(); id = "replacement"; decision(true);
+		await assert.rejects(drift, /identity changed/);
+		assert.equal(runtime.spawned.length, 0);
+		assert.equal(dialogs.filter(dialog => dialog.startsWith("confirm:")).length, 2);
+		assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), []);
+		await h.fire("session_shutdown", ctx);
+	} finally { rmSync(fixture, { recursive: true, force: true }); }
 });
 
 test("explicit child roots launch and continue in the actual cwd, persist without shell, and reject other clones", async () => {
