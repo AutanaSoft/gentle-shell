@@ -158,8 +158,23 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 	};
 	const prepare = (width: number, root: LayoutRoot): boolean => {
 		state.active = false;
-		if (stopped || failed || host.mode !== "fullscreen" || width < SIDEBAR_BREAKPOINT || placement() === "bottom" || placement() === "hidden") {
+		if (stopped || failed || host.mode !== "fullscreen") {
 			prepared = undefined;
+			headerLines = [];
+			return false;
+		}
+		const railEligible = width >= SIDEBAR_BREAKPOINT && placement() !== "bottom" && placement() !== "hidden";
+		if (!railEligible) {
+			prepared = undefined;
+			try {
+				const headerPart = state.parts.get("header");
+				headerLines = headerPlacement() === "top" && headerPart
+					? [...(headerPart.render(Math.max(0, width)) ?? [])] : [];
+				if (!headerLines.some((line) => line.trim() !== "")) headerLines = [];
+			} catch {
+				failed = true;
+				headerLines = [];
+			}
 			return false;
 		}
 		const parts = [...state.parts.entries()];
@@ -221,7 +236,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			}
 			// Height is owned by the native ScrollView, never by the transcript.
 			const active = railLines.length > 0 && railLines.every((line) => visibleWidth(line) <= contentWidth);
-			headerLines = active && headerActive ? preparedHeaderLines : [];
+			headerLines = headerActive && headerPlacement() === "top" ? preparedHeaderLines : [];
 			prepared = { revision: cache.revision, width, mode: host.mode, headerPlacement: headerPlacement(), root, theme, parts, digests, contentWidth, active, lines: railLines, hits, headerLines, headerActive: headerLines.length > 0 };
 			state.active = active;
 			return active;
@@ -266,6 +281,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 				}
 				return { ...node, entries: entries.map((entry, index) => index === entries.length - 1 ? { ...entry, component: wrapped! } : entry) };
 			};
+			const nativeHost = { render: () => [], invalidate() {}, [NODE]: () => original.call(root) };
 			const left = { render: () => [], invalidate() {}, [NODE]: () => reclaimFooterRow(original.call(root)) };
 			// Stable component wrapping the [left, scroll] hstack behind its own
 			// NODE, exactly like `left` wraps the native transcript: the header
@@ -280,7 +296,13 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 				] }),
 			};
 			const replacement = () => {
-				if (!prepare(tui.terminal.columns, root)) return original.call(root);
+				if (!prepare(tui.terminal.columns, root)) {
+					if (!headerLines.length || failed || stopped || host.mode !== "fullscreen") return original.call(root);
+					return { type: "vstack", gap: 0, align: "stretch", entries: [
+						{ component: header, basis: "auto", grow: 0, shrink: 0, minSize: 1 },
+						{ component: nativeHost, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+					] };
+				}
 				const current = prepared!;
 				if (current.presentation?.scrollTop === scroll.scrollTop) return current.presentation.output;
 				const output: LayoutNode = current.headerActive && headerPlacement() !== "below-input"
