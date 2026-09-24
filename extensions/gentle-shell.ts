@@ -13,6 +13,7 @@ import { CARD_TONE, renderCard, type Card, type CardTheme } from "../lib/shell-c
 import { CommandPalette, commandsKey, type CommandPaletteResult } from "../lib/command-palette.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
 import { VisualCustomizeView, type CustomizeRow } from "../lib/visual-customize-view.ts";
+import { sourcePalettePreview } from "../lib/theme-customization.ts";
 import { DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, STATUS_PLACEMENT, resolveVisualSettings, writeVisualSettings } from "../lib/visual-customization-policy.ts";
 import { BANNER_COLORS, DEFAULT_BANNER_CONFIG, readBannerConfig, readBannerConfigForEdit, writeBannerConfig } from "./startup-banner.ts";
 import { agentsViewKey } from "../lib/agents-keys.ts";
@@ -1081,11 +1082,21 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				if (!Array.isArray(themes)) throw new Error("invalid theme list");
 				const names = [...new Set(themes.map((item) => item?.name).filter((name): name is string => typeof name === "string" && !!name && !name.includes("/")))];
 				if (names.length === 0) throw new Error("no installed themes");
-				for (const name of names) add(() => `Theme: ${name}${activeTheme === name ? " (current)" : ""}`, "Theme applies now and is saved by Pi.", () => {
-					if (!ctx.ui.getTheme(name)) throw new Error(`Theme ${name} is unavailable or invalid.`);
-					const result = ctx.ui.setTheme(name);
-					if (!result.success) throw new Error(result.error ?? `Could not activate theme ${name}.`);
-					activeTheme = name;
+				for (const name of names) rows.push({
+					label: () => `Theme: ${name}${activeTheme === name ? " (current)" : ""}`,
+					preview: () => {
+						const selected = ctx.ui.getTheme(name);
+						if (selected?.name !== name) throw new Error("Selected theme is unavailable.");
+						const source = selected.sourcePath ?? ctx.ui.getAllThemes().find((item) => item.name === name)?.path;
+						return sourcePalettePreview(name, source);
+					},
+					action: () => {
+						if (!ctx.ui.getTheme(name)) throw new Error(`Theme ${name} is unavailable or invalid.`);
+						const result = ctx.ui.setTheme(name);
+						if (!result.success) throw new Error(result.error ?? `Could not activate theme ${name}.`);
+						activeTheme = name;
+						ctx.ui.notify("Theme applies now and is saved by Pi.", "info");
+					},
 				});
 			} catch {
 				rows.push({ label: "Themes unavailable; use Pi /settings", action: () => ctx.ui.notify("Installed themes are unavailable in this session.", "warning") });

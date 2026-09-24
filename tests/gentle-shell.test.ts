@@ -694,6 +694,30 @@ test("customize command updates displayed settings and persists animation, banne
 	await pending;
 });
 
+test("customize previews installed source palette without selecting until Enter", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const source = new URL("../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/dark.json", import.meta.url).pathname;
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const themeApi = ctx.ui as unknown as { getTheme(name: string): { name: string; sourcePath?: string } | undefined; setTheme(name: string): { success: boolean } };
+	const original = themeApi.getTheme;
+	themeApi.getTheme = (name) => name === "dark" ? { name, sourcePath: source } : original(name);
+	const applied: string[] = [];
+	themeApi.setTheme = (name) => { applied.push(name); return { success: true }; };
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	for (let i = 0; i < 40 && !ui.overlayView!.render(90).some(line => line.includes("▸ Theme: dark")); i++) ui.overlayView!.handleInput("\x1b[B");
+	const lines = ui.overlayView!.render(90).join("\n");
+	assert.match(lines, /dark · source palette/);
+	assert.match(lines, /sample text/);
+	assert.deepEqual(applied, []);
+	ui.overlayView!.handleInput("\r");
+	assert.deepEqual(applied, ["dark"]);
+	ui.overlayView!.handleInput("\x1b");
+	await pending;
+});
+
 test("customize preserves invalid visual settings and reports failed theme selection", async (t) => {
 	const home = scopedDoubleEscCancelConfigHome(t);
 	const path = join(home, "visual-customization.json");

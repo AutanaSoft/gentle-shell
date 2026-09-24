@@ -156,7 +156,7 @@ Model, effort, and who does what should be choices, not accidents. Named profile
 
 Extension commands are only useful if you can find them. `alt+k` opens a curated, grouped palette — Configuration, Session, Diagnostics, and Skills — searchable by label, command name, or description, showing entries only when they are actually registered.
 
-`/gentle:customize` opens an interactive panel to set animation quality, startup banner rose, text logo and color, or choose an installed Pi theme. It can reset the visual, banner and animation settings to defaults; banner changes appear on the next startup.
+`/gentle:customize` opens an interactive panel to set animation quality, startup banner rose, text logo and color, or choose an installed Pi theme. Highlighting a theme previews its source palette without changing the active theme; press Enter or Space to apply it through Pi. If its source is unreadable, the preview is unavailable. The panel can reset the visual, banner and animation settings to defaults; banner changes appear on the next startup.
 
 **[Docs →](docs/gentle-shell.md#command-palette)**
 

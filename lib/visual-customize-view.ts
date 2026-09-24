@@ -2,6 +2,8 @@ import { isKeyRelease, matchesKey, Key, truncateToWidth } from "@earendil-works/
 
 export interface CustomizeRow {
 	label: string | (() => string);
+	/** Read-only palette from the selected installed theme's source. */
+	preview?: () => { title: string; sample: string };
 	action(): void | Promise<void>;
 }
 export interface CustomizeViewOptions {
@@ -48,12 +50,18 @@ export class VisualCustomizeView {
 		const height = Number.isFinite(available) ? Math.max(0, Math.floor(available)) : 0;
 		if (height === 0) return [];
 		const length = this.options.rows.length;
-		const count = Math.max(0, Math.min(length, height - 3));
+		const showPreview = height >= 10 && !!this.options.rows[this.selected]?.preview;
+		const count = Math.max(0, Math.min(length, height - (showPreview ? 5 : 3)));
 		const start = Math.min(Math.max(0, this.selected - Math.floor(count / 2)), Math.max(0, length - count));
 		const rows = length === 0
 			? ["No settings available"]
 			: this.options.rows.slice(start, start + count).map((row, index) => `${start + index === this.selected ? "▸" : " "} ${typeof row.label === "function" ? row.label() : row.label}`);
-		const lines = height < 3 ? ["Visual customization", "Esc close"] : ["Visual customization", length ? `${start + 1}–${Math.min(start + count, length)} of ${length}` : "0 of 0", ...rows, "↑/↓ or j/k · Enter/Space apply · Esc close"];
+		let preview: { title: string; sample: string } | undefined;
+		if (showPreview) {
+			try { preview = this.options.rows[this.selected]?.preview?.(); }
+			catch { /* Never substitute active colors for an unreadable source. */ }
+		}
+		const lines = height < 3 ? ["Visual customization", "Esc close"] : ["Visual customization", length ? `${start + 1}–${Math.min(start + count, length)} of ${length}` : "0 of 0", ...rows, ...(showPreview ? [preview ? `Preview · ${preview.title}` : "Preview unavailable", preview?.sample ?? "No source palette available"] : []), "↑/↓ or j/k · Enter/Space apply · Esc close"];
 		return lines.slice(0, height).map((line, index) => truncateToWidth(this.options.theme.fg(index < 2 || index === this.selected - start + 2 ? "accent" : "text", line), width, ""));
 	}
 	invalidate(): void { this.options.requestRender(); }

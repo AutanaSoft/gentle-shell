@@ -48,6 +48,24 @@ test("tiny terminal heights never display settings beyond available rows", () =>
 	view.handleInput("\x1b");
 });
 
+test("highlight previews the installed source without applying; Enter explicitly applies", () => {
+	let applies = 0;
+	const view = new VisualCustomizeView({ rows: [
+		{ label: "Animations: quality", action: () => {} },
+		{ label: "Theme: dusk", preview: () => ({ title: "dusk · source palette", sample: "Aa sample text" }), action: () => { applies++; } },
+	], theme, rowsAvailable: () => 12, requestRender: () => {}, onClose: () => {} });
+	view.handleInput("\x1b[B");
+	assert.match(view.render(80).join("\n"), /dusk · source palette.*\n.*Aa sample text/);
+	assert.equal(applies, 0);
+	view.handleInput("\r");
+	assert.equal(applies, 1);
+});
+
+test("unreadable source never substitutes active colors or activates", () => {
+	const view = new VisualCustomizeView({ rows: [{ label: "Theme: broken", preview: () => { throw new Error("unreadable"); }, action: () => {} }], theme, rowsAvailable: () => 12, requestRender: () => {}, onClose: () => {} });
+	assert.match(view.render(80).join("\n"), /Preview unavailable/);
+});
+
 test("view awaits async actions, reports errors and repaints after completion", async () => {
 	let release!: () => void;
 	let renders = 0;
