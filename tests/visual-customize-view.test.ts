@@ -6,6 +6,61 @@ import { getThemeByName, Theme } from "../node_modules/@earendil-works/pi-coding
 
 const theme = { fg: (_role: string, text: string) => text };
 
+test("profiles open without applying settings", () => {
+	const view = new VisualCustomizeView({ rows: [], profiles: { list: () => [], save: () => {}, apply: () => {}, delete: () => {}, reset: () => {} }, theme, requestRender: () => {}, onClose: () => {} });
+	view.handleInput("p");
+	assert.match(view.render(80).join("\n"), /Visual profiles/);
+});
+
+test("profile confirmation rejects a changed target and a hidden prompt after resize", () => {
+	const first = { name: "one", themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: false, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, agents: true, todo: true, usageCost: true, modelDetails: true } } };
+	let items = [first];
+	let height = 12;
+	const applied: string[] = [];
+	const view = new VisualCustomizeView({ rows: [], profiles: { list: () => items, save: () => {}, apply: name => { applied.push(name); }, delete: () => {}, reset: () => {} }, theme, rowsAvailable: () => height, requestRender: () => {}, onClose: () => {} });
+	view.handleInput("p");
+	view.render(80);
+	view.handleInput("a");
+	view.render(80);
+	items = [{ ...first, themeName: "light" }];
+	view.handleInput("y");
+	assert.deepEqual(applied, []);
+	view.handleInput("a");
+	view.render(80);
+	height = 2;
+	view.handleInput("y");
+	assert.deepEqual(applied, []);
+});
+
+test("a hidden confirmation after a zero-width render cannot be confirmed by a stray 'y'", () => {
+	const items = [{ name: "one", themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: false, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, agents: true, todo: true, usageCost: true, modelDetails: true } } }];
+	const deleted: string[] = [];
+	const view = new VisualCustomizeView({ rows: [], profiles: { list: () => items, save: () => {}, apply: () => {}, delete: name => { deleted.push(name); }, reset: () => {} }, theme, rowsAvailable: () => 12, requestRender: () => {}, onClose: () => {} });
+	view.handleInput("p");
+	view.render(80);
+	view.handleInput("d");
+	assert.match(view.render(80).join("\n"), /Confirm delete one/);
+	assert.deepEqual(view.render(0), [], "a zero-width frame renders nothing");
+	view.handleInput("y");
+	assert.deepEqual(deleted, [], "a confirmation invisible in the last rendered frame must not be confirmable");
+});
+
+test("an input typed before a zero-width render cannot be saved by a stray Enter", () => {
+	const items: never[] = [];
+	const saved: Array<[string, boolean]> = [];
+	const view = new VisualCustomizeView({ rows: [], profiles: { list: () => items, save: (name, replace) => { saved.push([name, replace]); }, apply: () => {}, delete: () => {}, reset: () => {} }, theme, rowsAvailable: () => 12, requestRender: () => {}, onClose: () => {} });
+	view.handleInput("p");
+	view.render(80);
+	view.handleInput("s");
+	view.handleInput("a");
+	view.handleInput("b");
+	view.handleInput("c");
+	assert.match(view.render(80).join("\n"), /New profile name: abc/);
+	assert.deepEqual(view.render(0), [], "a zero-width frame renders nothing");
+	view.handleInput("\r");
+	assert.deepEqual(saved, [], "an input invisible in the last rendered frame must not be saveable");
+});
+
 test("customization view renders with Pi's real Theme instance", () => {
 	const piTheme = getThemeByName("dark");
 	assert.ok(piTheme instanceof Theme);

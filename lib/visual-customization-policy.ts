@@ -48,7 +48,7 @@ function keysMatch(value: Record<string, unknown>, keys: readonly string[]): boo
 function member<T extends string>(value: unknown, choices: Record<string, T>): value is T {
 	return typeof value === "string" && Object.values(choices).includes(value as T);
 }
-function valid(value: unknown): value is VisualSettings {
+export function isVisualSettings(value: unknown): value is VisualSettings {
 	if (!record(value) || !keysMatch(value, ["statusPlacement", "headerPlacement", "density", "visibility"])) return false;
 	const visibility = value.visibility;
 	return member(value.statusPlacement, STATUS_PLACEMENT)
@@ -63,7 +63,7 @@ export function parseVisualSettingsFile(raw: string): VisualSettings | undefined
 		const parsed: unknown = JSON.parse(raw);
 		if (!record(parsed) || parsed.schema !== VISUAL_SCHEMA) return undefined;
 		const { schema: _schema, ...settings } = parsed;
-		return valid(settings) ? settings : undefined;
+		return isVisualSettings(settings) ? settings : undefined;
 	} catch { return undefined; }
 }
 export function resolveVisualSettings(options: VisualOptions = {}): VisualResolution {
@@ -78,7 +78,7 @@ export function resolveVisualSettings(options: VisualOptions = {}): VisualResolu
 }
 /** Same-directory rename keeps partial JSON invisible to readers. */
 export function writeVisualSettings(settings: VisualSettings, options: VisualOptions = {}): string {
-	if (!valid(settings)) throw new TypeError("Invalid visual settings");
+	if (!isVisualSettings(settings)) throw new TypeError("Invalid visual settings");
 	const home = options.gentlePiConfigHome ?? gentlePiConfigHome();
 	const path = join(home, "visual-customization.json");
 	const temporary = `${path}.${randomUUID()}.tmp`;

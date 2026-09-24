@@ -12,7 +12,8 @@ import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment
 import { CARD_TONE, renderCard, type Card, type CardTheme } from "../lib/shell-card.ts";
 import { CommandPalette, commandsKey, type CommandPaletteResult } from "../lib/command-palette.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
-import { VisualCustomizeView, type CustomizeRow } from "../lib/visual-customize-view.ts";
+import { VisualCustomizeView, type CustomizeRow, type ProfileActions } from "../lib/visual-customize-view.ts";
+import { deleteVisualProfile, getVisualProfile, listVisualProfiles, resetVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts";
 import { sourcePalettePreview } from "../lib/theme-customization.ts";
 import { DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, STATUS_PLACEMENT, resolveVisualSettings, writeVisualSettings } from "../lib/visual-customization-policy.ts";
 import { BANNER_COLORS, DEFAULT_BANNER_CONFIG, readBannerConfig, readBannerConfigForEdit, writeBannerConfig } from "./startup-banner.ts";
@@ -1168,7 +1169,48 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return false;
 				}
 		});
-			await ctx.ui.custom<null>((tui, theme, _keys, done) => new VisualCustomizeView({ rows, theme, requestRender: () => tui.requestRender(), rowsAvailable: () => Math.floor(tui.terminal.rows * 0.8), onError: (error) => ctx.ui.notify(`Visual customization: ${error.message}`, "error"), onClose: () => done(null) }), { overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 42, maxHeight: "85%" } });
+			const profiles: ProfileActions = {
+				list: () => listVisualProfiles(home).map(name => getVisualProfile(name, home)!),
+				save: async (name, replace) => {
+					const visual = resolveVisualSettings(home);
+					if (visual.malformed || visual.readError) throw new Error("Visual settings unavailable for snapshot.");
+					const currentBanner = await readBannerConfigForEdit(bannerHome);
+					const currentAnimation = resolveAnimationPolicy(animationOptions);
+					if (currentAnimation.malformed) throw new Error(`Cannot read animation policy: ${currentAnimation.globalFile}`);
+					const themeName = ctx.ui.theme.name;
+					if (!themeName || !ctx.ui.getAllThemes?.().some((item) => item.name === themeName) || !ctx.ui.getTheme?.(themeName)) throw new Error("Active theme is not installed or valid; profile not saved.");
+					saveVisualProfile(name, { themeName, animationPolicy: currentAnimation.policy, banner: currentBanner, visual: visual.settings }, { ...home, replace });
+					ctx.ui.notify(`Visual profile ${name} saved.`, "info");
+				},
+				apply: async (name) => {
+					const profile = getVisualProfile(name, home);
+					if (!profile) throw new Error(`Visual profile ${name} not found.`);
+					const changed: string[] = [];
+					const failures: string[] = [];
+					const step = async (label: string, action: () => void | Promise<void>) => {
+						try { await action(); changed.push(label); } catch (error) { failures.push(`${label}: ${error instanceof Error ? error.message : String(error)}`); }
+					};
+					await step("theme", () => {
+						if (!ctx.ui.getTheme?.(profile.themeName)) throw new Error("Installed theme unavailable.");
+						const result = ctx.ui.setTheme(profile.themeName);
+						if (!result.success) throw new Error(result.error ?? "Theme activation failed.");
+						activeTheme = profile.themeName;
+					});
+					await step("visual", () => {
+						const current = resolveVisualSettings(home);
+						if (current.malformed || current.readError) throw new Error("Visual settings unreadable.");
+						writeVisualSettings(profile.visual, home);
+						refreshVisual();
+						pi.events.emit(VISUAL_SETTINGS_CHANGED, { configHome: doubleEscCancelConfigHome });
+					});
+					await step("banner", async () => { await readBannerConfigForEdit(bannerHome); await writeBannerConfig(profile.banner, bannerHome); banner = profile.banner; });
+					await step("animation", () => { writeAnimationPolicy(profile.animationPolicy, animationOptions); animationPolicy = profile.animationPolicy; prompt?.setAnimationPolicy(animationPolicy); });
+					ctx.ui.notify(failures.length ? `PARTIAL profile apply: ${changed.join(", ") || "none"} changed; ${failures.join("; ")}` : `Visual profile ${name} applied; banner applies at next startup.`, failures.length ? "warning" : "info");
+				},
+				delete: (name) => { deleteVisualProfile(name, home); ctx.ui.notify(`Visual profile ${name} deleted.`, "info"); },
+				reset: () => { resetVisualProfiles(home); ctx.ui.notify("Visual profile catalog cleared; active settings unchanged.", "info"); },
+			};
+			await ctx.ui.custom<null>((tui, theme, _keys, done) => new VisualCustomizeView({ rows, profiles, theme, requestRender: () => tui.requestRender(), rowsAvailable: () => Math.floor(tui.terminal.rows * 0.8), onError: (error) => ctx.ui.notify(`Visual customization: ${error.message}`, "error"), onClose: () => done(null) }), { overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 42, maxHeight: "85%" } });
 		},
 	});
 	pi.registerCommand("gentle:animations", {
