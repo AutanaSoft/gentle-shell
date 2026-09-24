@@ -724,6 +724,25 @@ test("targetStatus rejects a dangling or empty --base-ref/--lineage in the submi
 	}
 });
 
+test("targetStatus rejects ambiguous or malformed provider selectors before executing STATUS", async () => {
+	for (const tokens of [
+		[...SUBMITTED_PROVIDER_TOKENS, "--committed-only=false"],
+		[...SUBMITTED_PROVIDER_TOKENS, "--committed-only=garbage"],
+		[...SUBMITTED_PROVIDER_TOKENS, "--committed-only=true", "--committed-only=true"],
+		[...SUBMITTED_PROVIDER_TOKENS, "--committed-only", "--committed-only=true"],
+		[...SUBMITTED_PROVIDER_TOKENS, "--base-ref=deadbeef", "--base-ref", "deadbeef"],
+		[...SUBMITTED_PROVIDER_TOKENS, "--lineage=review-a", "--lineage", "review-a"],
+		[...SUBMITTED_PROVIDER_TOKENS, "--base-ref", "--lineage=review-a"],
+		[...SUBMITTED_PROVIDER_TOKENS, "--lineage", "--base-ref=deadbeef"],
+	]) {
+		const queue = queuedTargetStatusAdapter();
+		await assert.rejects(() => targetStatusClient(queue.adapter).targetStatus({
+			cwd: "/repo", intendedUntrackedSelection: { argumentTokens: tokens, value: '{"selection":true}' },
+		}), TypeError, JSON.stringify(tokens));
+		assert.equal(queue.calls.length, 0, JSON.stringify(tokens));
+	}
+});
+
 test("START/v4 accepts only its reviewing status continuation and preserves v3 strictness", () => {
 	for (const action of ["created", "replayed"] as const) {
 		const start = reviewingStartV4(action);

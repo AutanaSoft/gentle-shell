@@ -89,13 +89,21 @@ not remember the committed selector.
     diagnostics. Terminal-consumption record on disk names target `cad755ff…` and that lineage;
     `base_tree` a0b17eb equals the base commit tree.
 
-- [ ] T7 `select-intended-untracked` operation (extensions/gentle-ai.ts ~8096-8114) must keep the
-  committed-range selector: its STATUS and internal START currently omit `baseRef`, so a binding
-  issued by a committed-range inspect is rejected (`intended-untracked-selection-binding-rejected`)
-  or drifts. Found by the independent verifier of 236192c5 (issue step 7).
-- [ ] T8 Harden provider-token parsing: fail closed on `--committed-only=false` (or any
-  non-true value), repeated `--base-ref`/`--lineage`, and a split flag whose value is another
-  `--flag`. Found by the independent verifier of 236192c5.
+- [x] T7 `select-intended-untracked` preserves the committed-range selector from a plain
+  inspect stop through revalidation STATUS and internal START. Route: delegated writer.
+  Decision: the stop has no resolved selection yet, so retain its canonical base and exact
+  selection binding under the pre-lineage worktree key; reject another binding before STATUS,
+  and reject changed target identity before START. Non-committed selections keep their existing
+  selectorless route. Evidence: controller tests "committed-range inspect stop carries its binding
+  selector into selection STATUS and START, rejecting a mismatched binding" and
+  "committed-range selection rejects target-identity drift before START" (coverage of existing
+  guard, green immediately); pre-lineage non-committed route tests remain green. RED: missing stop entry.
+- [x] T8 Provider-token parsing rejects any non-true `--committed-only=` value, repeated
+  `--base-ref`/`--lineage`/`--committed-only` (including mixed bare/equals forms), and split
+  values starting with `--`. Route: delegated writer. Decision: validate before native STATUS
+  even without a forwarded selector. Evidence: "targetStatus rejects ambiguous or malformed
+  provider selectors before executing STATUS" with zero adapter calls; initial RED:
+  `--committed-only=false` accepted; correction RED: repeated `--committed-only=true` accepted.
 
 ## Acceptance criteria
 
@@ -110,4 +118,11 @@ T1–T5 done (delegated writer). Verification (RDD off, so this report is verifi
 - `npm run typecheck`: 188 recorded diagnostics, no regressions.
 - RED confirmed for T2–T4 and T5 by temporarily reverting each touched source file (via `git diff`/`git apply`, no stash) and re-running the new/updated tests before restoring the fix.
 
-T6 done (see evidence above). Verifier of 236192c5: PASS with two warnings → T7, T8. Next: T7–T8 via delegated writer, then E2E of the select-intended-untracked route.
+T6 done (see evidence above). Verifier of 236192c5: PASS with two warnings → T7, T8.
+T7–T8 done (delegated writer, uncommitted pending parent review and work-unit commit).
+RED: 164 pass, 2 fail (new T7/T8 tests). GREEN: 166 pass, 0 fail on the three-file test command.
+`npm run typecheck`: 188 recorded diagnostics, no regressions (10 file/code pairs improved).
+Scoped verifier correction: RED 166 pass/1 fail (repeated committed-only); changed-target-identity
+coverage green without production edits. GREEN 167 pass/0 fail; `npm run typecheck` unchanged
+(188 recorded diagnostics, no regressions, 10 improved pairs).
+Next: parent E2E of the select-intended-untracked route and work-unit review/commit.

@@ -711,22 +711,19 @@ function nativeUntrackedSelectionArguments(selection: NativeUntrackedSelection):
 	];
 }
 
-// Reads a `--flag`/`--flag=value` pair out of provider-issued argument
-// tokens (split or `=` form). Fails closed on a malformed provider token
-// instead of silently producing a broken argv: a dangling `--flag` as the
-// last token, or an empty `--flag=`, both throw.
+// Fail closed on malformed or duplicate provider selectors before invoking STATUS.
 function providerFlagValue(tokens: readonly string[], flag: string): string | undefined {
-	const index = tokens.findIndex((token) => token === `--${flag}` || token.startsWith(`--${flag}=`));
-	if (index === -1) return undefined;
-	const token = tokens[index]!;
-	if (token.startsWith(`--${flag}=`)) {
-		const value = token.slice(`--${flag}=`.length);
-		if (value === "") throw new TypeError(`Native intended-untracked selection has an empty --${flag}= value`);
-		return value;
+	let found: string | undefined;
+	for (let index = 0; index < tokens.length; index++) {
+		const token = tokens[index]!;
+		if (token !== `--${flag}` && !token.startsWith(`--${flag}=`)) continue;
+		if (found !== undefined) throw new TypeError(`Native intended-untracked selection repeats --${flag}`);
+		const value = token === `--${flag}` ? tokens[index + 1] : token.slice(`--${flag}=`.length);
+		if (value === undefined || value === "" || value.startsWith("--")) throw new TypeError(`Native intended-untracked selection has an invalid --${flag} value`);
+		found = value;
+		if (token === `--${flag}`) index++;
 	}
-	const value = tokens[index + 1];
-	if (value === undefined) throw new TypeError(`Native intended-untracked selection has a dangling --${flag} with no value`);
-	return value;
+	return found;
 }
 
 const NATIVE_RISK_LEVEL = ["low", "medium", "high"] as const;
@@ -2267,7 +2264,13 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 		if (request.baseRef !== undefined && submittedBaseRefValue !== undefined && submittedBaseRefValue !== request.baseRef) throw new TypeError("Native intended-untracked selection already carries a conflicting base-ref");
 		const submittedLineageValue = submittedTokens === undefined ? undefined : providerFlagValue(submittedTokens, "lineage");
 		if (request.lineageId !== undefined && submittedLineageValue !== undefined && submittedLineageValue !== request.lineageId) throw new TypeError("Native intended-untracked selection already carries a conflicting lineage");
-		const submittedHasCommittedOnly = submittedTokens?.some((token) => token === "--committed-only" || token === "--committed-only=true") ?? false;
+		let submittedHasCommittedOnly = false;
+		for (const token of submittedTokens ?? []) {
+			if (token !== "--committed-only" && !token.startsWith("--committed-only=")) continue;
+			if (token !== "--committed-only" && token !== "--committed-only=true") throw new TypeError("Native intended-untracked selection has an invalid --committed-only value");
+			if (submittedHasCommittedOnly) throw new TypeError("Native intended-untracked selection repeats --committed-only");
+			submittedHasCommittedOnly = true;
+		}
 		// Unchanged base-ref (submittedBaseRefValue undefined): append the full
 		// base-ref/committed-only pair. Same base-ref already present but missing
 		// --committed-only: append only --committed-only (submittedBaseRefValue
