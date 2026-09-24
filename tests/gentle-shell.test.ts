@@ -190,7 +190,9 @@ function fakeContext(options: { hasUI?: boolean; entries?: unknown[]; oauth?: bo
 				ui.overlay = factory;
 				return new Promise<T | null>((resolve) => {
 					ui.closeOverlay = () => resolve(null);
-					ui.overlayView = factory(fakeTui, plainTheme, fakeKeybindings, (value: T) => resolve(value));
+					// An identity bg mock hides focused rows; omit it so overlay navigation
+					// remains inspectable through Commands' ▸ fallback.
+					ui.overlayView = factory(fakeTui, { ...plainTheme, bg: undefined }, fakeKeybindings, (value: T) => resolve(value));
 					resolveOverlay();
 				});
 			},
@@ -658,15 +660,25 @@ function scopedDoubleEscCancelConfigHome(t: { after(callback: () => void): void 
 	return configHome;
 }
 
-async function customizeAction(ui: FakeUi, label: string): Promise<void> {
+function findCustomizeRow(ui: FakeUi, label: string, width = 90): boolean {
 	const view = ui.overlayView!;
-	for (let index = 0; index < 50; index++) {
-		if (view.render(90).some((line) => line.includes("▸") && line.includes(label))) break;
+	view.handleInput("\x1b[D");
+	for (let category = 0; category < 7; category++) {
+		view.handleInput("\x1b[C");
+		for (let index = 0; index < 35; index++) {
+			if (view.render(width).some((line) => line.includes(`▸ ${label}`))) return true;
+			view.handleInput("\x1b[B");
+		}
+		view.handleInput("\x1b[D");
 		view.handleInput("\x1b[B");
 	}
-	assert.ok(view.render(90).some((line) => line.includes("▸") && line.includes(label)), `missing ${label}`);
+	return false;
+}
+
+async function customizeAction(ui: FakeUi, label: string): Promise<void> {
+	assert.ok(findCustomizeRow(ui, label), `missing ${label}`);
 	const notices = ui.notices.length;
-	view.handleInput("\r");
+	ui.overlayView!.handleInput("\r");
 	for (let attempt = 0; attempt < 100 && ui.notices.length === notices; attempt++) await new Promise<void>((resolve) => setTimeout(resolve, 5));
 	assert.ok(ui.notices.length > notices, `action did not finish: ${label}`);
 }
@@ -733,7 +745,7 @@ test("customize previews installed source palette without selecting until Enter"
 	themeApi.setTheme = (name) => { applied.push(name); return { success: true }; };
 	const pending = commands.get("gentle:customize")!.handler("", ctx);
 	await overlayReady;
-	for (let i = 0; i < 40 && !ui.overlayView!.render(90).some(line => line.includes("▸ Theme: dark")); i++) ui.overlayView!.handleInput("\x1b[B");
+	assert.ok(findCustomizeRow(ui, "Theme: dark"), "missing Theme: dark");
 	const lines = ui.overlayView!.render(90).join("\n");
 	assert.match(lines, /dark · source palette/);
 	assert.match(lines, /sample text/);
@@ -986,7 +998,7 @@ test("customize degrades unavailable theme APIs and refuses noninteractive UI", 
 	(ctx.ui as unknown as { getAllThemes(): unknown }).getAllThemes = () => { throw new Error("theme lookup failed"); };
 	const pending = commands.get("gentle:customize")!.handler("", ctx);
 	await overlayReady;
-	assert.match(ui.overlayView!.render(90).join("\n"), /Themes unavailable/);
+	assert.ok(findCustomizeRow(ui, "Themes unavailable; use Pi /settings"), "missing Themes unavailable message");
 	ui.overlayView!.handleInput("\x1b");
 	await pending;
 	const { ctx: rpc, ui: rpcUi } = fakeContext();

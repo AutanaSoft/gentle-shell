@@ -12,7 +12,7 @@ import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment
 import { CARD_TONE, renderCard, type Card, type CardTheme } from "../lib/shell-card.ts";
 import { CommandPalette, commandsKey, type CommandPaletteResult } from "../lib/command-palette.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
-import { VisualCustomizeView, type CustomizeRow, type ProfileActions } from "../lib/visual-customize-view.ts";
+import { VisualCustomizeView, type CustomizeCategory, type CustomizeRow, type ProfileActions } from "../lib/visual-customize-view.ts";
 import { deleteVisualProfile, getVisualProfile, listVisualProfiles, resetVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts";
 import { sourcePalettePreview } from "../lib/theme-customization.ts";
 import { DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, STATUS_PLACEMENT, resolveVisualSettings, writeVisualSettings } from "../lib/visual-customization-policy.ts";
@@ -1074,7 +1074,9 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const bannerHome = doubleEscCancelConfigHome;
 			let banner = await readBannerConfig(bannerHome);
 			let activeTheme = ctx.ui.theme.name;
-			const add = (label: CustomizeRow["label"], notice: string, action: () => void | false | Promise<void | false>) => rows.push({ label, action: async () => {
+			let customizeView: VisualCustomizeView | undefined;
+			let category: CustomizeCategory = "Animations";
+			const add = (label: CustomizeRow["label"], notice: string, action: () => void | false | Promise<void | false>, preview?: CustomizeRow["preview"]) => rows.push({ category, label, preview, action: async () => {
 				if (await action() === false) return;
 				ctx.ui.notify(notice, "info");
 			} });
@@ -1086,24 +1088,33 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					animationPolicy = resolveAnimationPolicy(animationOptions).policy;
 					prompt?.setAnimationPolicy(animationPolicy);
 				},
+				() => ({ title: `${policy} · static animation sample`, sample: policy === "potato" ? "✿  idle → working (no pulse)" : policy === "performance" ? "✿  short pulse → settle (static)" : "✿  gentle wave → settle (static)" }),
 			);
+			category = "Banner";
+			const bannerColors = { pink: [255, 118, 195], cyan: [95, 210, 255], yellow: [255, 210, 95], green: [110, 220, 145] } as const;
+			const bannerPreview = (next: typeof banner) => {
+				const [r, g, b] = bannerColors[next.color];
+				return { title: `Banner · ${next.color} (static)`, sample: `${next.showRose ? `\x1b[38;2;${r};${g};${b}m🌹\x1b[0m` : "·"}  ${next.showTextLogo ? "GENTLE SHELL" : "(logo hidden)"}` };
+			};
 			add(() => `Banner rose: ${banner.showRose ? "on" : "off"}`, "Banner saved; applies at next startup.", async () => {
 				const next = { ...await readBannerConfigForEdit(bannerHome) };
 				next.showRose = !next.showRose;
 				await writeBannerConfig(next, bannerHome);
 				banner = next;
-			});
+			}, () => bannerPreview({ ...banner, showRose: !banner.showRose }));
 			add(() => `Banner text logo: ${banner.showTextLogo ? "on" : "off"}`, "Banner saved; applies at next startup.", async () => {
 				const next = { ...await readBannerConfigForEdit(bannerHome) };
 				next.showTextLogo = !next.showTextLogo;
 				await writeBannerConfig(next, bannerHome);
 				banner = next;
-			});
+			}, () => bannerPreview({ ...banner, showTextLogo: !banner.showTextLogo }));
 			for (const color of BANNER_COLORS) add(
 				() => `Banner color: ${color}${banner.color === color ? " (current)" : ""}`,
 				"Banner saved; applies at next startup.",
 				async () => { const next = { ...await readBannerConfigForEdit(bannerHome), color }; await writeBannerConfig(next, bannerHome); banner = next; },
+				() => bannerPreview({ ...banner, color }),
 			);
+			category = "Themes";
 			try {
 				if (typeof ctx.ui.getAllThemes !== "function" || typeof ctx.ui.getTheme !== "function" || typeof ctx.ui.setTheme !== "function") throw new Error("theme API unavailable");
 				const themes = ctx.ui.getAllThemes();
@@ -1111,6 +1122,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				const names = [...new Set(themes.map((item) => item?.name).filter((name): name is string => typeof name === "string" && !!name && !name.includes("/")))];
 				if (names.length === 0) throw new Error("no installed themes");
 				for (const name of names) rows.push({
+					category,
 					label: () => `Theme: ${name}${activeTheme === name ? " (current)" : ""}`,
 					preview: () => {
 						const selected = ctx.ui.getTheme(name);
@@ -1127,7 +1139,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					},
 				});
 			} catch {
-				rows.push({ label: "Themes unavailable; use Pi /settings", action: () => ctx.ui.notify("Installed themes are unavailable in this session.", "warning") });
+				rows.push({ category, label: "Themes unavailable; use Pi /settings", preview: () => ({ title: "Themes unavailable", sample: "Use Pi /settings to select a theme" }), action: () => ctx.ui.notify("Installed themes are unavailable in this session.", "warning") });
 			}
 			const updateVisual = (change: (settings: ReturnType<typeof resolveVisualSettings>["settings"]) => ReturnType<typeof resolveVisualSettings>["settings"]) => {
 				const current = resolveVisualSettings(home);
@@ -1138,14 +1150,35 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			};
 			const visual = () => resolveVisualSettings(home).settings;
 			const pending = "Preference saved and applied.";
-			for (const value of Object.values(STATUS_PLACEMENT)) add(() => `Status placement: ${value}${visual().statusPlacement === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, statusPlacement: value })));
-			for (const value of Object.values(HEADER_PLACEMENT)) add(() => `Header placement: ${value}${visual().headerPlacement === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, headerPlacement: value })));
-			for (const value of Object.values(DENSITY)) add(() => `Density: ${value}${visual().density === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, density: value })));
+			const layoutPreview = (settings: ReturnType<typeof visual>) => ({
+				title: `Layout · ${settings.density} (schematic)`,
+				sample: `${settings.headerPlacement === "top" ? "[Header] → [Input]" : "[Input] → [Header]"}  ${settings.statusPlacement === "auto" ? "[responsive status]" : settings.statusPlacement === "right" ? "[Right rail, wide]" : settings.statusPlacement === "hidden" ? "[Bottom status; no rail]" : "[Bottom status]"}`,
+			});
+			category = "Layout";
+			for (const value of Object.values(STATUS_PLACEMENT)) add(() => `Status placement: ${value}${visual().statusPlacement === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, statusPlacement: value })), () => layoutPreview({ ...visual(), statusPlacement: value }));
+			for (const value of Object.values(HEADER_PLACEMENT)) add(() => `Header placement: ${value}${visual().headerPlacement === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, headerPlacement: value })), () => layoutPreview({ ...visual(), headerPlacement: value }));
+			for (const value of Object.values(DENSITY)) add(() => `Density: ${value}${visual().density === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, density: value })), () => layoutPreview({ ...visual(), density: value }));
+			category = "Sections";
 			for (const key of ["changes", "agents", "todo", "usageCost", "modelDetails"] as const) add(
 				() => `Section ${key}: ${visual().visibility[key] ? "shown" : "hidden"}`,
 				pending,
 				() => updateVisual((settings) => ({ ...settings, visibility: { ...settings.visibility, [key]: !settings.visibility[key] } })),
+				() => {
+					const visibility = { ...visual().visibility, [key]: !visual().visibility[key] };
+					return { title: `Sections · ${key} ${visibility[key] ? "shown" : "hidden"}`, sample: `[${Object.entries(visibility).filter(([, shown]) => shown).map(([section]) => section).join("] [") || "no optional sections"}]` };
+				},
 			);
+			const catalog = () => listVisualProfiles(home).map(name => getVisualProfile(name, home)!);
+			category = "Profiles";
+			rows.push({ category, label: "Visual profiles (preview, save, apply, delete)", preview: () => {
+				const saved = catalog()[0];
+				return saved ? { title: `${saved.name} · saved profile`, sample: `${saved.visual.headerPlacement === "top" ? "[Header] → [Input]" : "[Input] → [Header]"}  [${saved.visual.statusPlacement} status]` } : { title: "No saved profiles", sample: "Enter to save the current appearance" };
+			}, action: () => {
+				catalog();
+				customizeView?.openProfiles();
+				ctx.ui.notify("Profile preview opened; selections do not change preferences.", "info");
+			} });
+			category = "Reset";
 			add("Reset visual, banner and animation defaults", "Defaults saved. Layout and prompt apply now; banner at next startup.", async (): Promise<void | false> => {
 				// Validate the banner before touching any store. The writes below are
 				// independent, not a transaction: report precisely what succeeded.
@@ -1168,9 +1201,9 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					ctx.ui.notify(`Partial reset: ${state}. ${error instanceof Error ? error.message : String(error)}`, "warning");
 					return false;
 				}
-		});
+		}, () => ({ title: "Restore visual defaults", sample: "[Header] → [Input]  [responsive status] · quality" }));
 			const profiles: ProfileActions = {
-				list: () => listVisualProfiles(home).map(name => getVisualProfile(name, home)!),
+				list: catalog,
 				save: async (name, replace) => {
 					const visual = resolveVisualSettings(home);
 					if (visual.malformed || visual.readError) throw new Error("Visual settings unavailable for snapshot.");
@@ -1210,7 +1243,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				delete: (name) => { deleteVisualProfile(name, home); ctx.ui.notify(`Visual profile ${name} deleted.`, "info"); },
 				reset: () => { resetVisualProfiles(home); ctx.ui.notify("Visual profile catalog cleared; active settings unchanged.", "info"); },
 			};
-			await ctx.ui.custom<null>((tui, theme, _keys, done) => new VisualCustomizeView({ rows, profiles, theme, requestRender: () => tui.requestRender(), rowsAvailable: () => Math.floor(tui.terminal.rows * 0.8), onError: (error) => ctx.ui.notify(`Visual customization: ${error.message}`, "error"), onClose: () => done(null) }), { overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 42, maxHeight: "85%" } });
+			await ctx.ui.custom<null>((tui, theme, _keys, done) => {
+				customizeView = new VisualCustomizeView({ rows, profiles, theme, requestRender: () => tui.requestRender(), rowsAvailable: () => Math.max(0, Math.floor(tui.terminal.rows * 0.85) - 2), onError: (error) => ctx.ui.notify(`Visual customization: ${error.message}`, "error"), onClose: () => done(null) });
+				return customizeView;
+			}, { overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 60, maxHeight: "85%" } });
 		},
 	});
 	pi.registerCommand("gentle:animations", {
