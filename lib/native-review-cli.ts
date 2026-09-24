@@ -2239,7 +2239,15 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 		const selection = nativeUntrackedSelection(request);
 		const submitted = request.intendedUntrackedSelection;
 		if (submitted !== undefined && submitted.argumentTokens.reduce((count, token) => count + token.split("{{value}}").length - 1, 0) !== 1) throw new TypeError("Native intended-untracked selection requires exactly one provider-issued {{value}} token");
-		const statusArguments = submitted === undefined ? [
+		const submittedTokens = submitted === undefined ? undefined : submitted.argumentTokens.map((token) => token.replaceAll("{{value}}", submitted.value));
+		// gentle-ai 3.7.1 submission argument_tokens never carry --base-ref /
+		// --committed-only, so a forwarded baseRef must be appended after them;
+		// only bail if the provider already staked out a conflicting base-ref.
+		const submittedBaseRefIndex = submittedTokens?.findIndex((token) => token === "--base-ref" || token.startsWith("--base-ref="));
+		const submittedBaseRefValue = submittedBaseRefIndex === undefined || submittedBaseRefIndex === -1 ? undefined
+			: (submittedTokens![submittedBaseRefIndex].startsWith("--base-ref=") ? submittedTokens![submittedBaseRefIndex].slice("--base-ref=".length) : submittedTokens![submittedBaseRefIndex + 1]);
+		if (request.baseRef !== undefined && submittedBaseRefValue !== undefined && submittedBaseRefValue !== request.baseRef) throw new TypeError("Native intended-untracked selection already carries a conflicting base-ref");
+		const statusArguments = submittedTokens === undefined ? [
 			"review", "status", "--contract", REVIEW_INTEGRATION_CONTRACT, "--cwd", request.cwd,
 			"--projection", request.projection ?? "workspace",
 			...nativeUntrackedSelectionArguments(selection),
@@ -2247,7 +2255,7 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 			...(request.lineageId === undefined ? [] : ["--lineage", request.lineageId]),
 			...(request.agent === undefined ? [] : ["--agent", request.agent]),
 			"--next-transition",
-		] : ["review", "status", "--cwd", request.cwd, ...submitted.argumentTokens.map((token) => token.replaceAll("{{value}}", submitted.value))];
+		] : ["review", "status", "--cwd", request.cwd, ...submittedTokens, ...(request.baseRef === undefined || submittedBaseRefValue !== undefined ? [] : ["--base-ref", request.baseRef, "--committed-only"])];
 		const execution = await this.negotiated(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal);
 		assertSupportedNextTransitionOperation(execution.body);
 		return decode(NATIVE_REVIEW_OPERATION.STATUS, false, () => decodeReviewStatusV3(execution.body));

@@ -17,6 +17,7 @@ import {
 	decodeReviewStartV4,
 	decodeReviewStatusV3,
 } from "../lib/review-integration-v2.ts";
+import { NativeReviewCliV216, type ExecFileAdapter } from "../lib/native-review-cli.ts";
 
 const DEV_FIXTURES = join(process.cwd(), "tests", "fixtures", "devbinary");
 const V2_FIXTURES = join(process.cwd(), "contracts", "review-integration", "v2", "fixtures");
@@ -554,6 +555,75 @@ test("status/v6 decodes and enforces the intended-untracked selection submission
 		collectInput(body)[field] = value;
 		assert.throws(() => decodeReviewStatusV3(body), /intended_untracked_selection binding/, field);
 	}
+});
+
+function queuedTargetStatusAdapter(): { adapter: ExecFileAdapter; calls: string[][] } {
+	const calls: string[][] = [];
+	return {
+		calls,
+		adapter: async (request) => {
+			calls.push([...request.arguments]);
+			return { stdout: JSON.stringify(currentStatusFixture("status-v5.captured.json")), stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
+		},
+	};
+}
+
+function targetStatusClient(adapter: ExecFileAdapter): NativeReviewCliV216 {
+	return new NativeReviewCliV216(adapter, "/package/.gentle-ai/gentle-ai", 30_000, 1024 * 1024);
+}
+
+const SUBMITTED_PROVIDER_TOKENS = ["--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", "--intended-untracked-selection={{value}}"];
+
+test("targetStatus appends the forwarded base-ref/committed-only pair after intended-untracked submission tokens", async () => {
+	const queue = queuedTargetStatusAdapter();
+	await targetStatusClient(queue.adapter).targetStatus({
+		cwd: "/repo",
+		baseRef: "deadbeef",
+		committedOnly: true,
+		intendedUntrackedSelection: { argumentTokens: SUBMITTED_PROVIDER_TOKENS, value: '{"selection":true}' },
+	});
+	assert.deepEqual(queue.calls[0], [
+		"review", "status", "--cwd", "/repo",
+		"--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", '--intended-untracked-selection={"selection":true}',
+		"--base-ref", "deadbeef", "--committed-only",
+	]);
+});
+
+test("targetStatus leaves the intended-untracked submission argv unchanged when no baseRef is forwarded", async () => {
+	const queue = queuedTargetStatusAdapter();
+	await targetStatusClient(queue.adapter).targetStatus({
+		cwd: "/repo",
+		intendedUntrackedSelection: { argumentTokens: SUBMITTED_PROVIDER_TOKENS, value: '{"selection":true}' },
+	});
+	assert.deepEqual(queue.calls[0], [
+		"review", "status", "--cwd", "/repo",
+		"--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", '--intended-untracked-selection={"selection":true}',
+	]);
+});
+
+test("targetStatus rejects a forwarded baseRef that conflicts with a base-ref the submission already carries", async () => {
+	const queue = queuedTargetStatusAdapter();
+	const tokensWithBaseRef = [...SUBMITTED_PROVIDER_TOKENS, "--base-ref=cafebabe"];
+	await assert.rejects(
+		() => targetStatusClient(queue.adapter).targetStatus({
+			cwd: "/repo", baseRef: "deadbeef", committedOnly: true,
+			intendedUntrackedSelection: { argumentTokens: tokensWithBaseRef, value: '{"selection":true}' },
+		}),
+		TypeError,
+	);
+	assert.equal(queue.calls.length, 0);
+
+	// Same value on both sides is not a conflict: keep the submission's tokens unchanged.
+	const sameValueQueue = queuedTargetStatusAdapter();
+	await targetStatusClient(sameValueQueue.adapter).targetStatus({
+		cwd: "/repo", baseRef: "cafebabe", committedOnly: true,
+		intendedUntrackedSelection: { argumentTokens: tokensWithBaseRef, value: '{"selection":true}' },
+	});
+	assert.deepEqual(sameValueQueue.calls[0], [
+		"review", "status", "--cwd", "/repo",
+		"--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", '--intended-untracked-selection={"selection":true}',
+		"--base-ref=cafebabe",
+	]);
 });
 
 test("START/v4 accepts only its reviewing status continuation and preserves v3 strictness", () => {
