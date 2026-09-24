@@ -52,15 +52,6 @@ export const COMMAND_PALETTE_CATALOG: readonly CommandPaletteCatalogGroup[] = [
 		],
 	},
 	{
-		title: "SDD",
-		items: [
-			{ command: "gentle:sdd-preflight", label: "SDD preflight" },
-			{ command: "gentle-sdd-status", label: "SDD status" },
-			{ command: "gentle-sdd-continue", label: "SDD continue" },
-			{ command: "gentle-sdd-init", label: "SDD init" },
-		],
-	},
-	{
 		title: "Skills",
 		items: [{ command: "skill-registry:refresh", label: "Refresh skill registry" }],
 	},

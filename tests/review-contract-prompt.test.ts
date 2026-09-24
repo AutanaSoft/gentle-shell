@@ -115,11 +115,12 @@ test("before_agent_start does not inject the review execution contract for jd-fi
 	assert.doesNotMatch(result.systemPrompt, /Gentle AI review execution contract/);
 });
 
-test("before_agent_start does not inject the review execution contract for an SDD executor session", async () => {
+test("before_agent_start does not let legacy prompt text bypass primary ODD and review injection", async () => {
 	const { beforeAgentStart } = harness({} as NativeReviewCli);
 	const result = await beforeAgentStart({ systemPrompt: "SDD apply executor body" }, ctx());
-	assert.doesNotMatch(result.systemPrompt, /Substantial authorized work: use ODD/);
-	assert.doesNotMatch(result.systemPrompt, /Gentle AI review execution contract/);
+	assert.match(result.systemPrompt, /Substantial authorized work: use ODD/);
+	assert.match(result.systemPrompt, /Gentle AI review execution contract/);
+	assert.doesNotMatch(result.systemPrompt, /### 3\. SDD \(optional\)/);
 });
 
 test("before_agent_start injects nothing when nativeReviewCli is null", async () => {
