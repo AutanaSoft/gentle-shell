@@ -41,6 +41,11 @@ function selectedColumns(row: string): number[] {
 }
 
 // Resolve the installed PATH Pi through its local pnpm launcher, never a network package.
+// Only the declared @earendil-works/pi-coding-agent 0.85.1 dev dependency
+// (see package.json) is guaranteed in CI; a locally linked newer PATH `pi`
+// (for example 0.87.1) is an optional bundled-compatibility fixture. When it
+// is absent or a different version, the tests below that need it skip with
+// an explicit reason instead of failing the whole file at import time.
 const target = (process.env.PATH ?? "").split(delimiter).flatMap((dir) => {
   const launcher = join(dir, "pi");
   if (!existsSync(launcher)) return [];
@@ -52,34 +57,46 @@ const target = (process.env.PATH ?? "").split(delimiter).flatMap((dir) => {
     return metadata.version === "0.87.1" ? [match] : [];
   } catch { return []; }
 })[0];
-if (!target) throw new Error("Installed PATH Pi 0.87.1 package unavailable to compatibility test loader");
-const runtimeRequire = createRequire(realpathSync(target));
-const runtimeTuiPath = runtimeRequire.resolve("@earendil-works/pi-tui");
-const runtimeAgentPath = resolve(dirname(realpathSync(target)), "../index.js");
-const runtimeTuiPackage = runtimeRequire(resolve(dirname(runtimeTuiPath), "../package.json")) as { version: string };
-const runtimeAgentPackage = runtimeRequire(resolve(dirname(runtimeAgentPath), "../package.json")) as { version: string };
-const runtimeTui = await import(pathToFileURL(runtimeTuiPath).href) as typeof import("@earendil-works/pi-tui");
-const runtimeAgent = await import(pathToFileURL(runtimeAgentPath).href) as typeof import("@earendil-works/pi-coding-agent");
-// The PATH CLI runs the bundled graph, not the package's unbundled dist/index.js.
-const bundledAgent = await import(pathToFileURL(resolve(dirname(realpathSync(target)), "index.js")).href) as typeof import("@earendil-works/pi-coding-agent");
-const BundledEditor = Object.getPrototypeOf(bundledAgent.CustomEditor.prototype)?.constructor as typeof Editor;
-// Follow the public bundle's actual imported module chain to the virtual
-// loader; no hash or chunk filename is assumed by the compatibility gate.
-const bundleIndex = resolve(dirname(realpathSync(target)), "index.js");
-const bundleImports = [...readFileSync(bundleIndex, "utf8").matchAll(/from"(\.\/chunks\/[^\"]+\.js)"/g)];
-const virtualPaths = bundleImports.flatMap((match) => {
-  const source = readFileSync(resolve(dirname(bundleIndex), match[1]!), "utf8");
-  return [...source.matchAll(/import\("(\.\/virtual-modules-[^\"]+\.js)"\)/g)]
-    .map((found) => resolve(dirname(bundleIndex), "chunks", found[1]!));
-});
-assert.equal(new Set(virtualPaths).size, 1, "bundle must have exactly one reachable virtual module map");
-const virtualModule = await import(pathToFileURL(virtualPaths[0]!).href) as {
-  VIRTUAL_MODULES: Record<string, { CustomEditor?: typeof bundledAgent.CustomEditor; Editor?: typeof Editor }>;
-};
-const virtualAgent = virtualModule.VIRTUAL_MODULES["@earendil-works/pi-coding-agent"];
-const virtualTui = virtualModule.VIRTUAL_MODULES["@earendil-works/pi-tui"];
+const skip0871 = target ? undefined : "installed PATH Pi 0.87.1 bundle unavailable; only the declared 0.85.1 dev dependency is guaranteed in CI";
 
-test("PATH bundled virtual host is admitted only through its exact bundled class and version", () => {
+let runtimeTui: typeof import("@earendil-works/pi-tui") | undefined;
+let runtimeAgent: typeof import("@earendil-works/pi-coding-agent") | undefined;
+let runtimeTuiPackage: { version: string } | undefined;
+let runtimeAgentPackage: { version: string } | undefined;
+let bundledAgent: typeof import("@earendil-works/pi-coding-agent") | undefined;
+let BundledEditor: typeof Editor | undefined;
+let virtualAgent: { CustomEditor?: typeof import("@earendil-works/pi-coding-agent").CustomEditor; Editor?: typeof Editor } | undefined;
+let virtualTui: { CustomEditor?: typeof import("@earendil-works/pi-coding-agent").CustomEditor; Editor?: typeof Editor } | undefined;
+
+if (target) {
+  const runtimeRequire = createRequire(realpathSync(target));
+  const runtimeTuiPath = runtimeRequire.resolve("@earendil-works/pi-tui");
+  const runtimeAgentPath = resolve(dirname(realpathSync(target)), "../index.js");
+  runtimeTuiPackage = runtimeRequire(resolve(dirname(runtimeTuiPath), "../package.json")) as { version: string };
+  runtimeAgentPackage = runtimeRequire(resolve(dirname(runtimeAgentPath), "../package.json")) as { version: string };
+  runtimeTui = await import(pathToFileURL(runtimeTuiPath).href) as typeof import("@earendil-works/pi-tui");
+  runtimeAgent = await import(pathToFileURL(runtimeAgentPath).href) as typeof import("@earendil-works/pi-coding-agent");
+  // The PATH CLI runs the bundled graph, not the package's unbundled dist/index.js.
+  bundledAgent = await import(pathToFileURL(resolve(dirname(realpathSync(target)), "index.js")).href) as typeof import("@earendil-works/pi-coding-agent");
+  BundledEditor = Object.getPrototypeOf(bundledAgent.CustomEditor.prototype)?.constructor as typeof Editor;
+  // Follow the public bundle's actual imported module chain to the virtual
+  // loader; no hash or chunk filename is assumed by the compatibility gate.
+  const bundleIndex = resolve(dirname(realpathSync(target)), "index.js");
+  const bundleImports = [...readFileSync(bundleIndex, "utf8").matchAll(/from"(\.\/chunks\/[^\"]+\.js)"/g)];
+  const virtualPaths = bundleImports.flatMap((match) => {
+    const source = readFileSync(resolve(dirname(bundleIndex), match[1]!), "utf8");
+    return [...source.matchAll(/import\("(\.\/virtual-modules-[^\"]+\.js)"\)/g)]
+      .map((found) => resolve(dirname(bundleIndex), "chunks", found[1]!));
+  });
+  assert.equal(new Set(virtualPaths).size, 1, "bundle must have exactly one reachable virtual module map");
+  const virtualModule = await import(pathToFileURL(virtualPaths[0]!).href) as {
+    VIRTUAL_MODULES: Record<string, { CustomEditor?: typeof bundledAgent.CustomEditor; Editor?: typeof Editor }>;
+  };
+  virtualAgent = virtualModule.VIRTUAL_MODULES["@earendil-works/pi-coding-agent"];
+  virtualTui = virtualModule.VIRTUAL_MODULES["@earendil-works/pi-tui"];
+}
+
+test("PATH bundled virtual host is admitted only through its exact bundled class and version", { skip: skip0871 }, () => {
   assert.equal(bundledAgent.VERSION, "0.87.1");
   assert.notEqual(bundledAgent.CustomEditor, runtimeAgent.CustomEditor);
   assert.notEqual(BundledEditor, runtimeTui.Editor);
@@ -104,7 +121,7 @@ test("PATH bundled virtual host is admitted only through its exact bundled class
   assert.ok(adapter.renderSelection(30, { line: 0, col: 0 }, { line: 0, col: 18 }, rows).some(row => row.includes("\x1b[7m")));
 });
 
-test("bundled 0.87.1 editor accepts visual c/p ranges at Unicode and multiline endpoints", () => {
+test("bundled 0.87.1 editor accepts visual c/p ranges at Unicode and multiline endpoints", { skip: skip0871 }, () => {
   const e = new bundledAgent.CustomEditor({ terminal: { rows: 6, columns: 30 }, requestRender() {} } as never,
     { borderColor: (s: string) => s } as never, { matches: () => false } as never);
   const adapter = createVimEditorAdapter(e, "0.87.1", BundledEditor, bundledAgent.VERSION);
@@ -135,7 +152,7 @@ test("bundled 0.87.1 editor accepts visual c/p ranges at Unicode and multiline e
   assert.equal(e.getText(), "👩‍💻é\n");
 });
 
-test("bundled 0.87.1 full-line characterwise visual c/p stages preserve host rows and autocomplete", () => {
+test("bundled 0.87.1 full-line characterwise visual c/p stages preserve host rows and autocomplete", { skip: skip0871 }, () => {
   for (const command of ["c", "p"] as const) {
     const e = new bundledAgent.CustomEditor({ terminal: { rows: 6, columns: 30 }, requestRender() {} } as never,
       { borderColor: (s: string) => s } as never, { matches: () => false } as never);
@@ -163,7 +180,7 @@ test("bundled 0.87.1 full-line characterwise visual c/p stages preserve host row
   }
 });
 
-test("runtime identity resolves only the matching installed coding-agent/TUI pair", () => {
+test("runtime identity resolves only the matching installed coding-agent/TUI pair", { skip: skip0871 }, () => {
   assert.deepEqual(resolveVimRuntime(target, runtimeAgent.CustomEditor), { version: "0.87.1", editorClass: runtimeTui.Editor });
   assert.deepEqual(resolveVimRuntime(target), { version: "0.85.1", editorClass: Editor }, "a separate 0.85.1 CustomEditor retains its own identity");
   // The extension's local TUI metadata is 0.85.1. A virtual-module Editor
@@ -174,48 +191,56 @@ test("runtime identity resolves only the matching installed coding-agent/TUI pai
   assert.equal(resolveVimRuntime("/nonexistent/cli.js", runtimeAgent.CustomEditor), undefined);
 });
 
-test("installed Pi pairs prove version, constructor identity, editing, paste, selection, wrap and autocomplete", () => {
-  assert.equal(runtimeTuiPackage.version, "0.87.1");
-  assert.equal(runtimeAgentPackage.version, "0.87.1");
-  for (const [version, EditorClass, CustomClass] of [
-    ["0.85.1", Editor, undefined],
-    ["0.87.1", runtimeTui.Editor, runtimeAgent.CustomEditor],
-  ] as const) {
-    assert.equal(CustomClass ? Object.getPrototypeOf(CustomClass.prototype) : EditorClass.prototype, EditorClass.prototype);
-    const e = new EditorClass({ terminal: { rows: 6, columns: 22 }, requestRender() {} } as never, { borderColor: (s: string) => s } as never);
-    e.setText("alpha beta\nthird line");
-    const adapter = createVimEditorAdapter(e, version, EditorClass);
-    adapter.move({ line: 0, col: 6 });
-    adapter.replace({ line: 0, col: 6 }, { line: 0, col: 10 }, "snow");
-    assert.equal(e.getText(), "alpha snow\nthird line");
-    adapter.undo();
-    assert.equal(e.getText(), "alpha beta\nthird line");
-    e.setText("[paste #1 3 chars] wrapping text\nthird line");
-    (e as unknown as { pastes: Map<number, string> }).pastes.set(1, "abc");
-    assert.ok(!adapter.motionBoundaries()[0]!.includes(4), `${version}: paste marker atomic`);
-    e.focused = true;
-    const rows = e.render(18);
-    const selected = adapter.renderSelection(18, { line: 0, col: 0 }, { line: 0, col: "[paste #1 3 chars]".length }, rows);
-    assert.ok(selected.some((row: string) => row.includes("\x1b[7m")), `${version}: selection`);
-    assert.ok(selected.join("").includes(CURSOR_MARKER), `${version}: cursor`);
-    assert.ok((e as unknown as { scrollOffset: number }).scrollOffset >= 0);
-    assert.ok(rows.length > 3, `${version}: wrapped frame`);
-    const privateEditor = e as unknown as { autocompleteState: string; autocompleteList: { render(width: number): string[] }; scrollOffset: number };
-    privateEditor.autocompleteState = "force";
-    privateEditor.autocompleteList = { render: () => ["completion"] };
-    assert.ok(e.render(18).some((row: string) => row.includes("completion")), `${version}: autocomplete renders after frame`);
-    privateEditor.autocompleteState = "";
-    e.setText("repeat ".repeat(60));
-    adapter.move({ line: 0, col: 0 });
-    e.render(18);
-    adapter.move({ line: 0, col: e.getText().length });
-    const scrolled = e.render(18);
-    assert.ok(privateEditor.scrollOffset > 0, `${version}: scrolled wraps`);
-    assert.equal(adapter.renderSelection(18, { line: 0, col: 0 }, { line: 0, col: 6 }, scrolled).length, scrolled.length);
-  }
+function assertInstalledPiPairBehavior(version: "0.85.1" | "0.87.1", EditorClass: typeof Editor, CustomClass: { prototype: unknown } | undefined): void {
+  assert.equal(CustomClass ? Object.getPrototypeOf(CustomClass.prototype) : EditorClass.prototype, EditorClass.prototype);
+  const e = new EditorClass({ terminal: { rows: 6, columns: 22 }, requestRender() {} } as never, { borderColor: (s: string) => s } as never);
+  e.setText("alpha beta\nthird line");
+  const adapter = createVimEditorAdapter(e, version, EditorClass);
+  adapter.move({ line: 0, col: 6 });
+  adapter.replace({ line: 0, col: 6 }, { line: 0, col: 10 }, "snow");
+  assert.equal(e.getText(), "alpha snow\nthird line");
+  adapter.undo();
+  assert.equal(e.getText(), "alpha beta\nthird line");
+  e.setText("[paste #1 3 chars] wrapping text\nthird line");
+  (e as unknown as { pastes: Map<number, string> }).pastes.set(1, "abc");
+  assert.ok(!adapter.motionBoundaries()[0]!.includes(4), `${version}: paste marker atomic`);
+  e.focused = true;
+  const rows = e.render(18);
+  const selected = adapter.renderSelection(18, { line: 0, col: 0 }, { line: 0, col: "[paste #1 3 chars]".length }, rows);
+  assert.ok(selected.some((row: string) => row.includes("\x1b[7m")), `${version}: selection`);
+  assert.ok(selected.join("").includes(CURSOR_MARKER), `${version}: cursor`);
+  assert.ok((e as unknown as { scrollOffset: number }).scrollOffset >= 0);
+  assert.ok(rows.length > 3, `${version}: wrapped frame`);
+  const privateEditor = e as unknown as { autocompleteState: string; autocompleteList: { render(width: number): string[] }; scrollOffset: number };
+  privateEditor.autocompleteState = "force";
+  privateEditor.autocompleteList = { render: () => ["completion"] };
+  assert.ok(e.render(18).some((row: string) => row.includes("completion")), `${version}: autocomplete renders after frame`);
+  privateEditor.autocompleteState = "";
+  e.setText("repeat ".repeat(60));
+  adapter.move({ line: 0, col: 0 });
+  e.render(18);
+  adapter.move({ line: 0, col: e.getText().length });
+  const scrolled = e.render(18);
+  assert.ok(privateEditor.scrollOffset > 0, `${version}: scrolled wraps`);
+  assert.equal(adapter.renderSelection(18, { line: 0, col: 0 }, { line: 0, col: 6 }, scrolled).length, scrolled.length);
+}
+
+test("installed Pi 0.85.1 pair proves version, constructor identity, editing, paste, selection, wrap and autocomplete", () => {
+  assertInstalledPiPairBehavior("0.85.1", Editor, undefined);
 });
 
-test("0.87.1 CustomEditor subclass admits the same adapter and preserves its own frame", () => {
+test("resolveVimRuntime's default entry resolves the declared local 0.85.1 install without any PATH Pi", () => {
+  assert.deepEqual(resolveVimRuntime(), { version: "0.85.1", editorClass: Editor });
+  assert.deepEqual(resolveVimRuntime("/nonexistent/cli.js"), { version: "0.85.1", editorClass: Editor });
+});
+
+test("installed Pi 0.87.1 pair proves version, constructor identity, editing, paste, selection, wrap and autocomplete", { skip: skip0871 }, () => {
+  assert.equal(runtimeTuiPackage.version, "0.87.1");
+  assert.equal(runtimeAgentPackage.version, "0.87.1");
+  assertInstalledPiPairBehavior("0.87.1", runtimeTui.Editor, runtimeAgent.CustomEditor);
+});
+
+test("0.87.1 CustomEditor subclass admits the same adapter and preserves its own frame", { skip: skip0871 }, () => {
   class RuntimePrompt extends runtimeAgent.CustomEditor {}
   const e = new RuntimePrompt({ terminal: { rows: 6, columns: 30 }, requestRender() {} } as never,
     { borderColor: (s: string) => s } as never, { matches: () => false } as never);
@@ -230,7 +255,7 @@ test("0.87.1 CustomEditor subclass admits the same adapter and preserves its own
   assert.equal(adapter.renderSelection(30, { line: 0, col: 0 }, { line: 0, col: 3 }, rows).length, rows.length);
 });
 
-test("runtime identity and prototype mismatch reject without mutation", () => {
+test("runtime identity and prototype mismatch reject without mutation", { skip: skip0871 }, () => {
   const e = new runtimeTui.Editor({ terminal: { rows: 6 }, requestRender() {} } as never, { borderColor: (s: string) => s } as never);
   e.setText("untouched");
   assert.throws(() => createVimEditorAdapter(e, "0.87.1", Editor), /unsupported/i);
