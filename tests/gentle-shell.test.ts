@@ -5,9 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandInfo, type SourceInfo } from "@earendil-works/pi-coding-agent";
-import type { TUI, TuiMouseEvent } from "@earendil-works/pi-tui";
-import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, type GentlePromptEditor } from "../extensions/gentle-shell.ts";
+import { CURSOR_MARKER, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, GentlePromptEditor } from "../extensions/gentle-shell.ts";
 import { USAGE_SOURCE_EVENT, USAGE_SOURCE_SCHEMA } from "../lib/shell-usage.ts";
+import { createVimEditorAdapter } from "../lib/vim-editor-adapter.ts";
 import { CHANGE_STATUS } from "../lib/shell-changes.ts";
 import { sidebarState, type SidebarRail } from "../lib/shell-sidebar.ts";
 import type { ShellBarTheme } from "../lib/shell-bar.ts";
@@ -441,6 +442,946 @@ test("gentleShell frames the editor with the petal prompt and a hint while empty
 	editor.dispose();
 });
 
+test("dot replays at a new cursor; each repeat and insert session is one undo unit", () => {
+  const { pi, handlers } = fakePi(); gentleShell(pi, {});
+  const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+  try {
+    editor.setVimPolicy("on"); editor.setText("one two three"); editor.handleInput("\x1b");
+    editor.handleInput("0"); editor.handleInput("x");
+    assert.equal(editor.getText(), "ne two three");
+    editor.handleInput("w"); editor.handleInput(".");
+    assert.equal(editor.getText(), "ne wo three");
+    editor.handleInput("u"); assert.equal(editor.getText(), "ne two three");
+    editor.handleInput("u"); assert.equal(editor.getText(), "one two three");
+    editor.handleInput("i");
+    for (const key of ["é", " ", "👩‍💻"]) editor.handleInput(key);
+    editor.handleInput("\x1b");
+    assert.equal(editor.getText(), "é 👩‍💻one two three");
+    editor.handleInput("u"); assert.equal(editor.getText(), "one two three");
+  } finally { editor.dispose(); }
+});
+
+test("completed insert and change replay as semantic Unicode edits with one undo per dot", () => {
+  const { pi, handlers } = fakePi(); gentleShell(pi, {});
+  const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+  try {
+    editor.setVimPolicy("on"); editor.setText("one two three"); editor.handleInput("\x1b"); editor.handleInput("0");
+    editor.handleInput("c"); editor.handleInput("w"); editor.handleInput("👩‍💻"); editor.handleInput("é"); editor.handleInput("\x1b");
+    assert.equal(editor.getText(), "👩‍💻étwo three");
+    editor.handleInput("w"); editor.handleInput(".");
+    assert.equal(editor.getText(), "👩‍💻étwo 👩‍💻é");
+    editor.handleInput("u"); assert.equal(editor.getText(), "👩‍💻étwo three");
+    editor.handleInput("u"); assert.equal(editor.getText(), "one two three");
+    editor.handleInput("i"); editor.handleInput("雪"); editor.handleInput("\x1b");
+    editor.handleInput("w"); editor.handleInput("2"); editor.handleInput(".");
+    assert.equal((editor.getText().match(/雪/gu) ?? []).length, 3);
+    editor.handleInput("u"); assert.equal((editor.getText().match(/雪/gu) ?? []).length, 2);
+    editor.handleInput("u"); assert.equal((editor.getText().match(/雪/gu) ?? []).length, 1);
+  } finally { editor.dispose(); }
+});
+
+test("open-line, substitute and motion shift remain bounded across multiline replay", () => {
+  const { pi, handlers } = fakePi(); gentleShell(pi, {});
+  const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+  try {
+    editor.setVimPolicy("on"); editor.setText("one\ntwo\nthree"); editor.handleInput("\x1b");
+    editor.handleInput("g"); editor.handleInput("g"); editor.handleInput(">"); editor.handleInput("j");
+    assert.equal(editor.getText(), "  one\n  two\nthree");
+    editor.handleInput("u"); assert.equal(editor.getText(), "one\ntwo\nthree");
+    editor.handleInput("g"); editor.handleInput("g"); editor.handleInput("o");
+    editor.handleInput("雪"); editor.handleInput("\x1b");
+    assert.equal(editor.getText(), "one\n雪\ntwo\nthree");
+    editor.handleInput("j"); editor.handleInput(".");
+    assert.equal(editor.getText(), "one\n雪\ntwo\n雪\nthree");
+    editor.handleInput("u"); assert.equal(editor.getText(), "one\n雪\ntwo\nthree");
+    editor.handleInput("u"); assert.equal(editor.getText(), "one\ntwo\nthree");
+  } finally { editor.dispose(); }
+});
+
+test("O and S replay multiline text with one undo unit and no raw-key playback", () => {
+  const { pi, handlers } = fakePi(); gentleShell(pi, {});
+  const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+  try {
+    editor.setVimPolicy("on"); editor.setText("a\nb"); editor.handleInput("\x1b");
+    editor.handleInput("O"); editor.handleInput("雪"); editor.handleInput("\x1b");
+    assert.equal(editor.getText(), "a\n雪\nb");
+    editor.handleInput("g"); editor.handleInput("g"); editor.handleInput(".");
+    assert.equal(editor.getText(), "雪\na\n雪\nb");
+    editor.handleInput("u"); assert.equal(editor.getText(), "a\n雪\nb");
+    editor.handleInput("u"); assert.equal(editor.getText(), "a\nb");
+    editor.handleInput("S"); editor.handleInput("👩‍💻"); editor.handleInput("\x1b");
+    editor.handleInput("g"); editor.handleInput("g"); editor.handleInput(".");
+    assert.equal(editor.getText(), "👩‍💻\n👩‍💻");
+    editor.handleInput("u"); assert.equal(editor.getText(), "a\n👩‍💻");
+  } finally { editor.dispose(); }
+});
+
+test("substitute and append replay at the new cursor without changing the register", () => {
+  const { pi, handlers } = fakePi(); gentleShell(pi, {});
+  const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+  try {
+    editor.setVimPolicy("on"); editor.setText("ab cd"); editor.handleInput("\x1b"); editor.handleInput("0");
+    editor.handleInput("s"); editor.handleInput("é"); editor.handleInput("\x1b");
+    editor.handleInput("w"); editor.handleInput(".");
+    assert.equal(editor.getText(), "éb éd");
+    editor.handleInput("u"); assert.equal(editor.getText(), "éb cd");
+    editor.handleInput("u"); assert.equal(editor.getText(), "ab cd");
+    editor.handleInput("0"); editor.handleInput("a"); editor.handleInput("雪"); editor.handleInput("\x1b");
+    editor.handleInput("w"); editor.handleInput(".");
+    assert.equal((editor.getText().match(/雪/gu) ?? []).length, 2);
+  } finally { editor.dispose(); }
+});
+
+test("empty insert and interrupted insert do not replace the last completed repeat", () => {
+  const { pi, handlers } = fakePi(); gentleShell(pi, {});
+  const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers,
+    { matches: (data: string, action: string) => action === "app.interrupt" && data === "\x03" });
+  try {
+    editor.setVimPolicy("on"); editor.setText("abcd"); editor.handleInput("\x1b"); editor.handleInput("0");
+    editor.handleInput("x"); editor.handleInput("i"); editor.handleInput("\x1b");
+    editor.handleInput("."); assert.equal(editor.getText(), "cd");
+    editor.handleInput("i"); editor.handleInput("雪"); editor.handleInput("\x03");
+    editor.handleInput("."); assert.equal(editor.getText(), "雪d");
+  } finally { editor.dispose(); }
+});
+
+test("change plus its insert session undoes as one complete change", () => {
+  const { pi, handlers } = fakePi(); gentleShell(pi, {});
+  const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+  try {
+    editor.setVimPolicy("on"); editor.setText("one two"); editor.handleInput("\x1b"); editor.handleInput("0");
+    editor.handleInput("c"); editor.handleInput("w");
+    editor.handleInput("é"); editor.handleInput(" "); editor.handleInput("👩‍💻"); editor.handleInput("\x1b");
+    assert.equal(editor.getText(), "é 👩‍💻two");
+    editor.handleInput("u"); assert.equal(editor.getText(), "one two");
+  } finally { editor.dispose(); }
+});
+
+test("counted dot, canceled operator, empty changes and unsupported visual do not corrupt the draft", () => {
+  const { pi, handlers } = fakePi(); gentleShell(pi, {});
+  const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+  try {
+    editor.setVimPolicy("on"); editor.setText("abcde"); editor.handleInput("\x1b");
+    editor.handleInput("0"); editor.handleInput("x");
+    editor.handleInput("2"); editor.handleInput(".");
+    assert.equal(editor.getText(), "de");
+    editor.handleInput("u"); assert.equal(editor.getText(), "cde");
+    editor.handleInput("u"); assert.equal(editor.getText(), "bcde");
+    editor.handleInput("d"); editor.handleInput("\x1b");
+    editor.handleInput("v"); editor.handleInput("y"); editor.handleInput(".");
+    assert.equal(editor.getText(), "cde");
+  } finally { editor.dispose(); }
+});
+
+test("visual char and line selections paint effective inverse in the framed editor and Esc keeps the draft", () => {
+  const { pi, handlers } = fakePi();
+  gentleShell(pi, {});
+  const { ctx, ui } = fakeContext();
+  const editor = installedPrompt(ctx, ui, handlers);
+  try {
+    editor.setVimPolicy("on");
+    editor.setText("ab\ncd");
+    editor.handleInput("\x1b");
+    editor.handleInput("v");
+    editor.handleInput("2"); editor.handleInput("h");
+    assert.deepEqual(reverseColumns(editor.render(30)[2]!), [1, 2], "selection includes both c and d");
+    editor.handleInput("V");
+    assert.deepEqual(reverseColumns(editor.render(30)[2]!), [1, 2]);
+    editor.handleInput("k");
+    assert.deepEqual(reverseColumns(editor.render(30)[1]!), [1, 2]);
+    editor.handleInput("\x1b");
+    assert.equal(editor.getText(), "ab\ncd");
+    assert.match(editor.render(30).join("\n"), /NORMAL/);
+  } finally { editor.dispose(); }
+});
+
+test("visual line delete, yank/paste, change and shifts use one undo step without leaking NORMAL text", () => {
+  const { pi, handlers } = fakePi();
+  gentleShell(pi, {});
+  const { ctx, ui } = fakeContext();
+  const editor = installedPrompt(ctx, ui, handlers);
+  try {
+    editor.setVimPolicy("on"); editor.setText("one\ntwo\nthree"); editor.handleInput("\x1b");
+    editor.handleInput("V"); editor.handleInput("k"); editor.handleInput("y");
+    assert.equal(editor.getText(), "one\ntwo\nthree");
+    editor.handleInput("p"); assert.equal(editor.getText(), "one\ntwo\ntwo\nthree\nthree");
+    editor.handleInput("u"); assert.equal(editor.getText(), "one\ntwo\nthree");
+    editor.handleInput("V"); editor.handleInput("k"); editor.handleInput("d");
+    assert.equal(editor.getText(), "three");
+    editor.handleInput("u"); assert.equal(editor.getText(), "one\ntwo\nthree");
+    editor.handleInput("V"); editor.handleInput(">");
+    assert.equal(editor.getText(), "  one\ntwo\nthree");
+    editor.handleInput("u"); assert.equal(editor.getText(), "one\ntwo\nthree");
+    editor.handleInput("G"); editor.handleInput("v"); editor.handleInput("c");
+    assert.match(editor.render(30).join("\n"), /INSERT/);
+    editor.handleInput("Z"); assert.equal(editor.getText(), "one\ntwo\nZhree");
+  } finally { editor.dispose(); }
+});
+
+test("visual anchor swap, grapheme delete and registered paste rejection keep selection safe", () => {
+  const { pi, handlers } = fakePi(); gentleShell(pi, {});
+  const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+  try {
+    editor.setVimPolicy("on"); editor.setText("a👩‍💻b"); editor.handleInput("\x1b");
+    editor.handleInput("0"); editor.handleInput("v"); editor.handleInput("l");
+    editor.handleInput("o"); assert.deepEqual(editor.getCursor(), { line: 0, col: 0 });
+    editor.handleInput("d"); assert.equal(editor.getText(), "b");
+    editor.handleInput("u"); assert.equal(editor.getText(), "a👩‍💻b");
+    editor.setText(""); editor.handleInput("i");
+    editor.handleInput(`\x1b[200~${"z".repeat(1001)}\x1b[201~`);
+    const before = editor.getExpandedText();
+    editor.handleInput("\x1b"); editor.handleInput("0"); editor.handleInput("v"); editor.handleInput("y");
+    assert.equal(editor.getExpandedText(), before);
+    assert.match(editor.render(30).join("\n"), /VISUAL/);
+    editor.handleInput("\x1b"); assert.match(editor.render(30).join("\n"), /NORMAL/);
+  } finally { editor.dispose(); }
+});
+
+test("visual text objects select exact range then operate, with failed match retaining selection and register", () => {
+  const { pi, handlers } = fakePi(); gentleShell(pi, {});
+  const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+  try {
+    editor.setVimPolicy("on"); editor.setText('one two (é 👩‍💻) "hi"'); editor.handleInput("\x1b");
+    editor.handleInput("g"); editor.handleInput("g"); editor.handleInput("v");
+    for (const key of ["i", "w", "y"]) editor.handleInput(key);
+    assert.equal(editor.getText(), 'one two (é 👩‍💻) "hi"');
+    editor.handleInput("f"); editor.handleInput("("); editor.handleInput("v");
+    for (const key of ["i", "(", "d"]) editor.handleInput(key);
+    assert.equal(editor.getText(), 'one two () "hi"');
+    editor.handleInput("u");
+    editor.handleInput("v"); editor.handleInput("i"); editor.handleInput('"');
+    assert.match(editor.render(30).join("\n"), /VISUAL/);
+    assert.equal(editor.getText(), 'one two (é 👩‍💻) "hi"');
+    editor.handleInput("d"); assert.equal(editor.getText(), 'one two (é ) "hi"');
+  } finally { editor.dispose(); }
+});
+
+test("visual word, WORD and quoted objects replace only the selected text and allow shortcut handoff", () => {
+  const { pi, handlers } = fakePi(); gentleShell(pi, {});
+  const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+  try {
+    editor.setVimPolicy("on"); editor.setText('alpha beta "é👩‍💻"'); editor.handleInput("\x1b");
+    editor.handleInput("g"); editor.handleInput("g"); editor.handleInput("v");
+    for (const key of ["i", "w", "y"]) editor.handleInput(key);
+    editor.handleInput("v"); editor.handleInput("a"); editor.handleInput("w"); editor.handleInput("d");
+    assert.equal(editor.getText(), 'beta "é👩‍💻"');
+    editor.handleInput("u");
+    editor.handleInput("f"); editor.handleInput('"'); editor.handleInput("v"); editor.handleInput("a"); editor.handleInput('"');
+    editor.handleInput("c");
+    assert.equal(editor.getText(), 'alpha beta ');
+    assert.match(editor.render(30).join("\n"), /INSERT/);
+    editor.handleInput("\x1b"); editor.handleInput("v");
+    editor.onExtensionShortcut = (data) => {
+      if (data !== "ctrl+k") return false;
+      assert.match(editor.render(30).join("\n"), /INSERT/);
+      return true;
+    };
+    editor.handleInput("i"); editor.handleInput("ctrl+k");
+    assert.match(editor.render(30).join("\n"), /INSERT/);
+  } finally { editor.dispose(); }
+});
+
+test("visual object selection refuses registered paste markers without moving or changing text", () => {
+  const { pi, handlers } = fakePi(); gentleShell(pi, {});
+  const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+  try {
+    editor.setVimPolicy("on"); editor.setText("(abc)"); editor.handleInput("\x1b");
+    editor.handleInput("g"); editor.handleInput("g"); editor.handleInput("l"); editor.handleInput("i"); editor.handleInput(`\x1b[200~${"z".repeat(1001)}\x1b[201~`);
+    const original = editor.getExpandedText();
+    editor.handleInput("\x1b"); editor.handleInput("v");
+    const cursor = editor.getCursor();
+    editor.handleInput("i"); editor.handleInput("(");
+    assert.equal(editor.getExpandedText(), original);
+    assert.deepEqual(editor.getCursor(), cursor);
+    assert.match(editor.render(30).join("\n"), /VISUAL/);
+  } finally { editor.dispose(); }
+});
+
+test("visual entry at EOF selects the last grapheme and empty document cannot clobber the register", () => {
+  const { pi, handlers } = fakePi(); gentleShell(pi, {});
+  const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+  try {
+    editor.setVimPolicy("on"); editor.setText("abc"); editor.handleInput("\x1b");
+    editor.handleInput("v");
+    assert.deepEqual(editor.getCursor(), { line: 0, col: 2 });
+    editor.handleInput("d"); assert.equal(editor.getText(), "ab");
+    editor.handleInput("u"); assert.equal(editor.getText(), "abc");
+    editor.setText(""); editor.handleInput("v"); editor.handleInput("d");
+    assert.equal(editor.getText(), "");
+    editor.handleInput("p"); assert.equal(editor.getText(), "c");
+  } finally { editor.dispose(); }
+});
+
+test("visual entry and yank clear a pending delete before a normal motion", () => {
+  const { pi, handlers } = fakePi(); gentleShell(pi, {});
+  const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+  try {
+    editor.setVimPolicy("on"); editor.setText("abc def"); editor.handleInput("\x1b");
+    editor.handleInput("h");
+    assert.deepEqual(editor.getCursor(), { line: 0, col: 6 });
+    for (const key of ["d", "v", "y", "0"]) editor.handleInput(key);
+    assert.equal(editor.getText(), "abc def");
+    assert.deepEqual(editor.getCursor(), { line: 0, col: 0 });
+    editor.handleInput("P");
+    assert.equal(editor.getText(), "fabc def", "visual yank remains available after clearing the pending operator");
+  } finally { editor.dispose(); }
+});
+
+test("empty visual-line delete leaves the previous register available", () => {
+  const { pi, handlers } = fakePi(); gentleShell(pi, {});
+  const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+  try {
+    editor.setVimPolicy("on"); editor.setText("saved"); editor.handleInput("\x1b");
+    editor.handleInput("v"); editor.handleInput("y");
+    editor.setText("");
+    editor.handleInput("V"); editor.handleInput("d");
+    assert.equal(editor.getText(), "");
+    editor.handleInput("p");
+    assert.equal(editor.getText(), "d", "the no-op delete must not replace the saved character with a newline");
+  } finally { editor.dispose(); }
+});
+
+test("visual p replaces a Unicode selection atomically and yanks overwritten text", () => {
+  const { pi, handlers } = fakePi(); gentleShell(pi, {});
+  const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+  try {
+    editor.setVimPolicy("on"); editor.setText("👩‍💻é z"); editor.handleInput("\x1b");
+    editor.handleInput("0"); editor.handleInput("v"); editor.handleInput("y");
+    editor.handleInput("l"); editor.handleInput("v"); editor.handleInput("p");
+    assert.equal(editor.getText(), "👩‍💻👩‍💻 z");
+    assert.deepEqual(editor.getCursor(), { line: 0, col: 5 });
+    assert.match(editor.render(30).join("\n"), /NORMAL/);
+    editor.handleInput("u"); assert.equal(editor.getText(), "👩‍💻é z");
+    editor.handleInput("P"); assert.equal(editor.getText(), "👩‍💻éé z", "overwritten selection becomes the register");
+  } finally { editor.dispose(); }
+});
+
+test("visual line p swaps whole lines, one undo restores the selection, and paste marker rejection retains mode", () => {
+  const { pi, handlers } = fakePi(); gentleShell(pi, {});
+  const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+  try {
+    editor.setVimPolicy("on"); editor.setText("alpha\nbeta\ngamma"); editor.handleInput("\x1b");
+    editor.handleInput("V"); editor.handleInput("y");
+    editor.handleInput("k"); editor.handleInput("V"); editor.handleInput("p");
+    assert.equal(editor.getText(), "alpha\ngamma\ngamma");
+    assert.deepEqual(editor.getCursor(), { line: 1, col: 0 });
+    editor.handleInput("u"); assert.equal(editor.getText(), "alpha\nbeta\ngamma");
+    editor.setText(""); editor.handleInput("i");
+    editor.handleInput(`\x1b[200~${"z".repeat(1001)}\x1b[201~`);
+    const original = editor.getExpandedText();
+    editor.handleInput("\x1b"); editor.handleInput("0"); editor.handleInput("v"); editor.handleInput("p");
+    assert.equal(editor.getExpandedText(), original);
+    assert.match(editor.render(30).join("\n"), /VISUAL/);
+  } finally { editor.dispose(); }
+});
+
+test("full-line characterwise VISUAL c/p on ordinary text retain frame and autocomplete", () => {
+  for (const command of ["c", "p"] as const) {
+    const { pi, handlers } = fakePi(); gentleShell(pi, {});
+    const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+    try {
+      editor.setVimPolicy("on"); editor.setText("asdf asdf asd f"); editor.handleInput("\x1b");
+      editor.handleInput("0"); editor.handleInput("v"); editor.handleInput("$");
+      const before = editor.render(30);
+      assert.match(before.join("\n"), /VISUAL(?! LINE)/);
+      assert.deepEqual(reverseColumns(before[1]!).filter((col) => col >= 1 && col <= 15).length, 15);
+      assert.ok(before.every((row) => visibleWidth(row) === 30));
+      const internal = editor as unknown as { autocompleteState: string; autocompleteList: { render(width: number): string[] } };
+      if (command === "p") {
+        editor.handleInput("y"); editor.handleInput("0"); editor.handleInput("v"); editor.handleInput("$");
+      }
+      internal.autocompleteState = "force";
+      internal.autocompleteList = { render: () => ["completion"] };
+      editor.handleInput(command);
+      assert.equal(ui.notices.length, 0);
+      assert.equal(editor.getText(), command === "c" ? "" : "asdf asdf asd f");
+      assert.match(editor.render(30).join("\n"), command === "c" ? /INSERT/ : /NORMAL/);
+      assert.equal(editor.isShowingAutocomplete(), false);
+      assert.ok(editor.render(30).every((row) => visibleWidth(row) === 30));
+    } finally { editor.dispose(); }
+  }
+});
+
+test("typed INSERT draft can enter VISUAL c after Escape across repeated mode cycles", () => {
+  const { pi, handlers } = fakePi(); gentleShell(pi, {});
+  const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+  try {
+    editor.setVimPolicy("on");
+    // Pi installs a global shortcut probe even when no extension owns the key.
+    editor.onExtensionShortcut = () => false;
+    for (const key of "asdf asdf") editor.handleInput(key);
+    editor.handleInput("\x1b");
+    assert.match(editor.render(30).join("\n"), /NORMAL/);
+    editor.handleInput("0"); editor.handleInput("v"); editor.handleInput("l"); editor.handleInput("c");
+    assert.deepEqual(ui.notices, []);
+    assert.equal(editor.getText(), "df asdf");
+    assert.match(editor.render(30).join("\n"), /INSERT/);
+    editor.handleInput("X"); editor.handleInput("\x1b");
+    assert.match(editor.render(30).join("\n"), /NORMAL/);
+    editor.handleInput("p");
+    assert.equal(editor.getText(), "Xdasf asdf");
+    editor.handleInput("u");
+    assert.equal(editor.getText(), "Xdf asdf");
+    editor.handleInput("u");
+    assert.equal(editor.getText(), "asdf asdf");
+    editor.handleInput("i"); editor.handleInput("!"); editor.handleInput("\x1b");
+    editor.handleInput("0"); editor.handleInput("v"); editor.handleInput("l"); editor.handleInput("c");
+    assert.deepEqual(ui.notices, []);
+    assert.equal(editor.getText(), "sdf asdf");
+    assert.match(editor.render(30).join("\n"), /INSERT/);
+  } finally { editor.dispose(); }
+});
+
+test("VISUAL c/p report unsafe registered paste selections without changing draft or register", () => {
+  const { pi, handlers } = fakePi(); gentleShell(pi, {});
+  const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+  try {
+    editor.setVimPolicy("on"); editor.setText("saved"); editor.handleInput("\x1b");
+    editor.handleInput("0"); editor.handleInput("v"); editor.handleInput("y");
+    editor.setText(""); editor.handleInput("i");
+    editor.handleInput(`\x1b[200~${"z".repeat(1001)}\x1b[201~`);
+    const draft = editor.getExpandedText();
+    editor.handleInput("\x1b"); editor.handleInput("0"); editor.handleInput("v");
+    for (const command of ["c", "p"]) {
+      const count = ui.notices.length;
+      editor.handleInput(command);
+      assert.equal(editor.getExpandedText(), draft);
+      assert.match(editor.render(30).join("\n"), /VISUAL/);
+      assert.equal(ui.notices.length, count + 1);
+      assert.match(ui.notices.at(-1)!, /selection.*paste marker.*\[readRange:paste-marker\]/i);
+      assert.ok(!ui.notices.at(-1)!.includes("z".repeat(20)));
+    }
+    editor.handleInput("\x1b"); editor.setText("xx"); editor.handleInput("0"); editor.handleInput("v"); editor.handleInput("p");
+    assert.equal(editor.getText(), "sx", "unsafe c/p must not overwrite the Vim register");
+  } finally { editor.dispose(); }
+});
+
+test("VISUAL replace failure reports a bounded stage without leaking raw host errors", () => {
+  const { pi, handlers } = fakePi(); gentleShell(pi, {});
+  const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+  try {
+    editor.setVimPolicy("on"); editor.setText("asdf asdf asd f"); editor.handleInput("\x1b");
+    editor.handleInput("0"); editor.handleInput("v"); editor.handleInput("$");
+    const internal = editor as unknown as { pushUndoSnapshot(): void };
+    const originalSnapshot = internal.pushUndoSnapshot;
+    internal.pushUndoSnapshot = () => { throw new Error("private /secret/draft asdf asdf asd f"); };
+    editor.handleInput("c");
+    assert.equal(editor.getText(), "asdf asdf asd f");
+    assert.match(editor.render(30).join("\n"), /VISUAL/);
+    assert.equal(ui.notices.at(-1), "Vim selection cannot be edited safely; try a different selection. [replace:unexpected]");
+    assert.ok(!ui.notices.at(-1)!.includes("/secret/"));
+    internal.pushUndoSnapshot = originalSnapshot;
+    editor.handleInput("c");
+    assert.equal(ui.notices.length, 1, "failed replacement must close its insert session before retry");
+    assert.equal(editor.getText(), "");
+    assert.match(editor.render(30).join("\n"), /INSERT/);
+  } finally { editor.dispose(); }
+});
+
+test("visual case, replace, join and shift operators act on selected text without escaping ownership", () => {
+  const { pi, handlers } = fakePi(); gentleShell(pi, {});
+  const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+  try {
+    editor.setVimPolicy("on"); editor.setText("aB\ncD"); editor.handleInput("\x1b");
+    editor.handleInput("g"); editor.handleInput("g"); editor.handleInput("v"); editor.handleInput("l"); editor.handleInput("U");
+    assert.equal(editor.getText(), "AB\ncD");
+    editor.handleInput("u"); assert.equal(editor.getText(), "aB\ncD");
+    editor.onExtensionShortcut = () => false;
+    editor.handleInput("g"); editor.handleInput("g"); editor.handleInput("v"); editor.handleInput("r"); editor.handleInput("👩‍💻");
+    assert.equal(editor.getText(), "👩‍💻B\ncD");
+    editor.handleInput("u"); assert.equal(editor.getText(), "aB\ncD");
+    editor.handleInput("G"); editor.handleInput("V"); editor.handleInput("k"); editor.handleInput("J");
+    assert.equal(editor.getText(), "aB cD");
+    editor.handleInput("u"); assert.equal(editor.getText(), "aB\ncD");
+    editor.handleInput("G"); editor.handleInput("V"); editor.handleInput("k"); editor.handleInput("<");
+    assert.equal(editor.getText(), "aB\ncD");
+    editor.handleInput("G"); editor.handleInput("v"); editor.handleInput("l"); editor.handleInput("u");
+    assert.equal(editor.getText(), "aB\ncd");
+    editor.handleInput("u"); assert.equal(editor.getText(), "aB\ncD");
+    editor.handleInput("G"); editor.handleInput("V"); editor.handleInput("x"); assert.equal(editor.getText(), "aB");
+  } finally { editor.dispose(); }
+});
+
+test("GentlePromptEditor visual selection uses adapter inside the fixed-width frame", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	editor.setVimPolicy("on");
+	editor.setText("abcd");
+	editor.handleInput("\x1b");
+	editor.handleInput("h");
+	editor.handleInput("h");
+	editor.handleInput("v");
+	editor.handleInput("l");
+	const lines = editor.render(30);
+	assert.ok(lines.some((line) => /\x1b\[7mc/.test(line)), "selection must cover c, not merely the software cursor");
+	assert.ok(lines.every((line) => [...stripAnsi(line)].length === 30), "frame retains requested width");
+	editor.dispose();
+});
+
+test("GentlePromptEditor preserves autocomplete below the bottom border during visual selection", () => {
+ const { pi, handlers } = fakePi();
+ gentleShell(pi, {});
+ const { ctx, ui } = fakeContext();
+ const editor = installedPrompt(ctx, ui, handlers);
+ editor.setVimPolicy("on");
+ editor.setText("abcd");
+ editor.handleInput("\x1b");
+ editor.handleInput("h");
+ editor.handleInput("h");
+ editor.handleInput("v");
+ editor.handleInput("l");
+ const internal = editor as unknown as { autocompleteState: string; autocompleteList: { render(width: number): string[] } };
+ internal.autocompleteState = "force";
+ internal.autocompleteList = { render: () => ["completion one", "completion two"] };
+ try {
+  const rows = editor.render(30).map(stripAnsi);
+  assert.ok(rows.some((row) => row.includes("completion one")));
+  assert.ok(rows.some((row) => row.includes("completion two")));
+  assert.match(rows[rows.length - 3]!, /^╰.*╯$/);
+  assert.ok(rows.every((row) => [...row].length === 30));
+  assert.ok(editor.render(30).some((row) => /\x1b\[7mc/.test(row)));
+ } finally { editor.dispose(); }
+});
+
+for (const kind of ["char", "line"] as const) {
+	for (const autocomplete of [false, true]) {
+		test(`VISUAL ${kind} c edits the selection with autocomplete ${autocomplete ? "visible" : "hidden"}`, () => {
+			const { pi, handlers } = fakePi(); gentleShell(pi, {});
+			const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+			try {
+				editor.setVimPolicy("on"); editor.setText(kind === "char" ? "abcd" : "one\ntwo\nthree");
+				editor.handleInput("\x1b");
+				if (kind === "char") { editor.handleInput("h"); editor.handleInput("h"); editor.handleInput("v"); editor.handleInput("l"); }
+				else { editor.handleInput("g"); editor.handleInput("g"); editor.handleInput("V"); editor.handleInput("j"); }
+				const internal = editor as unknown as { autocompleteState: string; autocompleteList: { render(width: number): string[] } };
+				if (autocomplete) { internal.autocompleteState = "force"; internal.autocompleteList = { render: () => ["completion"] }; }
+				editor.handleInput("c");
+				assert.equal(editor.getText(), kind === "char" ? "ab" : "\nthree", "c must not be inserted or discard the unselected draft");
+				assert.match(editor.render(30).join("\n"), /INSERT/);
+				assert.equal(editor.isShowingAutocomplete(), false);
+			} finally { editor.dispose(); }
+		});
+		test(`VISUAL ${kind} p replaces from register with autocomplete ${autocomplete ? "visible" : "hidden"}`, () => {
+			const { pi, handlers } = fakePi(); gentleShell(pi, {});
+			const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+			try {
+				editor.setVimPolicy("on"); editor.setText(kind === "char" ? "abc def" : "one\ntwo\nthree");
+				editor.handleInput("\x1b"); editor.handleInput("g"); editor.handleInput("g");
+				if (kind === "char") {
+					editor.handleInput("v"); editor.handleInput("l"); editor.handleInput("y");
+					editor.handleInput("w"); editor.handleInput("v"); editor.handleInput("l");
+				} else {
+					editor.handleInput("V"); editor.handleInput("y");
+					editor.handleInput("j"); editor.handleInput("V");
+				}
+				const internal = editor as unknown as { autocompleteState: string; autocompleteList: { render(width: number): string[] } };
+				if (autocomplete) { internal.autocompleteState = "force"; internal.autocompleteList = { render: () => ["completion"] }; }
+				editor.handleInput("p");
+				assert.equal(editor.getText(), kind === "char" ? "abc abf" : "one\none\nthree", "p must not insert its key or discard surrounding draft");
+				assert.match(editor.render(30).join("\n"), /NORMAL/);
+				assert.equal(editor.isShowingAutocomplete(), false);
+			} finally { editor.dispose(); }
+		});
+	}
+}
+
+test("VISUAL owns h/l and counts despite visible autocomplete; no bytes enter the draft", () => {
+	for (const kind of ["v", "V"] as const) {
+		const { pi, handlers } = fakePi(); gentleShell(pi, {});
+		const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+		try {
+			editor.setVimPolicy("on"); editor.setText(kind === "v" ? "abcdef" : "one\ntwo\nthree\nfour");
+			editor.handleInput("\x1b"); editor.handleInput("g"); editor.handleInput("g");
+			editor.handleInput(kind);
+			const internal = editor as unknown as { autocompleteState: string; autocompleteList: { render(width: number): string[] } };
+			internal.autocompleteState = "force";
+			internal.autocompleteList = { render: () => ["completion"] };
+			const draft = editor.getText();
+			editor.handleInput("2"); editor.handleInput(kind === "v" ? "l" : "j");
+			assert.equal(editor.getText(), draft);
+			assert.deepEqual(editor.getCursor(), kind === "v" ? { line: 0, col: 2 } : { line: 2, col: 0 });
+			assert.match(editor.render(30).join("\n"), /VISUAL/);
+			assert.equal(editor.isShowingAutocomplete(), false);
+			editor.handleInput(kind === "v" ? "h" : "k");
+			assert.deepEqual(editor.getCursor(), kind === "v" ? { line: 0, col: 1 } : { line: 1, col: 0 });
+			assert.equal(editor.getText(), draft);
+		} finally { editor.dispose(); }
+	}
+});
+
+test("VISUAL Escape dismisses visible autocomplete and selection without clearing the draft", () => {
+	const { pi, handlers } = fakePi(); gentleShell(pi, {});
+	const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+	try {
+		editor.setVimPolicy("on"); editor.setText("abcd"); editor.handleInput("\x1b"); editor.handleInput("h"); editor.handleInput("v");
+		const internal = editor as unknown as { autocompleteState: string; autocompleteList: { render(width: number): string[] } };
+		internal.autocompleteState = "force";
+		internal.autocompleteList = { render: () => ["completion"] };
+		editor.handleInput("\x1b");
+		assert.equal(editor.getText(), "abcd");
+		assert.match(editor.render(30).join("\n"), /NORMAL/);
+		assert.equal(editor.isShowingAutocomplete(), false);
+	} finally { editor.dispose(); }
+});
+
+test("GentlePromptEditor keeps visual selection when autocomplete offers printable input", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	try {
+		editor.setVimPolicy("on");
+		editor.setText("abcd");
+		editor.handleInput("\x1b");
+		editor.handleInput("h");
+		editor.handleInput("h");
+		editor.handleInput("v");
+		editor.handleInput("l");
+		const internal = editor as unknown as { autocompleteState: string; autocompleteList: { render(width: number): string[] } };
+		internal.autocompleteState = "force";
+		internal.autocompleteList = { render: () => ["completion"] };
+		assert.deepEqual(reverseColumns(editor.render(30)[1]!), [3, 4]);
+		editor.handleInput("z");
+		assert.equal(editor.getText(), "abcd");
+		assert.match(editor.render(30).join("\n"), /VISUAL/);
+		assert.equal(editor.isShowingAutocomplete(), false);
+		assert.deepEqual(reverseColumns(editor.render(30)[1]!), [3, 4], "the selected range remains anchored");
+	} finally { editor.dispose(); }
+});
+
+test("VISUAL autocomplete leaves app shortcut ownership ahead of c and p", () => {
+	const { pi, handlers } = fakePi(); gentleShell(pi, {});
+	const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+	try {
+		editor.setVimPolicy("on"); editor.setText("abcd"); editor.handleInput("\x1b");
+		editor.handleInput("h"); editor.handleInput("v");
+		const internal = editor as unknown as { autocompleteState: string; autocompleteList: { render(width: number): string[] } };
+		internal.autocompleteState = "force"; internal.autocompleteList = { render: () => ["completion"] };
+		let called = 0;
+		editor.onExtensionShortcut = (data) => {
+			if (data !== "c") return false;
+			called++;
+			assert.match(editor.render(30).join("\n"), /INSERT/);
+			return true;
+		};
+		editor.handleInput("c");
+		assert.equal(called, 1);
+		assert.equal(editor.getText(), "abcd");
+		assert.match(editor.render(30).join("\n"), /INSERT/);
+	} finally { editor.dispose(); }
+});
+
+test("GentlePromptEditor enters INSERT before an app shortcut writes from NORMAL", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	try {
+		editor.setVimPolicy("on");
+		editor.setText("abcd");
+		editor.handleInput("\x1b");
+		editor.handleInput("h");
+		editor.handleInput("h");
+		editor.handleInput("v");
+		editor.handleInput("l");
+		editor.onExtensionShortcut = (data) => {
+			if (data !== "ctrl+k") return false;
+			assert.match(editor.render(30).join("\n"), /INSERT/, "the shortcut must not write in NORMAL");
+			editor.insertTextAtCursor("X");
+			return true;
+		};
+		editor.handleInput("ctrl+k");
+		assert.equal(editor.getText(), "abcXd");
+		assert.deepEqual(reverseColumns(editor.render(30)[1]!), [5], "the old visual range must be gone");
+	} finally { editor.dispose(); }
+});
+
+test("throwing shortcut probes restore NORMAL or VISUAL and permit a subsequent insert session", () => {
+	for (const visual of [false, true]) {
+		const { pi, handlers } = fakePi(); gentleShell(pi, {});
+		const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+		try {
+			editor.setVimPolicy("on"); editor.setText("abcd"); editor.handleInput("\x1b");
+			editor.handleInput("h"); editor.handleInput("h");
+			if (visual) { editor.handleInput("v"); editor.handleInput("l"); }
+			const failure = new Error("shortcut failed");
+			editor.onExtensionShortcut = () => { throw failure; };
+			assert.throws(() => editor.handleInput("ctrl+k"), (error) => error === failure);
+			assert.equal(editor.getText(), "abcd");
+			assert.match(editor.render(30).join("\n"), visual ? /VISUAL/ : /NORMAL/);
+			if (visual) assert.deepEqual(reverseColumns(editor.render(30)[1]!), [3, 4]);
+			editor.onExtensionShortcut = () => false;
+			editor.handleInput("ctrl+k");
+			assert.match(editor.render(30).join("\n"), visual ? /VISUAL/ : /NORMAL/);
+			if (visual) assert.deepEqual(reverseColumns(editor.render(30)[1]!), [3, 4]);
+			if (visual) editor.handleInput("\x1b");
+			editor.handleInput("i"); editor.handleInput("X"); editor.handleInput("\x1b");
+			assert.match(editor.getText(), /X/);
+		} finally { editor.dispose(); }
+	}
+});
+
+test("throwing shortcuts that change a draft retain INSERT ownership from NORMAL or VISUAL", () => {
+	for (const visual of [false, true]) {
+		const { pi, handlers } = fakePi(); gentleShell(pi, {});
+		const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+		try {
+			editor.setVimPolicy("on"); editor.setText("abcd"); editor.handleInput("\x1b");
+			editor.handleInput("h"); editor.handleInput("h");
+			if (visual) { editor.handleInput("v"); editor.handleInput("l"); }
+			const failure = new Error("shortcut failed after writing");
+			editor.onExtensionShortcut = () => { editor.insertTextAtCursor("X"); throw failure; };
+			assert.throws(() => editor.handleInput("ctrl+k"), (error) => error === failure);
+			assert.equal(editor.getText(), visual ? "abcXd" : "abXcd");
+			assert.match(editor.render(30).join("\n"), /INSERT/);
+			assert.equal(reverseColumns(editor.render(30)[1]!).length, 1, "old visual range must be gone");
+			editor.onExtensionShortcut = () => false;
+			editor.handleInput("Y");
+			assert.match(editor.getText(), /Y/);
+		} finally { editor.dispose(); }
+	}
+});
+
+test("unhandled shortcut and blocked printable input leave NORMAL selection unchanged", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	try {
+		editor.setVimPolicy("on");
+		editor.setText("abcd");
+		editor.handleInput("\x1b");
+		editor.handleInput("h");
+		editor.handleInput("h");
+		editor.handleInput("v");
+		editor.handleInput("l");
+		editor.onExtensionShortcut = () => false;
+		editor.handleInput("z");
+		editor.handleInput("ctrl+k");
+		assert.equal(editor.getText(), "abcd");
+		assert.match(editor.render(30).join("\n"), /VISUAL/);
+		assert.deepEqual(reverseColumns(editor.render(30)[1]!), [3, 4]);
+	} finally { editor.dispose(); }
+});
+
+function reverseColumns(row: string): number[] {
+	let inverse = false;
+	let column = 0;
+	const selected: number[] = [];
+	const tokens = row.match(/\x1b\[[0-9;]*m|\x1b_pi:c\x07|[^\x1b]/g) ?? [];
+	assert.equal(tokens.join(""), row);
+	for (const token of tokens) {
+		if (token === CURSOR_MARKER) continue;
+		if (token.startsWith("\x1b[")) {
+			for (const code of token.slice(2, -1).split(";").map(Number)) {
+				if (code === 0 || code === 27) inverse = false;
+				if (code === 7) inverse = true;
+			}
+		} else {
+			if (inverse) selected.push(column);
+			column++;
+		}
+	}
+	return selected;
+}
+
+test("focused framed selection preserves hardware cursor position and software cursor cell", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	try {
+		editor.setVimPolicy("on");
+		editor.setText("abcd");
+		editor.focused = true;
+		editor.handleInput("\x1b");
+		editor.handleInput("h");
+		editor.handleInput("h");
+		editor.handleInput("v");
+		editor.handleInput("l");
+		const original = editor.render(30);
+		const row = original[1]!;
+		assert.ok(row.includes(CURSOR_MARKER));
+		assert.equal(visibleWidth(row.split(CURSOR_MARKER)[0]!), 4,
+			"frame border adds one column to the native cursor over d");
+		assert.deepEqual(reverseColumns(row), [3, 4], "c is selected; d is Pi's software cursor");
+		assert.ok(original.every((line) => visibleWidth(line) === 30));
+	} finally { editor.dispose(); }
+});
+
+test("autocomplete below a focused visual selection retains both cursor and framed row geometry", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	try {
+		editor.setVimPolicy("on");
+		editor.setText("abcd");
+		editor.handleInput("\x1b");
+		editor.handleInput("h");
+		editor.handleInput("h");
+		editor.handleInput("v");
+		editor.handleInput("l");
+		editor.focused = true;
+		const internal = editor as unknown as { autocompleteState: string; autocompleteList: { render(width: number): string[] } };
+		internal.autocompleteState = "force";
+		internal.autocompleteList = { render: () => ["completion one", "completion two"] };
+		const rows = editor.render(30);
+		assert.deepEqual(reverseColumns(rows[1]!), [3, 4]);
+		assert.equal(visibleWidth(rows[1]!.split(CURSOR_MARKER)[0]!), 4);
+		assert.match(stripAnsi(rows[2]!), /^╰.*╯$/);
+		assert.deepEqual(rows.slice(3).map((row) => stripAnsi(row).slice(1, 15)), ["completion one", "completion two"]);
+		assert.ok(rows.every((row) => visibleWidth(row) === 30));
+	} finally { editor.dispose(); }
+});
+
+test("focused framed empty logical line keeps hardware cursor at column zero inside the border", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	try {
+		editor.setVimPolicy("on");
+		editor.setText("a\n\nb");
+		editor.focused = true;
+		const adapter = createVimEditorAdapter(editor, "0.85.1");
+		adapter.move({ line: 0, col: 0 });
+		editor.handleInput("\x1b");
+		editor.handleInput("v");
+		adapter.move({ line: 1, col: 0 });
+		const rows = editor.render(30);
+		assert.deepEqual(reverseColumns(rows[1]!), [1]);
+		assert.equal(visibleWidth(rows[2]!.split(CURSOR_MARKER)[0]!), 1);
+		assert.deepEqual(reverseColumns(rows[2]!), [1], "only native empty-line cursor is inverted");
+		assert.ok(rows.every((row) => visibleWidth(row) === 30));
+	} finally { editor.dispose(); }
+});
+
+test("framed scrolled paste marker paints exactly its split visible cells", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	try {
+		editor.setVimPolicy("on");
+		editor.setText("a".repeat(100));
+		editor.handleInput(`\x1b[200~${"z".repeat(1001)}\x1b[201~`);
+		const pasteEnd = editor.getText().length;
+		editor.insertTextAtCursor("TAIL");
+		const adapter = createVimEditorAdapter(editor, "0.85.1");
+		adapter.move({ line: 0, col: 100 });
+		editor.handleInput("\x1b");
+		editor.handleInput("v");
+		adapter.move({ line: 0, col: pasteEnd });
+		editor.focused = true;
+		const rows = editor.render(10);
+		const internal = editor as unknown as { scrollOffset: number; layoutText(width: number): Array<{ text: string; hasCursor: boolean; cursorPos?: number }> };
+		const layout = internal.layoutText(7);
+		let offset = layout.slice(0, internal.scrollOffset).reduce((n, chunk) => n + chunk.text.length, 0);
+		assert.ok(internal.scrollOffset > 0);
+		const selected = rows.slice(1, -1).map((row, index) => {
+			const chunk = layout[internal.scrollOffset + index]!;
+			const expected = [...chunk.text].flatMap((_, col) => offset + col >= 100 && offset + col < pasteEnd ? [col + 1] : []);
+			if (chunk.hasCursor && chunk.cursorPos !== undefined) expected.push(chunk.cursorPos + 1);
+			offset += chunk.text.length;
+			assert.deepEqual(reverseColumns(row), expected);
+			assert.equal(visibleWidth(row), 10);
+			return row;
+		});
+		assert.ok(selected.some((row) => row.includes("[")));
+		assert.ok(selected.some((row) => row.includes("]")));
+		assert.ok(rows.every((row) => visibleWidth(row) === 10));
+		assert.equal(editor.getExpandedText(), "a".repeat(100) + "z".repeat(1001) + "TAIL");
+	} finally { editor.dispose(); }
+});
+
+test("owned frame fails closed when the installed TUI version does not match the adapter", () => {
+	const notices: string[] = [];
+	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, {
+		fg: (_color, text) => text, bold: (text) => text, requestRender() {},
+		pending: () => false, now: () => 0, doubleEscCancelEnabled: () => false,
+		dispatchQueuedText() {}, tuiVersion: () => "0.87.1", notifyCompatibility: (message: string) => notices.push(message),
+	});
+	try {
+		editor.setVimPolicy("on");
+		editor.setText("abcd");
+		editor.focused = true;
+		editor.handleInput("\x1b");
+		editor.handleInput("h");
+		editor.handleInput("h");
+		editor.handleInput("v");
+		editor.handleInput("l");
+		assert.equal(notices.length, 1);
+		assert.match(notices[0]!, /vim.*unsupported.*ordinary editing/i);
+		editor.handleInput("z");
+		assert.equal(notices.length, 1);
+		const frame = editor.render(30);
+		assert.deepEqual(reverseColumns(frame[1]!), [10], "only Pi's own software cursor remains inverse");
+		assert.equal(visibleWidth(frame[1]!.split(CURSOR_MARKER)[0]!), 10);
+		assert.ok(frame.every((row) => visibleWidth(row) === 30));
+		assert.equal(editor.getText(), "abcdhhvlz", "unsupported Vim never enters inert NORMAL: ordinary input still works");
+	} finally { editor.dispose(); }
+});
+
+test("duplicate registered paste marker disables Vim visibly and keeps ordinary editing", () => {
+	const notices: string[] = [];
+	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, {
+		fg: (_color, text) => text, bold: (text) => text, requestRender() {},
+		pending: () => false, now: () => 0, doubleEscCancelEnabled: () => false,
+		dispatchQueuedText() {}, notifyCompatibility: (message: string) => notices.push(message),
+	});
+	try {
+		editor.handleInput(`\x1b[200~${"z".repeat(1001)}\x1b[201~`);
+		const markerText = editor.getText();
+		editor.insertTextAtCursor(` ${markerText}`);
+		const before = editor.getExpandedText();
+		editor.setVimPolicy("on");
+		assert.equal(notices.length, 1);
+		assert.match(notices[0]!, /unsupported.*ordinary editing/i);
+		editor.handleInput("x");
+		assert.equal(editor.getExpandedText(), before + "x");
+	} finally { editor.dispose(); }
+});
+
+test("a duplicate marker introduced after Vim enable exits NORMAL with a visible warning", () => {
+	const notices: string[] = [];
+	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, {
+		fg: (_color, text) => text, bold: (text) => text, requestRender() {},
+		pending: () => false, now: () => 0, doubleEscCancelEnabled: () => false,
+		dispatchQueuedText() {}, notifyCompatibility: (message: string) => notices.push(message),
+	});
+	try {
+		editor.handleInput(`\x1b[200~${"z".repeat(1001)}\x1b[201~`);
+		editor.setVimPolicy("on");
+		const markerText = editor.getText();
+		editor.insertTextAtCursor(` ${markerText}`);
+		editor.handleInput("\x1b");
+		assert.equal(notices.length, 1);
+		const before = editor.getExpandedText();
+		editor.handleInput("x");
+		assert.equal(editor.getExpandedText(), before + "x");
+	} finally { editor.dispose(); }
+});
+
+test("GentlePromptEditor autocomplete respects narrow frame widths", () => {
+ const { pi, handlers } = fakePi();
+ gentleShell(pi, {});
+ const { ctx, ui } = fakeContext();
+ const editor = installedPrompt(ctx, ui, handlers);
+ const internal = editor as unknown as { autocompleteState: string; autocompleteList: { render(width: number): string[] } };
+ internal.autocompleteState = "force";
+ internal.autocompleteList = { render: () => ["completion"] };
+ try {
+  for (const width of [0, 1, 2, 30]) {
+   const rows = editor.render(width).map(stripAnsi);
+   assert.ok(rows.every((row) => [...row].length <= width), `width ${width}: ${JSON.stringify(rows)}`);
+   if (width === 30) assert.ok(rows.some((row) => row.includes("completion")));
+  }
+ } finally { editor.dispose(); }
+});
+
 test("registered prompt stays transparent while idle, working, and queued", () => {
 	const { pi, handlers, tools } = fakePi();
 	gentleShell(pi, {});
@@ -477,6 +1418,648 @@ test("gentleShell shows working while the agent runs and queued when messages wa
 	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
 	assert.match(stripAnsi(editor.render(60)[0]), /^╭─ ✿ ─+╮$/);
 	editor.dispose();
+});
+
+test("vim command enables a live prompt and INSERT Escape enters NORMAL without clearing", async (t) => {
+ const configHome = mkdtempSync(join(tmpdir(), "gentle-vim-shell-"));
+ const { pi, handlers, commands } = fakePi();
+ gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome });
+ const { ctx, ui } = fakeContext();
+ const editor = installedPrompt(ctx, ui, handlers);
+ editor.setText("hello");
+ await commands.get("gentle:vim")!.handler("enable", ctx);
+ editor.handleInput("\x1b");
+ assert.equal(editor.getText(), "hello");
+ assert.match(editor.render(60).join("\n"), /NORMAL/);
+ editor.handleInput("i");
+ assert.match(editor.render(60).join("\n"), /INSERT/);
+ editor.dispose();
+});
+
+test("vim command distinguishes persisted preference from rejected live editor and recovers on next start", async () => {
+ const configHome = mkdtempSync(join(tmpdir(), "gentle-vim-rejected-"));
+ const { pi, handlers, commands } = fakePi();
+ gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome }, { vimRuntimeVersion: () => "unsupported" });
+ const { ctx, ui } = fakeContext();
+ const editor = installedPrompt(ctx, ui, handlers);
+ try {
+  editor.setText("draft");
+  await commands.get("gentle:vim")!.handler("enable", ctx);
+  assert.equal(JSON.parse(readFileSync(join(configHome, "vim.json"), "utf8")).policy, "on");
+  assert.match(ui.notices.at(-1)!, /vim: on.*ordinary editing remains active/i);
+  assert.doesNotMatch(ui.notices.at(-1)!, /applies now/i);
+  editor.handleInput("h");
+  assert.equal(editor.getText(), "drafth");
+  // Split bracketed paste must not leak its framing bytes or run modal commands.
+  for (const part of ["\x1b[200~", "z", "\x1b[20", "1~"]) editor.handleInput(part);
+  assert.equal(editor.getExpandedText(), "drafthz");
+  await commands.get("gentle:vim")!.handler("status", ctx);
+  assert.match(ui.notices.at(-1)!, /vim: on.*ordinary editing remains active/i);
+  editor.dispose();
+  const next = installedPrompt(ctx, ui, handlers);
+  try {
+   assert.doesNotMatch(next.render(40).join("\n"), /NORMAL|INSERT/);
+   next.handleInput("h");
+   assert.equal(next.getText(), "h");
+   await commands.get("gentle:vim")!.handler("disable", ctx);
+   assert.match(ui.notices.at(-1)!, /vim: off.*ordinary editing/i);
+  } finally { next.dispose(); }
+ } finally { editor.dispose(); }
+});
+
+test("compatible vim command reports live activation and disable returns ordinary editing", async () => {
+ const { pi, handlers, commands } = fakePi();
+ gentleShell(pi, { GENTLE_PI_CONFIG_HOME: mkdtempSync(join(tmpdir(), "gentle-vim-compatible-")) }, { vimRuntimeVersion: () => "0.85.1" });
+ const { ctx, ui } = fakeContext();
+ const editor = installedPrompt(ctx, ui, handlers);
+ try {
+  await commands.get("gentle:vim")!.handler("enable", ctx);
+  assert.match(ui.notices.at(-1)!, /Prompt applies now/);
+  editor.handleInput("\x1b");
+  assert.match(editor.render(40).join("\n"), /NORMAL/);
+  await commands.get("gentle:vim")!.handler("disable", ctx);
+  assert.doesNotMatch(editor.render(40).join("\n"), /NORMAL|INSERT/);
+  editor.handleInput("h");
+  assert.equal(editor.getText(), "h");
+ } finally { editor.dispose(); }
+});
+
+test("vim NORMAL slash uses Pi's command and skill completion without displacing a draft", async () => {
+	const theme = { ...editorTheme, selectList: {
+		selectedText: (text: string) => text, description: (text: string) => text,
+		noMatch: (text: string) => text, scrollInfo: (text: string) => text,
+	} };
+	const editor = new GentlePromptEditor(fakeTui as never, theme as never, {
+		matches: (data: string, action: string) => action === "app.interrupt" && data === "\x1b",
+	} as never, {
+		fg: (_color, text) => text, bold: (text) => text, requestRender() {}, pending: () => false,
+		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, tuiVersion: () => "0.85.1",
+	});
+	const entries = ["gentle:vim", "gentle:models", "skill:example"];
+	const requests: string[] = [];
+	editor.setAutocompleteProvider({
+		async getSuggestions(lines: string[], line: number, col: number) {
+			const prefix = lines[line]!.slice(0, col);
+			requests.push(prefix);
+			const items = entries.filter((name) => name.startsWith(prefix.slice(1))).map((name) => ({ value: `/${name}`, label: name }));
+			return { prefix, items };
+		},
+		applyCompletion(lines: string[], line: number, col: number, selected: { value: string }) {
+			return { lines: [selected.value + lines[line]!.slice(col)], cursorLine: line, cursorCol: selected.value.length };
+		},
+	} as never);
+	try {
+		editor.setVimPolicy("on");
+		editor.handleInput("\x1b");
+		editor.handleInput("/");
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(editor.getText(), "/");
+		assert.ok(editor.isShowingAutocomplete(), "Pi opens the native slash menu");
+		assert.deepEqual(requests, ["/"]);
+		assert.match(editor.render(40).join("\n"), /INSERT/);
+		for (const char of "skill:") editor.handleInput(char);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(requests.at(-1), "/skill:");
+		assert.ok(editor.isShowingAutocomplete(), "Pi filters skill entries");
+		editor.handleInput("\x1b");
+		assert.equal(editor.getText(), "/skill:");
+		assert.equal(editor.isShowingAutocomplete(), false);
+		assert.match(editor.render(40).join("\n"), /INSERT/);
+		editor.handleInput("\x1b");
+		assert.match(editor.render(40).join("\n"), /NORMAL/);
+		editor.setText("");
+		editor.handleInput("/");
+		for (const char of "gentle:") editor.handleInput(char);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(requests.at(-1), "/gentle:");
+		assert.ok(editor.isShowingAutocomplete(), "Pi filters command entries");
+		editor.handleInput("\x1b");
+		editor.handleInput("\x1b");
+		editor.setText("saved draft");
+		const before = requests.length;
+		editor.handleInput("/");
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(editor.getText(), "saved draft/", "Pi inserts slash at the cursor, without moving the draft");
+		assert.equal(requests.length, before, "Pi does not open the slash menu after draft text");
+		assert.equal(editor.isShowingAutocomplete(), false);
+		assert.match(editor.render(40).join("\n"), /INSERT/);
+		editor.handleInput("\x1b");
+		assert.match(editor.render(40).join("\n"), /NORMAL/);
+		editor.setVimPolicy("off");
+		editor.handleInput("z");
+		assert.equal(editor.getText(), "saved draft/z");
+	} finally { editor.dispose(); }
+});
+
+test("vim NORMAL gives extension and app shortcuts precedence over modal letters without writing in NORMAL", () => {
+	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, {
+		matches: (data: string, action: string) => data === "h" && action === "app.model.select",
+	} as never, {
+		fg: (_color, text) => text, bold: (text) => text, requestRender() {}, pending: () => false,
+		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {},
+	});
+	try {
+		editor.setVimPolicy("on");
+		editor.setText("abcd");
+		editor.handleInput("\x1b");
+		const before = editor.getCursor();
+		let calls = 0;
+		editor.onAction("app.model.select", () => {
+			calls++;
+			assert.match(editor.render(30).join("\n"), /INSERT/);
+		});
+		editor.handleInput("h");
+		assert.equal(calls, 1);
+		assert.deepEqual(editor.getCursor(), before);
+		assert.equal(editor.getText(), "abcd");
+		editor.handleInput("\x1b");
+		editor.onExtensionShortcut = (data) => {
+			if (data !== "i") return false;
+			calls++;
+			assert.match(editor.render(30).join("\n"), /INSERT/);
+			return true;
+		};
+		editor.handleInput("i");
+		assert.equal(calls, 2);
+		assert.equal(editor.getText(), "abcd");
+	} finally { editor.dispose(); }
+});
+
+test("vim NORMAL blocks Kitty and emoji text, handles encoded motions and ignores releases", async () => {
+ const { pi, handlers, commands } = fakePi();
+ gentleShell(pi, { GENTLE_PI_CONFIG_HOME: mkdtempSync(join(tmpdir(), "gentle-vim-keys-")) });
+ const { ctx, ui } = fakeContext();
+ const editor = installedPrompt(ctx, ui, handlers, { matches: (data: string, binding: string) => binding === "app.interrupt" && data === "\x1b" });
+ await commands.get("gentle:vim")!.handler("enable", ctx);
+ editor.setText("ab\n雪🙂");
+ editor.handleInput("\x1b");
+ editor.handleInput("\x1b[120u");
+ editor.handleInput("\x1b[27;1;120~");
+ editor.handleInput("\x1b[200~pasted\x1b[201~");
+ editor.handleInput("🙂");
+ editor.handleInput("\x1b[105;1:3u");
+ assert.equal(editor.getText(), "ab\n雪🙂");
+ assert.match(editor.render(60).join("\n"), /NORMAL/);
+ editor.handleInput("\x1b[104u");
+ editor.handleInput("\x1b[105u");
+ assert.match(editor.render(60).join("\n"), /INSERT/);
+ editor.dispose();
+});
+
+test("vim bracketed paste frames split across editor events never run NORMAL commands", () => {
+	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, {
+		fg: (_color, text) => text, bold: (text) => text, requestRender() {}, pending: () => false,
+		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, tuiVersion: () => "0.85.1",
+	});
+	try {
+		editor.setVimPolicy("on");
+		editor.setText("saved draft");
+		editor.handleInput("\x1b");
+		for (const chunk of ["\x1b[200~", "a", "z", "\x1b[20", "1~"]) {
+			editor.handleInput(chunk);
+			assert.equal(editor.getText(), "saved draft", `partial paste ${JSON.stringify(chunk)}`);
+			assert.match(editor.render(40).join("\n"), /NORMAL/);
+		}
+		editor.handleInput("i");
+		assert.match(editor.render(40).join("\n"), /INSERT/);
+		for (const chunk of ["\x1b[200~", "hello", "\x1b[20", "1~"]) editor.handleInput(chunk);
+		assert.equal(editor.getText(), "saved drafthello");
+		assert.match(editor.render(40).join("\n"), /INSERT/);
+	} finally { editor.dispose(); }
+});
+
+test("vim paste overflow and policy cancellation discard partial frames without leaking modal commands", () => {
+	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, {
+		fg: (_color, text) => text, bold: (text) => text, requestRender() {}, pending: () => false,
+		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, tuiVersion: () => "0.85.1",
+	});
+	try {
+		editor.setVimPolicy("on");
+		editor.handleInput("\x1b[200~");
+		editor.handleInput("z".repeat(1024 * 1024 + 1));
+		editor.handleInput("\x1b[20");
+		editor.handleInput("1~");
+		assert.equal(editor.getText(), "", "oversized paste is discarded in INSERT");
+		editor.handleInput("\x1b[200~");
+		editor.handleInput("a");
+		editor.setVimPolicy("off");
+		editor.setVimPolicy("on");
+		editor.handleInput("\x1b");
+		editor.handleInput("z");
+		assert.equal(editor.getText(), "", "canceled paste and NORMAL input remain isolated");
+		assert.match(editor.render(40).join("\n"), /NORMAL/);
+	} finally { editor.dispose(); }
+});
+
+test("vim NORMAL rejects encoded insertions and paste without losing Unicode multiline draft", async () => {
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: mkdtempSync(join(tmpdir(), "gentle-vim-safety-")) });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	await commands.get("gentle:vim")!.handler("enable", ctx);
+	editor.setText("雪🙂\nhello");
+	editor.handleInput("\x1b");
+	for (const input of ["\x1b[13u", "\x1b[9u", "\x1b[200~", "pasted", "\x1b[201~", "\x1b[27;5;120~", "\x1b[27;1;120~", "\x1b[105;2u", "\x1b[105;1:2u"]) {
+		editor.handleInput(input);
+		assert.equal(editor.getText(), "雪🙂\nhello", `NORMAL input ${JSON.stringify(input)}`);
+	}
+	editor.dispose();
+});
+
+test("vim NORMAL hands autocomplete and bash-mode input to Pi only after entering INSERT", () => {
+	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, {
+		fg: (_color, text) => text, bold: (text) => text, requestRender() {}, pending: () => false,
+		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {},
+	});
+	try {
+		editor.setVimPolicy("on");
+		editor.setText("abcd");
+		editor.handleInput("\x1b");
+		const internal = editor as unknown as { autocompleteState: string; autocompleteList: { render(width: number): string[] } };
+		internal.autocompleteState = "force";
+		internal.autocompleteList = { render: () => ["completion"] };
+		editor.handleInput("z");
+		assert.match(editor.render(30).join("\n"), /INSERT/);
+		assert.equal(editor.getText(), "abcdz");
+		internal.autocompleteState = "none";
+		editor.setText("!echo");
+		editor.handleInput("\x1b");
+		assert.match(editor.render(30).join("\n"), /NORMAL/);
+		editor.handleInput("z");
+		assert.match(editor.render(30).join("\n"), /INSERT/);
+		assert.equal(editor.getText(), "!echoz");
+	} finally { editor.dispose(); }
+});
+
+test("vim bash draft reaches Pi's Escape handler on second Esc", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, {
+		matches: (data: string, binding: string) => binding === "app.interrupt" && data === "\x1b",
+	});
+	try {
+		editor.setVimPolicy("on");
+		editor.setText("!echo");
+		let escapes = 0;
+		editor.onEscape = () => { escapes++; };
+		editor.handleInput("\x1b");
+		assert.equal(escapes, 0, "INSERT Esc only enters NORMAL");
+		assert.equal(editor.getText(), "!echo");
+		assert.match(editor.render(40).join("\n"), /NORMAL/);
+		editor.handleInput("\x1b");
+		assert.equal(escapes, 1, "NORMAL Esc reaches Pi's bash-mode Escape handler");
+		assert.equal(editor.getText(), "!echo");
+	} finally { editor.dispose(); }
+});
+
+test("vim NORMAL motions and insert/open commands use Unicode and multiline cursor positions", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	try {
+		editor.setVimPolicy("on");
+		editor.setText("a👩‍💻z\n  snow");
+		editor.handleInput("\x1b");
+		createVimEditorAdapter(editor, "0.85.1").move({ line: 0, col: 0 });
+		for (const key of ["l", "l", "j", "k", "g", "g", "G", "0", "^", "$"]) editor.handleInput(key);
+		assert.deepEqual(editor.getCursor(), { line: 1, col: 6 });
+		editor.handleInput("O");
+		assert.equal(editor.getText(), "a👩‍💻z\n\n  snow");
+		assert.deepEqual(editor.getCursor(), { line: 1, col: 0 });
+		assert.match(editor.render(40).join("\n"), /INSERT/);
+	} finally { editor.dispose(); }
+});
+
+test("unhandled extension shortcut probes preserve pending NORMAL gg and 2j", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	try {
+		editor.setVimPolicy("on");
+		editor.setText("a\nb\nc");
+		editor.onExtensionShortcut = () => false;
+		editor.handleInput("\x1b");
+		editor.handleInput("g");
+		editor.handleInput("g");
+		assert.deepEqual(editor.getCursor(), { line: 0, col: 0 });
+		editor.handleInput("2");
+		editor.handleInput("j");
+		assert.deepEqual(editor.getCursor(), { line: 2, col: 0 });
+		assert.match(editor.render(30).join("\n"), /NORMAL/);
+	} finally { editor.dispose(); }
+});
+
+test("NORMAL first non-whitespace motion and insert land after a combining grapheme", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	try {
+		editor.setVimPolicy("on");
+		editor.setText(" \u0301a");
+		editor.handleInput("\x1b");
+		createVimEditorAdapter(editor, "0.85.1").move({ line: 0, col: 0 });
+		editor.handleInput("^");
+		assert.deepEqual(editor.getCursor(), { line: 0, col: 2 });
+		createVimEditorAdapter(editor, "0.85.1").move({ line: 0, col: 0 });
+		editor.handleInput("I");
+		assert.deepEqual(editor.getCursor(), { line: 0, col: 2 });
+		assert.match(editor.render(30).join("\n"), /INSERT/);
+	} finally { editor.dispose(); }
+});
+
+test("NORMAL h crosses a collapsed paste marker without entering its interior", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	try {
+		editor.setVimPolicy("on");
+		editor.setText("a");
+		editor.handleInput(`\x1b[200~${"z".repeat(1001)}\x1b[201~`);
+		const before = editor.getText();
+		const expanded = editor.getExpandedText();
+		editor.handleInput("\x1b");
+		editor.handleInput("h");
+		assert.deepEqual(editor.getCursor(), { line: 0, col: 1 });
+		assert.equal(editor.getText(), before);
+		assert.equal(editor.getExpandedText(), expanded);
+		editor.handleInput("l");
+		assert.deepEqual(editor.getCursor(), { line: 0, col: before.length });
+	} finally { editor.dispose(); }
+});
+
+test("vim NORMAL counted find and repeats remain Unicode/paste-safe and do not change the draft", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	try {
+		editor.setVimPolicy("on");
+		editor.setText("a👩‍💻x👩‍💻x\nnext");
+		editor.handleInput("\x1b");
+		createVimEditorAdapter(editor, "0.85.1").move({ line: 0, col: 0 });
+		for (const key of ["2", "f", "👩‍💻"]) editor.handleInput(key);
+		assert.deepEqual(editor.getCursor(), { line: 0, col: 7 });
+		editor.handleInput(",");
+		assert.deepEqual(editor.getCursor(), { line: 0, col: 1 });
+		editor.handleInput(";");
+		assert.deepEqual(editor.getCursor(), { line: 0, col: 7 });
+		editor.handleInput("f");
+		editor.handleInput("z");
+		assert.deepEqual(editor.getCursor(), { line: 0, col: 7 }, "no match never moves onto another line");
+		assert.equal(editor.getText(), "a👩‍💻x👩‍💻x\nnext");
+		assert.match(editor.render(40).join("\n"), /NORMAL/);
+	} finally { editor.dispose(); }
+});
+
+test("vim operator session edits, cancels, and restores the draft with Pi undo", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	try {
+		editor.setVimPolicy("on");
+		editor.setText("👩‍💻 hello\nnext");
+		editor.handleInput("\x1b");
+		createVimEditorAdapter(editor, "0.85.1").move({ line: 0, col: 0 });
+		for (const key of ["d", "w"]) editor.handleInput(key);
+		assert.equal(editor.getText(), "hello\nnext");
+		editor.handleInput("u");
+		assert.equal(editor.getText(), "👩‍💻 hello\nnext");
+		editor.handleInput("d");
+		editor.handleInput("\x1b");
+		editor.handleInput("l");
+		assert.equal(editor.getText(), "👩‍💻 hello\nnext");
+		assert.deepEqual(editor.getCursor(), { line: 0, col: 5 });
+	} finally { editor.dispose(); }
+});
+
+test("vim join and shift are single undo units and Escape cancels pending shift", () => {
+	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, {
+		fg: (_color, text) => text, bold: (text) => text, requestRender() {}, pending: () => false,
+		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {},
+	});
+	try {
+		editor.setVimPolicy("on");
+		editor.setText("👩‍💻 one\n  two\nthird");
+		editor.handleInput("\x1b");
+		createVimEditorAdapter(editor, "0.85.1").move({ line: 0, col: 0 });
+		editor.handleInput(">");
+		editor.handleInput("\x1b");
+		editor.handleInput("J");
+		assert.equal(editor.getText(), "👩‍💻 one two\nthird");
+		editor.handleInput("u");
+		assert.equal(editor.getText(), "👩‍💻 one\n  two\nthird");
+		for (const key of ["2", ">", ">"]) editor.handleInput(key);
+		assert.equal(editor.getText(), "  👩‍💻 one\n    two\nthird");
+		editor.handleInput("u");
+		assert.equal(editor.getText(), "👩‍💻 one\n  two\nthird");
+	} finally { editor.dispose(); }
+});
+
+test("vim operator survives an unhandled extension shortcut probe", () => {
+	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, {
+		fg: (_color, text) => text, bold: (text) => text, requestRender() {}, pending: () => false,
+		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {},
+	});
+	try {
+		editor.setVimPolicy("on");
+		editor.setText("abc def");
+		editor.onExtensionShortcut = () => false;
+		editor.handleInput("\x1b");
+		createVimEditorAdapter(editor, "0.85.1").move({ line: 0, col: 0 });
+		editor.handleInput("d");
+		editor.handleInput("w");
+		assert.equal(editor.getText(), "def");
+		assert.deepEqual(editor.getCursor(), { line: 0, col: 0 });
+	} finally { editor.dispose(); }
+});
+
+test("vim final-line yy/P, cc and empty S keep line boundaries and INSERT state", () => {
+	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, {
+		fg: (_color, text) => text, bold: (text) => text, requestRender() {}, pending: () => false,
+		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {},
+	});
+	try {
+		editor.setVimPolicy("on");
+		editor.setText("one\ntwo");
+		editor.handleInput("\x1b");
+		createVimEditorAdapter(editor, "0.85.1").move({ line: 1, col: 0 });
+		for (const key of ["y", "y", "P"]) editor.handleInput(key);
+		assert.equal(editor.getText(), "one\ntwo\ntwo");
+		assert.deepEqual(editor.getCursor(), { line: 1, col: 0 });
+		editor.handleInput("u");
+		assert.equal(editor.getText(), "one\ntwo");
+		createVimEditorAdapter(editor, "0.85.1").move({ line: 1, col: 0 });
+		for (const key of ["c", "c"]) editor.handleInput(key);
+		assert.equal(editor.getText(), "one\n");
+		assert.deepEqual(editor.getCursor(), { line: 1, col: 0 });
+		assert.match(editor.render(40).join("\n"), /INSERT/);
+		editor.setText("one");
+		editor.handleInput("\x1b");
+		createVimEditorAdapter(editor, "0.85.1").move({ line: 0, col: 0 });
+		for (const key of ["c", "c"]) editor.handleInput(key);
+		assert.equal(editor.getText(), "");
+		assert.deepEqual(editor.getCursor(), { line: 0, col: 0 });
+		assert.match(editor.render(40).join("\n"), /INSERT/);
+		editor.handleInput("\x1b");
+		editor.handleInput("S");
+		assert.equal(editor.getText(), "");
+		assert.match(editor.render(40).join("\n"), /INSERT/);
+	} finally { editor.dispose(); }
+});
+
+test("vim NORMAL Escape cancels pending find without inserting the next character", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	try {
+		editor.setVimPolicy("on");
+		editor.setText("ax");
+		editor.handleInput("\x1b");
+		createVimEditorAdapter(editor, "0.85.1").move({ line: 0, col: 0 });
+		editor.handleInput("f");
+		editor.handleInput("\x1b");
+		editor.handleInput("l");
+		assert.deepEqual(editor.getCursor(), { line: 0, col: 1 }, "Escape consumes the pending find, not the next motion");
+		assert.equal(editor.getText(), "ax");
+	} finally { editor.dispose(); }
+});
+
+test("vim NORMAL k at the first visual line does not recall history", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, {
+		matches: (data: string, binding: string) => binding === "app.interrupt" && data === "\x1b" ||
+			binding === "tui.editor.historyPrevious" && data === "\x1b[A",
+	});
+	try {
+		editor.setVimPolicy("on");
+		editor.addToHistory("previous prompt");
+		editor.setText("draft\nsecond line");
+		editor.handleInput("\x1b");
+		createVimEditorAdapter(editor, "0.85.1").move({ line: 1, col: 0 });
+		editor.handleInput("k");
+		assert.deepEqual(editor.getCursor(), { line: 0, col: 0 });
+		const before = editor.getText();
+		editor.handleInput("k");
+		assert.equal(editor.getText(), before, "top-edge k must not replace the draft with history");
+		assert.deepEqual(editor.getCursor(), { line: 0, col: 0 });
+		assert.match(editor.render(40).join("\n"), /NORMAL/);
+		createVimEditorAdapter(editor, "0.85.1").move({ line: 1, col: 0 });
+		editor.handleInput("j");
+		assert.equal(editor.getText(), before, "bottom-edge j must not browse history");
+		assert.deepEqual(editor.getCursor(), { line: 1, col: 0 });
+		createVimEditorAdapter(editor, "0.85.1").move({ line: 0, col: 0 });
+		editor.handleInput("\x1b[A");
+		assert.equal(editor.getText(), "previous prompt", "explicit Pi history binding still works");
+		assert.match(editor.render(40).join("\n"), /INSERT/);
+	} finally { editor.dispose(); }
+});
+
+test("vim status preserves NORMAL and frame remains width-safe in every state", async () => {
+ const { pi, handlers, commands } = fakePi();
+ gentleShell(pi, { GENTLE_PI_CONFIG_HOME: mkdtempSync(join(tmpdir(), "gentle-vim-frame-")) });
+ const { ctx, ui } = fakeContext();
+ const editor = installedPrompt(ctx, ui, handlers);
+ await commands.get("gentle:vim")!.handler("enable", ctx);
+ editor.handleInput("\x1b");
+ await commands.get("gentle:vim")!.handler("status", ctx);
+ for (const state of ["idle", "working", "queued"]) {
+  editor.setWorking(state !== "idle");
+  if (state === "queued") ctx.hasPendingMessages = () => true;
+  for (const width of [12, 18, 60]) {
+   const rendered = editor.render(width).map(stripAnsi);
+   for (const line of rendered) assert.ok([...line].length <= width, `${state} width ${width}: ${line}`);
+   if (width === 60) assert.match(editor.render(width).join("\n"), /NORMAL/);
+  }
+ }
+ editor.dispose();
+});
+
+test("vim NORMAL Escape retains working cancellation and idle draft clearing", async () => {
+ const { pi, handlers, commands } = fakePi();
+ gentleShell(pi, { GENTLE_PI_CONFIG_HOME: mkdtempSync(join(tmpdir(), "gentle-vim-esc-")) });
+ const { ctx, ui } = fakeContext();
+ const editor = installedPrompt(ctx, ui, handlers, { matches: (data: string, binding: string) => binding === "app.interrupt" && data === "\x1b" });
+ await commands.get("gentle:vim")!.handler("enable", ctx);
+ let aborted = 0;
+ editor.onEscape = () => { aborted++; };
+ editor.setWorking(true);
+ editor.handleInput("\x1b");
+ assert.equal(aborted, 0);
+ editor.handleInput("\x1b");
+ assert.equal(aborted, 1);
+ editor.setWorking(false);
+ editor.setText("draft");
+ editor.handleInput("\x1b");
+ assert.equal(editor.getText(), "draft");
+ editor.handleInput("\x1b");
+ assert.equal(editor.getText(), "");
+ editor.dispose();
+});
+
+test("vim live disable restores ordinary input, re-enable starts INSERT, and invalid persisted preference fails closed", async () => {
+	const home = mkdtempSync(join(tmpdir(), "gentle-vim-toggle-"));
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	try {
+		await commands.get("gentle:vim")!.handler("enable", ctx);
+		editor.setText("draft");
+		editor.handleInput("\x1b");
+		editor.handleInput("z");
+		assert.equal(editor.getText(), "draft");
+		await commands.get("gentle:vim")!.handler("disable", ctx);
+		editor.handleInput("z");
+		assert.equal(editor.getText(), "draftz");
+		await commands.get("gentle:vim")!.handler("enable", ctx);
+		assert.match(editor.render(40).join("\n"), /INSERT/);
+		writeFileSync(join(home, "vim.json"), '{"schema":"gentle-pi.vim/v1","policy":"invalid"}');
+		await commands.get("gentle:vim")!.handler("status", ctx);
+		assert.match(ui.notices.at(-1)!, /vim: off.*falling back to off/);
+		assert.doesNotMatch(editor.render(40).join("\n"), /INSERT|NORMAL/);
+	} finally { editor.dispose(); }
+});
+
+test("vim selector exposes enable, disable and status; status and cancellation do not write", async (t) => {
+ const home = mkdtempSync(join(tmpdir(), "gentle-vim-menu-"));
+ t.after(() => rmSync(home, { recursive: true, force: true }));
+ const { pi, handlers, commands } = fakePi();
+ gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+ let selected: string | undefined = "enable";
+ const choices: string[][] = [];
+ const { ctx, ui } = fakeContext({ select: async (_title, options) => { choices.push(options); return selected; } });
+ const editor = installedPrompt(ctx, ui, handlers);
+ try {
+  const command = commands.get("gentle:vim")!;
+  await command.handler("", { ...ctx, hasUI: false });
+  assert.match(ui.notices.at(-1)!, /vim: off/);
+  assert.equal(existsSync(join(home, "vim.json")), false);
+  await command.handler("", ctx);
+  assert.deepEqual(choices.at(-1), ["enable", "disable", "status"]);
+  assert.equal(JSON.parse(readFileSync(join(home, "vim.json"), "utf8")).policy, "on");
+  editor.handleInput("\x1b");
+  const saved = readFileSync(join(home, "vim.json"), "utf8");
+  selected = "status";
+  await command.handler("", ctx);
+  assert.equal(readFileSync(join(home, "vim.json"), "utf8"), saved);
+  assert.match(editor.render(60).join("\n"), /NORMAL/);
+  selected = undefined;
+  await command.handler("", ctx);
+  assert.equal(readFileSync(join(home, "vim.json"), "utf8"), saved);
+  selected = "disable";
+  await command.handler("", ctx);
+  assert.equal(JSON.parse(readFileSync(join(home, "vim.json"), "utf8")).policy, "off");
+  assert.doesNotMatch(editor.render(60).join("\n"), /INSERT|NORMAL/);
+ } finally { editor.dispose(); }
 });
 
 test("animations command reports without writing and switches the live pulse", async (t) => {
@@ -766,6 +2349,30 @@ test("working cancel: an aborted turn with a queued message sends it once settle
 	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
 	assert.deepEqual(sentMessages.map((m) => m.content), ["follow up"]);
 	editor.dispose();
+});
+
+test("vim INSERT Esc only enters NORMAL; NORMAL Esc hands off queued text after settlement", async (t) => {
+	const { pi, handlers, commands, sentMessages } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: scopedDoubleEscCancelConfigHome(t) });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	try {
+		await commands.get("gentle:vim")!.handler("enable", ctx);
+		editor.setText("draft reply");
+		let aborts = 0;
+		editor.onEscape = () => { aborts++; editor.setText(`follow up\n\n${editor.getText()}`); };
+		await fire(handlers, "agent_start", ctx);
+		editor.handleInput("\x1b");
+		assert.equal(aborts, 0);
+		assert.equal(editor.getText(), "draft reply");
+		assert.match(editor.render(60).join("\n"), /NORMAL/);
+		editor.handleInput("\x1b");
+		assert.equal(aborts, 1);
+		assert.equal(editor.getText(), "draft reply");
+		assert.equal(sentMessages.length, 0);
+		await fire(handlers, "agent_settled", ctx);
+		assert.deepEqual(sentMessages.map((message) => message.content), ["follow up"]);
+	} finally { editor.dispose(); }
 });
 
 test("working cancel: an aborted turn with no queued messages behaves exactly as before, with no redundant setText", (t) => {

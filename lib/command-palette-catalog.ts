@@ -27,6 +27,7 @@ export const COMMAND_PALETTE_CATALOG: readonly CommandPaletteCatalogGroup[] = [
 			{ command: "gentle:background-subagents", label: "Background subagents" },
 			{ command: "gentle:double-esc-cancel", label: "Require double Esc to cancel" },
 			{ command: "gentle:animations", label: "Animation mode" },
+			{ command: "gentle:vim", label: "Vim opt-in · Pi slash commands" },
 			{ command: "gentle:telemetry", label: "Telemetry" },
 			{ command: "gentle:banner", label: "Startup banner" },
 			{ command: "gentle:banner-color", label: "Banner color" },
