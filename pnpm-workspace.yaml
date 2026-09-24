@@ -5,7 +5,7 @@ nodeLinker: hoisted
 # Supply-chain defense — most malicious packages are caught within a few days.
 minimumReleaseAge: 4320
 
-# PR #634: approved Pi 0.87.1 upgrade; frozen installs also verify release age.
+# Approved Pi 0.87.1 upgrade; frozen installs also verify release age.
 # Keep the exception version-specific, including Pi's required aligned packages.
 minimumReleaseAgeExclude:
   - '@earendil-works/pi-coding-agent@0.87.1'

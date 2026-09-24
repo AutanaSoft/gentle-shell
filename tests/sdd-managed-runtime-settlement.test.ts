@@ -23,7 +23,10 @@ test("remediation shell captures numeric exit, preserves stock errors and execut
 			options.onData(Buffer.from("real output")); return { exitCode };
 		} }, shellScope(testCwd, ["pnpm test"]));
 		const run = shell.definition.execute("call", { command: "pnpm test" }, undefined, undefined, undefined);
-		if (exitCode === 7) await assert.rejects(run, /code 7/); else await run;
+		// Stock Pi 0.87.1 treats a null exit code as a signal-killed shell and rejects.
+		if (exitCode === 7) await assert.rejects(run, /code 7/);
+		else if (exitCode === null) await assert.rejects(run, /terminated without an exit code/);
+		else await run;
 		const patch = shell.result({ toolCallId: "call", details: { fullOutputPath: "/retained", remediationCommand: { exitCode: 99 } } } as unknown as Parameters<typeof shell.result>[0]);
 		const details = patch.details as typeof patch.details & { fullOutputPath?: string };
 		assert.equal(details.remediationCommand.exitCode, exitCode);
