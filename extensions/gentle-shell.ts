@@ -12,6 +12,9 @@ import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment
 import { CARD_TONE, renderCard, type Card, type CardTheme } from "../lib/shell-card.ts";
 import { CommandPalette, commandsKey, type CommandPaletteResult } from "../lib/command-palette.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
+import { VisualCustomizeView, type CustomizeRow } from "../lib/visual-customize-view.ts";
+import { DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, STATUS_PLACEMENT, resolveVisualSettings, writeVisualSettings } from "../lib/visual-customization-policy.ts";
+import { BANNER_COLORS, DEFAULT_BANNER_CONFIG, readBannerConfig, readBannerConfigForEdit, writeBannerConfig } from "./startup-banner.ts";
 import { agentsViewKey } from "../lib/agents-keys.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
 import { DOUBLE_ESC_CANCEL_HINT, framePromptLines, IDLE_ESC_CLEAR_HINT, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
@@ -1030,6 +1033,102 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			handler: async (ctx) => showCommandPalette(pi, ctx, env),
 		});
 	}
+	pi.registerCommand("gentle:customize", {
+		description: "Configure animations, startup banner, installed theme and future layout preferences.",
+		handler: async (_args, ctx) => {
+			if (ctx.mode !== "tui" || !ctx.hasUI) {
+				if (ctx.hasUI) ctx.ui.notify("Visual customization requires an interactive terminal.", "warning");
+				return;
+			}
+			const home = { gentlePiConfigHome: doubleEscCancelConfigHome };
+			const rows: CustomizeRow[] = [];
+			const bannerHome = doubleEscCancelConfigHome;
+			let banner = await readBannerConfig(bannerHome);
+			let activeTheme = ctx.ui.theme.name;
+			const add = (label: CustomizeRow["label"], notice: string, action: () => void | false | Promise<void | false>) => rows.push({ label, action: async () => {
+				if (await action() === false) return;
+				ctx.ui.notify(notice, "info");
+			} });
+			for (const policy of ["quality", "performance", "potato"] as const) add(
+				() => `Animations: ${policy}${resolveAnimationPolicy(animationOptions).policy === policy ? " (current)" : ""}`,
+				"Animation saved. Prompt applies now; startup banner applies at next startup.",
+				() => {
+					writeAnimationPolicy(policy, animationOptions);
+					animationPolicy = resolveAnimationPolicy(animationOptions).policy;
+					prompt?.setAnimationPolicy(animationPolicy);
+				},
+			);
+			add(() => `Banner rose: ${banner.showRose ? "on" : "off"}`, "Banner saved; applies at next startup.", async () => {
+				const next = { ...await readBannerConfigForEdit(bannerHome) };
+				next.showRose = !next.showRose;
+				await writeBannerConfig(next, bannerHome);
+				banner = next;
+			});
+			add(() => `Banner text logo: ${banner.showTextLogo ? "on" : "off"}`, "Banner saved; applies at next startup.", async () => {
+				const next = { ...await readBannerConfigForEdit(bannerHome) };
+				next.showTextLogo = !next.showTextLogo;
+				await writeBannerConfig(next, bannerHome);
+				banner = next;
+			});
+			for (const color of BANNER_COLORS) add(
+				() => `Banner color: ${color}${banner.color === color ? " (current)" : ""}`,
+				"Banner saved; applies at next startup.",
+				async () => { const next = { ...await readBannerConfigForEdit(bannerHome), color }; await writeBannerConfig(next, bannerHome); banner = next; },
+			);
+			try {
+				if (typeof ctx.ui.getAllThemes !== "function" || typeof ctx.ui.getTheme !== "function" || typeof ctx.ui.setTheme !== "function") throw new Error("theme API unavailable");
+				const themes = ctx.ui.getAllThemes();
+				if (!Array.isArray(themes)) throw new Error("invalid theme list");
+				const names = [...new Set(themes.map((item) => item?.name).filter((name): name is string => typeof name === "string" && !!name && !name.includes("/")))];
+				if (names.length === 0) throw new Error("no installed themes");
+				for (const name of names) add(() => `Theme: ${name}${activeTheme === name ? " (current)" : ""}`, "Theme applies now and is saved by Pi.", () => {
+					if (!ctx.ui.getTheme(name)) throw new Error(`Theme ${name} is unavailable or invalid.`);
+					const result = ctx.ui.setTheme(name);
+					if (!result.success) throw new Error(result.error ?? `Could not activate theme ${name}.`);
+					activeTheme = name;
+				});
+			} catch {
+				rows.push({ label: "Themes unavailable; use Pi /settings", action: () => ctx.ui.notify("Installed themes are unavailable in this session.", "warning") });
+			}
+			const updateVisual = (change: (settings: ReturnType<typeof resolveVisualSettings>["settings"]) => ReturnType<typeof resolveVisualSettings>["settings"]) => {
+				const current = resolveVisualSettings(home);
+				if (current.malformed || current.readError) throw new Error(`Cannot update unreadable or malformed visual settings: ${current.globalFile}`);
+				writeVisualSettings(change(current.settings), home);
+			};
+			const visual = () => resolveVisualSettings(home).settings;
+			const pending = "Preference saved; T4 layout application is pending.";
+			for (const value of Object.values(STATUS_PLACEMENT)) add(() => `Status placement: ${value}${visual().statusPlacement === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, statusPlacement: value })));
+			for (const value of Object.values(HEADER_PLACEMENT)) add(() => `Header placement: ${value}${visual().headerPlacement === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, headerPlacement: value })));
+			for (const value of Object.values(DENSITY)) add(() => `Density: ${value}${visual().density === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, density: value })));
+			for (const key of ["changes", "agents", "todo", "usageCost", "modelDetails"] as const) add(
+				() => `Section ${key}: ${visual().visibility[key] ? "shown" : "hidden"}`,
+				pending,
+				() => updateVisual((settings) => ({ ...settings, visibility: { ...settings.visibility, [key]: !settings.visibility[key] } })),
+			);
+			add("Reset visual, banner and animation defaults", "Defaults saved. Prompt applies now; banner at next startup; T4 layout application pending.", async () => {
+				// Validate the banner before touching any store. The writes below are
+				// independent, not a transaction: report precisely what succeeded.
+				await readBannerConfigForEdit(bannerHome);
+				const changed: string[] = [];
+				try {
+					writeVisualSettings(structuredClone(DEFAULT_VISUAL_SETTINGS), home);
+					changed.push("visual");
+					await writeBannerConfig({ ...DEFAULT_BANNER_CONFIG }, bannerHome);
+					banner = { ...DEFAULT_BANNER_CONFIG };
+					changed.push("banner");
+					writeAnimationPolicy("quality", animationOptions);
+					animationPolicy = resolveAnimationPolicy(animationOptions).policy;
+					prompt?.setAnimationPolicy(animationPolicy);
+					changed.push("animation");
+				} catch (error) {
+					const state = ["visual", "banner", "animation"].map((store) => `${store} ${changed.includes(store) ? "changed" : "unchanged"}`).join(", ");
+					ctx.ui.notify(`Partial reset: ${state}. ${error instanceof Error ? error.message : String(error)}`, "warning");
+					return false;
+				}
+		});
+			await ctx.ui.custom<null>((tui, theme, _keys, done) => new VisualCustomizeView({ rows, theme, requestRender: () => tui.requestRender(), rowsAvailable: () => Math.floor(tui.terminal.rows * 0.8), onError: (error) => ctx.ui.notify(`Visual customization: ${error.message}`, "error"), onClose: () => done(null) }), { overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 42, maxHeight: "85%" } });
+		},
+	});
 	pi.registerCommand("gentle:animations", {
 		description: "Show or set global animations; no argument opens a selectable menu (quality|performance|potato, plus status).",
 		// No argument opens a selectable menu when an interactive UI is present;

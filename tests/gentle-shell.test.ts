@@ -12,6 +12,9 @@ import { CHANGE_STATUS } from "../lib/shell-changes.ts";
 import { sidebarState, type SidebarRail } from "../lib/shell-sidebar.ts";
 import type { ShellBarTheme } from "../lib/shell-bar.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
+import { resolveVisualSettings, writeVisualSettings } from "../lib/visual-customization-policy.ts";
+import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
+import { readBannerConfig } from "../extensions/startup-banner.ts";
 
 // The Gentle Shell extension wires the pure bar renderer into pi's footer
 // slot. These tests drive it with a fake ExtensionAPI and context.
@@ -137,6 +140,7 @@ function fakeContext(options: { hasUI?: boolean; entries?: unknown[]; oauth?: bo
 	const entries = options.entries ?? [];
 	const ctx = {
 		hasUI: options.hasUI ?? true,
+		mode: "tui",
 		hasPendingMessages: () => options.pending ?? false,
 		isIdle: () => options.idle ?? true,
 		cwd: "/repo",
@@ -151,6 +155,9 @@ function fakeContext(options: { hasUI?: boolean; entries?: unknown[]; oauth?: bo
 		getContextUsage: () => ({ tokens: 122_400, contextWindow: 272_000, percent: 45 }),
 		ui: {
 			theme: plainTheme,
+			getAllThemes: () => [{ name: "dark", path: undefined }, { name: "light", path: undefined }],
+			getTheme: (name: string) => name === "dark" || name === "light" ? { name } : undefined,
+			setTheme: (name: string) => ({ success: name === "dark" || name === "light" }),
 			// Added only when requested: an absent select keeps the no-menu fallback
 			// that every pre-existing test relies on.
 			...(options.select ? { select: options.select } : {}),
@@ -649,6 +656,134 @@ function scopedDoubleEscCancelConfigHome(t: { after(callback: () => void): void 
 	t.after(() => rmSync(configHome, { recursive: true, force: true }));
 	return configHome;
 }
+
+async function customizeAction(ui: FakeUi, label: string): Promise<void> {
+	const view = ui.overlayView!;
+	for (let index = 0; index < 50; index++) {
+		if (view.render(90).some((line) => line.includes("▸") && line.includes(label))) break;
+		view.handleInput("\x1b[B");
+	}
+	assert.ok(view.render(90).some((line) => line.includes("▸") && line.includes(label)), `missing ${label}`);
+	const notices = ui.notices.length;
+	view.handleInput("\r");
+	for (let attempt = 0; attempt < 100 && ui.notices.length === notices; attempt++) await new Promise<void>((resolve) => setTimeout(resolve, 5));
+	assert.ok(ui.notices.length > notices, `action did not finish: ${label}`);
+}
+
+test("customize command updates displayed settings and persists animation, banner and layout without applying layout", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	assert.match(ui.overlayView!.render(90).join("\n"), /Animations: quality.*current/);
+	await customizeAction(ui, "Animations: performance");
+	assert.equal(resolveAnimationPolicy({ gentlePiConfigHome: home }).policy, "performance");
+	assert.match(ui.overlayView!.render(90).join("\n"), /Animations: performance.*current/);
+	assert.match(ui.notices.at(-1)!, /Prompt applies now.*banner.*next startup/i);
+	await customizeAction(ui, "Banner rose");
+	assert.equal((await readBannerConfig(home)).showRose, false);
+	assert.match(ui.overlayView!.render(90).join("\n"), /Banner rose: off/);
+	assert.match(ui.notices.at(-1)!, /next startup/i);
+	await customizeAction(ui, "Status placement: hidden");
+	assert.equal(resolveVisualSettings({ gentlePiConfigHome: home }).settings.statusPlacement, "hidden");
+	assert.match(ui.overlayView!.render(90).join("\n"), /Status placement: hidden.*current/);
+	assert.match(ui.notices.at(-1)!, /T4/);
+	ui.overlayView!.handleInput("\x1b");
+	await pending;
+});
+
+test("customize preserves invalid visual settings and reports failed theme selection", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const path = join(home, "visual-customization.json");
+	writeFileSync(path, "invalid");
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const api = ctx.ui as unknown as { getTheme(name: string): unknown; setTheme(name: string): unknown };
+	api.getTheme = () => undefined;
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	await customizeAction(ui, "Status placement: hidden");
+	assert.equal(readFileSync(path, "utf8"), "invalid");
+	assert.match(ui.notices.at(-1)!, /malformed/);
+	await customizeAction(ui, "Theme: light");
+	assert.match(ui.notices.at(-1)!, /unavailable/);
+	ui.overlayView!.handleInput("\x1b");
+	await pending;
+});
+
+test("customize never overwrites malformed banner through toggle, color or reset", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const bannerPath = join(home, "banner.json");
+	writeFileSync(bannerPath, "invalid banner");
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	for (const action of ["Banner rose", "Banner color: cyan", "Reset visual, banner and animation defaults"]) {
+		await customizeAction(ui, action);
+		assert.equal(readFileSync(bannerPath, "utf8"), "invalid banner");
+		assert.match(ui.notices.at(-1)!, /malformed.*banner/i);
+	}
+	assert.equal(resolveVisualSettings({ gentlePiConfigHome: home }).source, "default");
+	ui.overlayView!.handleInput("\x1b");
+	await pending;
+});
+
+test("customize refuses an unreadable banner path before modifying visual settings", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	mkdirSync(join(home, "banner.json"));
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	await customizeAction(ui, "Banner color: cyan");
+	assert.match(ui.notices.at(-1)!, /unreadable banner/i);
+	await customizeAction(ui, "Reset visual, banner and animation defaults");
+	assert.match(ui.notices.at(-1)!, /unreadable banner/i);
+	assert.equal(resolveVisualSettings({ gentlePiConfigHome: home }).source, "default");
+	ui.overlayView!.handleInput("\x1b");
+	await pending;
+});
+
+test("customize reports a partial reset and identifies committed stores on animation write failure", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const options = { gentlePiConfigHome: home };
+	writeVisualSettings({ ...resolveVisualSettings(options).settings, statusPlacement: "hidden" }, options);
+	mkdirSync(join(home, "animations.json"));
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	await customizeAction(ui, "Reset visual, banner and animation defaults");
+	assert.equal(resolveVisualSettings(options).settings.statusPlacement, "auto");
+	assert.match(ui.notices.at(-1)!, /Partial reset.*visual.*changed.*banner.*changed.*animation.*unchanged/i);
+	ui.overlayView!.handleInput("\x1b");
+	await pending;
+});
+
+test("customize degrades unavailable theme APIs and refuses noninteractive UI", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	(ctx.ui as unknown as { getAllThemes(): unknown }).getAllThemes = () => { throw new Error("theme lookup failed"); };
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	assert.match(ui.overlayView!.render(90).join("\n"), /Themes unavailable/);
+	ui.overlayView!.handleInput("\x1b");
+	await pending;
+	const { ctx: rpc, ui: rpcUi } = fakeContext();
+	(rpc as unknown as { mode: string }).mode = "rpc";
+	await commands.get("gentle:customize")!.handler("", rpc);
+	assert.equal(rpcUi.overlayView, undefined);
+	assert.match(rpcUi.notices.at(-1)!, /interactive terminal/);
+});
 
 test("double-esc-cancel enabled: the first Esc while working is swallowed and shows the hint instead of aborting", (t) => {
 	const configHome = scopedDoubleEscCancelConfigHome(t);
