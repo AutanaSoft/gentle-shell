@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { VisualCustomizeView } from "../lib/visual-customize-view.ts";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { Theme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
+import { getThemeByName, Theme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 
 const theme = { fg: (_role: string, text: string) => text };
 
 test("customization view renders with Pi's real Theme instance", () => {
-	const piTheme = new Theme({ accent: "#112233", text: "#445566", muted: "#778899", thinkingXhigh: "#aabbcc" }, { selectedBg: "#112233" }, "truecolor");
+	const piTheme = getThemeByName("dark");
+	assert.ok(piTheme instanceof Theme);
 	const view = new VisualCustomizeView({ rows: [{ label: "Theme: dark", action: () => {} }], theme: piTheme, requestRender: () => {}, onClose: () => {} });
 	assert.match(view.render(80).join("\n"), /Theme: dark/);
 });

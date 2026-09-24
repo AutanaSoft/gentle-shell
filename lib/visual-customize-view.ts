@@ -28,7 +28,7 @@ export class VisualCustomizeView {
 		if (length === 0) return;
 		if (matchesKey(data, Key.up) || matchesKey(data, "k")) this.selected = (this.selected + length - 1) % length;
 		else if (matchesKey(data, Key.down) || matchesKey(data, "j")) this.selected = (this.selected + 1) % length;
-		else if ((matchesKey(data, Key.enter) || matchesKey(data, " ")) && !this.busy) {
+		else if ((matchesKey(data, Key.enter) || matchesKey(data, Key.space)) && !this.busy) {
 			this.busy = true;
 			try {
 				void Promise.resolve(this.options.rows[this.selected]?.action()).catch((error: unknown) => {

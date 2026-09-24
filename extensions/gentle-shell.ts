@@ -1105,7 +1105,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				pending,
 				() => updateVisual((settings) => ({ ...settings, visibility: { ...settings.visibility, [key]: !settings.visibility[key] } })),
 			);
-			add("Reset visual, banner and animation defaults", "Defaults saved. Prompt applies now; banner at next startup; T4 layout application pending.", async () => {
+			add("Reset visual, banner and animation defaults", "Defaults saved. Prompt applies now; banner at next startup; T4 layout application pending.", async (): Promise<void | false> => {
 				// Validate the banner before touching any store. The writes below are
 				// independent, not a transaction: report precisely what succeeded.
 				await readBannerConfigForEdit(bannerHome);
