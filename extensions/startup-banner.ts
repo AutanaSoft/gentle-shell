@@ -491,10 +491,10 @@ function currentIntroMode(): IntroMode {
   return pickIntroMode(rows, cols);
 }
 
-async function countSddAgents(): Promise<number> {
+async function countBackgroundAgents(): Promise<number> {
   try {
     const entries = await readdir(join(PI_AGENT_DIR, "agents"), { withFileTypes: true });
-    return entries.filter((entry) => entry.isFile() && /^sdd-.*\.md$/.test(entry.name)).length;
+    return entries.filter((entry) => entry.isFile() && entry.name.endsWith(".md") && !/^sdd-/.test(entry.name)).length;
   } catch {
     return 0;
   }
@@ -639,7 +639,7 @@ export default function (pi: ExtensionAPI) {
     let mcpServersCount = 0;
     let extensionsCount = 0;
     let packagesCount = 0;
-    let sddAgentsCount = 0;
+    let backgroundAgentsCount = 0;
 
     const allCommands = pi.getCommands();
     const skills = allCommands.filter((c) => c.source === "skill");
@@ -673,7 +673,7 @@ export default function (pi: ExtensionAPI) {
     setTimeout(() => {
       (async () => {
         try {
-          sddAgentsCount = await countSddAgents();
+          backgroundAgentsCount = await countBackgroundAgents();
           const raw = await readFile(
             join(PI_AGENT_DIR, "settings.json"),
             "utf8",
@@ -767,7 +767,7 @@ export default function (pi: ExtensionAPI) {
           /** Renders the persistent header grid; memoized per width, tick, mode and stats so static passes reuse the built lines. */
           render(width: number): string[] {
             if (state.mode === "skip") return [];
-            const headerKey = `${width}|${tick}|${state.mode}|${gitBranch}|${mcpServersCount}|${extensionsCount}|${packagesCount}|${sddAgentsCount}|${ctx.cwd}|${skills.length}|${customTools.length}`;
+            const headerKey = `${width}|${tick}|${state.mode}|${gitBranch}|${mcpServersCount}|${extensionsCount}|${packagesCount}|${backgroundAgentsCount}|${ctx.cwd}|${skills.length}|${customTools.length}`;
             if (headerCache?.key === headerKey) return headerCache.out;
 
             const flashStartTick = 10;
@@ -876,7 +876,7 @@ export default function (pi: ExtensionAPI) {
                 ["GIT:", gitBranch],
                 ["PATH:", ctx.cwd],
                 ["MCP:", `${mcpServersCount} server(s)`],
-                ["AGENTS:", `${sddAgentsCount} phases`],
+                ["AGENTS:", `${backgroundAgentsCount} agents`],
                 ["PLUGINS:", `${packagesCount} package(s)`],
                 ["SKILLS:", `${skills.length} loaded`],
                 ["EXTENSIONS:", `${extensionsCount} active`],
@@ -909,7 +909,7 @@ export default function (pi: ExtensionAPI) {
                 );
                 addWideRow(
                   "AGENTS:",
-                  `${sddAgentsCount} phases`,
+                  `${backgroundAgentsCount} agents`,
                   "EXTENSIONS:",
                   `${extensionsCount} active`,
                 );
@@ -925,7 +925,7 @@ export default function (pi: ExtensionAPI) {
                 addNarrowRow("PATH:", ctx.cwd);
                 addNarrowRow("MCP:", `${mcpServersCount} server(s)`);
                 addNarrowRow("PLUGINS:", `${packagesCount} package(s)`);
-                addNarrowRow("AGENTS:", `${sddAgentsCount} phases`);
+                addNarrowRow("AGENTS:", `${backgroundAgentsCount} agents`);
                 addNarrowRow("SKILLS:", `${skills.length} loaded`);
                 addNarrowRow("EXTENSIONS:", `${extensionsCount} active`);
                 addNarrowRow("VER:", `v${VERSION}`);

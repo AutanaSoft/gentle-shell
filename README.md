@@ -86,8 +86,6 @@ A bare terminal answers "what is the agent doing?" only with scrollback. gentle-
 
 ### el Gentleman — Think before you build
 
-<img width="100%" src="docs/assets/diagrams/gentleman-workflow.svg" alt="Diagram of el Gentleman turning human intent into clarified scope, a smallest workflow choice, evidence, and a human delivery decision">
-
 Say what you need once, then keep moving. el Gentleman helps turn intent into clear scope, a sensible next step, and evidence people can review — without making every task feel like a process meeting.
 
 **[Docs →](docs/readme-reference.md#organic-driven-development)**
@@ -156,9 +154,7 @@ Model, effort, and who does what should be choices, not accidents. Named profile
 
 ### Command palette — Every command, one keystroke away
 
-<img width="100%" src="docs/assets/features/command-palette.png" alt="Command palette with a search field and grouped entries: Configuration, Session, Diagnostics, SDD, and Skills">
-
-Extension commands are only useful if you can find them. `alt+k` opens a curated, grouped palette — Configuration, Session, Diagnostics, SDD, and Skills — searchable by label, command name, or description, showing entries only when they are actually registered.
+Extension commands are only useful if you can find them. `alt+k` opens a curated, grouped palette — Configuration, Session, Diagnostics, and Skills — searchable by label, command name, or description, showing entries only when they are actually registered.
 
 **[Docs →](docs/gentle-shell.md#command-palette)**
 
@@ -278,7 +274,7 @@ Start with the product-facing destination, then move into the operational refere
 | Destination | Purpose |
 | --- | --- |
 | [gentle-shell reference](docs/gentle-shell.md) | Workspace layout, changes, usage, agents, and todo interactions. |
-| [ODD workflow](docs/readme-reference.md#organic-driven-development) · [Technical reference](docs/readme-reference.md) | Everyday work and recovery, optional SDD/OpenSpec, installation, configuration, commands, and contributor detail. |
+| [ODD workflow](docs/readme-reference.md#organic-driven-development) · [Technical reference](docs/readme-reference.md) | Everyday work and recovery, installation, configuration, commands, and contributor detail. |
 | [Review integration](docs/review-integration.md) | The provider/consumer boundary for native review. |
 | [Native authority architecture](docs/native-authority-architecture.md) | Ownership boundaries and review architecture. |
 | [Telemetry](docs/telemetry.md) | Approved fields and source limitations. |

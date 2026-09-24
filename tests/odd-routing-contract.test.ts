@@ -45,7 +45,7 @@ test("research uses adaptive evidence gathering and existing general workers onl
 		"recommendation, tradeoffs, open questions, and implementation implications",
 		"Forward these research instructions",
 		"existing fresh general exploration/research worker",
-		"do not create a specialized agent or invoke `sdd-research`",
+		"do not create a specialized agent or create a new workflow",
 		"no new persistence or readiness machinery",
 	]);
 });
@@ -195,7 +195,7 @@ test("ODD forwards configured TDD without equating test presence with enablement
 		"When disabled, run ordinary functional checks, not no checks",
 		"If mode is unknown/conflicting or the runner is missing",
 		"resolve only the ambiguity affecting the next action",
-		"never invent precedence or a command, and never invoke sdd-init to determine ODD TDD",
+		"never invent precedence or a command, and never infer TDD from test presence",
 	]);
 	containsAll(read("assets/agents/gentle-ai-worker.md"), [
 		"Consume the parent's effective TDD mode, configuration/choice source, and exact runner",
@@ -217,7 +217,7 @@ test("mandatory delegation triggers are behavioral in the lazy canonical port an
 		"**Route declaration:**",
 		"record the chosen route per task",
 		"so skipped delegation is observable instead of silent",
-		"These triggers never select SDD and never create SDD artifacts",
+		"These triggers only choose between direct inline and delegated direct inside ODD",
 	]) {
 		assert.ok(delegation.includes(clause), `lazy canonical port is missing mandatory delegation clause: ${clause}`);
 	}
@@ -255,7 +255,6 @@ test("core and lazy canonical trigger lists agree in numbering and semantics", (
 		"**Write rule**",
 		"**Context rule**",
 		"**Per-action rule**",
-		"**Optional SDD rule**",
 	]) {
 		assert.ok(!delegation.includes(stale), `reconciled canonical list retains stale trigger framing: ${stale}`);
 	}
@@ -265,7 +264,6 @@ test("ODD protocol is always-on in the rendered system prompt and runs by defaul
 	const orderedClauses = [
 		"Default workflow: Organic Driven Development (MANDATORY)",
 		"predefined workflow of this orchestrator",
-		"SDD is a branch inside ODD",
 		"Never describe this workflow only when asked about it: run it.",
 		"1. **Authorize.**",
 		"2. **Explore.**",
@@ -298,15 +296,11 @@ test("ODD protocol is always-on in the rendered system prompt and runs by defaul
 		wrapper.includes("Organic Driven Development (ODD) is the predefined workflow for every request"),
 		"missing contract: extensions/gentle-ai.ts harness principle",
 	);
-	assert.ok(
-		wrapper.includes(
-			"I run Organic Driven Development by default and SDD/OpenSpec when explicitly selected",
-		),
-		"missing contract: extensions/gentle-ai.ts identity sentence",
-	);
+	// The parent owns the injected identity; its migration is outside this suite's edit surface.
 	assert.ok(
 		core.includes("ODD (Default Workflow, harness section above) is mandatory on every request"),
 		"missing contract: assets/orchestrator.md pointer sentence",
 	);
 	containsAll(core, ["orchestrator-delegation.md", "orchestrator-memory.md"]);
+	assert.doesNotMatch(core + delegation + memory, /SDD|sdd-|OpenSpec|openspec/i);
 });

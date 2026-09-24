@@ -68,8 +68,6 @@ export const NATIVE_REVIEW_OPERATION = {
 	CAPTURE_PROVIDER_ROLE: "review/capture-provider-role",
 	CAPTURE_UNACHIEVABLE: "review/capture-unachievable",
 	ACKNOWLEDGE_APPROVED: "review/acknowledge-approved",
-	SDD_STATUS: "sdd-status",
-	SDD_CONTINUE: "sdd-continue",
 }         ;
 
 
@@ -124,11 +122,6 @@ export const NATIVE_REVIEW_ERROR_CODE = {
 
 
 
-
-
-
-
-
 export const NATIVE_REVIEW_MODE_OPERATION = {
 	STATUS: "status",
 	ENABLE: "enable",
@@ -161,35 +154,6 @@ export const NATIVE_REVIEW_MODE_SCOPE = {
 	CLONE: "clone",
 	BOTH: "both",
 }         ;
-
-
-
-
-
-
-
-
-
-
-
-/**
- * The native CLI owns this complete v2 record. The decoder validates the fields
- * Pi relies on and returns the original object without adding, omitting, or
- * reconciling local SDD state.
- */
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -1516,52 +1480,6 @@ function nativeError(code                       , operation                     
 
 
 
-const NATIVE_SDD_DEPENDENCIES = ["proposal", "specs", "design", "tasks", "apply", "verify", "archive"]         ;
-const NATIVE_SDD_INSTRUCTION_PHASES = ["apply", "verify", "archive"]         ;
-const NATIVE_SDD_NEXT_RECOMMENDATIONS = ["apply", "verify", "remediate", "archive", "archived", "resolve-blockers", "sdd-new", "select-change", "propose", "spec", "design", "tasks"]         ;
-const NATIVE_SDD_DEPENDENCY_STATES = ["blocked", "ready", "all_done"]         ;
-
-/** Strictly validates the native v2 contract while preserving its whole record. */
-export function decodeNativeSddStatusV2(value         , request                                                              )                    {
-	const status = object(value);
-	if (status.schemaName !== "gentle-ai.sdd-status" || status.schemaVersion !== 2) throw new Error("wrong native SDD status schema");
-	if ((request.changeName !== undefined && status.changeName !== request.changeName) || (status.changeName !== null && !isCanonicalProcessString(status.changeName))) throw new Error("native SDD status change identity mismatch");
-	const artifactStore = enumString(status.artifactStore, ["openspec", "engram", "hybrid", "none"]);
-	const planningHome = object(status.planningHome);
-	if (planningHome.mode !== "repo-local" || !isCanonicalProcessString(planningHome.path)) throw new Error("invalid native SDD planning home");
-	const expectedOpenSpecHome = join(request.workspaceRoot, "openspec");
-	if (planningHome.path !== expectedOpenSpecHome && !((artifactStore === "engram" || artifactStore === "hybrid") && planningHome.path === "engram:sdd")) throw new Error("native SDD planning home escaped its workspace");
-	if (status.changeRoot !== null && !isCanonicalProcessString(status.changeRoot)) throw new Error("invalid native SDD change root");
-	const actionContext = object(status.actionContext);
-	if (actionContext.mode !== "repo-local" || actionContext.workspaceRoot !== request.workspaceRoot || !isCanonicalProcessString(actionContext.workspaceRoot)) throw new Error("native SDD status workspace root mismatch");
-	const allowedEditRoots = stringArray(actionContext.allowedEditRoots);
-	if (!allowedEditRoots.includes(request.workspaceRoot) || allowedEditRoots.some((root) => !isAbsolute(root) || root !== join(root))) throw new Error("invalid native SDD allowed edit roots");
-	const dependencies = object(status.dependencies);
-	for (const phase of NATIVE_SDD_DEPENDENCIES) {
-		if (enumString(dependencies[phase], NATIVE_SDD_DEPENDENCY_STATES) !== dependencies[phase]) throw new Error("invalid native SDD dependency");
-	}
-	if (Object.keys(dependencies).length !== NATIVE_SDD_DEPENDENCIES.length) throw new Error("native SDD dependencies have an unsupported shape");
-	if (status.instructions !== undefined) throw new Error("native SDD status uses phaseInstructions, not instructions");
-	if (status.phaseInstructions !== undefined) {
-		const instructions = object(status.phaseInstructions);
-		for (const phase of NATIVE_SDD_INSTRUCTION_PHASES) stringArray(instructions[phase]);
-		// Classical SDD no longer emits a remediation phase. Keep the published
-		// producer's optional legacy instructions intact without inventing them
-		// for a newer producer or accepting unknown phase keys.
-		const hasRemediation = Object.hasOwn(instructions, "remediate");
-		if (hasRemediation) stringArray(instructions.remediate);
-		if (Object.keys(instructions).length !== NATIVE_SDD_INSTRUCTION_PHASES.length + Number(hasRemediation)) throw new Error("native SDD instructions have an unsupported shape");
-		if (status.nextRecommended === "remediate" && !hasRemediation) throw new Error("native SDD remediation instructions are missing");
-	}
-	if (status.nextRecommended === "remediate" || status.remediationState !== undefined) {
-		const remediation = object(status.remediationState);
-		if (typeof remediation.required !== "boolean" || typeof remediation.complete !== "boolean" || typeof remediation.failedEvidenceRevision !== "string" || (remediation.failedEvidenceRevision !== "" && !/^sha256:[0-9a-f]{64}$/.test(remediation.failedEvidenceRevision)) || (status.nextRecommended === "remediate" && (!remediation.required || remediation.complete || !remediation.failedEvidenceRevision))) throw new Error("Invalid native remediation state");
-	}
-	stringArray(status.blockedReasons);
-	enumString(status.nextRecommended, NATIVE_SDD_NEXT_RECOMMENDATIONS);
-	return status                     ;
-}
-
 class NativeReviewPlainCli {
 	                 adapter                 ;
 	                 executable                         ;
@@ -2198,30 +2116,6 @@ export class NativeReviewCliV216                            {
 		toleratedStderr                    = [],
 	)                               {
 		return this.invoke(operation, cwd, arguments_, mutating, signal, this.executablePath(operation, mutating), toleratedStderr);
-	}
-
-	async sddStatus(request                        )                             {
-		return this.sddProjection(request, false);
-	}
-
-	async sddContinue(request                        )                             {
-		if (!isCanonicalProcessString(request.changeName)) throw new TypeError("Native SDD continuation requires an exact selected change");
-		return this.sddProjection(request, true);
-	}
-
-	        async sddProjection(request                        , mutating         )                             {
-		if ((request.changeName !== undefined && !isCanonicalProcessString(request.changeName)) || !isCanonicalProcessString(request.workspaceRoot) || !isAbsolute(request.workspaceRoot)) {
-			throw new TypeError("Native SDD status requires a canonical change and absolute workspace root");
-		}
-		const operation = mutating ? NATIVE_REVIEW_OPERATION.SDD_CONTINUE : NATIVE_REVIEW_OPERATION.SDD_STATUS;
-		const execution = await this.negotiated(
-			operation,
-			request.workspaceRoot,
-			[operation, ...(request.changeName === undefined ? [] : [request.changeName]), "--cwd", request.workspaceRoot, "--json", "--instructions"],
-			mutating,
-			request.signal,
-		);
-		return decode(operation, mutating, () => decodeNativeSddStatusV2(execution.body, request));
 	}
 
 	async start(request                    )                             {
