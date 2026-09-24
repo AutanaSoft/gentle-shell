@@ -366,6 +366,7 @@ test("COMMAND_PALETTE_CATALOG matches the curated command set, in order", () => 
 		"gentle:review-mode",
 		"gentle:background-subagents",
 		"gentle:double-esc-cancel",
+		"gentle:customize",
 		"gentle:animations",
 		"gentle:vim",
 		"gentle:telemetry",

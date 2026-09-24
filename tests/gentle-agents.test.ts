@@ -1093,8 +1093,8 @@ for (const boundary of ["allowed", "env", "session", "replacement", "bus-throws"
 		writeFileSync(join(profile, "subagents.json"), JSON.stringify({ model_profiles: { "gentle-ai-worker": { model: "openai/gpt-4o", effort: "high" } } }));
 		gentleAgents(h.pi, env, { ...runtime.deps, env, agentHome: profile, runtimeMetricsPolicy: policy, metricsNow: () => clock, metricsSchedule });
 		const listenerCounts = () => [...h.listeners].map(([name, set]) => [name, set.size]);
-		const initialListeners = listenerCounts();
 		await h.fire("session_start", context.ctx);
+		const initialListeners = listenerCounts();
 		const result = h.tools.get("subagent_run")!.execute("call", { agent: "gentle-ai-worker", task: "private task", mode: "task" }, undefined, undefined, context.ctx);
 		await tick();
 		assert.equal(runtime.children.length, 1);
@@ -1129,7 +1129,7 @@ for (const boundary of ["allowed", "env", "session", "replacement", "bus-throws"
 				Object.assign(fresh.pi, { events: h.pi.events });
 				gentleAgents(fresh.pi, env, { ...runtime.deps, env, runtimeMetricsPolicy: policy, metricsSchedule });
 				await fresh.fire("session_start", context.ctx);
-				assert.deepEqual(listenerCounts(), initialListeners, "fresh instance installs one subscription set");
+				assert.deepEqual(listenerCounts(), initialListeners, "fresh instance installs one subscription set, including visual preference updates");
 				await fresh.fire("session_shutdown", context.ctx);
 				assert.ok([...h.listeners.values()].every(set => set.size === 0));
 				assert.equal(renewalTimers.size, 0);

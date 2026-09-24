@@ -13,6 +13,11 @@ import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment
 import { CARD_TONE, renderCard, type Card, type CardTheme } from "../lib/shell-card.ts";
 import { CommandPalette, commandsKey, type CommandPaletteResult } from "../lib/command-palette.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
+import { VisualCustomizeView, type CustomizeCategory, type CustomizeRow, type ProfileActions } from "../lib/visual-customize-view.ts";
+import { deleteVisualProfile, getVisualProfile, listVisualProfiles, resetVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts";
+import { sourcePalettePreview } from "../lib/theme-customization.ts";
+import { DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, STATUS_PLACEMENT, resolveVisualSettings, writeVisualSettings } from "../lib/visual-customization-policy.ts";
+import { BANNER_COLORS, DEFAULT_BANNER_CONFIG, readBannerConfig, readBannerConfigForEdit, writeBannerConfig } from "./startup-banner.ts";
 import { agentsViewKey } from "../lib/agents-keys.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
 import { DOUBLE_ESC_CANCEL_HINT, framePromptLines, IDLE_ESC_CLEAR_HINT, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
@@ -94,7 +99,7 @@ import {
 } from "../lib/double-esc-cancel-policy.ts";
 import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_QUOTA_URL, parseCodexUsage, parseNanQuota, parseProviderUsage, parseUsageHeaders, parseUsageSource, UsageSourceRegistry, UsageStore, USAGE_SOURCE_EVENT, type ProviderUsage, type UsageSource } from "../lib/shell-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
-import { sidebarHeader, sidebarPart } from "../lib/shell-sidebar.ts";
+import { sidebarHeader, sidebarPart, sidebarState, VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
 import { installSidebar, invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
 import { SessionChanges, SESSION_CHANGE_EVENT } from "../lib/session-changes.ts";
 import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
@@ -238,6 +243,7 @@ export function createShellBarComponent(
 	footerData: ShellFooterData,
 	dirty: () => number | undefined = () => undefined,
 	usage: () => ProviderUsage | undefined = () => undefined,
+	presentation?: () => ReturnType<typeof resolveVisualSettings>["settings"],
 ): ShellBarComponent {
 	const unsubscribe = footerData.onBranchChange(() => {
 		host.invalidateSidebar?.();
@@ -245,7 +251,7 @@ export function createShellBarComponent(
 	});
 	return {
 		render(width: number) {
-			return renderShellBar(buildShellBarModel(pi, ctx, footerData, { dirty: dirty(), usage: usage() }), theme, width);
+			return renderShellBar(buildShellBarModel(pi, ctx, footerData, { dirty: dirty(), usage: usage() }), theme, width, presentation?.());
 		},
 		invalidate() {},
 		dispose() {
@@ -1057,6 +1063,7 @@ function renderDoubleEscCancelReport(
 }
 
 const CHANGES_WIDGET_KEY = "gentle-shell-changes";
+const HEADER_WIDGET_KEY = "gentle-shell-below-input-header";
 const CHANGES_COMMAND_NAME = "gentle:changes";
 const CHANGES_SHORTCUT_DEFAULT = "alt+g";
 const CHANGES_POLL_DEFAULT_MS = 2000;
@@ -1213,8 +1220,8 @@ async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext, env: 
 	if (result?.type === "run") pi.sendUserMessage(`/${result.name}`, { expandPromptTemplates: true });
 }
 
-function showChanges(ctx: ExtensionContext, model: ChangesModel): void {
-	if (model.files.length === 0) {
+function showChanges(ctx: ExtensionContext, model: ChangesModel, visible = true): void {
+	if (!visible || model.files.length === 0) {
 		ctx.ui.setWidget(CHANGES_WIDGET_KEY, undefined);
 		return;
 	}
@@ -1435,6 +1442,15 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	const animationOptions = { gentlePiConfigHome: doubleEscCancelConfigHome };
 	let animationPolicy = resolveAnimationPolicy(animationOptions).policy;
 	let vimPolicy = resolveVimPolicy(animationOptions).policy;
+	let visualSettings = resolveVisualSettings(animationOptions).settings;
+	let sidebarTui: TUI | undefined;
+	const refreshVisual = () => {
+		visualSettings = resolveVisualSettings(animationOptions).settings;
+		if (currentContext && changes) showChanges(currentContext, changes.model, visualSettings.visibility.changes);
+		if (sidebarTui?.terminal) sidebarState(sidebarTui).visibility = { todo: visualSettings.visibility.todo };
+		renderHost?.invalidateSidebar?.();
+		renderHost?.requestRender();
+	};
 	let doubleEscCancelPolicy: DoubleEscCancelPolicy = resolveDoubleEscCancelPolicy({
 		env,
 		gentlePiConfigHome: doubleEscCancelConfigHome,
@@ -1447,7 +1463,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		const fingerprint = changesFingerprint(model);
 		if (fingerprint === shown) return;
 		shown = fingerprint;
-		showChanges(ctx, model);
+		showChanges(ctx, model, visualSettings.visibility.changes);
 	};
 	const refreshChanges = async (ctx: ExtensionContext) => {
 		const tracker = changes;
@@ -1482,11 +1498,14 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		registry = new SessionWorktreeRegistry(pi, ctx.sessionManager, ctx.cwd, deps.resolveWorktree);
 		registry.start();
 		if (!ctx.hasUI) return;
+		visualSettings = resolveVisualSettings(animationOptions).settings;
 		changes = new SessionChanges(ctx.sessionManager.getSessionId(), ctx.sessionManager.getEntries());
 		const tracker = changes;
 		ctx.ui.setFooter((tui, theme, footerData) => {
+			sidebarTui = tui;
+			if (tui.terminal) sidebarState(tui).visibility = { todo: visualSettings.visibility.todo };
 			renderHost = { requestRender: () => tui.requestRender(), invalidateSidebar: () => invalidateSidebar(tui) };
-			const bottom = createShellBarComponent(pi, ctx, renderHost, theme, footerData, () => tracker.model.files.length, () => usage.get(ctx.model?.provider ?? ""));
+			const bottom = createShellBarComponent(pi, ctx, renderHost, theme, footerData, () => tracker.model.files.length, () => usage.get(ctx.model?.provider ?? ""), () => visualSettings);
 			// The Status card paints live session state that no event re-registers a
 			// part for: model, effort, context, cost, session name and extension
 			// statuses. The digest is what keeps the fullscreen memo honest, and it
@@ -1496,16 +1515,16 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				changes: { files: tracker.model.files.length, added: tracker.model.added, deleted: tracker.model.deleted, notice: tracker.model.notice },
 			});
 			const part = sidebarPart(tui, "footer", bottom, {
-				digest: () => JSON.stringify(footerModel()),
-				render: (width) => renderShellSidebarBar(footerModel(), theme, width),
+				digest: () => JSON.stringify([footerModel(), visualSettings]),
+				render: (width) => renderShellSidebarBar(footerModel(), theme, width, visualSettings),
 				invalidate() {},
 			});
 			// The header row carries everything that ticks every frame (model,
 			// effort, context, cost, usage) plus session identity; it never sees
 			// extension statuses or the working/thinking state.
-			const headerBar = (width: number) => renderShellHeaderBar(buildShellHeaderModel(footerModel()), theme, width, usageShortcutKey);
+			const headerBar = (width: number) => renderShellHeaderBar(buildShellHeaderModel(footerModel()), theme, width, usageShortcutKey, visualSettings);
 			const disposeHeader = sidebarHeader(tui, {
-				digest: () => JSON.stringify(buildShellHeaderModel(footerModel())),
+				digest: () => JSON.stringify([buildShellHeaderModel(footerModel()), visualSettings]),
 				render: (width) => [headerBar(width).text, renderShellHeaderRule(theme, width)],
 				invalidate() {},
 				handleMouse(event) {
@@ -1517,8 +1536,21 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return { handled: true, render: true };
 				},
 			});
-			const uninstall = installSidebar(tui, theme);
-			return { ...part, dispose() { disposeHeader(); uninstall(); part.dispose(); } };
+			const uninstall = installSidebar(tui, theme, () => visualSettings.statusPlacement, () => visualSettings.headerPlacement, () => visualSettings.density);
+			// The public widget slot follows the editor even when the rail is absent.
+			const belowHeader = () => visualSettings.headerPlacement === "below-input" && (tui as TUI & { mode?: string }).mode === "fullscreen";
+			ctx.ui.setWidget(HEADER_WIDGET_KEY, () => ({
+				render(width: number) { return belowHeader() ? [headerBar(width).text, renderShellHeaderRule(theme, width)] : []; },
+				invalidate() {},
+				handleMouse(event) {
+					if (!belowHeader() || event.type !== "click" || event.button !== "left" || event.y !== 0) return undefined;
+					const span = headerBar(event.width).usageSpan;
+					if (!span || event.x < span.start || event.x >= span.end) return undefined;
+					void openUsage(ctx);
+					return { handled: true, render: true };
+				},
+			}), { placement: "belowEditor" });
+			return { ...part, dispose() { ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); disposeHeader(); uninstall(); part.dispose(); if (sidebarTui === tui) sidebarTui = undefined; } };
 		});
 		void refreshUsage(ctx, true);
 		const ownsPrompt = installPrompt(
@@ -1591,6 +1623,193 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			handler: async (ctx) => showCommandPalette(pi, ctx, env),
 		});
 	}
+	pi.registerCommand("gentle:customize", {
+		description: "Configure animations, startup banner, installed theme and future layout preferences.",
+		handler: async (_args, ctx) => {
+			if (ctx.mode !== "tui" || !ctx.hasUI) {
+				if (ctx.hasUI) ctx.ui.notify("Visual customization requires an interactive terminal.", "warning");
+				return;
+			}
+			const home = { gentlePiConfigHome: doubleEscCancelConfigHome };
+			const rows: CustomizeRow[] = [];
+			const bannerHome = doubleEscCancelConfigHome;
+			let banner = await readBannerConfig(bannerHome);
+			let activeTheme = ctx.ui.theme.name;
+			let customizeView: VisualCustomizeView | undefined;
+			let category: CustomizeCategory = "Animations";
+			const add = (label: CustomizeRow["label"], notice: string, action: () => void | false | Promise<void | false>, preview?: CustomizeRow["preview"]) => rows.push({ category, label, preview, action: async () => {
+				if (await action() === false) return;
+				ctx.ui.notify(notice, "info");
+			} });
+			for (const policy of ["quality", "performance", "potato"] as const) add(
+				() => `Animations: ${policy}${resolveAnimationPolicy(animationOptions).policy === policy ? " (current)" : ""}`,
+				"Animation saved. Prompt applies now; startup banner applies at next startup.",
+				() => {
+					writeAnimationPolicy(policy, animationOptions);
+					animationPolicy = resolveAnimationPolicy(animationOptions).policy;
+					prompt?.setAnimationPolicy(animationPolicy);
+				},
+				() => ({ title: `${policy} · static animation sample`, sample: policy === "potato" ? "✿  idle → working (no pulse)" : policy === "performance" ? "✿  short pulse → settle (static)" : "✿  gentle wave → settle (static)" }),
+			);
+			category = "Banner";
+			const bannerColors = { pink: [255, 118, 195], cyan: [95, 210, 255], yellow: [255, 210, 95], green: [110, 220, 145] } as const;
+			const bannerPreview = (next: typeof banner) => {
+				const [r, g, b] = bannerColors[next.color];
+				return { title: `Banner · ${next.color} (static)`, sample: `${next.showRose ? `\x1b[38;2;${r};${g};${b}m🌹\x1b[0m` : "·"}  ${next.showTextLogo ? "GENTLE SHELL" : "(logo hidden)"}` };
+			};
+			add(() => `Banner rose: ${banner.showRose ? "on" : "off"}`, "Banner saved; applies at next startup.", async () => {
+				const next = { ...await readBannerConfigForEdit(bannerHome) };
+				next.showRose = !next.showRose;
+				await writeBannerConfig(next, bannerHome);
+				banner = next;
+			}, () => bannerPreview({ ...banner, showRose: !banner.showRose }));
+			add(() => `Banner text logo: ${banner.showTextLogo ? "on" : "off"}`, "Banner saved; applies at next startup.", async () => {
+				const next = { ...await readBannerConfigForEdit(bannerHome) };
+				next.showTextLogo = !next.showTextLogo;
+				await writeBannerConfig(next, bannerHome);
+				banner = next;
+			}, () => bannerPreview({ ...banner, showTextLogo: !banner.showTextLogo }));
+			for (const color of BANNER_COLORS) add(
+				() => `Banner color: ${color}${banner.color === color ? " (current)" : ""}`,
+				"Banner saved; applies at next startup.",
+				async () => { const next = { ...await readBannerConfigForEdit(bannerHome), color }; await writeBannerConfig(next, bannerHome); banner = next; },
+				() => bannerPreview({ ...banner, color }),
+			);
+			category = "Themes";
+			try {
+				if (typeof ctx.ui.getAllThemes !== "function" || typeof ctx.ui.getTheme !== "function" || typeof ctx.ui.setTheme !== "function") throw new Error("theme API unavailable");
+				const themes = ctx.ui.getAllThemes();
+				if (!Array.isArray(themes)) throw new Error("invalid theme list");
+				const names = [...new Set(themes.map((item) => item?.name).filter((name): name is string => typeof name === "string" && !!name && !name.includes("/")))];
+				if (names.length === 0) throw new Error("no installed themes");
+				for (const name of names) rows.push({
+					category,
+					label: () => `Theme: ${name}${activeTheme === name ? " (current)" : ""}`,
+					preview: () => {
+						const selected = ctx.ui.getTheme(name);
+						if (selected?.name !== name) throw new Error("Selected theme is unavailable.");
+						const source = selected.sourcePath ?? ctx.ui.getAllThemes().find((item) => item.name === name)?.path;
+						return sourcePalettePreview(name, source);
+					},
+					action: () => {
+						if (!ctx.ui.getTheme(name)) throw new Error(`Theme ${name} is unavailable or invalid.`);
+						const result = ctx.ui.setTheme(name);
+						if (!result.success) throw new Error(result.error ?? `Could not activate theme ${name}.`);
+						activeTheme = name;
+						ctx.ui.notify("Theme applies now and is saved by Pi.", "info");
+					},
+				});
+			} catch {
+				rows.push({ category, label: "Themes unavailable; use Pi /settings", preview: () => ({ title: "Themes unavailable", sample: "Use Pi /settings to select a theme" }), action: () => ctx.ui.notify("Installed themes are unavailable in this session.", "warning") });
+			}
+			const updateVisual = (change: (settings: ReturnType<typeof resolveVisualSettings>["settings"]) => ReturnType<typeof resolveVisualSettings>["settings"]) => {
+				const current = resolveVisualSettings(home);
+				if (current.malformed || current.readError) throw new Error(`Cannot update unreadable or malformed visual settings: ${current.globalFile}`);
+				writeVisualSettings(change(current.settings), home);
+				refreshVisual();
+				pi.events.emit(VISUAL_SETTINGS_CHANGED, { configHome: doubleEscCancelConfigHome });
+			};
+			const visual = () => resolveVisualSettings(home).settings;
+			const pending = "Preference saved and applied.";
+			const layoutPreview = (settings: ReturnType<typeof visual>) => ({
+				title: `Layout · ${settings.density} (schematic)`,
+				sample: `${settings.headerPlacement === "top" ? "[Header] → [Input]" : "[Input] → [Header]"}  ${settings.statusPlacement === "auto" ? "[responsive status]" : settings.statusPlacement === "right" ? "[Right rail, wide]" : settings.statusPlacement === "hidden" ? "[Bottom status; no rail]" : "[Bottom status]"}`,
+			});
+			category = "Layout";
+			for (const value of Object.values(STATUS_PLACEMENT)) add(() => `Status placement: ${value}${visual().statusPlacement === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, statusPlacement: value })), () => layoutPreview({ ...visual(), statusPlacement: value }));
+			for (const value of Object.values(HEADER_PLACEMENT)) add(() => `Header placement: ${value}${visual().headerPlacement === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, headerPlacement: value })), () => layoutPreview({ ...visual(), headerPlacement: value }));
+			for (const value of Object.values(DENSITY)) add(() => `Density: ${value}${visual().density === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, density: value })), () => layoutPreview({ ...visual(), density: value }));
+			category = "Sections";
+			for (const key of ["changes", "agents", "todo", "usageCost", "modelDetails"] as const) add(
+				() => `Section ${key}: ${visual().visibility[key] ? "shown" : "hidden"}`,
+				pending,
+				() => updateVisual((settings) => ({ ...settings, visibility: { ...settings.visibility, [key]: !settings.visibility[key] } })),
+				() => {
+					const visibility = { ...visual().visibility, [key]: !visual().visibility[key] };
+					return { title: `Sections · ${key} ${visibility[key] ? "shown" : "hidden"}`, sample: `[${Object.entries(visibility).filter(([, shown]) => shown).map(([section]) => section).join("] [") || "no optional sections"}]` };
+				},
+			);
+			const catalog = () => listVisualProfiles(home).map(name => getVisualProfile(name, home)!);
+			category = "Profiles";
+			rows.push({ category, label: "Visual profiles (preview, save, apply, delete)", preview: () => {
+				const saved = catalog()[0];
+				return saved ? { title: `${saved.name} · saved profile`, sample: `${saved.visual.headerPlacement === "top" ? "[Header] → [Input]" : "[Input] → [Header]"}  [${saved.visual.statusPlacement} status]` } : { title: "No saved profiles", sample: "Enter to save the current appearance" };
+			}, action: () => {
+				catalog();
+				customizeView?.openProfiles();
+				ctx.ui.notify("Profile preview opened; selections do not change preferences.", "info");
+			} });
+			category = "Reset";
+			add("Reset visual, banner and animation defaults", "Defaults saved. Layout and prompt apply now; banner at next startup.", async (): Promise<void | false> => {
+				// Validate the banner before touching any store. The writes below are
+				// independent, not a transaction: report precisely what succeeded.
+				await readBannerConfigForEdit(bannerHome);
+				const changed: string[] = [];
+				try {
+					writeVisualSettings(structuredClone(DEFAULT_VISUAL_SETTINGS), home);
+					refreshVisual();
+					pi.events.emit(VISUAL_SETTINGS_CHANGED, { configHome: doubleEscCancelConfigHome });
+					changed.push("visual");
+					await writeBannerConfig({ ...DEFAULT_BANNER_CONFIG }, bannerHome);
+					banner = { ...DEFAULT_BANNER_CONFIG };
+					changed.push("banner");
+					writeAnimationPolicy("quality", animationOptions);
+					animationPolicy = resolveAnimationPolicy(animationOptions).policy;
+					prompt?.setAnimationPolicy(animationPolicy);
+					changed.push("animation");
+				} catch (error) {
+					const state = ["visual", "banner", "animation"].map((store) => `${store} ${changed.includes(store) ? "changed" : "unchanged"}`).join(", ");
+					ctx.ui.notify(`Partial reset: ${state}. ${error instanceof Error ? error.message : String(error)}`, "warning");
+					return false;
+				}
+		}, () => ({ title: "Restore visual defaults", sample: "[Header] → [Input]  [responsive status] · quality" }));
+			const profiles: ProfileActions = {
+				list: catalog,
+				save: async (name, replace) => {
+					const visual = resolveVisualSettings(home);
+					if (visual.malformed || visual.readError) throw new Error("Visual settings unavailable for snapshot.");
+					const currentBanner = await readBannerConfigForEdit(bannerHome);
+					const currentAnimation = resolveAnimationPolicy(animationOptions);
+					if (currentAnimation.malformed) throw new Error(`Cannot read animation policy: ${currentAnimation.globalFile}`);
+					const themeName = ctx.ui.theme.name;
+					if (!themeName || !ctx.ui.getAllThemes?.().some((item) => item.name === themeName) || !ctx.ui.getTheme?.(themeName)) throw new Error("Active theme is not installed or valid; profile not saved.");
+					saveVisualProfile(name, { themeName, animationPolicy: currentAnimation.policy, banner: currentBanner, visual: visual.settings }, { ...home, replace });
+					ctx.ui.notify(`Visual profile ${name} saved.`, "info");
+				},
+				apply: async (name) => {
+					const profile = getVisualProfile(name, home);
+					if (!profile) throw new Error(`Visual profile ${name} not found.`);
+					const changed: string[] = [];
+					const failures: string[] = [];
+					const step = async (label: string, action: () => void | Promise<void>) => {
+						try { await action(); changed.push(label); } catch (error) { failures.push(`${label}: ${error instanceof Error ? error.message : String(error)}`); }
+					};
+					await step("theme", () => {
+						if (!ctx.ui.getTheme?.(profile.themeName)) throw new Error("Installed theme unavailable.");
+						const result = ctx.ui.setTheme(profile.themeName);
+						if (!result.success) throw new Error(result.error ?? "Theme activation failed.");
+						activeTheme = profile.themeName;
+					});
+					await step("visual", () => {
+						const current = resolveVisualSettings(home);
+						if (current.malformed || current.readError) throw new Error("Visual settings unreadable.");
+						writeVisualSettings(profile.visual, home);
+						refreshVisual();
+						pi.events.emit(VISUAL_SETTINGS_CHANGED, { configHome: doubleEscCancelConfigHome });
+					});
+					await step("banner", async () => { await readBannerConfigForEdit(bannerHome); await writeBannerConfig(profile.banner, bannerHome); banner = profile.banner; });
+					await step("animation", () => { writeAnimationPolicy(profile.animationPolicy, animationOptions); animationPolicy = profile.animationPolicy; prompt?.setAnimationPolicy(animationPolicy); });
+					ctx.ui.notify(failures.length ? `PARTIAL profile apply: ${changed.join(", ") || "none"} changed; ${failures.join("; ")}` : `Visual profile ${name} applied; banner applies at next startup.`, failures.length ? "warning" : "info");
+				},
+				delete: (name) => { deleteVisualProfile(name, home); ctx.ui.notify(`Visual profile ${name} deleted.`, "info"); },
+				reset: () => { resetVisualProfiles(home); ctx.ui.notify("Visual profile catalog cleared; active settings unchanged.", "info"); },
+			};
+			await ctx.ui.custom<null>((tui, theme, _keys, done) => {
+				customizeView = new VisualCustomizeView({ rows, profiles, theme, requestRender: () => tui.requestRender(), rowsAvailable: () => Math.max(0, Math.floor(tui.terminal.rows * 0.85) - 2), onError: (error) => ctx.ui.notify(`Visual customization: ${error.message}`, "error"), onClose: () => done(null) });
+				return customizeView;
+			}, { overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 60, maxHeight: "85%" } });
+		},
+	});
 	pi.registerCommand("gentle:vim", {
 		description: "Show or set global Vim prompt editing (status|enable|disable); no argument opens a menu.",
 		handler: async (args, ctx) => {
