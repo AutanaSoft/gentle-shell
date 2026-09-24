@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { existsSync, readFileSync } from "node:fs";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { CommandPalette, commandsKey, rankPaletteGroups, type CommandPaletteGroup, type CommandPaletteItem, type CommandPaletteResult, type CommandPaletteTheme } from "../lib/command-palette.ts";
 import { buildCommandPaletteGroups, COMMAND_PALETTE_CATALOG } from "../lib/command-palette-catalog.ts";
@@ -335,7 +336,7 @@ test("commandsKey is disabled by an empty value or off (case-insensitive)", () =
 test("COMMAND_PALETTE_CATALOG matches the curated command set, in order", () => {
 	assert.deepEqual(
 		COMMAND_PALETTE_CATALOG.map((group) => group.title),
-		["Configuration", "Session", "Diagnostics", "SDD", "Skills"],
+		["Configuration", "Session", "Diagnostics", "Skills"],
 	);
 	const byTitle = (title: string) => COMMAND_PALETTE_CATALOG.find((group) => group.title === title)?.items.map((item) => item.command);
 	assert.deepEqual(byTitle("Configuration"), [
@@ -355,8 +356,21 @@ test("COMMAND_PALETTE_CATALOG matches the curated command set, in order", () => 
 	]);
 	assert.deepEqual(byTitle("Session"), ["gentle:changes", "gentle:agents", "gentle:usage", "gentle:review-session-permission"]);
 	assert.deepEqual(byTitle("Diagnostics"), ["gentle:status", "gentle:doctor"]);
-	assert.deepEqual(byTitle("SDD"), ["gentle:sdd-preflight", "gentle-sdd-status", "gentle-sdd-continue", "gentle-sdd-init"]);
+	assert.equal(byTitle("SDD"), undefined);
 	assert.deepEqual(byTitle("Skills"), ["skill-registry:refresh"]);
+});
+
+test("retired SDD commands are absent from the palette and extension registrations", () => {
+	const retired = ["gentle:sdd-preflight", "gentle-sdd-status", "gentle-sdd-continue", "gentle-sdd-init", "gentle:install-sdd"];
+	const catalogCommands = COMMAND_PALETTE_CATALOG.flatMap((group) => group.items.map((item) => item.command));
+	assert.equal(existsSync(new URL("../extensions/sdd-init.ts", import.meta.url)), false, "retired init extension must stay absent");
+	const source = readFileSync(new URL("../extensions/gentle-ai.ts", import.meta.url), "utf8");
+	for (const command of retired) {
+		assert.ok(!catalogCommands.includes(command), `${command} must not appear in the palette`);
+		assert.ok(!source.includes(`registerCommand("${command}"`), `${command} must not be registered`);
+	}
+	assert.match(source, /for \(const owner of \["delegation", "review"\] as const\) \{\s*const label = owner;\s*pi\.registerCommand\(`gentle:install-\$\{owner\}`/);
+	assert.ok(catalogCommands.includes("gentle:review-mode"));
 });
 
 test("buildCommandPaletteGroups keeps only registered commands, attaches descriptions and shortcuts, drops empty groups, preserves catalog order", () => {
