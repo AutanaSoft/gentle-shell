@@ -119,10 +119,19 @@ T1–T5 done (delegated writer). Verification (RDD off, so this report is verifi
 - RED confirmed for T2–T4 and T5 by temporarily reverting each touched source file (via `git diff`/`git apply`, no stash) and re-running the new/updated tests before restoring the fix.
 
 T6 done (see evidence above). Verifier of 236192c5: PASS with two warnings → T7, T8.
-T7–T8 done (delegated writer, uncommitted pending parent review and work-unit commit).
+T7–T8 done (delegated writer), committed as 86e395e5.
 RED: 164 pass, 2 fail (new T7/T8 tests). GREEN: 166 pass, 0 fail on the three-file test command.
 `npm run typecheck`: 188 recorded diagnostics, no regressions (10 file/code pairs improved).
 Scoped verifier correction: RED 166 pass/1 fail (repeated committed-only); changed-target-identity
 coverage green without production edits. GREEN 167 pass/0 fail; `npm run typecheck` unchanged
 (188 recorded diagnostics, no regressions, 10 improved pairs).
-Next: parent E2E of the select-intended-untracked route and work-unit review/commit.
+T7 E2E (Pi + `pi-claude-bridge`, `claude-bridge/claude-opus-5-5`, worktree at 86e395e5, temp repo
+with committed `sub.ts` + untracked `notes.txt`): committed-range inspect stopped at
+`intended_untracked_selection_required` (`sha256:269d71b2…`, `base-diff` [`sub.ts`]);
+`select-intended-untracked` with that exact binding and `[]` → consent granted → lineage
+`review-a68904a1d6ee4634` over the same identity → 1 reviewer via Claude Bridge → `approved` →
+acknowledge succeeded (a first acknowledge call failed only because the agent passed
+controller-only `input`). The native START vector carries `--base-ref=<base tree>`; that is
+provider-owned and was identical in the T6 run.
+Full suite `npm test`: 3266 tests, 3232 pass, 0 fail, 0 cancelled (exit 0).
+Next: push and PR on user decision.
