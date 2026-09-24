@@ -82,7 +82,8 @@ function createFixture(columns: number, rowCount: number, sidebar: boolean, work
 
 function measure(fixture: Fixture, invalidate = false, anchors?: number[]) {
 	const { transcript, header, rail, markdownMiss, widthBuild } = fixture.counts;
-	const maxTop = fixture.viewport.transcript.contentHeight - fixture.viewport.transcript.viewportHeight;
+	fixture.viewport.transcript.scrollToEnd();
+	const maxTop = fixture.viewport.transcript.scrollTop;
 	const positions = anchors ?? [0, Math.floor(maxTop / 4), Math.floor(maxTop / 2), Math.floor(maxTop * 3 / 4), maxTop];
 	const samples: number[] = [];
 	const cpuSamples: number[] = [];
