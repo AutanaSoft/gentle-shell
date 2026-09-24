@@ -670,7 +670,7 @@ async function customizeAction(ui: FakeUi, label: string): Promise<void> {
 	assert.ok(ui.notices.length > notices, `action did not finish: ${label}`);
 }
 
-test("customize command updates displayed settings and persists animation, banner and layout without applying layout", async (t) => {
+test("customize command updates displayed settings and applies layout immediately", async (t) => {
 	const home = scopedDoubleEscCancelConfigHome(t);
 	const { pi, commands } = fakePi();
 	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
@@ -689,9 +689,34 @@ test("customize command updates displayed settings and persists animation, banne
 	await customizeAction(ui, "Status placement: hidden");
 	assert.equal(resolveVisualSettings({ gentlePiConfigHome: home }).settings.statusPlacement, "hidden");
 	assert.match(ui.overlayView!.render(90).join("\n"), /Status placement: hidden.*current/);
-	assert.match(ui.notices.at(-1)!, /T4/);
+	assert.match(ui.notices.at(-1)!, /saved and applied/);
 	ui.overlayView!.handleInput("\x1b");
 	await pending;
+});
+
+test("below-input header remains a fullscreen widget without the rail and follows live placement", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	const tui = { mode: "fullscreen", terminal: { rows: 40, columns: 100 }, requestRender() {} };
+	const footer = (ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void })(tui, plainTheme, {
+		getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {},
+	});
+	try {
+		const widget = ui.widgets.get("gentle-shell-below-input-header") as (tui: unknown, theme: ShellBarTheme) => { render(width: number): string[] };
+		assert.deepEqual(widget(tui, plainTheme).render(100), []);
+		const pending = commands.get("gentle:customize")!.handler("", ctx);
+		await overlayReady;
+		await customizeAction(ui, "Header placement: below-input");
+		assert.match(widget(tui, plainTheme).render(100).join("\n"), /Gentle Shell/);
+		assert.equal(widget(tui, plainTheme).render(100).length, 2);
+		tui.mode = "regular";
+		assert.deepEqual(widget(tui, plainTheme).render(100), []);
+		ui.overlayView!.handleInput("\x1b");
+		await pending;
+	} finally { footer.dispose(); }
 });
 
 test("customize previews installed source palette without selecting until Enter", async (t) => {

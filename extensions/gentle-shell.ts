@@ -30,7 +30,7 @@ import {
 } from "../lib/double-esc-cancel-policy.ts";
 import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_QUOTA_URL, parseCodexUsage, parseNanQuota, parseProviderUsage, parseUsageHeaders, parseUsageSource, UsageSourceRegistry, UsageStore, USAGE_SOURCE_EVENT, type ProviderUsage, type UsageSource } from "../lib/shell-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
-import { sidebarHeader, sidebarPart } from "../lib/shell-sidebar.ts";
+import { sidebarHeader, sidebarPart, sidebarState, VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
 import { installSidebar, invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
 import { SessionChanges, SESSION_CHANGE_EVENT } from "../lib/session-changes.ts";
 import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
@@ -173,6 +173,7 @@ export function createShellBarComponent(
 	footerData: ShellFooterData,
 	dirty: () => number | undefined = () => undefined,
 	usage: () => ProviderUsage | undefined = () => undefined,
+	presentation?: () => ReturnType<typeof resolveVisualSettings>["settings"],
 ): ShellBarComponent {
 	const unsubscribe = footerData.onBranchChange(() => {
 		host.invalidateSidebar?.();
@@ -180,7 +181,7 @@ export function createShellBarComponent(
 	});
 	return {
 		render(width: number) {
-			return renderShellBar(buildShellBarModel(pi, ctx, footerData, { dirty: dirty(), usage: usage() }), theme, width);
+			return renderShellBar(buildShellBarModel(pi, ctx, footerData, { dirty: dirty(), usage: usage() }), theme, width, presentation?.());
 		},
 		invalidate() {},
 		dispose() {
@@ -502,6 +503,7 @@ function renderDoubleEscCancelReport(
 }
 
 const CHANGES_WIDGET_KEY = "gentle-shell-changes";
+const HEADER_WIDGET_KEY = "gentle-shell-below-input-header";
 const CHANGES_COMMAND_NAME = "gentle:changes";
 const CHANGES_SHORTCUT_DEFAULT = "alt+g";
 const CHANGES_POLL_DEFAULT_MS = 2000;
@@ -658,8 +660,8 @@ async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext, env: 
 	if (result?.type === "run") pi.sendUserMessage(`/${result.name}`, { expandPromptTemplates: true });
 }
 
-function showChanges(ctx: ExtensionContext, model: ChangesModel): void {
-	if (model.files.length === 0) {
+function showChanges(ctx: ExtensionContext, model: ChangesModel, visible = true): void {
+	if (!visible || model.files.length === 0) {
 		ctx.ui.setWidget(CHANGES_WIDGET_KEY, undefined);
 		return;
 	}
@@ -879,6 +881,15 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	const doubleEscCancelConfigHome = gentlePiConfigHome(env);
 	const animationOptions = { gentlePiConfigHome: doubleEscCancelConfigHome };
 	let animationPolicy = resolveAnimationPolicy(animationOptions).policy;
+	let visualSettings = resolveVisualSettings(animationOptions).settings;
+	let sidebarTui: TUI | undefined;
+	const refreshVisual = () => {
+		visualSettings = resolveVisualSettings(animationOptions).settings;
+		if (currentContext && changes) showChanges(currentContext, changes.model, visualSettings.visibility.changes);
+		if (sidebarTui?.terminal) sidebarState(sidebarTui).visibility = { todo: visualSettings.visibility.todo };
+		renderHost?.invalidateSidebar?.();
+		renderHost?.requestRender();
+	};
 	let doubleEscCancelPolicy: DoubleEscCancelPolicy = resolveDoubleEscCancelPolicy({
 		env,
 		gentlePiConfigHome: doubleEscCancelConfigHome,
@@ -891,7 +902,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		const fingerprint = changesFingerprint(model);
 		if (fingerprint === shown) return;
 		shown = fingerprint;
-		showChanges(ctx, model);
+		showChanges(ctx, model, visualSettings.visibility.changes);
 	};
 	const refreshChanges = async (ctx: ExtensionContext) => {
 		const tracker = changes;
@@ -926,11 +937,14 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		registry = new SessionWorktreeRegistry(pi, ctx.sessionManager, ctx.cwd, deps.resolveWorktree);
 		registry.start();
 		if (!ctx.hasUI) return;
+		visualSettings = resolveVisualSettings(animationOptions).settings;
 		changes = new SessionChanges(ctx.sessionManager.getSessionId(), ctx.sessionManager.getEntries());
 		const tracker = changes;
 		ctx.ui.setFooter((tui, theme, footerData) => {
+			sidebarTui = tui;
+			if (tui.terminal) sidebarState(tui).visibility = { todo: visualSettings.visibility.todo };
 			renderHost = { requestRender: () => tui.requestRender(), invalidateSidebar: () => invalidateSidebar(tui) };
-			const bottom = createShellBarComponent(pi, ctx, renderHost, theme, footerData, () => tracker.model.files.length, () => usage.get(ctx.model?.provider ?? ""));
+			const bottom = createShellBarComponent(pi, ctx, renderHost, theme, footerData, () => tracker.model.files.length, () => usage.get(ctx.model?.provider ?? ""), () => visualSettings);
 			// The Status card paints live session state that no event re-registers a
 			// part for: model, effort, context, cost, session name and extension
 			// statuses. The digest is what keeps the fullscreen memo honest, and it
@@ -940,16 +954,16 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				changes: { files: tracker.model.files.length, added: tracker.model.added, deleted: tracker.model.deleted, notice: tracker.model.notice },
 			});
 			const part = sidebarPart(tui, "footer", bottom, {
-				digest: () => JSON.stringify(footerModel()),
-				render: (width) => renderShellSidebarBar(footerModel(), theme, width),
+				digest: () => JSON.stringify([footerModel(), visualSettings]),
+				render: (width) => renderShellSidebarBar(footerModel(), theme, width, visualSettings),
 				invalidate() {},
 			});
 			// The header row carries everything that ticks every frame (model,
 			// effort, context, cost, usage) plus session identity; it never sees
 			// extension statuses or the working/thinking state.
-			const headerBar = (width: number) => renderShellHeaderBar(buildShellHeaderModel(footerModel()), theme, width, usageShortcutKey);
+			const headerBar = (width: number) => renderShellHeaderBar(buildShellHeaderModel(footerModel()), theme, width, usageShortcutKey, visualSettings);
 			const disposeHeader = sidebarHeader(tui, {
-				digest: () => JSON.stringify(buildShellHeaderModel(footerModel())),
+				digest: () => JSON.stringify([buildShellHeaderModel(footerModel()), visualSettings]),
 				render: (width) => [headerBar(width).text, renderShellHeaderRule(theme, width)],
 				invalidate() {},
 				handleMouse(event) {
@@ -961,8 +975,21 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return { handled: true, render: true };
 				},
 			});
-			const uninstall = installSidebar(tui, theme);
-			return { ...part, dispose() { disposeHeader(); uninstall(); part.dispose(); } };
+			const uninstall = installSidebar(tui, theme, () => visualSettings.statusPlacement, () => visualSettings.headerPlacement, () => visualSettings.density);
+			// The public widget slot follows the editor even when the rail is absent.
+			const belowHeader = () => visualSettings.headerPlacement === "below-input" && (tui as TUI & { mode?: string }).mode === "fullscreen";
+			ctx.ui.setWidget(HEADER_WIDGET_KEY, () => ({
+				render(width: number) { return belowHeader() ? [headerBar(width).text, renderShellHeaderRule(theme, width)] : []; },
+				invalidate() {},
+				handleMouse(event) {
+					if (!belowHeader() || event.type !== "click" || event.button !== "left" || event.y !== 0) return undefined;
+					const span = headerBar(event.width).usageSpan;
+					if (!span || event.x < span.start || event.x >= span.end) return undefined;
+					void openUsage(ctx);
+					return { handled: true, render: true };
+				},
+			}), { placement: "belowEditor" });
+			return { ...part, dispose() { ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); disposeHeader(); uninstall(); part.dispose(); if (sidebarTui === tui) sidebarTui = undefined; } };
 		});
 		void refreshUsage(ctx, true);
 		const ownsPrompt = installPrompt(
@@ -1105,9 +1132,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				const current = resolveVisualSettings(home);
 				if (current.malformed || current.readError) throw new Error(`Cannot update unreadable or malformed visual settings: ${current.globalFile}`);
 				writeVisualSettings(change(current.settings), home);
+				refreshVisual();
+				pi.events.emit(VISUAL_SETTINGS_CHANGED, { configHome: doubleEscCancelConfigHome });
 			};
 			const visual = () => resolveVisualSettings(home).settings;
-			const pending = "Preference saved; T4 layout application is pending.";
+			const pending = "Preference saved and applied.";
 			for (const value of Object.values(STATUS_PLACEMENT)) add(() => `Status placement: ${value}${visual().statusPlacement === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, statusPlacement: value })));
 			for (const value of Object.values(HEADER_PLACEMENT)) add(() => `Header placement: ${value}${visual().headerPlacement === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, headerPlacement: value })));
 			for (const value of Object.values(DENSITY)) add(() => `Density: ${value}${visual().density === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, density: value })));
@@ -1116,13 +1145,15 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				pending,
 				() => updateVisual((settings) => ({ ...settings, visibility: { ...settings.visibility, [key]: !settings.visibility[key] } })),
 			);
-			add("Reset visual, banner and animation defaults", "Defaults saved. Prompt applies now; banner at next startup; T4 layout application pending.", async (): Promise<void | false> => {
+			add("Reset visual, banner and animation defaults", "Defaults saved. Layout and prompt apply now; banner at next startup.", async (): Promise<void | false> => {
 				// Validate the banner before touching any store. The writes below are
 				// independent, not a transaction: report precisely what succeeded.
 				await readBannerConfigForEdit(bannerHome);
 				const changed: string[] = [];
 				try {
 					writeVisualSettings(structuredClone(DEFAULT_VISUAL_SETTINGS), home);
+					refreshVisual();
+					pi.events.emit(VISUAL_SETTINGS_CHANGED, { configHome: doubleEscCancelConfigHome });
 					changed.push("visual");
 					await writeBannerConfig({ ...DEFAULT_BANNER_CONFIG }, bannerHome);
 					banner = { ...DEFAULT_BANNER_CONFIG };

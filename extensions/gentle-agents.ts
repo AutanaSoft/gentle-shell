@@ -14,6 +14,8 @@ import { join, resolve, isAbsolute } from "node:path";
 import { keyHint, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text, type TUI } from "@earendil-works/pi-tui";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
+import { VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
+import { resolveVisualSettings } from "../lib/visual-customization-policy.ts";
 import { createCompletionQueue } from "../lib/agents-completion-delivery.ts";
 import { AGENT_MODE, discoverAgents, loadAgentsConfig, resolveAgentProfile, withPinnedModelProfiles, type AgentDefinition, type AgentMode } from "../lib/agents-config.ts";
 import { resolveBackgroundSubagentsPolicy } from "../lib/background-subagents-policy.ts";
@@ -311,6 +313,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	let ui: ExtensionContext["ui"] | undefined;
 	let host: { requestRender(): void } | undefined;
 	let sidebarTui: TUI | undefined;
+	const visualHome = gentlePiConfigHome(env);
+	let agentsVisible = resolveVisualSettings({ gentlePiConfigHome: visualHome }).settings.visibility.agents;
+	let stopVisualUpdates: (() => void) | undefined;
 	let sessions: ExtensionContext["sessionManager"] | undefined;
 	let presence: PresencePublisher | undefined;
 	let rpcActivityPublisher: RpcActivityPublisher | undefined;
@@ -891,6 +896,14 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	const showWidget = (ctx: ExtensionContext) => {
 		ui = ctx.hasUI ? ctx.ui : undefined;
 		sessions = ctx.sessionManager;
+		agentsVisible = resolveVisualSettings({ gentlePiConfigHome: visualHome }).settings.visibility.agents;
+		stopVisualUpdates?.();
+		stopVisualUpdates = pi.events.on(VISUAL_SETTINGS_CHANGED, (event) => {
+			if ((event as { configHome?: unknown } | undefined)?.configHome !== visualHome) return;
+			agentsVisible = resolveVisualSettings({ gentlePiConfigHome: visualHome }).settings.visibility.agents;
+			if (sidebarTui) invalidateSidebar(sidebarTui);
+			host?.requestRender();
+		});
 		tickClock();
 		// Agents is not a rail part: the fullscreen sidebar only suppresses
 		// bottom components registered through sidebarPart, and this widget is
@@ -900,6 +913,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			sidebarTui = tui;
 			return {
 				render(width: number) {
+					if (!agentsVisible) return [];
 					const lines = renderAgentsCard(visibleTasks(), theme, width, deps.now(), { collapsed, collapseKey, maxRows: widgetRows(tui.terminal?.rows), viewKey });
 					return lines.length === 0 ? [] : [...lines, ""];
 				},
@@ -1382,6 +1396,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		for (const view of overlays) { view.handleInput("q"); view.dispose(); }
 		overlays.clear();
 		sessions = undefined;
+		stopVisualUpdates?.();
+		stopVisualUpdates = undefined;
 		sidebarTui = undefined;
 		worktrees?.close();
 		worktrees = undefined;

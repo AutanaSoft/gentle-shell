@@ -156,7 +156,7 @@ Model, effort, and who does what should be choices, not accidents. Named profile
 
 Extension commands are only useful if you can find them. `alt+k` opens a curated, grouped palette — Configuration, Session, Diagnostics, and Skills — searchable by label, command name, or description, showing entries only when they are actually registered.
 
-`/gentle:customize` opens an interactive panel to set animation quality, startup banner rose, text logo and color, or choose an installed Pi theme. Highlighting a theme previews its source palette without changing the active theme; press Enter or Space to apply it through Pi. If its source is unreadable, the preview is unavailable. The panel can reset the visual, banner and animation settings to defaults; banner changes appear on the next startup.
+`/gentle:customize` opens an interactive panel to set animation quality, startup banner rose, text logo and color, or choose an installed Pi theme. Highlighting a theme previews its source palette without changing the active theme; press Enter or Space to apply it through Pi. If its source is unreadable, the preview is unavailable. Status defaults to a right rail in fullscreen terminals at least 140 columns wide, and to a bottom bar otherwise. Choose right, bottom, or hidden (which hides only the rail), move the fullscreen header below the input, select comfortable/compact/minimal density, and toggle Changes, Agents, TODO, usage/cost, and model details independently. Layout changes and reset take effect immediately; banner changes appear on the next startup. The panel can reset visual, banner, and animation settings to defaults.
 
 **[Docs →](docs/gentle-shell.md#command-palette)**
 

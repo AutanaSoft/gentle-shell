@@ -2,6 +2,7 @@ import { ScrollView, VStack, visibleWidth, type Component, type TUI, type TuiMou
 import { sidebarState, type SidebarRail } from "./shell-sidebar.ts";
 import type { ShellBarTheme } from "./shell-bar.ts";
 import { renderSidebarBanner } from "./shell-sidebar-banner.ts";
+import type { Density, HeaderPlacement, StatusPlacement } from "./visual-customization-policy.ts";
 
 export const SIDEBAR_BREAKPOINT = 140;
 const RAIL_WIDTH = 50;
@@ -27,6 +28,7 @@ type PreparedRail = {
 	revision: number;
 	width: number;
 	mode: string | undefined;
+	headerPlacement: HeaderPlacement;
 	root: LayoutRoot;
 	theme: ShellBarTheme;
 	parts: Array<[string, SidebarRail]>;
@@ -69,7 +71,7 @@ function railDigest(rail: SidebarRail): string | undefined {
 }
 
 /** Installs the fullscreen rail: wraps the host layout root with the [rail, transcript] hstack and returns a disposer restoring the original layout. */
-export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
+export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => StatusPlacement = () => "auto", headerPlacement: () => HeaderPlacement = () => "top", density: () => Density = () => "comfortable"): () => void {
 	if (!tui.terminal) return () => {};
 	const host = tui as Host;
 	const state = sidebarState(tui);
@@ -89,7 +91,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 	// revision counter, exactly like the whole-rail memo already did.
 	const sectionCache = new Map<string, SectionCacheEntry>();
 	state.active = false;
-	state.ownsHost = () => !stopped && host.mode === "fullscreen" && !!host.layoutRoot && roots.has(host.layoutRoot);
+	state.ownsHost = () => !stopped && host.mode === "fullscreen" && tui.terminal.columns >= SIDEBAR_BREAKPOINT && (placement() === "auto" || placement() === "right") && !!host.layoutRoot && roots.has(host.layoutRoot);
 	const rail: Component = {
 		render: () => railLines,
 		invalidate() {
@@ -156,14 +158,14 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 	};
 	const prepare = (width: number, root: LayoutRoot): boolean => {
 		state.active = false;
-		if (stopped || failed || host.mode !== "fullscreen" || width < SIDEBAR_BREAKPOINT) {
+		if (stopped || failed || host.mode !== "fullscreen" || width < SIDEBAR_BREAKPOINT || placement() === "bottom" || placement() === "hidden") {
 			prepared = undefined;
 			return false;
 		}
 		const parts = [...state.parts.entries()];
 		const digests = parts.map(([, rail]) => railDigest(rail));
 		const unchanged = prepared?.revision === cache.revision &&
-			prepared.width === width && prepared.mode === host.mode && prepared.root === root && prepared.theme === theme &&
+			prepared.width === width && prepared.mode === host.mode && prepared.headerPlacement === headerPlacement() && prepared.root === root && prepared.theme === theme &&
 			prepared.parts.length === parts.length && prepared.parts.every(([key, part], index) => parts[index]?.[0] === key && parts[index]?.[1] === part) &&
 			prepared.digests.length === digests.length && prepared.digests.every((digest, index) => digest === digests[index]);
 		if (unchanged) {
@@ -179,7 +181,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 			const preparedHeaderLines = [...(headerPart?.render(Math.max(0, width - HEADER_RIGHT_INSET)) ?? [])];
 			const headerActive = headerPart !== undefined && preparedHeaderLines.some((line) => line.trim() !== "");
 			const contentWidth = scroll.getContentWidth(RAIL_WIDTH);
-			const sections = ["footer", "agents", "todo"].map((key) => {
+			const sections = ["footer", "agents", "todo"].filter((key) => key !== "todo" || state.visibility?.todo !== false).map((key) => {
 				const component = state.parts.get(key);
 				if (!component) {
 					sectionCache.delete(key);
@@ -204,7 +206,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 			railLines = [];
 			if (sections.length && branding.length) {
 				railLines.push(...branding.map((line) => " ".repeat(RAIL_PADDING) + line + " ".repeat(RAIL_PADDING)));
-			} else if (sections.length && headerActive) {
+			} else if (sections.length && headerActive && density() === "comfortable") {
 				// The banner used to hold the first card off the top; the header
 				// took its place, so keep one blank row between them.
 				railLines.push("");
@@ -212,7 +214,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 			for (const section of sections) {
 				// One blank row separates a section from the banner or the
 				// previous section; the header gap above is not a section.
-				if (hits.length > 0 || branding.length > 0) railLines.push("");
+				if ((hits.length > 0 || branding.length > 0) && density() === "comfortable") railLines.push("");
 				const startY = railLines.length;
 				railLines.push(...section.lines.map((line) => " ".repeat(RAIL_PADDING) + line + " ".repeat(RAIL_PADDING)));
 				hits.push({ key: section.key, component: section.component, startY, height: section.lines.length, width: contentWidth - RAIL_PADDING * 2 });
@@ -220,7 +222,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 			// Height is owned by the native ScrollView, never by the transcript.
 			const active = railLines.length > 0 && railLines.every((line) => visibleWidth(line) <= contentWidth);
 			headerLines = active && headerActive ? preparedHeaderLines : [];
-			prepared = { revision: cache.revision, width, mode: host.mode, root, theme, parts, digests, contentWidth, active, lines: railLines, hits, headerLines, headerActive: headerLines.length > 0 };
+			prepared = { revision: cache.revision, width, mode: host.mode, headerPlacement: headerPlacement(), root, theme, parts, digests, contentWidth, active, lines: railLines, hits, headerLines, headerActive: headerLines.length > 0 };
 			state.active = active;
 			return active;
 		} catch {
@@ -281,7 +283,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 				if (!prepare(tui.terminal.columns, root)) return original.call(root);
 				const current = prepared!;
 				if (current.presentation?.scrollTop === scroll.scrollTop) return current.presentation.output;
-				const output: LayoutNode = current.headerActive
+				const output: LayoutNode = current.headerActive && headerPlacement() !== "below-input"
 					? { type: "vstack", gap: 0, align: "stretch", entries: [
 						{ component: header, basis: "auto", grow: 0, shrink: 0, minSize: 1 },
 						{ component: hstackHost, basis: 0, grow: 1, shrink: 1, minSize: 1 },

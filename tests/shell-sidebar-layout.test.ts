@@ -82,6 +82,76 @@ test("only fullscreen at 140 columns activates; shrinking restores bottom paint"
 	}
 });
 
+test("bottom paint follows placement and resize before the next layout pass", (t) => {
+	const f = fixture("fullscreen", 140);
+	let placement: "auto" | "right" | "bottom" | "hidden" = "auto";
+	t.after(installSidebar(f.tui, theme, () => placement));
+	assert.equal(f.root[NODE]().type, "hstack");
+	assert.deepEqual(f.bottom.render(80), []);
+
+	// A preference notification can request paint before the host measures its root.
+	placement = "bottom";
+	assert.deepEqual(f.bottom.render(80), ["Status"]);
+	assert.equal(f.root[NODE]().type, "vstack");
+	placement = "right";
+	assert.equal(f.root[NODE]().type, "hstack");
+	f.host.terminal.columns = 139;
+	assert.deepEqual(f.bottom.render(80), ["Status"]);
+	assert.equal(f.root[NODE]().type, "vstack");
+	placement = "hidden";
+	f.host.terminal.columns = 180;
+	assert.deepEqual(f.bottom.render(80), ["Status"]);
+	assert.equal(f.root[NODE]().type, "vstack");
+	placement = "auto";
+	assert.equal(f.root[NODE]().type, "hstack");
+	assert.deepEqual(f.bottom.render(80), []);
+});
+
+test("status placement preserves bottom paint when hidden and resizes responsively", (t) => {
+	const f = fixture("fullscreen", 140);
+	let placement: "auto" | "right" | "bottom" | "hidden" = "auto";
+	t.after(installSidebar(f.tui, theme, () => placement));
+	assert.equal(f.root[NODE]().type, "hstack");
+	placement = "hidden";
+	assert.equal(f.root[NODE]().type, "vstack");
+	assert.deepEqual(f.bottom.render(80), ["Status"]);
+	placement = "right";
+	assert.equal(f.root[NODE]().type, "hstack");
+	f.host.terminal.columns = 139;
+	assert.equal(f.root[NODE]().type, "vstack");
+	placement = "bottom";
+	f.host.terminal.columns = 180;
+	assert.equal(f.root[NODE]().type, "vstack");
+});
+
+test("below-input header removes only the rail's top row", (t) => {
+	const f = fixture();
+	let header: "top" | "below-input" = "top";
+	sidebarHeader(f.tui, { render: () => ["header"], invalidate() {} });
+	t.after(installSidebar(f.tui, theme, () => "auto", () => header));
+	assert.equal(f.root[NODE]().type, "vstack");
+	header = "below-input";
+	assert.equal(f.root[NODE]().type, "hstack");
+	assert.deepEqual(f.bottom.render(80), []);
+	header = "top";
+	assert.equal(f.root[NODE]().type, "vstack");
+});
+
+test("TODO visibility hides both rail and bottom without mutating the registered part", (t) => {
+	const f = fixture();
+	const todo = sidebarPart(f.tui, "todo", { render: (_width: number) => ["todo"], invalidate() {} });
+	t.after(installSidebar(f.tui, theme));
+	assert.match(rail(f).render(50).join("\n"), /todo/);
+	sidebarState(f.tui).visibility = { todo: false };
+	invalidateSidebar(f.tui);
+	assert.doesNotMatch(rail(f).render(50).join("\n"), /todo/);
+	f.host.terminal.columns = 100;
+	assert.equal(f.root[NODE]().type, "vstack");
+	assert.deepEqual(todo.render(100), []);
+	sidebarState(f.tui).visibility = { todo: true };
+	assert.deepEqual(todo.render(100), ["todo"]);
+});
+
 test("rail orders unified Status, agents, TODO without standalone changes", (t) => {
 	const f = fixture();
 	for (const key of ["todo", "agents", "changes"]) {
