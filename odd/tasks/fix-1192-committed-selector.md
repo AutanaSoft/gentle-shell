@@ -70,9 +70,32 @@ not remember the committed selector.
   Evidence: tests "inspect with a committed-range selector retains baseRef/committedOnly, and a
   plain START adopts it" and "an explicit baseRef that conflicts with a retained committed-range
   selector is not adopted" in `tests/review-controller-native-routing.test.ts`.
-- [ ] T6 End-to-end RDD proof: load the worktree extension against the real `gentle-ai` binary
+- [x] T6 End-to-end RDD proof: load the worktree extension against the real `gentle-ai` binary
   in a temp repo (committed range + unrelated untracked file) and show inspect →
   selection → START creates a lineage without projection drift.
+  Route: parent-run headless Pi (`gentle-shell --package-root <worktree> -p --no-session
+  --model claude-bridge/claude-opus-5-5`), i.e. Pi + `pi-claude-bridge`, gentle-ai
+  3.7.1-0.20260923150940. Temp repo: base commit, feature commit (`add.ts`), untracked
+  `notes.txt` + Pi-created `.gitignore`.
+  - Baseline (installed gentle-pi, same runtime): inspect with baseRef → `sha256:1c2fdb…`
+    `base-diff` [`add.ts`]; inspect + `untrackedScope: exclude` → `sha256:011fb4…`
+    `current-changes` [] `empty_candidate_base_ref_required` (bug reproduced).
+  - Fixed (this branch, 236192c5): inspect → `sha256:cad755ff…` `base-diff` [`add.ts`]
+    `intended_untracked_selection_required`; inspect + exclude → same identity,
+    `fresh_target_ready`; plain START `{"mode":"ordinary"}` adopted the retained committed
+    selector (`--base-ref`, `--committed-only`, `--untracked-scope=exclude`) → consent granted →
+    lineage `review-aef8b8305d59e2ba`, one `review-reliability` host-relay reviewer through
+    Claude Bridge → `approved` → acknowledge-approved succeeded (authority burned). No
+    diagnostics. Terminal-consumption record on disk names target `cad755ff…` and that lineage;
+    `base_tree` a0b17eb equals the base commit tree.
+
+- [ ] T7 `select-intended-untracked` operation (extensions/gentle-ai.ts ~8096-8114) must keep the
+  committed-range selector: its STATUS and internal START currently omit `baseRef`, so a binding
+  issued by a committed-range inspect is rejected (`intended-untracked-selection-binding-rejected`)
+  or drifts. Found by the independent verifier of 236192c5 (issue step 7).
+- [ ] T8 Harden provider-token parsing: fail closed on `--committed-only=false` (or any
+  non-true value), repeated `--base-ref`/`--lineage`, and a split flag whose value is another
+  `--flag`. Found by the independent verifier of 236192c5.
 
 ## Acceptance criteria
 
@@ -87,4 +110,4 @@ T1–T5 done (delegated writer). Verification (RDD off, so this report is verifi
 - `npm run typecheck`: 188 recorded diagnostics, no regressions.
 - RED confirmed for T2–T4 and T5 by temporarily reverting each touched source file (via `git diff`/`git apply`, no stash) and re-running the new/updated tests before restoring the fix.
 
-Next: T6 (end-to-end RDD proof against the real `gentle-ai` binary in a temp repo).
+T6 done (see evidence above). Verifier of 236192c5: PASS with two warnings → T7, T8. Next: T7–T8 via delegated writer, then E2E of the select-intended-untracked route.
