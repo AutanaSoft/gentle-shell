@@ -711,6 +711,24 @@ function nativeUntrackedSelectionArguments(selection: NativeUntrackedSelection):
 	];
 }
 
+// Reads a `--flag`/`--flag=value` pair out of provider-issued argument
+// tokens (split or `=` form). Fails closed on a malformed provider token
+// instead of silently producing a broken argv: a dangling `--flag` as the
+// last token, or an empty `--flag=`, both throw.
+function providerFlagValue(tokens: readonly string[], flag: string): string | undefined {
+	const index = tokens.findIndex((token) => token === `--${flag}` || token.startsWith(`--${flag}=`));
+	if (index === -1) return undefined;
+	const token = tokens[index]!;
+	if (token.startsWith(`--${flag}=`)) {
+		const value = token.slice(`--${flag}=`.length);
+		if (value === "") throw new TypeError(`Native intended-untracked selection has an empty --${flag}= value`);
+		return value;
+	}
+	const value = tokens[index + 1];
+	if (value === undefined) throw new TypeError(`Native intended-untracked selection has a dangling --${flag} with no value`);
+	return value;
+}
+
 const NATIVE_RISK_LEVEL = ["low", "medium", "high"] as const;
 
 // gentle-ai's negotiated `start/v2` envelope is a closed schema
@@ -2241,12 +2259,25 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 		if (submitted !== undefined && submitted.argumentTokens.reduce((count, token) => count + token.split("{{value}}").length - 1, 0) !== 1) throw new TypeError("Native intended-untracked selection requires exactly one provider-issued {{value}} token");
 		const submittedTokens = submitted === undefined ? undefined : submitted.argumentTokens.map((token) => token.replaceAll("{{value}}", submitted.value));
 		// gentle-ai 3.7.1 submission argument_tokens never carry --base-ref /
-		// --committed-only, so a forwarded baseRef must be appended after them;
-		// only bail if the provider already staked out a conflicting base-ref.
-		const submittedBaseRefIndex = submittedTokens?.findIndex((token) => token === "--base-ref" || token.startsWith("--base-ref="));
-		const submittedBaseRefValue = submittedBaseRefIndex === undefined || submittedBaseRefIndex === -1 ? undefined
-			: (submittedTokens![submittedBaseRefIndex].startsWith("--base-ref=") ? submittedTokens![submittedBaseRefIndex].slice("--base-ref=".length) : submittedTokens![submittedBaseRefIndex + 1]);
+		// --committed-only / --lineage, so a forwarded selector must be appended
+		// after them; only bail if the provider already staked out a conflicting
+		// value for the same flag. providerFlagValue also fails closed on a
+		// dangling `--flag` (last token, no value) or an empty `--flag=`.
+		const submittedBaseRefValue = submittedTokens === undefined ? undefined : providerFlagValue(submittedTokens, "base-ref");
 		if (request.baseRef !== undefined && submittedBaseRefValue !== undefined && submittedBaseRefValue !== request.baseRef) throw new TypeError("Native intended-untracked selection already carries a conflicting base-ref");
+		const submittedLineageValue = submittedTokens === undefined ? undefined : providerFlagValue(submittedTokens, "lineage");
+		if (request.lineageId !== undefined && submittedLineageValue !== undefined && submittedLineageValue !== request.lineageId) throw new TypeError("Native intended-untracked selection already carries a conflicting lineage");
+		const submittedHasCommittedOnly = submittedTokens?.some((token) => token === "--committed-only" || token === "--committed-only=true") ?? false;
+		// Unchanged base-ref (submittedBaseRefValue undefined): append the full
+		// base-ref/committed-only pair. Same base-ref already present but missing
+		// --committed-only: append only --committed-only (submittedBaseRefValue
+		// !== undefined implies it already equals request.baseRef, the throw
+		// above ruled out the conflicting case).
+		const forwardedBaseRef = request.baseRef === undefined ? []
+			: submittedBaseRefValue === undefined ? ["--base-ref", request.baseRef, "--committed-only"]
+			: submittedHasCommittedOnly ? []
+			: ["--committed-only"];
+		const forwardedLineage = request.lineageId === undefined || submittedLineageValue !== undefined ? [] : ["--lineage", request.lineageId];
 		const statusArguments = submittedTokens === undefined ? [
 			"review", "status", "--contract", REVIEW_INTEGRATION_CONTRACT, "--cwd", request.cwd,
 			"--projection", request.projection ?? "workspace",
@@ -2255,7 +2286,7 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 			...(request.lineageId === undefined ? [] : ["--lineage", request.lineageId]),
 			...(request.agent === undefined ? [] : ["--agent", request.agent]),
 			"--next-transition",
-		] : ["review", "status", "--cwd", request.cwd, ...submittedTokens, ...(request.baseRef === undefined || submittedBaseRefValue !== undefined ? [] : ["--base-ref", request.baseRef, "--committed-only"])];
+		] : ["review", "status", "--cwd", request.cwd, ...submittedTokens, ...forwardedBaseRef, ...forwardedLineage];
 		const execution = await this.negotiated(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal);
 		assertSupportedNextTransitionOperation(execution.body);
 		return decode(NATIVE_REVIEW_OPERATION.STATUS, false, () => decodeReviewStatusV3(execution.body));

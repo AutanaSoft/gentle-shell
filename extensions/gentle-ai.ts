@@ -5581,6 +5581,11 @@ interface RetainedNativeUntrackedSelection {
 interface RetainedPreLineageNativeUntrackedSelection extends RetainedNativeUntrackedSelection {
 	readonly targetIdentity: string;
 	readonly candidateTree: string;
+	// gentle-pi#1192: only set when the inspect that produced this entry was a
+	// committed-range inspect, so a later plain START can replay the same
+	// selector instead of silently falling back to the workspace-diff range.
+	readonly baseRef?: string;
+	readonly committedOnly?: true;
 }
 
 interface RetainedNativeCaptureRoute { readonly workspaceRoot: string; readonly lineageId: string; readonly baseRef?: string; readonly committedOnly?: true; }
@@ -6362,8 +6367,11 @@ function readRetainedPreLineageNativeUntrackedSelection(
 	workspaceRoot: string,
 ): RetainedPreLineageNativeUntrackedSelection | undefined {
 	const selection = selections.get(reviewLifecycleStorageKey(workspaceRoot, ""));
+	// gentle-pi#1192: this entry may now carry its own optional baseRef, so the
+	// discriminant against RetainedNativeCaptureRoute (a distinct key namespace
+	// that always carries workspaceRoot/lineageId) can no longer be "no baseRef".
 	return selection !== undefined &&
-		!("baseRef" in selection) &&
+		!isRetainedNativeCaptureRoute(selection) &&
 		typeof (selection as Partial<RetainedPreLineageNativeUntrackedSelection>).targetIdentity === "string" &&
 		typeof (selection as Partial<RetainedPreLineageNativeUntrackedSelection>).candidateTree === "string"
 		? selection as RetainedPreLineageNativeUntrackedSelection
@@ -7715,6 +7723,10 @@ async function executeReviewControllerOperation(
 							intendedUntracked: Object.freeze([...selected.intendedUntracked!]),
 							submission,
 							...candidateIdentity,
+							// gentle-pi#1192: remember the committed-range selector this
+							// inspect used, so a later plain START replays it instead of
+							// recomputing an unrelated workspace-diff candidate.
+							...(canonicalBaseRef === undefined ? {} : { baseRef: canonicalBaseRef, committedOnly: true as const }),
 						}),
 					);
 				}
@@ -8127,7 +8139,7 @@ async function executeReviewControllerOperation(
 			// gentle-pi#706: a plain START adopts the selection an inspect
 			// untrackedScope round trip retained pre-lineage; explicit input or a
 			// carried submission always wins over the retained entry.
-			const retainedPreLineageSelection =
+			const rawRetainedPreLineageSelection =
 				explicitUntrackedSelection.untrackedScope === undefined &&
 				intendedUntrackedSelection === undefined
 					? readRetainedPreLineageNativeUntrackedSelection(
@@ -8135,6 +8147,31 @@ async function executeReviewControllerOperation(
 							defaultCwd,
 						)
 					: undefined;
+			let canonicalBaseRef: string | undefined;
+			if (baseRef !== undefined) {
+				try {
+					canonicalBaseRef = resolveCanonicalCandidateBase(defaultCwd, baseRef).commit;
+				} catch (error) {
+					if (error instanceof CandidateViewError && error.diagnostics !== undefined) return nativeOperationFailure(parameters.operation, Object.assign(error, { candidateViewPreNative: true }));
+					if (error instanceof CandidateViewError && (error.reason === "base-ref-ambiguous" || error.reason === "base-ref-unresolvable" || error.reason === "base-ref-moved")) return nativeStartRejection(error.reason);
+					return nativeStartRejection("base-ref-unresolvable");
+				}
+			}
+			// gentle-pi#1192: an explicit baseRef always wins over a conflicting
+			// retained one (same precedent as explicit untrackedScope/submission
+			// above); drop the retained entry from *this* START rather than reject
+			// outright, so a differently-scoped explicit START still proceeds. Any
+			// STATUS/START this call still runs against the "" key clears it below
+			// on success regardless (gentle-pi#706), same as any other START.
+			const retainedBaseRefConflicts =
+				canonicalBaseRef !== undefined &&
+				rawRetainedPreLineageSelection?.baseRef !== undefined &&
+				rawRetainedPreLineageSelection.baseRef !== canonicalBaseRef;
+			const retainedPreLineageSelection = retainedBaseRefConflicts ? undefined : rawRetainedPreLineageSelection;
+			// A plain START (no explicit baseRef) adopts the retained committed-range
+			// selector verbatim; it was already canonicalized when the inspect stored
+			// it, so no second resolveCanonicalCandidateBase round trip is needed.
+			if (canonicalBaseRef === undefined && retainedPreLineageSelection?.baseRef !== undefined) canonicalBaseRef = retainedPreLineageSelection.baseRef;
 			const untrackedSelection: NativeStartUntrackedSelection =
 				retainedPreLineageSelection === undefined
 					? explicitUntrackedSelection
@@ -8146,19 +8183,20 @@ async function executeReviewControllerOperation(
 						};
 			const untrackedSubmission =
 				intendedUntrackedSelection ?? retainedPreLineageSelection?.submission;
-			const retainedUntrackedSelection =
-				retainedPreLineageSelection ??
-				cloneRetainedNativeUntrackedSelection(explicitUntrackedSelection);
-			let canonicalBaseRef: string | undefined;
-			if (baseRef !== undefined) {
-				try {
-					canonicalBaseRef = resolveCanonicalCandidateBase(defaultCwd, baseRef).commit;
-				} catch (error) {
-					if (error instanceof CandidateViewError && error.diagnostics !== undefined) return nativeOperationFailure(parameters.operation, Object.assign(error, { candidateViewPreNative: true }));
-					if (error instanceof CandidateViewError && (error.reason === "base-ref-ambiguous" || error.reason === "base-ref-unresolvable" || error.reason === "base-ref-moved")) return nativeStartRejection(error.reason);
-					return nativeStartRejection("base-ref-unresolvable");
-				}
-			}
+			// The stored value must stay a plain RetainedNativeUntrackedSelection
+			// (no baseRef/targetIdentity/candidateTree): it is re-keyed under the
+			// lineage-scoped entry below, and readRetainedNativeUntrackedSelection
+			// discriminates that entry from a RetainedNativeCaptureRoute by the
+			// absence of a baseRef field.
+			const retainedUntrackedSelection: RetainedNativeUntrackedSelection | undefined =
+				retainedPreLineageSelection === undefined
+					? cloneRetainedNativeUntrackedSelection(explicitUntrackedSelection)
+					: Object.freeze({
+							untrackedScope: retainedPreLineageSelection.untrackedScope,
+							expectedUntrackedInventory: retainedPreLineageSelection.expectedUntrackedInventory,
+							intendedUntracked: retainedPreLineageSelection.intendedUntracked,
+							...(retainedPreLineageSelection.submission === undefined ? {} : { submission: retainedPreLineageSelection.submission }),
+						});
 			try {
 				const gated = await resolveReviewModeGate(nativeReviewCli, parameters.operation, defaultCwd, signal);
 				if (gated !== undefined) return gated;
