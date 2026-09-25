@@ -28,10 +28,10 @@ Show the repository-effective subagent profile in the fullscreen shell header an
   - Acceptance: both fullscreen surfaces show `name`, `name (Local)`, or `name (Repo)` as appropriate; same-name source transitions redraw; invalid/stale pin layers fall through; no filesystem/Git in repeated digest/render; external edits appear after bounded refresh; no leaked refresh across sessions; compact bar and routing unchanged.
   - Evidence: worker focused tests 126 passed; `pnpm run typecheck` passed with 195 baseline diagnostics and no regression; `pnpm test` passed (3,362 passed, 38 skipped). Independent verifier reran focused tests: 126 passed, 0 failed; `git diff --check` passed. Parent spot check `git diff --check` passed. Implementation diff: 187 additions + 20 deletions = 207 changed lines (before task document), below 400. Commit: `b5e07511abf20846875d3e58493aa9db25dc3ceb` (`fix(shell): show repository-effective agent profile`). Assessment/review: committed candidate risk high (`process_boundary`); initial untracked assessment was unavailable, so an independent verifier ran; native review lineage `review-907c17f25f78e424` closed approved and exact acknowledgement burned authority (`gentle-ai.review-acknowledged/v1`).
 
-- [ ] P1176-2 — Integrate current upstream `main` into the existing feature branch, resolve the `session_start` overlap without losing profile polling or main visual settings, rerun focused tests/typecheck/full suite, and record the merge result.
+- [x] P1176-2 — Integrate current upstream `main` into the existing feature branch, resolve the `session_start` overlap without losing profile polling or main visual settings, rerun focused tests/typecheck/full suite, and record the merge result.
   - Route: parent performs authorized Git merge; delegate nontrivial conflict resolution and verification. No new worktree, no formatters, no push or PR.
   - Acceptance: no conflict markers; both UI features run; current branch is based on upstream main; checks pass; new candidate review handled under the enabled switch.
-  - Evidence: only `extensions/gentle-shell.ts:session_start` conflicted; retained main visual settings and feature profile poll. Independent verifier: focused tests 222 passed; `pnpm run typecheck` passed (188 baseline diagnostics, 10 improvements); `pnpm test` passed (3,436 passed, 41 skipped), provider contract and harness passed. `git diff --check` and staged check passed; no unresolved paths. Pi 0.87.1 bundle and Windows-native skipped coverage remain unverified. Merge commit: pending.
+  - Evidence: only `extensions/gentle-shell.ts:session_start` conflicted; retained main visual settings and feature profile poll. Independent verifier: focused tests 222 passed; `pnpm run typecheck` passed (188 baseline diagnostics, 10 improvements); `pnpm test` passed (3,436 passed, 41 skipped), provider contract and harness passed. `git diff --check` and staged check passed; no unresolved paths. Pi 0.87.1 bundle and Windows-native skipped coverage remain unverified. Merge commit: `5d88e3305f1a62d9b0fbb535eb36a7ab04e4a403` (parents `4f0178f0`, `8035114a`). Final PR diff against main: 251 changed lines. Native review `review-f1ee3b2266438def` approved and acknowledged.
 
 ## Progress
 
@@ -41,4 +41,4 @@ Show the repository-effective subagent profile in the fullscreen shell header an
 
 ## Next step
 
-Finish the verified merge from upstream `main` at `8035114a` into this branch, then record its commit and review outcome. User approved integration only, not push or PR.
+Integration and review are complete. The remaining delivery decisions (push and replacement PR) belong to the user.
