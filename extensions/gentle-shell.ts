@@ -21,6 +21,7 @@ import { BANNER_COLORS, DEFAULT_BANNER_CONFIG, readBannerConfig, readBannerConfi
 import { agentsViewKey } from "../lib/agents-keys.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
 import { DOUBLE_ESC_CANCEL_HINT, framePromptLines, IDLE_ESC_CLEAR_HINT, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
+import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import { resolveAnimationPolicy, writeAnimationPolicy, type AnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy, type VimPolicy } from "../lib/vim-policy.ts";
@@ -274,6 +275,12 @@ interface PromptEditorDeps {
 	tuiVersion?: () => string | undefined;
 	/** Report a single warning if this editor cannot safely provide modal editing. */
 	notifyCompatibility?: (message: string) => void;
+	/**
+	 * Read fresh on every render while WORKING: the explicit, orchestrator-reported
+	 * ODD phase label for the current session, or undefined to fall back to the
+	 * generic "working…" label. Never applied to IDLE or QUEUED.
+	 */
+	workingLabel?: () => string | undefined;
 }
 
 const PROMPT_FRAME_ROLE = "border";
@@ -947,6 +954,7 @@ export class GentlePromptEditor extends CustomEditor {
 			borderColor: (text) => this.deps.fg(PROMPT_FRAME_ROLE, text),
 			fg: this.deps.fg,
 			bold: this.deps.bold,
+			workingLabel: this.promptState === PROMPT_STATE.WORKING ? this.deps.workingLabel?.() : undefined,
 			escHint: [
 				this.vimPolicy === "on" ? (this.vimVisual.active ? (this.vimVisual.kind === "line" ? "VISUAL LINE" : "VISUAL") : this.vimNormal ? "NORMAL" : "INSERT") : undefined,
 				this.promptState === PROMPT_STATE.WORKING && this.isPendingEscapeCancel()
@@ -1014,7 +1022,14 @@ function installPrompt(
 			dispatchQueuedText: promptDeps.dispatchQueuedText,
 			notifyCompatibility: (message) => ctx.ui.notify(message, "warning"),
 			tuiVersion: promptDeps.vimRuntimeVersion,
+			workingLabel: () => oddPhaseRegistry.label(ctx.sessionManager.getSessionId()),
 		});
+		// Pi's own docs require an explicit requestRender() after a state change
+		// (docs/tui.md: "Call tui.requestRender() after state changes"); no host
+		// re-render is implicitly guaranteed, and the WORKING pulse loop does not
+		// run at all under the "potato" animation policy. Register this session's
+		// redraw so a phase reported by the tool is visible immediately.
+		oddPhaseRegistry.setRenderRequest(ctx.sessionManager.getSessionId(), () => tui.requestRender());
 		onCreated(prompt);
 		return prompt;
 	};
@@ -1586,6 +1601,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		applyChanges(ctx, tracker.model);
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
+		oddPhaseRegistry.clear(ctx.sessionManager.getSessionId());
+		oddPhaseRegistry.clearRenderRequest(ctx.sessionManager.getSessionId());
 		pendingQueuedText = undefined;
 		prompt?.dispose();
 		prompt = undefined;
@@ -1932,6 +1949,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// below has delivered the pending text. Nothing is sent from here: Pi
 		// is mid-turn, so the text simply waits and goes out, once, when that
 		// turn settles. It is never dropped.
+		// A new turn always starts unlabeled: any ODD phase reported for the
+		// previous turn must never leak into this one. The orchestrator
+		// reports the new turn's phase explicitly once it knows it.
+		oddPhaseRegistry.clear(ctx.sessionManager.getSessionId());
 		prompt?.setWorking(true);
 		// The dev-binary card is a startup notice: it leaves with the first prompt.
 		if (ctx.hasUI) ctx.ui.setWidget(DEV_BINARY_WIDGET_KEY, undefined);
@@ -1941,6 +1962,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// this is normally idle; if a run is somehow still in flight the prompt
 		// stays working and the pending text waits for the next settle.
 		if (!ctx.isIdle()) return;
+		// Covers both a normal finish and an aborted turn settling idle: the
+		// input falls back to the generic "working…" label until the next
+		// turn's own agent_start clears it again (belt-and-suspenders with the
+		// clear above).
+		oddPhaseRegistry.clear(ctx.sessionManager.getSessionId());
 		prompt?.setWorking(false);
 		if (pendingQueuedText === undefined) return;
 		const queued = pendingQueuedText;

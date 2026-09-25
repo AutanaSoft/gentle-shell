@@ -228,9 +228,13 @@ test("registered Gentle Review tools render reusable rose lifecycle call rows", 
 		],
 	] as const;
 
+	// This exhaustiveness check is scoped to the gentle_review* lifecycle
+	// family this test names, not every gentle_-prefixed tool: gentle_odd_phase
+	// is a plain status-report tool with no pending/running/failed rose
+	// lifecycle card of its own (see extensions/gentle-ai.ts).
 	assert.deepEqual(
 		[...new Set(cases.map(([name]) => name))].sort(),
-		[...tools.keys()].filter((name) => name.startsWith("gentle_")).sort(),
+		[...tools.keys()].filter((name) => name.startsWith("gentle_review")).sort(),
 	);
 
 	for (const [name, args, operationPath] of cases) {

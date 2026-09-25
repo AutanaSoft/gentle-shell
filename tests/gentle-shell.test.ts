@@ -19,6 +19,7 @@ import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy } from "../lib/vim-policy.ts";
 import { readBannerConfig } from "../extensions/startup-banner.ts";
 import { listVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts";
+import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 
 // The Gentle Shell extension wires the pure bar renderer into pi's footer
 // slot. These tests drive it with a fake ExtensionAPI and context.
@@ -451,6 +452,143 @@ test("gentleShell frames the editor with the petal prompt and a hint while empty
 	assert.match(lines[lines.length - 1], /^╰─+╯$/);
 	editor.setText("hola");
 	assert.doesNotMatch(editor.render(60).map(stripAnsi)[1], /type, or/);
+	editor.dispose();
+});
+
+test("an explicit ODD phase reported for the session renders in the working label", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	try {
+		for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+		oddPhaseRegistry.report(ctx.sessionManager.getSessionId(), "exploring");
+		assert.match(editor.render(60).map(stripAnsi)[0], /^╭─ .+ exploring… ─+╮$/);
+	} finally {
+		oddPhaseRegistry.clear(ctx.sessionManager.getSessionId());
+		editor.dispose();
+	}
+});
+
+test("an unknown or unreported phase falls back to the generic working label", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	try {
+		for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+		assert.match(editor.render(60).map(stripAnsi)[0], /^╭─ .+ working… ─+╮$/);
+	} finally {
+		editor.dispose();
+	}
+});
+
+test("agent_start clears a previous turn's phase so it never leaks into the next turn", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	try {
+		for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+		oddPhaseRegistry.report(ctx.sessionManager.getSessionId(), "checking");
+		for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+		assert.match(editor.render(60).map(stripAnsi)[0], /^╭─ .+ working… ─+╮$/, "a new turn must start unlabeled");
+	} finally {
+		editor.dispose();
+	}
+});
+
+test("agent_settled going idle clears the reported phase, including after an abort", async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	try {
+		for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+		oddPhaseRegistry.report(ctx.sessionManager.getSessionId(), "implementing");
+		await fire(handlers, "agent_settled", ctx);
+		assert.equal(oddPhaseRegistry.get(ctx.sessionManager.getSessionId()), undefined);
+	} finally {
+		editor.dispose();
+	}
+});
+
+test("session_shutdown clears the reported phase", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	oddPhaseRegistry.report(ctx.sessionManager.getSessionId(), "researching");
+	for (const handler of handlers.get("session_shutdown") ?? []) handler({}, ctx);
+	assert.equal(oddPhaseRegistry.get(ctx.sessionManager.getSessionId()), undefined);
+	editor.dispose();
+});
+
+test("a phase reported for one session never leaks into another session's prompt", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	try {
+		for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+		oddPhaseRegistry.report("a-background-child-session", "exploring");
+		assert.match(editor.render(60).map(stripAnsi)[0], /^╭─ .+ working… ─+╮$/, "a different session's report must not override this prompt");
+	} finally {
+		oddPhaseRegistry.clear("a-background-child-session");
+		editor.dispose();
+	}
+});
+
+test("a reported phase does not override the queued label", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext({ pending: true });
+	const editor = installedPrompt(ctx, ui, handlers);
+	try {
+		for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+		oddPhaseRegistry.report(ctx.sessionManager.getSessionId(), "checking");
+		assert.match(editor.render(60).map(stripAnsi)[0], /^╭─ .+ queued ─+╮$/);
+	} finally {
+		oddPhaseRegistry.clear(ctx.sessionManager.getSessionId());
+		editor.dispose();
+	}
+});
+
+test("reporting an ODD phase requests an immediate redraw even under the potato animation policy, which runs no pulse loop at all", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	for (const handler of handlers.get("session_start") ?? []) handler({}, ctx);
+	let renders = 0;
+	const localTui = { terminal: { rows: 40, columns: 120 }, requestRender() { renders += 1; } };
+	const factory = ui.editorFactory as (tui: unknown, theme: unknown, keybindings: unknown) => GentlePromptEditor;
+	const editor = factory(localTui, editorTheme, fakeKeybindings);
+	try {
+		editor.setAnimationPolicy("potato");
+		for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+		renders = 0;
+		oddPhaseRegistry.report(ctx.sessionManager.getSessionId(), "planning");
+		assert.ok(renders > 0, "a phase report must trigger a redraw directly; potato mode schedules no pulse interval to pick it up later");
+	} finally {
+		oddPhaseRegistry.clear(ctx.sessionManager.getSessionId());
+		editor.dispose();
+	}
+});
+
+test("session_shutdown stops requesting redraws for a since-closed session", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	for (const handler of handlers.get("session_start") ?? []) handler({}, ctx);
+	let renders = 0;
+	const localTui = { terminal: { rows: 40, columns: 120 }, requestRender() { renders += 1; } };
+	const factory = ui.editorFactory as (tui: unknown, theme: unknown, keybindings: unknown) => GentlePromptEditor;
+	const editor = factory(localTui, editorTheme, fakeKeybindings);
+	for (const handler of handlers.get("session_shutdown") ?? []) handler({}, ctx);
+	renders = 0;
+	oddPhaseRegistry.report(ctx.sessionManager.getSessionId(), "closing");
+	assert.equal(renders, 0, "a session that already shut down must not receive further redraw requests");
+	oddPhaseRegistry.clear(ctx.sessionManager.getSessionId());
 	editor.dispose();
 });
 
