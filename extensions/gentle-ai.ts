@@ -1,4 +1,5 @@
 import { consumeReviewMutation, pendingReviewMutation, recordReviewMutation } from "../lib/review-reminder-receipt.ts";
+import { isOddPhase, oddPhaseRegistry, ODD_PHASES } from "../lib/odd-phase.ts";
 import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { declareReviewRelayHandshake } from "../lib/review-relay-contract.ts";
 import { execFileSync } from "node:child_process";
@@ -8692,6 +8693,54 @@ function createGentleAiExtensionForTesting(
 		cleanupAllPendingReviewConsents(pendingReviewConsentRegistry, sessionKey);
 		processRetainedNativeStatusSelections.delete(sessionKey);
 		processAgentEndSubagentDepth.delete(sessionKey);
+	});
+
+	// gentle-pi ODD input phase labels: a small, explicit, bounded ODD phase
+	// signal for the Gentle prompt's working label. There is no Pi runtime
+	// event for ODD phases, so this is reported by the orchestrator only, at
+	// ODD protocol transitions -- never inferred from tool use or prose. It is
+	// session-scoped in lib/odd-phase.ts: a background/child agent runs as its
+	// own OS process with its own module state, so it can never see or
+	// override the primary session's reported phase.
+	pi.registerTool({
+		name: "gentle_odd_phase",
+		label: "Gentle ODD Phase",
+		description: "Report the primary session's current ODD phase for the Gentle prompt's working label. Best-effort UI only; never a source of truth for orchestration logic.",
+		promptSnippet: "Report authorizing/exploring/researching/deciding/planning/implementing/checking/closing only at real ODD phase transitions of the primary turn; never poll or report per tool call.",
+		promptGuidelines: [
+			`phase must be exactly one of ${ODD_PHASES.join(", ")}, or "clear" to leave the current phase before its turn ends. Call this only when the ODD phase actually changes for the primary session's active turn, not on every tool call or thought.`,
+			"Never call this from a subagent or background/child task; it reports only the primary orchestrator's own phase, and a child's session id can never override the parent's label.",
+		],
+		parameters: {
+			type: "object",
+			additionalProperties: false,
+			required: ["phase"],
+			properties: {
+				phase: { type: "string", enum: [...ODD_PHASES, "clear"], description: "The reported ODD phase, or 'clear' to leave the current phase." },
+			},
+		} as const,
+		executionMode: "parallel",
+		async execute(_toolCallId, parameters, _signal, _onUpdate, ctx) {
+			const phase = (parameters as { phase?: unknown }).phase;
+			const sessionId = ctx.sessionManager.getSessionId();
+			// Pi's own contract (docs/extensions.md, Signaling errors): throw to
+			// mark a tool execution as failed (sets isError: true on the result);
+			// returning a value -- including an isError property on it -- never
+			// sets that flag.
+			if (!sessionId) throw new Error("No active session to report an ODD phase for; nothing changed.");
+			// An invalid token never resets state: only the explicit "clear" token
+			// leaves the current phase. This keeps a malformed report from wiping
+			// out an otherwise-accurate label for the rest of the turn.
+			if (phase === "clear") {
+				oddPhaseRegistry.clear(sessionId);
+				return { content: [{ type: "text", text: "ODD phase cleared." }], details: { phase: undefined } };
+			}
+			if (!isOddPhase(phase)) {
+				throw new Error(`Invalid ODD phase; use one of ${ODD_PHASES.join(", ")}, or "clear". The previously reported phase, if any, is unchanged.`);
+			}
+			const reported = oddPhaseRegistry.report(sessionId, phase);
+			return { content: [{ type: "text", text: `ODD phase reported: ${reported}` }], details: { phase: reported } };
+		},
 	});
 
 	pi.registerTool({
