@@ -124,11 +124,16 @@ test("public docs and metadata advertise ODD and review without retired phase wo
 test("technical reference declares the tested Pi minimum required for agent_settled", () => {
 	const manifest = readPackageJson();
 	assert.equal(manifest.peerDependencies?.["@earendil-works/pi-coding-agent"], ">=0.85.1");
-	assert.equal(manifest.devDependencies?.["@earendil-works/pi-coding-agent"], "0.85.1");
+	assert.equal(manifest.devDependencies?.["@earendil-works/pi-coding-agent"], "0.87.1");
 	const reference = readFileSync(join(PACKAGE_ROOT, "docs", "readme-reference.md"), "utf8");
 	assert.match(reference, /Pi 0\.85\.1 or newer/);
 	assert.match(reference, /agent_settled/);
 	assert.match(readFileSync(join(PACKAGE_ROOT, "README.md"), "utf8"), /\]\(docs\/readme-reference\.md(?:#[^)]+)?\)/);
+});
+
+test("packed runtime declares its pi-ai compat import as a direct exact dependency", () => {
+	const manifest = readPackageJson();
+	assert.equal(manifest.dependencies?.["@earendil-works/pi-ai"], "0.87.1");
 });
 
 test("package manifest has no obsolete native activation build surface", () => {
