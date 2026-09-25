@@ -2741,6 +2741,8 @@ class SddModelPanel implements OverlayComponent {
 	private readonly theme: Theme | undefined;
 	// The profile `u` writes to, named up front so the key never targets a surprise.
 	private readonly profileLabel: string;
+	// Terminal rows, so the card fills the fullscreen overlay like `/gentle:profiles`.
+	private readonly terminalRows: (() => number) | undefined;
 
 	constructor(
 		initialConfig: AgentModelConfig,
@@ -2749,6 +2751,7 @@ class SddModelPanel implements OverlayComponent {
 		done: (result: ModelPanelResult) => void,
 		theme?: Theme,
 		profileLabel = "none",
+		terminalRows?: () => number,
 	) {
 		this.draft = cloneModelConfig(initialConfig);
 		this.rows = [SET_ALL_AGENTS, ...agents];
@@ -2756,6 +2759,7 @@ class SddModelPanel implements OverlayComponent {
 		this.done = done;
 		this.theme = theme;
 		this.profileLabel = profileLabel;
+		this.terminalRows = terminalRows;
 	}
 
 	invalidate(): void {}
@@ -2783,10 +2787,15 @@ class SddModelPanel implements OverlayComponent {
 		return this.renderCard(lines, width);
 	}
 
-	private renderCard(lines: string[], width: number): string[] {
+	private renderCard(body: string[], width: number): string[] {
+		let lines = body;
 		const innerWidth = Math.max(1, width - 4);
 		const horizontal = "─".repeat(innerWidth + 2);
 		const border = (text: string) => this.renderText(text, "border");
+		const bodyRows = this.terminalRows ? Math.floor(this.terminalRows()) - 2 : 0;
+		if (lines.length < bodyRows) {
+			lines = [...lines, ...Array<string>(bodyRows - lines.length).fill("")];
+		}
 		return [
 			border(`╭${horizontal}╮`),
 			...lines.map(
@@ -3199,10 +3208,17 @@ function renderSddModelPanelForTesting(
 	agents: string[],
 	width: number,
 	theme?: Theme,
+	terminalRows?: number,
 ): string[] {
-	return new SddModelPanel(initialConfig, modelOptions, agents, () => {}, theme).render(
-		width,
-	);
+	return new SddModelPanel(
+		initialConfig,
+		modelOptions,
+		agents,
+		() => {},
+		theme,
+		undefined,
+		terminalRows === undefined ? undefined : () => terminalRows,
+	).render(width);
 }
 
 async function showSddModelPanel(
@@ -3213,15 +3229,18 @@ async function showSddModelPanel(
 	const modelOptions = await getPiModelOptions(ctx);
 	const agents = modelAssignmentNames(ctx.cwd);
 	return ctx.ui.custom<ModelPanelResult>(
-		(_tui, theme, _keybindings, done) =>
-			new SddModelPanel(config, modelOptions, agents, done, theme, profileLabel),
+		(tui, theme, _keybindings, done) =>
+			new SddModelPanel(config, modelOptions, agents, done, theme, profileLabel, () =>
+				Math.max(0, tui.terminal.rows),
+			),
 		{
 			overlay: true,
+			// Same fullscreen dimensions as the `/gentle:profiles` panel.
 			overlayOptions: {
 				anchor: "center",
-				width: "70%",
-				minWidth: 72,
-				maxHeight: "85%",
+				width: "100%",
+				maxHeight: "100%",
+				margin: 0,
 			},
 		},
 	);

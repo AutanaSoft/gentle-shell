@@ -1213,6 +1213,15 @@ test("model panel render does not auto-apply the Gentle theme and sanitizes agen
 	assert.doesNotMatch(plain, /\[31m/);
 });
 
+test("model panel fills the terminal height like the profiles panel", () => {
+	const lines = __testing.renderSddModelPanel({}, ["openai/gpt-5.5"], ["safe-agent"], 72, undefined, 40);
+	assert.equal(lines.length, 40);
+	const plain = lines.map(stripAnsi);
+	assert.match(plain[0] ?? "", /^╭─+╮$/);
+	assert.match(plain[39] ?? "", /^╰─+╯$/);
+	for (const line of plain) assert.equal(line.length, 72);
+});
+
 test("model panel render uses the Pi-provided current theme when supplied", () => {
 	const currentTheme = {
 		fg(_color: string, text: string): string {
