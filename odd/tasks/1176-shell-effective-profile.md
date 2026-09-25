@@ -23,16 +23,17 @@ Show the repository-effective subagent profile in the fullscreen shell header an
 
 ## Task
 
-- [ ] P1176-1 — Extend the existing profile reader to resolve the effective profile off-render, keep session lifecycle refresh bounded, cover global/local/repo precedence, transitions, replacement, disposal, and frame cost with regression tests, update product documentation, run focused/full/type checks, and record the work-unit commit.
+- [x] P1176-1 — Extend the existing profile reader to resolve the effective profile off-render, keep session lifecycle refresh bounded, cover global/local/repo precedence, transitions, replacement, disposal, and frame cost with regression tests, update product documentation, run focused/full/type checks, and record the work-unit commit.
   - Route: delegated `gentle-ai-worker` (3 non-trivial files to change; multi-file write trigger).
   - Acceptance: both fullscreen surfaces show `name`, `name (Local)`, or `name (Repo)` as appropriate; same-name source transitions redraw; invalid/stale pin layers fall through; no filesystem/Git in repeated digest/render; external edits appear after bounded refresh; no leaked refresh across sessions; compact bar and routing unchanged.
-  - Evidence: worker focused tests 126 passed; `pnpm run typecheck` passed with 195 baseline diagnostics and no regression; `pnpm test` passed (3,362 passed, 38 skipped). Independent verifier reran focused tests: 126 passed, 0 failed; `git diff --check` passed. Parent spot check `git diff --check` passed. Implementation diff: 187 additions + 20 deletions = 207 changed lines (before task document), below 400. Commit: pending explicit approval. Assessment/review: initial native assess unavailable while this task file remains untracked; treated as high verification risk, independent verifier completed.
+  - Evidence: worker focused tests 126 passed; `pnpm run typecheck` passed with 195 baseline diagnostics and no regression; `pnpm test` passed (3,362 passed, 38 skipped). Independent verifier reran focused tests: 126 passed, 0 failed; `git diff --check` passed. Parent spot check `git diff --check` passed. Implementation diff: 187 additions + 20 deletions = 207 changed lines (before task document), below 400. Commit: `b5e07511abf20846875d3e58493aa9db25dc3ceb` (`fix(shell): show repository-effective agent profile`). Assessment/review: committed candidate risk high (`process_boundary`); initial untracked assessment was unavailable, so an independent verifier ran; native review lineage `review-907c17f25f78e424` closed approved and exact acknowledgement burned authority (`gentle-ai.review-acknowledged/v1`).
 
 ## Progress
 
 - 2026-09-25: implementation authorized on existing branch, no new worktree; task record created before source writes. Engram mirror pending: mem_save returned `session has already ended`; local file remains authoritative until resynchronized.
 - 2026-09-25: reader, polling, regression tests and docs implemented. Polling regression triggers captured 2-second callback deterministically; wall-clock timing not measured. Verifier noted cached Git identity would not reflect a repository change mid-session; the defined scope is the worktree identity bound at session start, refreshed on session replacement. No tests failing; no formatter or markdownlint run.
+- 2026-09-25: user authorized local commit; `b5e07511` created with four files and 245 changed lines. Native candidate review was approved and acknowledged. This evidence-only task record update is not part of the approved commit.
 
 ## Next step
 
-Await explicit authorization to create the work-unit commit. Then assess the committed candidate and follow the native review route. Do not check off P1176-1 until candidate handling and verification are recorded; do not push or create a PR.
+The implementation commit is complete and its review authority was acknowledged. Commit this evidence-only update separately from the reviewed code candidate. No push or PR was requested.
