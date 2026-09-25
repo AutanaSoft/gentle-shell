@@ -112,6 +112,11 @@ test("technical reference declares the tested Pi minimum required for agent_sett
 	assert.match(readFileSync(join(PACKAGE_ROOT, "README.md"), "utf8"), /\]\(docs\/readme-reference\.md(?:#[^)]+)?\)/);
 });
 
+test("packed runtime declares its pi-ai compat import as a direct exact dependency", () => {
+	const manifest = readPackageJson();
+	assert.equal(manifest.dependencies?.["@earendil-works/pi-ai"], "0.87.1");
+});
+
 test("package manifest has no obsolete native activation build surface", () => {
 	const packageJson = readPackageJson();
 	const manifest = JSON.stringify(packageJson);
