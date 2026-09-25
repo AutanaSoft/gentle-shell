@@ -65,11 +65,14 @@ function createFixture(columns: number, rowCount: number, sidebar: boolean, work
 	const tui = new TuiAltScreen(terminal, false);
 	tui.setLayoutRoot(viewport.root);
 	let dispose = () => {};
-	if (sidebar) {
-		footer.addChild(sidebarPart(tui, "footer", { render: () => { counts.rail++; return ["Status card"]; }, invalidate() {} }));
+	if (sidebar) footer.addChild(sidebarPart(tui, "footer", { render: () => { counts.rail++; return ["Status card"]; }, invalidate() {} }));
+	else footer.addChild(leaf(["Status card"]));
+	// Main's narrow fallback keeps the header even without a rail. Give the
+	// width-matched fallback control the same header and native layout hook.
+	if (sidebar || columns === 100) {
 		sidebarHeader(tui, { render: (width: number) => { counts.header++; return [`HEADER ${width}`]; }, invalidate() {} });
 		dispose = installSidebar(tui, theme);
-	} else footer.addChild(leaf(["Status card"]));
+	}
 	tui.start();
 	const render = () => {
 		// Use the real alt-screen frame pipeline, not a hand-built layout node.
@@ -139,7 +142,8 @@ test("characterize settled native fullscreen scroll frames with and without the 
 						assert.ok(screen.some((line) => line.includes("Status card")), "desktop rail is painted");
 						assert.equal(screen[0], "HEADER 138");
 					} else {
-						assert.ok(!screen.some((line) => line.startsWith("HEADER ")), "narrow or sidebar-off frame has no header");
+						if (fixture.columns === 100) assert.equal(screen[0], "HEADER 100", "narrow fallback retains the full-width header");
+						else assert.ok(!screen.some((line) => line.startsWith("HEADER ")), "desktop sidebar-off control has no header");
 						assert.equal(screen.at(-1), "Status card", "footer stays in the native dock");
 					}
 				}
