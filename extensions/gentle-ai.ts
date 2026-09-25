@@ -30,7 +30,7 @@ import type {
 	ThemeColor,
 	ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
-import { Key, isKeyRelease, matchesKey, truncateToWidth, type KeybindingsManager, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { Key, Text, isKeyRelease, matchesKey, truncateToWidth, type KeybindingsManager, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { resolveGentlePiAgentHome, gentlePiConfigHome } from "../lib/agent-home.ts";
 import {
 	BACKGROUND_SUBAGENTS_FILE,
@@ -8740,8 +8740,10 @@ function createGentleAiExtensionForTesting(
 	// session-scoped in lib/odd-phase.ts: a background/child agent runs as its
 	// own OS process with its own module state, so it can never see or
 	// override the primary session's reported phase.
+	const hiddenOddPhaseToolComponent = { render: (_width: number): string[] => [], invalidate() {} };
 	pi.registerTool({
 		name: "gentle_odd_phase",
+		renderShell: "self",
 		label: "Gentle ODD Phase",
 		description: "Report the primary session's current ODD phase for the Gentle prompt's working label. Best-effort UI only; never a source of truth for orchestration logic.",
 		promptSnippet: "Report authorizing/exploring/researching/deciding/planning/implementing/checking/closing only at real ODD phase transitions of the primary turn; never poll or report per tool call.",
@@ -8758,6 +8760,16 @@ function createGentleAiExtensionForTesting(
 			},
 		} as const,
 		executionMode: "parallel",
+		// The prompt editor owns the success indicator. An empty self-rendered
+		// call avoids Pi's default transcript card while preserving error output.
+		renderCall() {
+			return hiddenOddPhaseToolComponent;
+		},
+		renderResult(result, _options, theme, context) {
+			if (!context.isError) return hiddenOddPhaseToolComponent;
+			const message = result.content.filter((item) => item.type === "text").map((item) => item.text).join("\n");
+			return new Text(theme.fg("error", sanitizeTerminalText(message || "ODD phase report failed.")), 0, 0);
+		},
 		async execute(_toolCallId, parameters, _signal, _onUpdate, ctx) {
 			const phase = (parameters as { phase?: unknown }).phase;
 			const sessionId = ctx.sessionManager.getSessionId();

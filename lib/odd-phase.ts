@@ -98,5 +98,10 @@ export class OddPhaseRegistry {
 	}
 }
 
-/** Shared across extensions/gentle-ai.ts (writer) and extensions/gentle-shell.ts (reader) within one Pi process. */
-export const oddPhaseRegistry = new OddPhaseRegistry();
+// Pi loads extensions with separate jiti moduleCache:false loaders, so a
+// module-local singleton is duplicated. The global symbol bridges only those
+// loaders inside this process; subagents run in separate OS processes. Keep
+// the session key inside the registry and clear it at turn/session boundaries.
+const ODD_PHASE_REGISTRY = Symbol.for("gentle-pi.odd-phase-registry");
+const processState = globalThis as typeof globalThis & { [ODD_PHASE_REGISTRY]?: OddPhaseRegistry };
+export const oddPhaseRegistry = processState[ODD_PHASE_REGISTRY] ??= new OddPhaseRegistry();
