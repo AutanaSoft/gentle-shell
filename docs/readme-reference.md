@@ -810,7 +810,7 @@ Both use the same shape, and both are a separate artifact from `profiles.json`:
 ```
 
 The fullscreen shell header and Status → Project → Profile show the effective profile for the session
-repository: `name (Local)` for a clone-local pin, `name (Repo)` for a repository declaration, or the
+repository: `name (local)` for a clone-local pin, `name (repo)` for a repository declaration, or the
 global active name without a suffix. Invalid or stale pins fall through to the next valid layer.
 Changes made inside or outside the profiles panel appear within about two seconds while the UI
 session is active; the indicator is omitted if no valid profile remains.

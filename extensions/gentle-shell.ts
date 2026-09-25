@@ -186,7 +186,7 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 			configHome: env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai"),
 			resolveWorktree: () => identity!,
 		}) : undefined;
-		const next = pin ? `${pin.profile} (${pin.source === "local" ? "Local" : "Repo"})` : global();
+		const next = pin ? `${pin.profile} (${pin.source})` : global();
 		const changed = next !== effective;
 		effective = next;
 		return changed;
