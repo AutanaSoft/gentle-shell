@@ -653,6 +653,19 @@ test("targetStatus appends --committed-only when the submission's same base-ref 
 		"--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", '--intended-untracked-selection={"selection":true}',
 		"--base-ref=cafebabe", "--committed-only=true",
 	]);
+
+	const committedOnlyQueue = queuedTargetStatusAdapter();
+	const tokensWithCommittedOnly = [...SUBMITTED_PROVIDER_TOKENS, "--committed-only"];
+	await targetStatusClient(committedOnlyQueue.adapter).targetStatus({
+		cwd: "/repo", baseRef: "cafebabe", committedOnly: true,
+		intendedUntrackedSelection: { argumentTokens: tokensWithCommittedOnly, value: '{"selection":true}' },
+	});
+	assert.deepEqual(committedOnlyQueue.calls[0], [
+		"review", "status", "--cwd", "/repo",
+		"--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", '--intended-untracked-selection={"selection":true}',
+		"--committed-only",
+		"--base-ref", "cafebabe",
+	]);
 });
 
 test("targetStatus forwards --lineage on the submitted branch, skips a matching value, and rejects a conflicting one", async () => {

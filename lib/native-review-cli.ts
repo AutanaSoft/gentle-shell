@@ -2271,15 +2271,13 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 			if (submittedHasCommittedOnly) throw new TypeError("Native intended-untracked selection repeats --committed-only");
 			submittedHasCommittedOnly = true;
 		}
-		// Unchanged base-ref (submittedBaseRefValue undefined): append the full
-		// base-ref/committed-only pair. Same base-ref already present but missing
-		// --committed-only: append only --committed-only (submittedBaseRefValue
-		// !== undefined implies it already equals request.baseRef, the throw
-		// above ruled out the conflicting case).
-		const forwardedBaseRef = request.baseRef === undefined ? []
-			: submittedBaseRefValue === undefined ? ["--base-ref", request.baseRef, "--committed-only"]
-			: submittedHasCommittedOnly ? []
-			: ["--committed-only"];
+		// Append only the half of the base-ref/committed-only pair the provider
+		// did not already carry (a present base-ref already equals
+		// request.baseRef; the throw above ruled out the conflicting case).
+		const forwardedBaseRef = request.baseRef === undefined ? [] : [
+			...(submittedBaseRefValue === undefined ? ["--base-ref", request.baseRef] : []),
+			...(submittedHasCommittedOnly ? [] : ["--committed-only"]),
+		];
 		const forwardedLineage = request.lineageId === undefined || submittedLineageValue !== undefined ? [] : ["--lineage", request.lineageId];
 		const statusArguments = submittedTokens === undefined ? [
 			"review", "status", "--contract", REVIEW_INTEGRATION_CONTRACT, "--cwd", request.cwd,
