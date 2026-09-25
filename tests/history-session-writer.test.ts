@@ -36,6 +36,9 @@ function captureHandlerWith(env: NodeJS.ProcessEnv, root: string) {
     on: (event: string, handler: unknown) => {
       registered.push([event, handler]);
     },
+    // Slice-3 stage-1 surface: registration-time no-ops for this harness.
+    registerShortcut: () => {},
+    registerCommand: () => {},
   };
   promptHistoryExtension(pi as never, {
     env,
@@ -108,13 +111,17 @@ test("two writers own separate files in the same project dir", () => {
 
 test("the slice-1 extension entry registers only the capture handler", () => {
   // Module load must stay side-effect free (importing index.ts parses the
-  // whole slice-1 graph without touching the real ~/.pi store root), and
-  // slice 1 wires exactly one handler: before_agent_start.
+  // whole slice-1 graph without touching the real ~/.pi store root). The
+  // slice-1 contract on pi.on events holds: exactly one handler,
+  // before_agent_start. (Shortcut/command registration is slice-3 wiring
+  // and is not a pi.on event; the fake below stubs it as no-ops.)
   const registered: Array<[string, unknown]> = [];
   const pi = {
     on: (event: string, handler: unknown) => {
       registered.push([event, handler]);
     },
+    registerShortcut: () => {},
+    registerCommand: () => {},
   };
   promptHistoryExtension(pi as never);
   assert.deepEqual(
