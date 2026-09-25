@@ -1590,7 +1590,11 @@ const MODEL_PANEL_MAX_RENDER_ROWS = 20;
 // Rows the agent list does not own: two borders, title, current-profile line,
 // blank, "Current assignments:", blank, both scroll indicators, blank, Continue,
 // Back, blank, and the two footer rows.
-const AGENT_LIST_MAX_VISIBLE_ROWS = MODEL_PANEL_MAX_RENDER_ROWS - 15;
+const AGENT_LIST_CHROME_ROWS = 15;
+const AGENT_LIST_MAX_VISIBLE_ROWS = MODEL_PANEL_MAX_RENDER_ROWS - AGENT_LIST_CHROME_ROWS;
+// Rows the model list does not own: two borders, title, blank, search, blank,
+// blank, and the footer row.
+const MODEL_LIST_CHROME_ROWS = 8;
 const MODEL_LIST_MAX_VISIBLE_ROWS = 12;
 
 function readStringPath(value: unknown, path: string[]): string | undefined {
@@ -2787,6 +2791,13 @@ class SddModelPanel implements OverlayComponent {
 		return this.renderCard(lines, width);
 	}
 
+	// In the fullscreen overlay a list owns every row its chrome leaves free;
+	// without a terminal height it keeps the fixed window.
+	private visibleListRows(fixedRows: number, chromeRows: number): number {
+		if (!this.terminalRows) return fixedRows;
+		return Math.max(1, Math.floor(this.terminalRows()) - chromeRows);
+	}
+
 	private renderCard(body: string[], width: number): string[] {
 		let lines = body;
 		const innerWidth = Math.max(1, width - 4);
@@ -3027,7 +3038,10 @@ class SddModelPanel implements OverlayComponent {
 		lines.push("");
 		lines.push(line("Current assignments:", "muted"));
 		lines.push("");
-		const visibleRows = Math.min(AGENT_LIST_MAX_VISIBLE_ROWS, this.rows.length);
+		const visibleRows = Math.min(
+			this.visibleListRows(AGENT_LIST_MAX_VISIBLE_ROWS, AGENT_LIST_CHROME_ROWS),
+			this.rows.length,
+		);
 		const listCursor = Math.min(this.cursor, this.rows.length - 1);
 		const start = Math.max(
 			0,
@@ -3093,14 +3107,15 @@ class SddModelPanel implements OverlayComponent {
 			`${this.renderText("◎", "accent")} ${this.renderText(this.query || "search...", "muted")}`,
 		);
 		lines.push("");
+		const visibleRows = this.visibleListRows(MODEL_LIST_MAX_VISIBLE_ROWS, MODEL_LIST_CHROME_ROWS);
 		const start = Math.max(
 			0,
 			Math.min(
-				this.modelCursor - Math.floor(MODEL_LIST_MAX_VISIBLE_ROWS / 2),
-				Math.max(0, options.length - MODEL_LIST_MAX_VISIBLE_ROWS),
+				this.modelCursor - Math.floor(visibleRows / 2),
+				Math.max(0, options.length - visibleRows),
 			),
 		);
-		const end = Math.min(options.length, start + MODEL_LIST_MAX_VISIBLE_ROWS);
+		const end = Math.min(options.length, start + visibleRows);
 		for (let i = start; i < end; i++) {
 			const focused = i === this.modelCursor;
 			lines.push(
@@ -3209,8 +3224,9 @@ function renderSddModelPanelForTesting(
 	width: number,
 	theme?: Theme,
 	terminalRows?: number,
+	inputs: string[] = [],
 ): string[] {
-	return new SddModelPanel(
+	const panel = new SddModelPanel(
 		initialConfig,
 		modelOptions,
 		agents,
@@ -3218,7 +3234,9 @@ function renderSddModelPanelForTesting(
 		theme,
 		undefined,
 		terminalRows === undefined ? undefined : () => terminalRows,
-	).render(width);
+	);
+	for (const data of inputs) panel.handleInput(data);
+	return panel.render(width);
 }
 
 async function showSddModelPanel(
