@@ -1213,6 +1213,34 @@ test("model panel render does not auto-apply the Gentle theme and sanitizes agen
 	assert.doesNotMatch(plain, /\[31m/);
 });
 
+test("model panel fills the terminal height like the profiles panel", () => {
+	const lines = __testing.renderSddModelPanel({}, ["openai/gpt-5.5"], ["safe-agent"], 72, undefined, 40);
+	assert.equal(lines.length, 40);
+	const plain = lines.map(stripAnsi);
+	assert.match(plain[0] ?? "", /^╭─+╮$/);
+	assert.match(plain[39] ?? "", /^╰─+╯$/);
+	for (const line of plain) assert.equal(line.length, 72);
+});
+
+test("model panel lists grow with the terminal height instead of a fixed window", () => {
+	const agents = Array.from({ length: 40 }, (_, i) => `agent-${String(i).padStart(2, "0")}`);
+	const models = Array.from({ length: 60 }, (_, i) => `provider/model-${String(i).padStart(2, "0")}`);
+	const agentLines = __testing
+		.renderSddModelPanel({}, models, agents, 100, undefined, 40)
+		.map(stripAnsi);
+	assert.equal(agentLines.length, 40);
+	// 40 rows minus 15 rows of chrome: every remaining row lists an agent or "Set all".
+	assert.equal(agentLines.filter((line) => /(agent-\d\d|Set all agents)\s+model=/.test(line)).length, 25);
+	assert.ok(agentLines.some((line) => /x export/.test(line)));
+
+	const pickerLines = __testing
+		.renderSddModelPanel({}, models, agents, 100, undefined, 40, ["\r"])
+		.map(stripAnsi);
+	assert.equal(pickerLines.length, 40);
+	// 40 rows minus 8 rows of chrome.
+	assert.equal(pickerLines.filter((line) => /provider\/model-\d\d/.test(line)).length, 32);
+});
+
 test("model panel render uses the Pi-provided current theme when supplied", () => {
 	const currentTheme = {
 		fg(_color: string, text: string): string {
