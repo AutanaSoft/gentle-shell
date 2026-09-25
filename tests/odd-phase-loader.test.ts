@@ -28,7 +28,12 @@ test("separate extension loaders share only the active session's ODD phase and r
 	const { default: shell } = await shellLoader.import<typeof import("../extensions/gentle-shell.ts")>("../extensions/gentle-shell.ts");
 	const aiRegistry = (await aiLoader.import<typeof import("../lib/odd-phase.ts")>("../lib/odd-phase.ts")).oddPhaseRegistry;
 	const shellRegistry = (await shellLoader.import<typeof import("../lib/odd-phase.ts")>("../lib/odd-phase.ts")).oddPhaseRegistry;
-	const tools = new Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>();
+	const tools = new Map<string, {
+		execute: (...args: unknown[]) => Promise<unknown>;
+		renderShell?: string;
+		renderCall?: (args: unknown, theme: unknown, context: unknown) => { render(width: number): string[]; invalidate(): void };
+		renderResult?: (result: unknown, options: unknown, theme: unknown, context: unknown) => { render(width: number): string[]; invalidate(): void };
+	}>();
 	const handlers = new Map<string, Array<(event: unknown, ctx: unknown) => unknown>>();
 	const pi = {
 		on(name: string, fn: (event: unknown, ctx: unknown) => unknown) { handlers.set(name, [...(handlers.get(name) ?? []), fn]); },
@@ -39,7 +44,7 @@ test("separate extension loaders share only the active session's ODD phase and r
 	};
 	createGentleAiExtension({ nativeReviewCli: null } as never)(pi as never);
 	shell(pi as never, {}, { resolveWorktree: (path: string) => ({ root: path, commonDir: path }), gitRunner: () => async () => ({ stdout: "", stderr: "", code: 0, killed: false }), devBinary: () => undefined } as never);
-	let sessionId = "primary-loader-test";
+	let sessionId: string | undefined = "primary-loader-test";
 	let editorFactory: ((tui: unknown, theme: unknown, bindings: unknown) => { render(width: number): string[]; setAnimationPolicy(policy: string): void; dispose(): void }) | undefined;
 	let redraws = 0;
 	const ui = {
@@ -67,14 +72,51 @@ test("separate extension loaders share only the active session's ODD phase and r
 		assert.ok(tools.get("gentle_odd_phase"));
 		const report = (phase: string) => tools.get("gentle_odd_phase")!.execute("call", { phase }, undefined, undefined, ctx);
 		redraws = 0;
-		await report("authorizing");
-		assert.match(render(), /authorizing…/);
+		const phaseTool = tools.get("gentle_odd_phase")!;
+		const successful = await report("authorizing");
+		assert.equal(phaseTool.renderShell, "self", "Pi must not paint its default tool card");
+		const toolTheme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
+		const renderContext = (isError: boolean) => ({
+			args: { phase: "authorizing" }, toolCallId: "call", invalidate() {}, lastComponent: undefined,
+			state: {}, cwd: "/repo", executionStarted: true, argsComplete: true,
+			isPartial: false, expanded: false, showImages: false, isError,
+		});
+		const renderTool = (component: { render(width: number): string[]; invalidate(): void }) => component.render(80);
+		assert.ok(phaseTool.renderCall && phaseTool.renderResult);
+		assert.deepEqual(renderTool(phaseTool.renderCall({ phase: "authorizing" }, toolTheme, renderContext(false))), []);
+		assert.deepEqual(renderTool(phaseTool.renderResult(successful, { isPartial: false, expanded: false }, toolTheme, renderContext(false))), []);
+		assert.deepEqual(renderTool(phaseTool.renderResult(successful, { isPartial: false, expanded: true }, toolTheme, renderContext(false))), []);
+		assert.match(render(), /authorizing…/, "suppressing the transcript must not suppress the editor phase");
 		assert.ok(redraws > 0, "the phase must request redraw even without a pulse");
 		assert.equal(aiRegistry.get(sessionId), "authorizing");
 		assert.equal(shellRegistry.get(sessionId), "authorizing");
-		await assert.rejects(() => report("not-a-phase"), /Invalid ODD phase/);
+		for (const [id, phase, expected] of [
+			["primary-loader-test", "not-a-phase", /Invalid ODD phase/],
+			[undefined, "exploring", /No active session/],
+		] as const) {
+			sessionId = id;
+			let message = "";
+			await assert.rejects(() => report(phase), (error: unknown) => {
+				assert.ok(error instanceof Error);
+				message = error.message;
+				assert.match(message, expected);
+				return true;
+			});
+			const failure = { content: [{ type: "text", text: message }], isError: true };
+			assert.match(renderTool(phaseTool.renderResult(failure, { isPartial: false, expanded: false }, toolTheme, renderContext(true))).join("\n"), expected);
+			assert.match(renderTool(phaseTool.renderResult(failure, { isPartial: false, expanded: true }, toolTheme, renderContext(true))).join("\n"), expected);
+		}
+		const callComponent = phaseTool.renderCall({ phase: "checking" }, toolTheme, renderContext(false));
+		const resultComponent = phaseTool.renderResult(successful, { isPartial: false, expanded: false }, toolTheme, renderContext(false));
+		for (const component of [callComponent, resultComponent]) {
+			assert.equal(typeof component.invalidate, "function");
+			component.invalidate();
+			assert.deepEqual(component.render(80), []);
+		}
+		sessionId = "primary-loader-test";
 		assert.match(render(), /authorizing…/, "a malformed report cannot erase the last valid phase");
-		await report("clear");
+		const cleared = await report("clear");
+		assert.deepEqual(renderTool(phaseTool.renderResult(cleared, { isPartial: false, expanded: false }, toolTheme, renderContext(false))), []);
 		assert.match(render(), /working…/);
 		await report("authorizing");
 		sessionId = "child-session";
