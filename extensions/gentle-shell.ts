@@ -3,12 +3,13 @@ import type { EditorTheme, TUI } from "@earendil-works/pi-tui";
 import { execFile, spawnSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { profilesFilePath, readProfilesFileResult } from "../lib/agent-profiles.ts";
+import { resolveProfilePin } from "../lib/agent-profile-pin.ts";
 import * as os from "node:os";
 import { join } from "node:path";
 import { buildShellHeaderModel, renderShellBar, renderShellHeaderBar, renderShellHeaderRule, renderShellSidebarBar, shellEnabled, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
 import { CHANGE_STATUS, RootBranchLabels, renderChangesWidget, type ChangedFile, type ChangesModel, type GitRunner, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
-import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver } from "../lib/session-worktree-registry.ts";
+import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver, type WorktreeIdentity } from "../lib/session-worktree-registry.ts";
 import { CARD_TONE, renderCard, type Card, type CardTheme } from "../lib/shell-card.ts";
 import { CommandPalette, commandsKey, type CommandPaletteResult } from "../lib/command-palette.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
@@ -71,14 +72,23 @@ export interface ShellDeps {
 	gitRunner(cwd: string): GitRunner;
 }
 
-// The rail digest runs every frame. Cache parsing by file identity and metadata,
-// not just mtime: profile writes replace the store atomically. Keep the cache
-// local to this shell instance and recheck on the next frame after panel edits.
-export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env): () => string | undefined {
+export type ActiveProfileReader = (() => string | undefined) & {
+	bind(cwd: string, resolveWorktree: WorktreeResolver): boolean;
+	refresh(): boolean;
+	reset(): void;
+};
+
+// Unbound reads retain the global file-identity cache, including atomic replacements.
+// Bound reads are snapshots: no filesystem or Git work is done during a frame.
+export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env): ActiveProfileReader {
 	const path = profilesFilePath(env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai"));
 	let fingerprint: string | undefined;
 	let name: string | undefined;
-	return () => {
+	let bound = false;
+	let cwd: string | undefined;
+	let identity: WorktreeIdentity | undefined;
+	let effective: string | undefined;
+	const global = () => {
 		try {
 			const stat = statSync(path, { bigint: true });
 			const next = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
@@ -94,6 +104,28 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 			return undefined;
 		}
 	};
+	const reader = (() => bound ? effective : global()) as ActiveProfileReader;
+	reader.refresh = () => {
+		if (!bound) return false;
+		const pin = identity && cwd ? resolveProfilePin({
+			cwd,
+			configHome: env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai"),
+			resolveWorktree: () => identity!,
+		}) : undefined;
+		const next = pin ? `${pin.profile} (${pin.source === "local" ? "Local" : "Repo"})` : global();
+		const changed = next !== effective;
+		effective = next;
+		return changed;
+	};
+	reader.bind = (nextCwd, resolveWorktree) => {
+		reader.reset();
+		cwd = nextCwd;
+		try { identity = resolveWorktree(nextCwd, nextCwd); } catch { identity = undefined; }
+		bound = true;
+		return reader.refresh();
+	};
+	reader.reset = () => { bound = false; cwd = undefined; identity = undefined; effective = undefined; };
+	return reader;
 }
 
 function ambientDevBinary(): DevBinaryNotice | undefined {
@@ -773,7 +805,14 @@ async function fetchFromSource(source: UsageSource, apiKey: string | undefined, 
 export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<ShellDeps> = {}): void {
 	installSessionChangeCapture(pi, env, overrides.resolveWorktree ?? resolveSessionWorktree);
 	if (!shellEnabled(env)) return;
-	const deps: ShellDeps = { ...defaultShellDeps, activeProfile: createActiveProfileReader(env), ...overrides };
+	const profileReader = createActiveProfileReader(env);
+	const deps: ShellDeps = { ...defaultShellDeps, activeProfile: profileReader, ...overrides };
+	let profilePoll: ReturnType<typeof setInterval> | undefined;
+	const stopProfilePoll = () => {
+		if (profilePoll) clearInterval(profilePoll);
+		profilePoll = undefined;
+		profileReader.reset();
+	};
 	const usage = new UsageStore();
 	// Providers gentle-shell has never heard of get a usage source too, when
 	// the extension that owns them registers one on pi.events; see the
@@ -916,12 +955,24 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		},
 	});
 	pi.on("session_start", async (_event, ctx) => {
+		stopProfilePoll();
 		registry?.close();
 		currentContext = ctx;
 		changes = undefined;
 		registry = new SessionWorktreeRegistry(pi, ctx.sessionManager, ctx.cwd, deps.resolveWorktree);
 		registry.start();
 		if (!ctx.hasUI) return;
+		if (!overrides.activeProfile) {
+			profileReader.bind(ctx.cwd, deps.resolveWorktree);
+			const sessionId = ctx.sessionManager.getSessionId();
+			profilePoll = setInterval(() => {
+				if (currentContext !== ctx || ctx.sessionManager.getSessionId() !== sessionId) return;
+				if (!profileReader.refresh()) return;
+				renderHost?.invalidateSidebar?.();
+				renderHost?.requestRender();
+			}, 2_000);
+			profilePoll.unref?.();
+		}
 		changes = new SessionChanges(ctx.sessionManager.getSessionId(), ctx.sessionManager.getEntries());
 		const tracker = changes;
 		ctx.ui.setFooter((tui, theme, footerData) => {
@@ -985,6 +1036,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		applyChanges(ctx, tracker.model);
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
+		stopProfilePoll();
 		pendingQueuedText = undefined;
 		prompt?.dispose();
 		prompt = undefined;
