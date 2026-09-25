@@ -10,10 +10,9 @@ import { fileURLToPath } from "node:url";
  * PromptHistorySelector is private to extensions/history/index.ts and needs
  * the pi-tui runtime (Container, Input, TUI, Theme), so these tests read the
  * source file and pin the normative §B2 shape instead of importing it:
- * exactly 9 explicit entries in a fixed order (the ctrl+shift+up/down
- * preview entries join with the preview panel in stage 3 and the
- * ctrl+shift+backspace delete entry joins with deletion in slice 5), then
- * the implicit forwardToSearch fallthrough inside handleInput.
+ * exactly 11 explicit entries in a fixed order (the ctrl+shift+backspace
+ * delete entry joins with deletion in slice 5), then the implicit
+ * forwardToSearch fallthrough inside handleInput.
  */
 
 const sourcePath = fileURLToPath(
@@ -35,6 +34,8 @@ const EXPECTED_MATCHERS = [
   'kb.matches(_d, "tui.select.cancel")',
   'matchesKey(d, "home")',
   'matchesKey(d, "end")',
+  'matchesKey(d, "ctrl+shift+up")',
+  'matchesKey(d, "ctrl+shift+down")',
 ];
 
 /** Handler each entry must invoke (searched within the entry's body). */
@@ -48,6 +49,8 @@ const EXPECTED_HANDLERS = [
   "this.onCancel()",
   "this.jumpToFirst()",
   "this.jumpToLast()",
+  "this.previewPageUp()",
+  "this.previewPageDown()",
 ];
 
 function dispatchTable(): string {
@@ -81,13 +84,13 @@ function methodBody(name: string): string {
 }
 
 describe("dispatch table (source-parsed, §B2)", () => {
-  it("has exactly 9 explicit match: entries (AC-P2-4.1)", () => {
+  it("has exactly 11 explicit match: entries (AC-P2-4.1)", () => {
     const table = dispatchTable();
     const matchCount = table.split("match:").length - 1;
     assert.strictEqual(
       matchCount,
-      9,
-      `expected 9 explicit entries, found ${matchCount}`,
+      11,
+      `expected 11 explicit entries, found ${matchCount}`,
     );
   });
 
@@ -120,7 +123,7 @@ describe("dispatch table (source-parsed, §B2)", () => {
     });
   });
 
-  it("pages the LIST via pageSelectedIndex with clamping (AC-P2-1.3)", () => {
+  it("pages the LIST via pageSelectedIndex and resets the preview offset (AC-P2-1.3)", () => {
     const up = methodBody("pageListUp");
     assert.ok(
       up.includes("pageSelectedIndex("),
@@ -129,6 +132,10 @@ describe("dispatch table (source-parsed, §B2)", () => {
     assert.ok(
       up.includes("-MAX_VISIBLE"),
       "pageListUp must page up by one page",
+    );
+    assert.ok(
+      up.includes("previewScrollOffset = 0"),
+      "pageListUp must reset the preview offset",
     );
     const down = methodBody("pageListDown");
     assert.ok(
@@ -139,14 +146,18 @@ describe("dispatch table (source-parsed, §B2)", () => {
       down.includes("MAX_VISIBLE"),
       "pageListDown must page down by one page",
     );
+    assert.ok(
+      down.includes("previewScrollOffset = 0"),
+      "pageListDown must reset the preview offset",
+    );
   });
 
-  it("runs the combos before the implicit fallthrough (AC-P2-2.1)", () => {
+  it("runs the ctrl+shift combos before the implicit fallthrough (AC-P2-2.1)", () => {
     const table = dispatchTable();
     const lastMatch = table.lastIndexOf("match:");
     assert.ok(
-      table.slice(lastMatch).includes('matchesKey(d, "end")'),
-      "the final table entry must be the end key (preview combos join in stage 3)",
+      table.slice(lastMatch).includes('matchesKey(d, "ctrl+shift+down")'),
+      "the final table entry must be the ctrl+shift+down combo",
     );
     const loopAt = source.indexOf(
       "for (const { match, handler } of this.dispatch) {",
