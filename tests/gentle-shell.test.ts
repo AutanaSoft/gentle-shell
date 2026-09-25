@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, execFile } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -16,6 +16,7 @@ import type { ShellBarTheme } from "../lib/shell-bar.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { resolveVisualSettings, writeVisualSettings } from "../lib/visual-customization-policy.ts";
 import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
+import { resolveVimPolicy, writeVimPolicy } from "../lib/vim-policy.ts";
 import { readBannerConfig } from "../extensions/startup-banner.ts";
 import { listVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts";
 
@@ -2274,7 +2275,7 @@ function scopedDoubleEscCancelConfigHome(t: { after(callback: () => void): void 
 function findCustomizeRow(ui: FakeUi, label: string, width = 90): boolean {
 	const view = ui.overlayView!;
 	view.handleInput("\x1b[D");
-	for (let category = 0; category < 7; category++) {
+	for (let category = 0; category < 8; category++) {
 		view.handleInput("\x1b[C");
 		for (let index = 0; index < 35; index++) {
 			if (view.render(width).some((line) => line.includes(`▸ ${label}`))) return true;
@@ -2293,6 +2294,111 @@ async function customizeAction(ui: FakeUi, label: string): Promise<void> {
 	for (let attempt = 0; attempt < 100 && ui.notices.length === notices; attempt++) await new Promise<void>((resolve) => setTimeout(resolve, 5));
 	assert.ok(ui.notices.length > notices, `action did not finish: ${label}`);
 }
+
+test("customize Editor rows preview global preference without applying until Enter or Space", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	assert.ok(findCustomizeRow(ui, "Vim: enable"));
+	assert.match(ui.overlayView!.render(90).join("\n"), /Preview · Vim[\s\S]*preference: off.*effective: no active prompt/i);
+	assert.equal(existsSync(join(home, "vim.json")), false);
+	await customizeAction(ui, "Vim: enable");
+	await new Promise<void>(resolve => setImmediate(resolve));
+	assert.equal(resolveVimPolicy({ gentlePiConfigHome: home }).policy, "on");
+	assert.ok(findCustomizeRow(ui, "Vim: disable"));
+	assert.match(ui.overlayView!.render(90).join("\n"), /preference: on.*effective:/i);
+	ui.overlayView!.handleInput(" ");
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(resolveVimPolicy({ gentlePiConfigHome: home }).policy, "off");
+	ui.overlayView!.handleInput("\x1b"); await pending;
+});
+
+test("external Vim preference change while customize is open never implies a compatibility failure", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home }, { vimRuntimeVersion: () => "0.85.1" });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	try {
+		const pending = commands.get("gentle:customize")!.handler("", ctx);
+		await overlayReady;
+		assert.ok(findCustomizeRow(ui, "Vim: enable"));
+		writeVimPolicy("on", { gentlePiConfigHome: home }); // Another session changes the global preference.
+		assert.equal(editor.effectiveVimPolicy, "off");
+		const preview = ui.overlayView!.render(90).join("\n");
+		assert.match(preview, /preference: on.*effective: off/i);
+		assert.doesNotMatch(preview, /compatibility rejected|unsupported/i);
+		await commands.get("gentle:vim")!.handler("status", ctx);
+		assert.equal(editor.effectiveVimPolicy, "on");
+		assert.doesNotMatch(ui.notices.at(-1)!, /compatibility rejected|unsupported/i);
+		ui.overlayView!.handleInput("\x1b"); await pending;
+	} finally { editor.dispose(); }
+});
+
+test("customize updates live Vim prompt and reports unsupported effective state without attributing its cause", async (t) => {
+	for (const version of ["0.85.1", "unsupported"]) {
+		const home = scopedDoubleEscCancelConfigHome(t);
+		const { pi, handlers, commands } = fakePi();
+		gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home }, { vimRuntimeVersion: () => version });
+		const { ctx, ui, overlayReady } = fakeContext();
+		const editor = installedPrompt(ctx, ui, handlers);
+		try {
+			const pending = commands.get("gentle:customize")!.handler("", ctx); await overlayReady;
+			await customizeAction(ui, "Vim: enable");
+			await new Promise<void>(resolve => setImmediate(resolve));
+			assert.equal(editor.effectiveVimPolicy, version === "unsupported" ? "off" : "on");
+			assert.match(ui.notices.at(-1)!, version === "unsupported" ? /Effective prompt: off; saved preference and prompt differ; ordinary editing remains active/i : /Prompt applies now/i);
+			assert.ok(findCustomizeRow(ui, "Vim: enable"));
+			assert.match(ui.overlayView!.render(90).join("\n"), version === "unsupported" ? /preference: on.*effective: off.*preference and prompt differ/i : /preference: on.*effective: on/i);
+			await customizeAction(ui, "Vim: disable");
+			assert.equal(editor.effectiveVimPolicy, "off");
+			ui.overlayView!.handleInput("\x1b"); await pending;
+		} finally { editor.dispose(); }
+	}
+});
+
+test("customize Vim reports a persistence error without changing the live prompt", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const { pi, handlers, commands } = fakePi(); gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	const pending = commands.get("gentle:customize")!.handler("", ctx); await overlayReady;
+	chmodSync(home, 0o500);
+	try {
+		await customizeAction(ui, "Vim: enable");
+		assert.match(ui.notices.at(-1)!, /Visual customization:/);
+		assert.equal(editor.effectiveVimPolicy, "off");
+		assert.equal(resolveVimPolicy({ gentlePiConfigHome: home }).policy, "off");
+	} finally {
+		chmodSync(home, 0o700);
+		ui.overlayView!.handleInput("\x1b"); await pending;
+		editor.dispose();
+	}
+});
+
+test("customize Vim refuses malformed or unreadable policy without false success", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const path = join(home, "vim.json");
+	writeFileSync(path, "invalid");
+	const { pi, commands } = fakePi(); gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx); await overlayReady;
+	assert.ok(findCustomizeRow(ui, "Vim: enable"));
+	assert.match(ui.overlayView!.render(90).join("\n"), /malformed or unreadable/i);
+	await customizeAction(ui, "Vim: enable");
+	assert.equal(readFileSync(path, "utf8"), "invalid");
+	assert.match(ui.notices.at(-1)!, /malformed or unreadable/i);
+	rmSync(path); mkdirSync(path);
+	assert.ok(findCustomizeRow(ui, "Vim: disable"));
+	assert.match(ui.overlayView!.render(90).join("\n"), /malformed or unreadable/i);
+	await customizeAction(ui, "Vim: disable");
+	assert.match(ui.notices.at(-1)!, /malformed or unreadable/i);
+	assert.equal(resolveVimPolicy({ gentlePiConfigHome: home }).malformed, true);
+	ui.overlayView!.handleInput("\x1b"); await pending;
+});
 
 test("customize command updates displayed settings and applies layout immediately", async (t) => {
 	const home = scopedDoubleEscCancelConfigHome(t);

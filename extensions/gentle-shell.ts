@@ -1442,6 +1442,14 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	const animationOptions = { gentlePiConfigHome: doubleEscCancelConfigHome };
 	let animationPolicy = resolveAnimationPolicy(animationOptions).policy;
 	let vimPolicy = resolveVimPolicy(animationOptions).policy;
+	const reportVim = (ctx: ExtensionContext, result: ReturnType<typeof resolveVimPolicy>) => {
+		const source = result.source === "default" ? "built-in default" : `global file ${result.globalFile}`;
+		const effective = prompt?.effectiveVimPolicy;
+		const state = effective === undefined ? "No active Gentle prompt; preference applies when one starts" :
+			effective !== result.policy ? `Effective prompt: ${effective}; saved preference and prompt differ; ordinary editing remains active` :
+			result.policy === "off" ? "Prompt applies now; ordinary editing active" : "Prompt applies now";
+		ctx.ui.notify(`vim: ${result.policy} (decided by ${source})${result.malformed ? "; malformed or unreadable file, falling back to off" : ""}. ${state}.`, result.malformed || (effective !== undefined && effective !== result.policy) ? "warning" : "info");
+	};
 	let visualSettings = resolveVisualSettings(animationOptions).settings;
 	let sidebarTui: TUI | undefined;
 	const refreshVisual = () => {
@@ -1624,7 +1632,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		});
 	}
 	pi.registerCommand("gentle:customize", {
-		description: "Configure animations, startup banner, installed theme and future layout preferences.",
+		description: "Configure animations, banner, themes, layout and global Vim prompt editing.",
 		handler: async (_args, ctx) => {
 			if (ctx.mode !== "tui" || !ctx.hasUI) {
 				if (ctx.hasUI) ctx.ui.notify("Visual customization requires an interactive terminal.", "warning");
@@ -1714,6 +1722,25 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const layoutPreview = (settings: ReturnType<typeof visual>) => ({
 				title: `Layout · ${settings.density} (schematic)`,
 				sample: `${settings.headerPlacement === "top" ? "[Header] → [Input]" : "[Input] → [Header]"}  ${settings.statusPlacement === "auto" ? "[responsive status]" : settings.statusPlacement === "right" ? "[Right rail, wide]" : settings.statusPlacement === "hidden" ? "[Bottom status; no rail]" : "[Bottom status]"}`,
+			});
+			category = "Editor";
+			for (const [label, policy] of [["enable", "on"], ["disable", "off"]] as const) rows.push({
+				category,
+				label: () => `Vim: ${label}${resolveVimPolicy(animationOptions).policy === policy ? " (current preference)" : ""}`,
+				preview: () => {
+					const result = resolveVimPolicy(animationOptions);
+					const effective = prompt?.effectiveVimPolicy ?? "no active prompt";
+					return { title: "Vim · global prompt editing", sample: `preference: ${result.policy} · effective: ${effective}${result.malformed ? " · malformed or unreadable file" : result.policy !== effective && effective !== "no active prompt" ? " · preference and prompt differ" : ""}` };
+				},
+				action: () => {
+					const current = resolveVimPolicy(animationOptions);
+					if (current.malformed) throw new Error(`Cannot update malformed or unreadable Vim policy: ${current.globalFile}`);
+					writeVimPolicy(policy, animationOptions);
+					const result = resolveVimPolicy(animationOptions);
+					vimPolicy = result.policy;
+					prompt?.setVimPolicy(vimPolicy);
+					reportVim(ctx, result);
+				},
 			});
 			category = "Layout";
 			for (const value of Object.values(STATUS_PLACEMENT)) add(() => `Status placement: ${value}${visual().statusPlacement === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, statusPlacement: value })), () => layoutPreview({ ...visual(), statusPlacement: value }));
@@ -1828,12 +1855,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				const result = resolveVimPolicy(animationOptions);
 				vimPolicy = result.policy;
 				prompt?.setVimPolicy(vimPolicy);
-				const source = result.source === "default" ? "built-in default" : `global file ${result.globalFile}`;
-				const effective = prompt?.effectiveVimPolicy;
-				const state = effective === undefined ? "No active Gentle prompt; preference applies when one starts" :
-					effective !== vimPolicy ? "Effective prompt: off; compatibility rejected Vim; ordinary editing remains active" :
-					vimPolicy === "off" ? "Prompt applies now; ordinary editing active" : "Prompt applies now";
-				ctx.ui.notify(`vim: ${vimPolicy} (decided by ${source})${result.malformed ? "; malformed or unreadable file, falling back to off" : ""}. ${state}.`, result.malformed || (effective !== undefined && effective !== vimPolicy) ? "warning" : "info");
+				reportVim(ctx, result);
 			} catch (error) {
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 			}
