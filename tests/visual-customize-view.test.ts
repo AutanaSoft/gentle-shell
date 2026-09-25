@@ -358,6 +358,28 @@ test("rows without a read-only sample never claim a visual preview", () => {
 	assert.match(frame, /Preview unavailable/);
 });
 
+test("Editor category is keyboard reachable in narrow and short layouts; preview never applies", async () => {
+	for (const [width, height] of [[76, 12], [36, 12], [36, 5]] as const) {
+		const effects: string[] = [];
+		const view = new VisualCustomizeView({ rows: [
+			{ category: "Animations", label: "Quality", action: () => {} },
+			{ category: "Editor", label: "Vim: enable", preview: () => ({ title: "Vim preference", sample: "preference: off · effective: off" }), action: () => { effects.push("on"); } },
+			{ category: "Editor", label: "Vim: disable", action: () => { effects.push("off"); } },
+		], theme, rowsAvailable: () => height, requestRender: () => {}, onClose: () => {} });
+		view.render(width);
+		view.handleInput("\x1b[B"); // Editor category
+		if (width < 60) assert.match(view.render(width).join("\n"), /Editor/);
+		view.handleInput("\x1b[C");
+		const frame = view.render(width);
+		assert.ok(frame.every(line => visibleWidth(line) <= width));
+		assert.match(frame.join("\n"), /Vim: enable/);
+		if (height >= 11) assert.match(frame.join("\n"), /preference: off/);
+		assert.deepEqual(effects, []);
+		view.handleInput(" "); await new Promise<void>(resolve => setImmediate(resolve));
+		assert.deepEqual(effects, ["on"]);
+	}
+});
+
 test("selected layout and section controls change a genuine schematic without applying", () => {
 	const changes: string[] = [];
 	const view = new VisualCustomizeView({ rows: [
