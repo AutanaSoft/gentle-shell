@@ -453,10 +453,7 @@ test("applyFilter windows the loaded prefix and grows only via loadedCountForQue
 // T10 — AC-L3-2: headerRow-only constraint — the suffix is produced inside
 // rebuildListWithWidth's existing headerRow.setText argument, adds no row
 // (no new addChild in the method, constructor child sequence unchanged) and
-// the fixed overlay height stays intact. Stage-2 adaptation: the overlay is
-// 18 rows (search + list; the preview panel's 12 more rows join in stage 3,
-// where the ratified 30-row geometry completes), and the constructor holds
-// 9 children instead of the final 12.
+// OVERLAY_LINES = 30 stays intact.
 
 test("the header keeps the position segment plus the loaded suffix on the existing headerRow.setText path (AC-L3-2)", () => {
   const body = methodBodyOf("rebuildListWithWidth");
@@ -486,19 +483,15 @@ test("the header keeps the position segment plus the loaded suffix on the existi
     "the suffix adds no addChild call — today's 4 list-row sites unchanged",
   );
   assert.ok(
-    selectorSource.includes("private static readonly OVERLAY_LINES = 18;"),
-    "the stage-2 fixed overlay height (18 rows) must stay intact",
+    selectorSource.includes("private static readonly OVERLAY_LINES = 30;"),
+    "OVERLAY_LINES = 30 must stay intact",
   );
   const classAt = selectorSource.indexOf("class PromptHistorySelector");
   const ctorAt = selectorSource.indexOf("constructor(", classAt);
   const ctorEnd = selectorSource.indexOf('this.applyFilter("")', ctorAt);
   const ctorAddChild =
     selectorSource.slice(ctorAt, ctorEnd).split("this.addChild(").length - 1;
-  assert.equal(
-    ctorAddChild,
-    9,
-    "the stage-2 constructor child sequence is unchanged (search + list, no preview yet)",
-  );
+  assert.equal(ctorAddChild, 12, "the constructor child sequence is unchanged");
 });
 
 // T14 — AC-L2-3 revision (user-directed 2026-09-08): a non-empty query

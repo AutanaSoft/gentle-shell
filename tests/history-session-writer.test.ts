@@ -109,12 +109,13 @@ test("two writers own separate files in the same project dir", () => {
   assert.deepEqual(files, ["inst-a.jsonl", "inst-b.jsonl"]);
 });
 
-test("the slice-1 extension entry registers only the capture handler", () => {
+test("the extension entry registers the capture handler and the overlay dismiss", () => {
   // Module load must stay side-effect free (importing index.ts parses the
   // whole slice-1 graph without touching the real ~/.pi store root). The
-  // slice-1 contract on pi.on events holds: exactly one handler,
-  // before_agent_start. (Shortcut/command registration is slice-3 wiring
-  // and is not a pi.on event; the fake below stubs it as no-ops.)
+  // pi.on surface is exactly two handlers: before_agent_start (slice-1
+  // capture) and tool_call (slice-3 stage-3 overlay dismissal).
+  // (Shortcut/command registration is slice-3 wiring and is not a pi.on
+  // event; the fake below stubs it as no-ops.)
   const registered: Array<[string, unknown]> = [];
   const pi = {
     on: (event: string, handler: unknown) => {
@@ -126,10 +127,11 @@ test("the slice-1 extension entry registers only the capture handler", () => {
   promptHistoryExtension(pi as never);
   assert.deepEqual(
     registered.map(([event]) => event),
-    ["before_agent_start"],
+    ["before_agent_start", "tool_call"],
   );
-  // The handler is callable but is NEVER invoked here: a real invocation
-  // would run getWriter() against the user's real ~/.pi/agent/history.
+  // The capture handler is callable but is NEVER invoked here: a real
+  // invocation would run getWriter() against the user's real
+  // ~/.pi/agent/history.
   assert.equal(typeof registered[0][1], "function");
 });
 

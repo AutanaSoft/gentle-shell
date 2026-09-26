@@ -1,14 +1,13 @@
 // SPDX-FileCopyrightText: 2026 ExoPro. Inspired by @jasonish/pi-prompt-history
 // SPDX-License-Identifier: MIT
 
-// Prompt-history extension entry (slice 3, stage 2): the selector open flow
-// over the slice-1 writer and slice-2 drains, now with the search input
+// Prompt-history extension entry (slice 3, stage 3): the selector open flow
+// over the slice-1 writer and slice-2 drains, with the search input
 // (filterPrompts + forwardToSearch fallthrough), the lazy loaded window
 // (initial batch, prefetch growth, PgUp/PgDn, Home/End), the header loaded
-// segment, and the project<->global scope toggle under the expanded-globals
-// contract. The preview panel, wheel/mouse handling, and the fixed 30-row
-// overlay geometry arrive in stage 3; deletion (slice 5) and GC (slice 6)
-// later still.
+// segment, the project<->global scope toggle under the expanded-globals
+// contract, and the preview panel + wheel handling over the fixed 30-row
+// overlay geometry. Deletion (slice 5) and GC (slice 6) arrive later.
 //
 // Capture is OPT-IN while the deletion/privacy behavior is unshipped:
 // nothing is recorded unless GENTLE_PI_HISTORY_CAPTURE=1|true|on. The
@@ -34,6 +33,7 @@ import {
   matchesKey,
   Text,
   type TUI,
+  type TuiMouseEvent,
   truncateToWidth,
 } from "@earendil-works/pi-tui";
 import {
@@ -47,6 +47,7 @@ import {
 } from "./store.ts";
 import {
   buildPromptRecords,
+  clampPreviewOffset,
   clampSelectedIndex,
   dedupePromptEntries,
   filterPrompts,
@@ -66,6 +67,7 @@ import {
 
 const SHORTCUT = "ctrl+shift+r";
 const MAX_VISIBLE = 10;
+const PREVIEW_ROWS = 10;
 // Lazy windowing (design §D3; user-tuned 2026-09-08). PRELOAD_BUFFER=3
 // fires growth as the cursor enters the final 3 loaded rows; BATCH_SIZE=10
 // loads exactly one viewport per growth; INITIAL_BATCH=10 paints one
@@ -74,6 +76,13 @@ const MAX_VISIBLE = 10;
 const INITIAL_BATCH = 10;
 const BATCH_SIZE = 10;
 const PRELOAD_BUFFER = 3;
+// Wheel regions over the fixed 30-row overlay geometry (design §D6): the
+// list container renders at rows 5-14 and the preview container at rows
+// 17-26; every other row is a consumed no-op.
+const LIST_WHEEL_Y_FIRST = 5;
+const LIST_WHEEL_Y_LAST = 14;
+const PREVIEW_WHEEL_Y_FIRST = 17;
+const PREVIEW_WHEEL_Y_LAST = 26;
 /** Width of the "→ " / "  " prefix on each entry line. */
 const ENTRY_PREFIX_WIDTH = 2;
 
@@ -132,7 +141,7 @@ function sanitizeForDisplay(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// TUI Selector (stage 2: search + lazy list + scope toggle)
+// TUI Selector (stage 3: search + lazy list + scope toggle + preview + wheel)
 // ---------------------------------------------------------------------------
 
 /** Keybinding lookup returned by getKeybindings(). */
@@ -197,10 +206,41 @@ class FixedRowText {
   }
 }
 
+/** Word-wrap plain text so each line fits within maxWidth characters. */
+function wordWrapText(text: string, maxWidth: number): string[] {
+  if (maxWidth <= 0) return [text || " "];
+  const paragraphs = text.split("\n");
+  const result: string[] = [];
+  for (const para of paragraphs) {
+    if (para.length === 0) {
+      result.push("");
+      continue;
+    }
+    let remaining = para;
+    while (remaining.length > 0) {
+      if (remaining.length <= maxWidth) {
+        result.push(remaining);
+        break;
+      }
+      const breakAt = remaining.lastIndexOf(" ", maxWidth);
+      if (breakAt <= 0) {
+        result.push(remaining.substring(0, maxWidth));
+        remaining = remaining.substring(maxWidth);
+      } else {
+        result.push(remaining.substring(0, breakAt));
+        remaining = remaining.substring(breakAt + 1);
+      }
+    }
+  }
+  return result.length > 0 ? result : [""];
+}
+
 class PromptHistorySelector extends Container implements Focusable {
   private readonly searchInput: Input;
+  private readonly previewContainer: Container;
   private readonly listContainer: Container;
   private readonly headerRow: FixedRowText;
+  private readonly previewLabelRow: FixedRowText;
   private records: PromptRecord[];
   private readonly theme: Theme;
   private readonly tui: TUI;
@@ -222,9 +262,12 @@ class PromptHistorySelector extends Container implements Focusable {
   private scope: HistoryScope = "project";
   /** Last render width, used for entry truncation. */
   private lastWidth = 800;
+  /** Word-wrapped lines of the currently selected prompt. */
+  private wrappedPreviewLines: string[] = [];
+  /** Scroll offset into wrappedPreviewLines for the preview viewport. */
+  private previewScrollOffset = 0;
 
-  /** Dispatch table: first match wins, fallthrough last. The preview
-   *  ctrl+shift combos join with the preview panel (stage 3) and the
+  /** Dispatch table: first match wins, fallthrough last. The
    *  ctrl+shift+backspace delete entry joins with deletion (slice 5). */
   private readonly dispatch: readonly DispatchEntry[] = [
     {
@@ -259,6 +302,14 @@ class PromptHistorySelector extends Container implements Focusable {
     {
       match: (d, _kb) => matchesKey(d, "end"),
       handler: () => this.jumpToLast(),
+    },
+    {
+      match: (d, _kb) => matchesKey(d, "ctrl+shift+up"),
+      handler: () => this.previewPageUp(),
+    },
+    {
+      match: (d, _kb) => matchesKey(d, "ctrl+shift+down"),
+      handler: () => this.previewPageDown(),
     },
   ];
 
@@ -318,6 +369,15 @@ class PromptHistorySelector extends Container implements Focusable {
     this.listContainer = new Container();
     this.addChild(this.listContainer);
 
+    // ── Preview panel (bottom) ──
+    this.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+    this.previewLabelRow = new FixedRowText(
+      theme.fg("accent", theme.bold(" Preview ")),
+    );
+    this.addChild(this.previewLabelRow);
+    this.previewContainer = new Container();
+    this.addChild(this.previewContainer);
+
     this.addChild(new DynamicBorder((s: string) => theme.fg("dim", s)));
     this.addChild(
       new FixedRowText(
@@ -352,7 +412,9 @@ class PromptHistorySelector extends Container implements Focusable {
       this.selectedIndex,
       this.filteredRecords.length,
     );
+    this.previewScrollOffset = 0;
     this.rebuildList();
+    this.rebuildPreview();
   }
 
   private rebuildList(): void {
@@ -423,6 +485,68 @@ class PromptHistorySelector extends Container implements Focusable {
     }
   }
 
+  /**
+   * Rebuild preview: word-wrap the full selected prompt text and show
+   * a PREVIEW_ROWS-tall viewport starting at previewScrollOffset.
+   * Content starts immediately below the "Preview" label (no top padding).
+   * PgUp/PgDn scroll through the wrapped lines.
+   */
+  private rebuildPreviewWithWidth(width: number): void {
+    this.previewContainer.clear();
+
+    const wrapWidth = Math.max(1, width - 2);
+    const selected = this.filteredRecords[this.selectedIndex];
+    if (selected) {
+      const safeText = sanitizeForDisplay(selected.text);
+      this.wrappedPreviewLines = wordWrapText(safeText, wrapWidth);
+      this.previewScrollOffset = clampPreviewOffset(
+        this.previewScrollOffset,
+        this.wrappedPreviewLines.length,
+        PREVIEW_ROWS,
+      );
+    } else {
+      this.wrappedPreviewLines = [];
+      this.previewScrollOffset = 0;
+    }
+
+    // P1-3 indicator: fresh wrap is known here — one update site covers all
+    // paths; the label appends the 1-based range only when content overflows.
+    this.previewLabelRow.setText(this.previewLabelRowText());
+
+    for (let i = 0; i < PREVIEW_ROWS; i++) {
+      const lineIdx = this.previewScrollOffset + i;
+      if (lineIdx < this.wrappedPreviewLines.length) {
+        // Pad the plain text to wrapWidth so FixedRowText.render()
+        // never truncates — the visible width is always ≤ width-2.
+        const raw = this.wrappedPreviewLines[lineIdx];
+        const padded = raw + " ".repeat(Math.max(0, wrapWidth - raw.length));
+        this.previewContainer.addChild(
+          new FixedRowText(this.theme.fg("text", padded)),
+        );
+      } else {
+        this.previewContainer.addChild(new FixedRowText());
+      }
+    }
+  }
+
+  /** " Preview " label; appends the 1-based visible range only on overflow. */
+  private previewLabelRowText(): string {
+    const total = this.wrappedPreviewLines.length;
+    if (total <= PREVIEW_ROWS) {
+      return this.theme.fg("accent", this.theme.bold(" Preview "));
+    }
+    const start = this.previewScrollOffset + 1;
+    const end = Math.min(this.previewScrollOffset + PREVIEW_ROWS, total);
+    return this.theme.fg(
+      "accent",
+      this.theme.bold(` Preview — ${start}–${end}/${total} `),
+    );
+  }
+
+  private rebuildPreview(): void {
+    this.rebuildPreviewWithWidth(this.lastWidth);
+  }
+
   // -- Selection actions --------------------------------------------------
 
   private selectCurrent(): void {
@@ -473,7 +597,9 @@ class PromptHistorySelector extends Container implements Focusable {
       );
       this.applyFilter(this.searchInput.getValue());
     }
+    this.previewScrollOffset = 0;
     this.rebuildList();
+    this.rebuildPreview();
   }
 
   private moveDown(): void {
@@ -501,7 +627,9 @@ class PromptHistorySelector extends Container implements Focusable {
       this.filteredRecords.length,
       1,
     );
+    this.previewScrollOffset = 0;
     this.rebuildList();
+    this.rebuildPreview();
   }
 
   /** Page the LIST up by MAX_VISIBLE with clamping (no wrap). */
@@ -511,7 +639,9 @@ class PromptHistorySelector extends Container implements Focusable {
       this.filteredRecords.length,
       -MAX_VISIBLE,
     );
+    this.previewScrollOffset = 0;
     this.rebuildList();
+    this.rebuildPreview();
   }
 
   /** Page the LIST down by MAX_VISIBLE with clamping (no wrap). */
@@ -533,13 +663,34 @@ class PromptHistorySelector extends Container implements Focusable {
       this.filteredRecords.length,
       MAX_VISIBLE,
     );
+    this.previewScrollOffset = 0;
     this.rebuildList();
+    this.rebuildPreview();
+  }
+
+  private previewPageUp(): void {
+    this.previewScrollOffset = Math.max(
+      0,
+      this.previewScrollOffset - PREVIEW_ROWS,
+    );
+    this.rebuildPreview();
+  }
+
+  private previewPageDown(): void {
+    this.previewScrollOffset = clampPreviewOffset(
+      this.previewScrollOffset + PREVIEW_ROWS,
+      this.wrappedPreviewLines.length,
+      PREVIEW_ROWS,
+    );
+    this.rebuildPreview();
   }
 
   private jumpToFirst(): void {
     if (this.filteredRecords.length === 0) return;
     this.selectedIndex = 0;
+    this.previewScrollOffset = 0;
     this.rebuildList();
+    this.rebuildPreview();
   }
 
   private jumpToLast(): void {
@@ -551,7 +702,9 @@ class PromptHistorySelector extends Container implements Focusable {
     }
     if (this.filteredRecords.length === 0) return;
     this.selectedIndex = this.filteredRecords.length - 1;
+    this.previewScrollOffset = 0;
     this.rebuildList();
+    this.rebuildPreview();
   }
 
   // -- Input handling -----------------------------------------------------
@@ -576,24 +729,73 @@ class PromptHistorySelector extends Container implements Focusable {
     this.tui.requestRender();
   }
 
+  // -- Mouse (wheel-only) -------------------------------------------------
+
+  /**
+   * Wheel-only mouse handling over the fixed 30-row geometry (design
+   * §D6). Non-wheel events stay host-owned (undefined = Container child
+   * dispatch); EVERY wheel path — including the no-op regions — reaches
+   * the single consumed return, closing the pre-existing SGR-fallthrough
+   * hazard where raw wheel bytes were typed into the search box.
+   */
+  override handleMouse(
+    event: TuiMouseEvent,
+  ): ReturnType<Container["handleMouse"]> {
+    if (event.type !== "wheel") return undefined;
+    const delta = event.wheelDelta ?? 0;
+    if (event.y >= LIST_WHEEL_Y_FIRST && event.y <= LIST_WHEEL_Y_LAST) {
+      const steps = Math.min(Math.abs(delta), this.filteredRecords.length);
+      for (let i = 0; i < steps; i++) {
+        if (delta > 0) this.moveDown();
+        else this.moveUp();
+      }
+    } else if (
+      event.y >= PREVIEW_WHEEL_Y_FIRST &&
+      event.y <= PREVIEW_WHEEL_Y_LAST
+    ) {
+      if (delta !== 0) {
+        this.previewScrollOffset = clampPreviewOffset(
+          this.previewScrollOffset + (delta > 0 ? 1 : -1),
+          this.wrappedPreviewLines.length,
+          PREVIEW_ROWS,
+        );
+        this.rebuildPreview();
+      }
+    }
+    return {
+      handled: true,
+      target: {
+        component: this,
+        originX: event.screenX - event.x,
+        originY: event.screenY - event.y,
+        width: event.width,
+        height: event.height,
+      },
+    };
+  }
+
   // -- Render override for dynamic entry width ---------------------------
 
-  /** Fixed overlay height so the TUI never repositions the panel. Stage-2
-   *  geometry (search + list, no preview panel); grows to 30 rows when the
-   *  preview panel joins in stage 3. */
-  private static readonly OVERLAY_LINES = 18;
+  /** Fixed overlay height so the TUI never repositions the panel. */
+  private static readonly OVERLAY_LINES = 30;
 
   override render(width: number): string[] {
     if (width !== this.lastWidth) {
-      // Pre-clamp against the previous filter so a width change can never
-      // drive the rebuild with a stale selection (AC-P1-4.1/4.2).
+      // Pre-clamp against the previous wrap so a width change can never
+      // drive the rebuilds with a stale selection/offset (AC-P1-4.1/4.2).
       this.selectedIndex = clampSelectedIndex(
         this.selectedIndex,
         this.filteredRecords.length,
       );
+      this.previewScrollOffset = clampPreviewOffset(
+        this.previewScrollOffset,
+        this.wrappedPreviewLines.length,
+        PREVIEW_ROWS,
+      );
     }
     this.lastWidth = width;
     this.rebuildListWithWidth(width);
+    this.rebuildPreviewWithWidth(width);
     const raw = super.render(width);
     // Pad or trim to exactly OVERLAY_LINES so the overlay never shifts.
     const blank = " ".repeat(Math.max(1, width));
@@ -619,13 +821,25 @@ function castSelectorArgs(tui: unknown, theme: unknown): [TUI, Theme] {
   return [tui as TUI, theme as Theme];
 }
 
+/** TUI handle captured when the selector overlay mounts. */
+let selectorTui: { requestRender(): void } | null = null;
+
+/** Stored close callback for the currently-open overlay. Null when closed. */
+let activeOverlayClose: (() => void) | null = null;
+
 function createPromptHistorySelectorFactory(
   records: PromptRecord[],
   onNotify?: SelectorNotify,
   drainScope?: (scope: HistoryScope) => DrainResult,
 ): SelectorFactory {
   return (tui, theme, _keybindings, done) => {
-    const finish = (result: PromptRecord | null) => done(result);
+    selectorTui = tui as { requestRender(): void };
+    const finish = (result: PromptRecord | null) => {
+      activeOverlayClose = null;
+      done(result);
+    };
+    // Expose close so the tool_call handler can dismiss the overlay.
+    activeOverlayClose = () => finish(null);
     const [typedTui, typedTheme] = castSelectorArgs(tui, theme);
     return new PromptHistorySelector(
       typedTui,
@@ -737,6 +951,9 @@ function createOpenFlow(env: NodeJS.ProcessEnv, root: string, cwd: string) {
       // pasteToEditor routes through the editor's input pipeline (bracketed
       // paste), so the text renders immediately (a22588fc).
       ctx.ui.pasteToEditor(selected.text);
+      // The overlay teardown can race the paste render: force one more
+      // frame on the next tick so the editor box shows the text at once.
+      setTimeout(() => selectorTui?.requestRender(), 0);
     }
   }
 
@@ -785,7 +1002,13 @@ export default function promptHistoryExtension(
     }
   });
 
-  // Selector open flow (slice 3, stage 2): both entry points share it.
+  // When a tool asks for user input while the history overlay is open,
+  // dismiss the overlay so the tool can take over the UI.
+  pi.on("tool_call", () => {
+    activeOverlayClose?.();
+  });
+
+  // Selector open flow (slice 3, stage 3): both entry points share it.
   const { openHistorySelector } = createOpenFlow(env, root, cwd);
 
   pi.registerShortcut(SHORTCUT, {
