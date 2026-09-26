@@ -67,6 +67,11 @@ export interface AgentMessageQueue {
 	dropAll(): void;
 }
 
+/**
+ * Creates an agent message queue that manages pending notifications and queries
+ * from subagents, bounding their lifetime and invalidating stale messages upon
+ * task settlement or query resolution.
+ */
 export function createAgentMessageQueue(): AgentMessageQueue {
 	let pending: Array<PendingAgentMessage> = [];
 	const consumedQueries = new Set<string>();

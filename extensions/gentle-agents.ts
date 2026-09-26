@@ -1327,7 +1327,6 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	tool("reply", "Reply once to a live query from a child of the current parent session.", { required: ["task_id", "request_id", "message"], properties: { task_id: { type: "string" }, request_id: { type: "string" }, message: { type: "string" } } }, async (params, ctx) => {
 		const taskId = String(params.task_id);
 		const requestId = String(params.request_id);
-		messages.consumeQuery(taskId, requestId);
 		const accepted = await runner.reply(taskId, requestId, typeof params.message === "string" ? params.message : "", ctx.sessionManager.getSessionId() ?? "");
 		return accepted ? text("Reply accepted for delivery.") : text("Error: query is unavailable.", { error: "query unavailable" });
 	});

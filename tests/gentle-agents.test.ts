@@ -4021,6 +4021,40 @@ test("issue #1162: an answered subagent query is dropped and never replays after
 	await fire("session_shutdown", ctx);
 });
 
+test("issue #1162: a rejected query reply preserves the live query for delivery at turn boundary", async () => {
+	const { pi, tools, fire, sent } = fakePi();
+	const harness = deps();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+
+	const started = await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Interactive worker", mode: "background" }, undefined, undefined, ctx);
+	const id = (started.details.gentleAgents as { taskId: string }).taskId;
+	await tick();
+
+	await fire("agent_start", ctx);
+	harness.children[0].message({ id: "q1", kind: "query", message: "Confirm deletion?" });
+	await tick();
+
+	const wrongSessionCtx = {
+		...ctx,
+		sessionManager: {
+			...ctx.sessionManager,
+			getSessionId: () => "wrong-session",
+		},
+	};
+	const rejectedResult = await tools.get("subagent_reply")!.execute("r1", { task_id: id, request_id: "q1", message: "unauthorized" }, undefined, undefined, wrongSessionCtx as typeof ctx);
+	assert.match(rejectedResult.content[0].text, /unavailable/);
+
+	await fire("turn_end", ctx);
+
+	const queries = sent.filter((entry) => entry.message.customType === "gentle-agents.message" && (entry.message.details as { gentleAgents?: { kind?: string } })?.gentleAgents?.kind === "query");
+	assert.equal(queries.length, 1, "query is delivered to the parent session at turn_end");
+	assert.match(String(queries[0].message.content), /Confirm deletion\?/);
+
+	await fire("session_shutdown", ctx);
+});
+
 test("issue #1162: task-mode subagent_run includes question directly in waiting result and avoids duplicate delivery", async () => {
 	const { pi, tools, fire, sent } = fakePi();
 	const harness = deps();
