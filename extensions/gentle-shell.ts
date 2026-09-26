@@ -22,6 +22,7 @@ import { BANNER_COLORS, DEFAULT_BANNER_CONFIG, readBannerConfig, readBannerConfi
 import { agentsViewKey } from "../lib/agents-keys.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
 import { DOUBLE_ESC_CANCEL_HINT, framePromptLines, IDLE_ESC_CLEAR_HINT, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
+import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import { resolveAnimationPolicy, writeAnimationPolicy, type AnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy, type VimPolicy } from "../lib/vim-policy.ts";
@@ -104,6 +105,7 @@ import { sidebarHeader, sidebarPart, sidebarState, VISUAL_SETTINGS_CHANGED } fro
 import { installSidebar, invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
 import { SessionChanges, SESSION_CHANGE_EVENT } from "../lib/session-changes.ts";
 import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
+import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
 
 // Gentle Shell: the visual layer gentle-pi puts on top of pi. It installs the
 // status bar, the petal prompt, the working-tree changes widget and overlay,
@@ -306,6 +308,12 @@ interface PromptEditorDeps {
 	tuiVersion?: () => string | undefined;
 	/** Report a single warning if this editor cannot safely provide modal editing. */
 	notifyCompatibility?: (message: string) => void;
+	/**
+	 * Read fresh on every render while WORKING: the explicit, orchestrator-reported
+	 * ODD phase label for the current session, or undefined to fall back to the
+	 * generic "working…" label. Never applied to IDLE or QUEUED.
+	 */
+	workingLabel?: () => string | undefined;
 }
 
 const PROMPT_FRAME_ROLE = "border";
@@ -979,6 +987,7 @@ export class GentlePromptEditor extends CustomEditor {
 			borderColor: (text) => this.deps.fg(PROMPT_FRAME_ROLE, text),
 			fg: this.deps.fg,
 			bold: this.deps.bold,
+			workingLabel: this.promptState === PROMPT_STATE.WORKING ? this.deps.workingLabel?.() : undefined,
 			escHint: [
 				this.vimPolicy === "on" ? (this.vimVisual.active ? (this.vimVisual.kind === "line" ? "VISUAL LINE" : "VISUAL") : this.vimNormal ? "NORMAL" : "INSERT") : undefined,
 				this.promptState === PROMPT_STATE.WORKING && this.isPendingEscapeCancel()
@@ -1046,7 +1055,14 @@ function installPrompt(
 			dispatchQueuedText: promptDeps.dispatchQueuedText,
 			notifyCompatibility: (message) => ctx.ui.notify(message, "warning"),
 			tuiVersion: promptDeps.vimRuntimeVersion,
+			workingLabel: () => oddPhaseRegistry.label(ctx.sessionManager.getSessionId()),
 		});
+		// Pi's own docs require an explicit requestRender() after a state change
+		// (docs/tui.md: "Call tui.requestRender() after state changes"); no host
+		// re-render is implicitly guaranteed, and the WORKING pulse loop does not
+		// run at all under the "potato" animation policy. Register this session's
+		// redraw so a phase reported by the tool is visible immediately.
+		oddPhaseRegistry.setRenderRequest(ctx.sessionManager.getSessionId(), () => tui.requestRender());
 		onCreated(prompt);
 		return prompt;
 	};
@@ -1206,14 +1222,15 @@ async function showChangesOverlay(ctx: ExtensionContext, deps: OverlayDeps): Pro
 	try {
 		const chosen = await ctx.ui.custom<{ root: string; file: ChangedFile } | null>(
 			(tui, theme, _keybindings, done) => {
+				const close = withOverlayRepaint(tui, done);
 				host = tui;
 				view = new WorktreeChangesView(worktrees(), {
 					theme,
 					rows: () => Math.max(OVERLAY_MIN_ROWS, Math.floor(tui.terminal.rows * OVERLAY_HEIGHT_RATIO)),
 					loadDiff: (root, file) => Promise.resolve(deps.loadDiff(root, file)),
-					onOpen: (root, file) => done({ root, file }),
+					onOpen: (root, file) => close({ root, file }),
 					onRefresh: () => void refresh(),
-					onClose: () => done(null),
+					onClose: () => close(null),
 					requestRender: () => tui.requestRender(),
 				});
 				return view;
@@ -1246,7 +1263,7 @@ async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext, env: 
 		return;
 	}
 	const result = await ctx.ui.custom<CommandPaletteResult>(
-		(tui, theme, _keybindings, done) => new CommandPalette(groups, done, theme, () => Math.max(0, tui.terminal.rows)),
+		(tui, theme, _keybindings, done) => new CommandPalette(groups, withOverlayRepaint(tui, done), theme, () => Math.max(0, tui.terminal.rows)),
 		{ overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 60, maxHeight: "85%" } },
 	);
 	if (result?.type === "run") pi.sendUserMessage(`/${result.name}`, { expandPromptTemplates: true });
@@ -1446,7 +1463,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					active: () => (ctx.model ? { provider: ctx.model.provider } : undefined),
 					registry: () => usageSources,
 					onRefresh: () => refreshUsage(ctx, true),
-					onClose: () => done(null),
+					onClose: () => withOverlayRepaint(tui, done)(null),
 					requestRender: () => tui.requestRender(),
 				}),
 			{ overlay: true, overlayOptions: { width: "70%", minWidth: 60, anchor: "center" } },
@@ -1638,6 +1655,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
 		stopProfilePoll();
+		oddPhaseRegistry.clear(ctx.sessionManager.getSessionId());
+		oddPhaseRegistry.clearRenderRequest(ctx.sessionManager.getSessionId());
 		pendingQueuedText = undefined;
 		prompt?.dispose();
 		prompt = undefined;
@@ -1984,6 +2003,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// below has delivered the pending text. Nothing is sent from here: Pi
 		// is mid-turn, so the text simply waits and goes out, once, when that
 		// turn settles. It is never dropped.
+		// A new turn always starts unlabeled: any ODD phase reported for the
+		// previous turn must never leak into this one. The orchestrator
+		// reports the new turn's phase explicitly once it knows it.
+		oddPhaseRegistry.clear(ctx.sessionManager.getSessionId());
 		prompt?.setWorking(true);
 		// The dev-binary card is a startup notice: it leaves with the first prompt.
 		if (ctx.hasUI) ctx.ui.setWidget(DEV_BINARY_WIDGET_KEY, undefined);
@@ -1993,6 +2016,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// this is normally idle; if a run is somehow still in flight the prompt
 		// stays working and the pending text waits for the next settle.
 		if (!ctx.isIdle()) return;
+		// Covers both a normal finish and an aborted turn settling idle: the
+		// input falls back to the generic "working…" label until the next
+		// turn's own agent_start clears it again (belt-and-suspenders with the
+		// clear above).
+		oddPhaseRegistry.clear(ctx.sessionManager.getSessionId());
 		prompt?.setWorking(false);
 		if (pendingQueuedText === undefined) return;
 		const queued = pendingQueuedText;
