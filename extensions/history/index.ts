@@ -1,12 +1,14 @@
 // SPDX-FileCopyrightText: 2026 ExoPro. Inspired by @jasonish/pi-prompt-history
 // SPDX-License-Identifier: MIT
 
-// Prompt-history extension entry (slice 3, stage 1): the minimal selector
-// open flow over the slice-1 writer and slice-2 drains — /history command,
-// ctrl+shift+r shortcut, the capture gate, the fail-closed project drain,
-// and a non-search list overlay. Search, paging/preview, mouse, and the
-// scope toggle arrive in later stages; deletion (slice 5) and GC
-// (slice 6) later still.
+// Prompt-history extension entry (slice 3, stage 2): the selector open flow
+// over the slice-1 writer and slice-2 drains, now with the search input
+// (filterPrompts + forwardToSearch fallthrough), the lazy loaded window
+// (initial batch, prefetch growth, PgUp/PgDn, Home/End), the header loaded
+// segment, and the project<->global scope toggle under the expanded-globals
+// contract. The preview panel, wheel/mouse handling, and the fixed 30-row
+// overlay geometry arrive in stage 3; deletion (slice 5) and GC (slice 6)
+// later still.
 //
 // Capture is OPT-IN while the deletion/privacy behavior is unshipped:
 // nothing is recorded unless GENTLE_PI_HISTORY_CAPTURE=1|true|on. The
@@ -28,6 +30,9 @@ import {
   Container,
   type Focusable,
   getKeybindings,
+  Input,
+  matchesKey,
+  Text,
   type TUI,
   truncateToWidth,
 } from "@earendil-works/pi-tui";
@@ -42,15 +47,33 @@ import {
 } from "./store.ts";
 import {
   buildPromptRecords,
+  clampSelectedIndex,
   dedupePromptEntries,
+  filterPrompts,
   getVisiblePromptRecords,
+  initialLoadedCount,
+  loadedCountForQuery,
+  loadedCountForTarget,
   moveSelectedIndex,
+  nextLoadedCount,
+  pageSelectedIndex,
+  shouldGrowWindow,
+  withExpandedHistoryGlobals,
+  type PiHistoryGlobals,
   type PromptEntry,
   type PromptRecord,
 } from "./selector-helpers.ts";
 
 const SHORTCUT = "ctrl+shift+r";
 const MAX_VISIBLE = 10;
+// Lazy windowing (design §D3; user-tuned 2026-09-08). PRELOAD_BUFFER=3
+// fires growth as the cursor enters the final 3 loaded rows; BATCH_SIZE=10
+// loads exactly one viewport per growth; INITIAL_BATCH=10 paints one
+// viewport at open. PRELOAD_BUFFER <= MAX_VISIBLE keeps a jump within one
+// viewport covered by the catch-up loop; review all three together.
+const INITIAL_BATCH = 10;
+const BATCH_SIZE = 10;
+const PRELOAD_BUFFER = 3;
 /** Width of the "→ " / "  " prefix on each entry line. */
 const ENTRY_PREFIX_WIDTH = 2;
 
@@ -109,7 +132,7 @@ function sanitizeForDisplay(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// TUI Selector (stage 1: frame + non-search list)
+// TUI Selector (stage 2: search + lazy list + scope toggle)
 // ---------------------------------------------------------------------------
 
 /** Keybinding lookup returned by getKeybindings(). */
@@ -175,19 +198,34 @@ class FixedRowText {
 }
 
 class PromptHistorySelector extends Container implements Focusable {
-  private readonly headerRow: FixedRowText;
+  private readonly searchInput: Input;
   private readonly listContainer: Container;
+  private readonly headerRow: FixedRowText;
   private records: PromptRecord[];
   private readonly theme: Theme;
   private readonly tui: TUI;
   private readonly onSelect: (record: PromptRecord) => void;
   private readonly onCancel: () => void;
-  /** Notification sink for selector feedback (wired by the open flow). */
+  /** Notification sink for selector feedback (wired by the factory). */
   private readonly onNotify?: SelectorNotify;
+  /**
+   * Scope drain injectable (slice-02 DrainResult contract): the open flow
+   * hands the selector its drainForScope so tab can re-drain the other
+   * scope without the selector touching store paths itself.
+   */
+  private readonly drainScope: (scope: HistoryScope) => DrainResult;
+  private filteredRecords: PromptRecord[] = [];
   private selectedIndex = 0;
+  /** Number of records loaded (newest-first) from the top of `records`. */
+  private loadedCount = 0;
+  /** Active scope (design v2): project (default) or global. */
+  private scope: HistoryScope = "project";
+  /** Last render width, used for entry truncation. */
+  private lastWidth = 800;
 
-  /** Dispatch table: first match wins. Unhandled input is ignored — the
-   *  search box joins in a later stage and owns the fallthrough. */
+  /** Dispatch table: first match wins, fallthrough last. The preview
+   *  ctrl+shift combos join with the preview panel (stage 3) and the
+   *  ctrl+shift+backspace delete entry joins with deletion (slice 5). */
   private readonly dispatch: readonly DispatchEntry[] = [
     {
       match: (_d, kb) => kb.matches(_d, "tui.select.up"),
@@ -198,12 +236,29 @@ class PromptHistorySelector extends Container implements Focusable {
       handler: () => this.moveDown(),
     },
     {
+      match: (_d, kb) => kb.matches(_d, "tui.select.pageUp"),
+      handler: () => this.pageListUp(),
+    },
+    {
+      match: (_d, kb) => kb.matches(_d, "tui.select.pageDown"),
+      handler: () => this.pageListDown(),
+    },
+    {
       match: (d, kb) => d === "\r" || kb.matches(d, "tui.select.confirm"),
       handler: () => this.selectCurrent(),
     },
+    { match: (d, _kb) => d === "\t", handler: () => this.toggleScope() },
     {
       match: (_d, kb) => kb.matches(_d, "tui.select.cancel"),
       handler: () => this.onCancel(),
+    },
+    {
+      match: (d, _kb) => matchesKey(d, "home"),
+      handler: () => this.jumpToFirst(),
+    },
+    {
+      match: (d, _kb) => matchesKey(d, "end"),
+      handler: () => this.jumpToLast(),
     },
   ];
 
@@ -213,6 +268,7 @@ class PromptHistorySelector extends Container implements Focusable {
   }
   set focused(value: boolean) {
     this._focused = value;
+    this.searchInput.focused = value;
   }
 
   constructor(
@@ -222,49 +278,118 @@ class PromptHistorySelector extends Container implements Focusable {
     onSelect: (record: PromptRecord) => void,
     onCancel: () => void,
     onNotify?: SelectorNotify,
+    drainScope?: (scope: HistoryScope) => DrainResult,
   ) {
     super();
     this.tui = tui;
     this.theme = theme;
     this.records = records;
+    this.loadedCount = initialLoadedCount(records.length, INITIAL_BATCH);
     this.onSelect = onSelect;
     this.onCancel = onCancel;
     this.onNotify = onNotify;
+    // Default injectable: an empty drain so a bare constructor (tests,
+    // tooling) never touches the store; the open flow always passes the
+    // real fail-closed drainForScope.
+    this.drainScope = drainScope ?? (() => ({ status: "ok", prompts: [] }));
 
-    // ── Frame ──
+    // ── Search panel (top) ──
     this.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
     this.headerRow = new FixedRowText(
-      theme.fg("accent", theme.bold(" Prompt History ")),
+      theme.fg("accent", theme.bold(" History Search ")),
     );
     this.addChild(this.headerRow);
+    this.addChild(
+      new Text(
+        theme.fg(
+          "dim",
+          "Type to filter (multi-word AND substring, case-insensitive)",
+        ),
+        0,
+        0,
+      ),
+    );
+    this.searchInput = new Input();
+    this.searchInput.onSubmit = () => this.selectCurrent();
+    this.searchInput.onEscape = () => this.onCancel();
+    this.addChild(this.searchInput);
+    this.addChild(new DynamicBorder((s: string) => theme.fg("dim", s)));
+
     this.listContainer = new Container();
     this.addChild(this.listContainer);
+
     this.addChild(new DynamicBorder((s: string) => theme.fg("dim", s)));
     this.addChild(
       new FixedRowText(
-        theme.fg("dim", "↑↓ move • enter select and quit • esc cancel"),
+        theme.fg(
+          "dim",
+          "↑↓ move • PgUp/PgDn page • tab scope • enter select and quit • esc cancel",
+        ),
         true /* centered */,
       ),
     );
     this.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
 
+    this.applyFilter("");
+  }
+
+  // -- Filtering & list building ------------------------------------------
+
+  private applyFilter(query: string): void {
+    // AC-L2-3r (user-directed 2026-09-08): a non-empty query implies
+    // full-snapshot visibility — one-shot and idempotent, never a batch —
+    // so per-keypress incremental loads remain impossible (C2).
+    this.loadedCount = loadedCountForQuery(
+      this.loadedCount,
+      this.records.length,
+      query,
+    );
+    this.filteredRecords = filterPrompts(
+      this.records.slice(0, this.loadedCount),
+      query,
+    );
+    this.selectedIndex = clampSelectedIndex(
+      this.selectedIndex,
+      this.filteredRecords.length,
+    );
     this.rebuildList();
   }
 
-  // -- List building -------------------------------------------------------
+  private rebuildList(): void {
+    this.rebuildListWithWidth(this.lastWidth);
+  }
 
   /** Rebuild list rows: header counter + entries. Always MAX_VISIBLE rows. */
   private rebuildListWithWidth(width: number): void {
-    const count = this.records.length;
+    const count = this.filteredRecords.length;
     const position = count === 0 ? 0 : this.selectedIndex + 1;
     this.headerRow.setText(
-      this.theme.fg("accent", this.theme.bold(" Prompt History ")) +
-        this.theme.fg("dim", ` · ${position} of ${count} `),
+      this.theme.fg("accent", this.theme.bold(" History Search ")) +
+        this.theme.fg("dim", ` · ${position} of ${count} `) +
+        this.theme.fg(
+          "dim",
+          ` · loaded ${this.loadedCount} of ${this.records.length} `,
+        ) +
+        // Right-aligned scope radio: pad from plain-text lengths so the
+        // radio ends flush at the header's last column at any width.
+        (() => {
+          const scopeRadio =
+            this.scope === "project"
+              ? "◉ Current project | ○ All projects"
+              : "○ Current project | ◉ All projects";
+          const leftWidth =
+            " History Search ".length +
+            ` · ${position} of ${count} `.length +
+            ` · loaded ${this.loadedCount} of ${this.records.length} `.length;
+          return (
+            " ".repeat(Math.max(1, width - leftWidth - scopeRadio.length)) +
+            this.theme.fg("dim", scopeRadio)
+          );
+        })(),
     );
     this.listContainer.clear();
 
     if (count === 0) {
-      // Defensive: the open-flow guard never opens an empty selector.
       this.listContainer.addChild(
         new FixedRowText(this.theme.fg("warning", "No matching prompts")),
       );
@@ -277,7 +402,7 @@ class PromptHistorySelector extends Container implements Focusable {
     const entryMax = Math.floor(width * 0.95) - ENTRY_PREFIX_WIDTH;
 
     const visible = getVisiblePromptRecords(
-      this.records,
+      this.filteredRecords,
       this.selectedIndex,
       MAX_VISIBLE,
     );
@@ -298,53 +423,182 @@ class PromptHistorySelector extends Container implements Focusable {
     }
   }
 
-  private rebuildList(): void {
-    this.rebuildListWithWidth(800);
+  // -- Selection actions --------------------------------------------------
+
+  private selectCurrent(): void {
+    const selected = this.filteredRecords[this.selectedIndex];
+    if (selected) this.onSelect(selected);
   }
 
-  // -- Navigation & selection ----------------------------------------------
+  /**
+   * Toggle project <-> global (design v2): re-drain the other scope,
+   * rebuild the records, reset the window. Tab's only role. Fail-closed
+   * (slice-02 contract): a blocked drain keeps the working scope and
+   * surfaces the recovery warning instead of a blocked (entry-less) list.
+   */
+  private toggleScope(): void {
+    const previous = this.scope;
+    this.scope = this.scope === "project" ? "global" : "project";
+    const drained = this.drainScope(this.scope);
+    if (drained.status === "blocked") {
+      this.scope = previous;
+      this.onNotify?.(drained.message, "error");
+      return;
+    }
+    this.records = recordsFromEntries(drained.prompts);
+    this.loadedCount = initialLoadedCount(this.records.length, INITIAL_BATCH);
+    this.applyFilter(this.searchInput.getValue());
+  }
+
+  // -- Navigation ---------------------------------------------------------
 
   private moveUp(): void {
     this.selectedIndex = moveSelectedIndex(
       this.selectedIndex,
-      this.records.length,
+      this.filteredRecords.length,
       -1,
     );
+    if (
+      shouldGrowWindow(
+        this.selectedIndex,
+        this.loadedCount,
+        this.records.length,
+        PRELOAD_BUFFER,
+      )
+    ) {
+      this.loadedCount = nextLoadedCount(
+        this.loadedCount,
+        this.records.length,
+        BATCH_SIZE,
+      );
+      this.applyFilter(this.searchInput.getValue());
+    }
     this.rebuildList();
   }
 
   private moveDown(): void {
+    // Grow-before-move (design §D1): the C2 trigger fires while the cursor
+    // sits in the final PRELOAD_BUFFER rows of the loaded window, so the
+    // modulo below moves into freshly loaded rows — a wrap to index 0 is
+    // reachable only on the exhausted set.
+    if (
+      shouldGrowWindow(
+        this.selectedIndex,
+        this.loadedCount,
+        this.records.length,
+        PRELOAD_BUFFER,
+      )
+    ) {
+      this.loadedCount = nextLoadedCount(
+        this.loadedCount,
+        this.records.length,
+        BATCH_SIZE,
+      );
+      this.applyFilter(this.searchInput.getValue());
+    }
     this.selectedIndex = moveSelectedIndex(
       this.selectedIndex,
-      this.records.length,
+      this.filteredRecords.length,
       1,
     );
     this.rebuildList();
   }
 
-  private selectCurrent(): void {
-    const selected = this.records[this.selectedIndex];
-    if (selected) this.onSelect(selected);
+  /** Page the LIST up by MAX_VISIBLE with clamping (no wrap). */
+  private pageListUp(): void {
+    this.selectedIndex = pageSelectedIndex(
+      this.selectedIndex,
+      this.filteredRecords.length,
+      -MAX_VISIBLE,
+    );
+    this.rebuildList();
   }
 
-  // -- Input handling --------------------------------------------------------
+  /** Page the LIST down by MAX_VISIBLE with clamping (no wrap). */
+  private pageListDown(): void {
+    // PgDn catch-up (design §D7): grow in whole batches until the paged-to
+    // row is loaded BEFORE the selection lands on it.
+    const grown = loadedCountForTarget(
+      this.loadedCount,
+      this.records.length,
+      this.selectedIndex + MAX_VISIBLE,
+      BATCH_SIZE,
+    );
+    if (grown !== this.loadedCount) {
+      this.loadedCount = grown;
+      this.applyFilter(this.searchInput.getValue());
+    }
+    this.selectedIndex = pageSelectedIndex(
+      this.selectedIndex,
+      this.filteredRecords.length,
+      MAX_VISIBLE,
+    );
+    this.rebuildList();
+  }
+
+  private jumpToFirst(): void {
+    if (this.filteredRecords.length === 0) return;
+    this.selectedIndex = 0;
+    this.rebuildList();
+  }
+
+  private jumpToLast(): void {
+    // End full-jump (design §D7): one-shot load of everything BEFORE the
+    // empty guard, so End also surfaces matches beyond the window.
+    if (this.loadedCount < this.records.length) {
+      this.loadedCount = this.records.length;
+      this.applyFilter(this.searchInput.getValue());
+    }
+    if (this.filteredRecords.length === 0) return;
+    this.selectedIndex = this.filteredRecords.length - 1;
+    this.rebuildList();
+  }
+
+  // -- Input handling -----------------------------------------------------
+
+  private forwardToSearch(data: string): void {
+    this.searchInput.handleInput(data);
+    this.selectedIndex = 0;
+    this.applyFilter(this.searchInput.getValue());
+  }
 
   handleInput(data: string): void {
     const kb = getKeybindings();
+    let handled = false;
     for (const { match, handler } of this.dispatch) {
       if (match(data, kb)) {
         handler();
-        this.tui.requestRender();
-        return;
+        handled = true;
+        break;
       }
     }
+    if (!handled) this.forwardToSearch(data);
+    this.tui.requestRender();
   }
 
-  // -- Render ---------------------------------------------------------------
+  // -- Render override for dynamic entry width ---------------------------
+
+  /** Fixed overlay height so the TUI never repositions the panel. Stage-2
+   *  geometry (search + list, no preview panel); grows to 30 rows when the
+   *  preview panel joins in stage 3. */
+  private static readonly OVERLAY_LINES = 18;
 
   override render(width: number): string[] {
+    if (width !== this.lastWidth) {
+      // Pre-clamp against the previous filter so a width change can never
+      // drive the rebuild with a stale selection (AC-P1-4.1/4.2).
+      this.selectedIndex = clampSelectedIndex(
+        this.selectedIndex,
+        this.filteredRecords.length,
+      );
+    }
+    this.lastWidth = width;
     this.rebuildListWithWidth(width);
-    return super.render(width);
+    const raw = super.render(width);
+    // Pad or trim to exactly OVERLAY_LINES so the overlay never shifts.
+    const blank = " ".repeat(Math.max(1, width));
+    while (raw.length < PromptHistorySelector.OVERLAY_LINES) raw.push(blank);
+    return raw.slice(0, PromptHistorySelector.OVERLAY_LINES);
   }
 }
 
@@ -352,25 +606,60 @@ class PromptHistorySelector extends Container implements Focusable {
 // Overlay glue
 // ---------------------------------------------------------------------------
 
+type SelectorDone = (result: PromptRecord | null) => void;
+
+type SelectorFactory = (
+  tui: unknown,
+  theme: unknown,
+  keybindings: unknown,
+  done: SelectorDone,
+) => PromptHistorySelector;
+
+function castSelectorArgs(tui: unknown, theme: unknown): [TUI, Theme] {
+  return [tui as TUI, theme as Theme];
+}
+
+function createPromptHistorySelectorFactory(
+  records: PromptRecord[],
+  onNotify?: SelectorNotify,
+  drainScope?: (scope: HistoryScope) => DrainResult,
+): SelectorFactory {
+  return (tui, theme, _keybindings, done) => {
+    const finish = (result: PromptRecord | null) => done(result);
+    const [typedTui, typedTheme] = castSelectorArgs(tui, theme);
+    return new PromptHistorySelector(
+      typedTui,
+      typedTheme,
+      records,
+      (record) => finish(record),
+      () => finish(null),
+      onNotify,
+      drainScope,
+    );
+  };
+}
+
 async function runPromptHistorySelection(
   ctx: Pick<ExtensionCommandContext, "ui">,
   records: PromptRecord[],
+  drainScope?: (scope: HistoryScope) => DrainResult,
 ): Promise<PromptRecord | null> {
-  return ctx.ui.custom<PromptRecord | null>(
-    (tui, theme, _keybindings, done) => {
-      const finish = (result: PromptRecord | null) => done(result);
-      return new PromptHistorySelector(
-        tui,
-        theme,
+  const historyGlobals: PiHistoryGlobals = globalThis as Record<
+    string,
+    unknown
+  >;
+  return withExpandedHistoryGlobals(historyGlobals, async () =>
+    ctx.ui.custom<PromptRecord | null>(
+      createPromptHistorySelectorFactory(
         records,
-        (record) => finish(record),
-        () => finish(null),
-      );
-    },
-    {
-      overlay: true,
-      overlayOptions: { anchor: "bottom-center", width: "100%", offsetY: 5 },
-    },
+        (message, level) => ctx.ui.notify(message, level),
+        drainScope,
+      ),
+      {
+        overlay: true,
+        overlayOptions: { anchor: "bottom-center", width: "100%", offsetY: 5 },
+      },
+    ),
   );
 }
 
@@ -401,7 +690,7 @@ function createOpenFlow(env: NodeJS.ProcessEnv, root: string, cwd: string) {
    * dirs + the legacy global seed). Both apply the fail-closed tombstone
    * filter — the state dir is the store root itself (hidden.json contract).
    * The DrainResult is returned verbatim: `blocked` must stop the open flow
-   * before any records build.
+   * before any records build, and the selector's scope toggle surfaces it.
    */
   function drainForScope(scope: HistoryScope): DrainResult {
     return scope === "project"
@@ -439,7 +728,11 @@ function createOpenFlow(env: NodeJS.ProcessEnv, root: string, cwd: string) {
     }
 
     const records = recordsFromEntries(entries);
-    const selected = await runPromptHistorySelection(ctx, records);
+    const selected = await runPromptHistorySelection(
+      ctx,
+      records,
+      drainForScope,
+    );
     if (selected) {
       // pasteToEditor routes through the editor's input pipeline (bracketed
       // paste), so the text renders immediately (a22588fc).
@@ -492,7 +785,7 @@ export default function promptHistoryExtension(
     }
   });
 
-  // Selector open flow (slice 3, stage 1): both entry points share it.
+  // Selector open flow (slice 3, stage 2): both entry points share it.
   const { openHistorySelector } = createOpenFlow(env, root, cwd);
 
   pi.registerShortcut(SHORTCUT, {
