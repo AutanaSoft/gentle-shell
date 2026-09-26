@@ -1,27 +1,58 @@
 // SPDX-FileCopyrightText: 2026 ExoPro. Inspired by @jasonish/pi-prompt-history
 // SPDX-License-Identifier: MIT
 
-// Prompt-history extension entry (slice 1): identity constants, the
-// per-instance writer lifecycle, and the before_agent_start capture
-// handler. Selector UI, shortcut/command, scope drains, legacy migration
-// and seed bootstrap, and GC arrive in later slices.
+// Prompt-history extension entry (slice 3, stage 1): the minimal selector
+// open flow over the slice-1 writer and slice-2 drains — /history command,
+// ctrl+shift+r shortcut, the capture gate, the fail-closed project drain,
+// and a non-search list overlay. Search, paging/preview, mouse, and the
+// scope toggle arrive in later stages; deletion (slice 5) and GC
+// (slice 6) later still.
 //
 // Capture is OPT-IN while the deletion/privacy behavior is unshipped:
-// nothing is recorded unless GENTLE_PI_HISTORY_CAPTURE=1|true|on. With the
-// switch off the handler is a no-op — no registry entry, no files, and
-// prompts are never written. Unsetting the switch only stops NEW captures;
-// files already written stay on disk (docs/prompt-history.md).
+// nothing is recorded unless GENTLE_PI_HISTORY_CAPTURE=1|true|on. The
+// selector honors the same gate: with the switch off, opening the selector
+// is a no-op — no registry entry, no writer init, no store reads.
+// Unsetting the switch only stops NEW captures; files already written stay
+// on disk (docs/prompt-history.md).
 
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  DynamicBorder,
+  type ExtensionAPI,
+  type ExtensionCommandContext,
+  type Theme,
+} from "@earendil-works/pi-coding-agent";
+import {
+  Container,
+  type Focusable,
+  getKeybindings,
+  type TUI,
+  truncateToWidth,
+} from "@earendil-works/pi-tui";
 import {
   appendSessionCapture,
+  type DrainResult,
+  drainGlobal,
+  drainProject,
   ensureRegistryEntry,
   openSessionWriter,
   type SessionWriterState,
 } from "./store.ts";
+import {
+  buildPromptRecords,
+  dedupePromptEntries,
+  getVisiblePromptRecords,
+  moveSelectedIndex,
+  type PromptEntry,
+  type PromptRecord,
+} from "./selector-helpers.ts";
+
+const SHORTCUT = "ctrl+shift+r";
+const MAX_VISIBLE = 10;
+/** Width of the "→ " / "  " prefix on each entry line. */
+const ENTRY_PREFIX_WIDTH = 2;
 
 // v2 multi-concurrency store root (design: tmp/multi-concurrency-design.md).
 const PI_HISTORY_ROOT = join(homedir(), ".pi", "agent", "history");
@@ -43,6 +74,380 @@ export interface HistoryDeps {
 export function captureEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const value = env.GENTLE_PI_HISTORY_CAPTURE?.trim().toLowerCase();
   return value === "1" || value === "true" || value === "on";
+}
+
+// ---------------------------------------------------------------------------
+// Sanitization (a22588fc)
+// ---------------------------------------------------------------------------
+
+/**
+ * Replace control characters with visible escape notation so the terminal
+ * renders them as text instead of interpreting them as commands.
+ * Preserves \n (newlines) and \t (tabs).
+ */
+function sanitizeForDisplay(text: string): string {
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    const cp = text.codePointAt(i)!;
+    if (cp === 0x0a) {
+      out += "\n";
+    } else if (cp === 0x09) {
+      out += "\t";
+    } else if (cp < 0x20 || cp === 0x7f) {
+      out += "\\x" + cp.toString(16).padStart(2, "0");
+    } else if (cp >= 0x80 && cp < 0xa0) {
+      out += "\\x" + cp.toString(16).padStart(2, "0");
+    } else {
+      // Astral code points (> 0xFFFF) span a surrogate pair; append the
+      // full code point, not just the high surrogate at text[i], so emoji
+      // and other non-BMP characters survive sanitization intact.
+      out += cp > 0xffff ? String.fromCodePoint(cp) : text[i];
+    }
+    if (cp > 0xffff) i++; // skip low surrogate of astral pair
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// TUI Selector (stage 1: frame + non-search list)
+// ---------------------------------------------------------------------------
+
+/** Keybinding lookup returned by getKeybindings(). */
+interface Keybindings {
+  matches(data: string, action: string): boolean;
+}
+
+type InputMatcher = (data: string, kb: Keybindings) => boolean;
+type InputHandler = () => void;
+
+interface DispatchEntry {
+  match: InputMatcher;
+  handler: InputHandler;
+}
+
+/** Notification sink for selector feedback; an absent callback drops notifications. */
+type SelectorNotify = (
+  message: string,
+  level: "error" | "warning" | "info",
+) => void;
+
+/** Single rendered row; always occupies exactly one terminal row. */
+class FixedRowText {
+  private text: string;
+  private readonly centered: boolean;
+
+  constructor(text: string = "", centered = false) {
+    this.text = text;
+    this.centered = centered;
+  }
+
+  /** Replace the row content in place; padding contract comes from render(). */
+  setText(next: string): void {
+    this.text = next;
+  }
+
+  invalidate(): void {}
+
+  render(width: number): string[] {
+    if (width <= 0) return [" "] as string[];
+    if (this.text.length === 0) {
+      // Use a space so the terminal always renders this as a visible row
+      // and differential rendering correctly detects it as a changed line.
+      return [" ".repeat(width)] as string[];
+    }
+    const rendered = this.centered
+      ? (() => {
+          // Truncate first so an overlong help row can never exceed width,
+          // then center the truncated copy (design §C hardening).
+          const truncated = truncateToWidth(this.text, width, "…");
+          const visible = truncated.replace(/\x1b\[[0-9;]*m/g, "");
+          const pad = Math.max(0, Math.floor((width - visible.length) / 2));
+          return " ".repeat(pad) + truncated;
+        })()
+      : truncateToWidth(this.text, width, "…");
+    // Pad to full terminal width so the overlay fully overwrites
+    // whatever is beneath it and leaves no ghost characters on dismiss.
+    // Measure the VISIBLE width: SGR escape sequences (colored rows)
+    // occupy no terminal cells.
+    const visible = rendered.replace(/\x1b\[[0-9;]*m/g, "");
+    return [rendered + " ".repeat(Math.max(0, width - visible.length))];
+  }
+}
+
+class PromptHistorySelector extends Container implements Focusable {
+  private readonly headerRow: FixedRowText;
+  private readonly listContainer: Container;
+  private records: PromptRecord[];
+  private readonly theme: Theme;
+  private readonly tui: TUI;
+  private readonly onSelect: (record: PromptRecord) => void;
+  private readonly onCancel: () => void;
+  /** Notification sink for selector feedback (wired by the open flow). */
+  private readonly onNotify?: SelectorNotify;
+  private selectedIndex = 0;
+
+  /** Dispatch table: first match wins. Unhandled input is ignored — the
+   *  search box joins in a later stage and owns the fallthrough. */
+  private readonly dispatch: readonly DispatchEntry[] = [
+    {
+      match: (_d, kb) => kb.matches(_d, "tui.select.up"),
+      handler: () => this.moveUp(),
+    },
+    {
+      match: (_d, kb) => kb.matches(_d, "tui.select.down"),
+      handler: () => this.moveDown(),
+    },
+    {
+      match: (d, kb) => d === "\r" || kb.matches(d, "tui.select.confirm"),
+      handler: () => this.selectCurrent(),
+    },
+    {
+      match: (_d, kb) => kb.matches(_d, "tui.select.cancel"),
+      handler: () => this.onCancel(),
+    },
+  ];
+
+  private _focused = false;
+  get focused(): boolean {
+    return this._focused;
+  }
+  set focused(value: boolean) {
+    this._focused = value;
+  }
+
+  constructor(
+    tui: TUI,
+    theme: Theme,
+    records: PromptRecord[],
+    onSelect: (record: PromptRecord) => void,
+    onCancel: () => void,
+    onNotify?: SelectorNotify,
+  ) {
+    super();
+    this.tui = tui;
+    this.theme = theme;
+    this.records = records;
+    this.onSelect = onSelect;
+    this.onCancel = onCancel;
+    this.onNotify = onNotify;
+
+    // ── Frame ──
+    this.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+    this.headerRow = new FixedRowText(
+      theme.fg("accent", theme.bold(" Prompt History ")),
+    );
+    this.addChild(this.headerRow);
+    this.listContainer = new Container();
+    this.addChild(this.listContainer);
+    this.addChild(new DynamicBorder((s: string) => theme.fg("dim", s)));
+    this.addChild(
+      new FixedRowText(
+        theme.fg("dim", "↑↓ move • enter select and quit • esc cancel"),
+        true /* centered */,
+      ),
+    );
+    this.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+
+    this.rebuildList();
+  }
+
+  // -- List building -------------------------------------------------------
+
+  /** Rebuild list rows: header counter + entries. Always MAX_VISIBLE rows. */
+  private rebuildListWithWidth(width: number): void {
+    const count = this.records.length;
+    const position = count === 0 ? 0 : this.selectedIndex + 1;
+    this.headerRow.setText(
+      this.theme.fg("accent", this.theme.bold(" Prompt History ")) +
+        this.theme.fg("dim", ` · ${position} of ${count} `),
+    );
+    this.listContainer.clear();
+
+    if (count === 0) {
+      // Defensive: the open-flow guard never opens an empty selector.
+      this.listContainer.addChild(
+        new FixedRowText(this.theme.fg("warning", "No matching prompts")),
+      );
+      for (let i = 1; i < MAX_VISIBLE; i++) {
+        this.listContainer.addChild(new FixedRowText());
+      }
+      return;
+    }
+
+    const entryMax = Math.floor(width * 0.95) - ENTRY_PREFIX_WIDTH;
+
+    const visible = getVisiblePromptRecords(
+      this.records,
+      this.selectedIndex,
+      MAX_VISIBLE,
+    );
+
+    for (const { record, isSelected } of visible) {
+      const prefix = isSelected ? "→ " : "  ";
+      const color = isSelected ? "accent" : "text";
+      const compacted = sanitizeForDisplay(record.text)
+        .replace(/\s+/g, " ")
+        .trim();
+      const truncated = truncateToWidth(compacted, entryMax, "…");
+      const line = prefix + this.theme.fg(color, truncated);
+      this.listContainer.addChild(new FixedRowText(line));
+    }
+
+    for (let i = visible.length; i < MAX_VISIBLE; i++) {
+      this.listContainer.addChild(new FixedRowText());
+    }
+  }
+
+  private rebuildList(): void {
+    this.rebuildListWithWidth(800);
+  }
+
+  // -- Navigation & selection ----------------------------------------------
+
+  private moveUp(): void {
+    this.selectedIndex = moveSelectedIndex(
+      this.selectedIndex,
+      this.records.length,
+      -1,
+    );
+    this.rebuildList();
+  }
+
+  private moveDown(): void {
+    this.selectedIndex = moveSelectedIndex(
+      this.selectedIndex,
+      this.records.length,
+      1,
+    );
+    this.rebuildList();
+  }
+
+  private selectCurrent(): void {
+    const selected = this.records[this.selectedIndex];
+    if (selected) this.onSelect(selected);
+  }
+
+  // -- Input handling --------------------------------------------------------
+
+  handleInput(data: string): void {
+    const kb = getKeybindings();
+    for (const { match, handler } of this.dispatch) {
+      if (match(data, kb)) {
+        handler();
+        this.tui.requestRender();
+        return;
+      }
+    }
+  }
+
+  // -- Render ---------------------------------------------------------------
+
+  override render(width: number): string[] {
+    this.rebuildListWithWidth(width);
+    return super.render(width);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Overlay glue
+// ---------------------------------------------------------------------------
+
+async function runPromptHistorySelection(
+  ctx: Pick<ExtensionCommandContext, "ui">,
+  records: PromptRecord[],
+): Promise<PromptRecord | null> {
+  return ctx.ui.custom<PromptRecord | null>(
+    (tui, theme, _keybindings, done) => {
+      const finish = (result: PromptRecord | null) => done(result);
+      return new PromptHistorySelector(
+        tui,
+        theme,
+        records,
+        (record) => finish(record),
+        () => finish(null),
+      );
+    },
+    {
+      overlay: true,
+      overlayOptions: { anchor: "bottom-center", width: "100%", offsetY: 5 },
+    },
+  );
+}
+
+/** Build selector records from drain entries (shared by both scopes). */
+function recordsFromEntries(
+  entries: Array<string | PromptEntry>,
+): PromptRecord[] {
+  return buildPromptRecords(dedupePromptEntries(entries));
+}
+
+// ---------------------------------------------------------------------------
+// Open flow: capture gate → fail-closed drain → records → overlay
+// ---------------------------------------------------------------------------
+
+type HistoryScope = "project" | "global";
+
+/**
+ * Per-load open flow over the slice-1 deps (env/root/cwd): the selector is
+ * a pure store reader, so it never initializes the capture writer — the
+ * capture gate in openHistorySelector runs before any store access and a
+ * capture-off session performs no registry/writer side effects on the
+ * open path.
+ */
+function createOpenFlow(env: NodeJS.ProcessEnv, root: string, cwd: string) {
+  /**
+   * Scope drain for the selector: project scope drains the project's store
+   * files; global scope is the store-only cross-project view (all project
+   * dirs + the legacy global seed). Both apply the fail-closed tombstone
+   * filter — the state dir is the store root itself (hidden.json contract).
+   * The DrainResult is returned verbatim: `blocked` must stop the open flow
+   * before any records build.
+   */
+  function drainForScope(scope: HistoryScope): DrainResult {
+    return scope === "project"
+      ? drainProject(root, cwd, 1000, root)
+      : drainGlobal(root, 1000, root);
+  }
+
+  async function openHistorySelector(
+    ctx: Pick<ExtensionCommandContext, "ui">,
+  ): Promise<void> {
+    // Capture gate (#1390) FIRST: with capture off the selector is a no-op —
+    // no registry writes, no writer init, no store reads, no overlay.
+    if (!captureEnabled(env)) {
+      ctx.ui.notify(
+        "Prompt history is disabled (GENTLE_PI_HISTORY_CAPTURE is not set).",
+        "warning",
+      );
+      return;
+    }
+
+    // Store-only drain (user-directed): the selector reads the store files —
+    // no live transcript merge. `blocked` (untrusted hidden.json) fails
+    // CLOSED: surface the recovery message and stop before building records.
+    const drained = drainForScope("project");
+    if (drained.status === "blocked") {
+      ctx.ui.notify(drained.message, "error");
+      return;
+    }
+    const entries = drained.prompts;
+    if (entries.length === 0) {
+      // a22588fc empty-store policy: no history warns and skips the overlay.
+      // A later slice changes this, not this one.
+      ctx.ui.notify("No prompt history available.", "warning");
+      return;
+    }
+
+    const records = recordsFromEntries(entries);
+    const selected = await runPromptHistorySelection(ctx, records);
+    if (selected) {
+      // pasteToEditor routes through the editor's input pipeline (bracketed
+      // paste), so the text renders immediately (a22588fc).
+      ctx.ui.pasteToEditor(selected.text);
+    }
+  }
+
+  return { openHistorySelector };
 }
 
 export default function promptHistoryExtension(
@@ -85,5 +490,18 @@ export default function promptHistoryExtension(
       // A capture failure must never break the agent loop or unregister
       // the handler - swallow and keep the next prompt capturable.
     }
+  });
+
+  // Selector open flow (slice 3, stage 1): both entry points share it.
+  const { openHistorySelector } = createOpenFlow(env, root, cwd);
+
+  pi.registerShortcut(SHORTCUT, {
+    description: "Search prompt history",
+    handler: async (ctx) => openHistorySelector(ctx),
+  });
+
+  pi.registerCommand("history", {
+    description: "Search prompt history",
+    handler: async (_args, ctx) => openHistorySelector(ctx),
   });
 }

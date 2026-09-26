@@ -25,6 +25,19 @@ export interface PromptEntry {
   ts?: number;
 }
 
+/** Half-open window of list rows currently rendered (spec: centered cursor). */
+export interface VisibleRange {
+  start: number;
+  end: number;
+}
+
+/** One rendered list row: the record, its master index, and cursor state. */
+export interface VisiblePromptRecord {
+  index: number;
+  record: PromptRecord;
+  isSelected: boolean;
+}
+
 export function buildPromptRecords(
   entries: ReadonlyArray<string | PromptEntry>,
 ): PromptRecord[] {
@@ -85,6 +98,60 @@ export function dedupePromptEntries<T extends string | PromptEntry>(
     }
   }
   return deduped;
+}
+
+// ---------------------------------------------------------------------------
+// Selector navigation & windowing (open-flow surface; search/paging helpers
+// join in later stages)
+// ---------------------------------------------------------------------------
+
+/** Wrapped cursor move: (+/-delta) with modulo wrap over the total. */
+export function moveSelectedIndex(
+  selectedIndex: number,
+  total: number,
+  delta: number,
+): number {
+  if (total === 0) return 0;
+  return (selectedIndex + delta + total) % total;
+}
+
+/**
+ * Centered visible window (a22588fc shape): keep the cursor near the middle
+ * once the list outgrows maxVisible; small lists render in full.
+ */
+export function computeVisibleRange(
+  selectedIndex: number,
+  total: number,
+  maxVisible: number,
+): VisibleRange {
+  if (total <= 0 || maxVisible <= 0) return { start: 0, end: 0 };
+  if (total <= maxVisible) return { start: 0, end: total };
+
+  const half = Math.floor(maxVisible / 2);
+  const start = Math.max(0, Math.min(selectedIndex - half, total - maxVisible));
+
+  return {
+    start,
+    end: Math.min(start + maxVisible, total),
+  };
+}
+
+/** The rows to render for the current cursor: sliced, indexed, cursor-flagged. */
+export function getVisiblePromptRecords(
+  records: PromptRecord[],
+  selectedIndex: number,
+  maxVisible: number,
+): VisiblePromptRecord[] {
+  const { start, end } = computeVisibleRange(
+    selectedIndex,
+    records.length,
+    maxVisible,
+  );
+  return records.slice(start, end).map((record, offset) => ({
+    index: start + offset,
+    record,
+    isSelected: start + offset === selectedIndex,
+  }));
 }
 
 const MAX_RESULTS = 10000;
