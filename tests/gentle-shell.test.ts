@@ -367,7 +367,7 @@ test("review sidebar ignores a stale completion after session_start and accepts 
 	try {
 		const release = harness.hold();
 		const pending = harness.run();
-		assert.match(harness.text(), /Checking/);
+		assert.match(harness.text(), /Updating…/);
 		await harness.startSession("next-session");
 		assert.doesNotMatch(harness.text(), /RDD/);
 		const before = harness.published.length;
@@ -389,7 +389,7 @@ test("review sidebar ignores a stale completion after same-session tree navigati
 		assert.match(harness.text(), /fresh\.ts/);
 		const release = harness.hold();
 		const pending = harness.run();
-		assert.match(harness.text(), /Checking/);
+		assert.match(harness.text(), /Updating…/);
 		await harness.navigateTree();
 		assert.doesNotMatch(harness.text(), /RDD/, "tree navigation clears the visible snapshot");
 		const before = harness.published.length;

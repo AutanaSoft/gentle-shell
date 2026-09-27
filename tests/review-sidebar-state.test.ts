@@ -3,7 +3,7 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { renderShellSidebarBar, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
-import { createReviewSidebarPublisher, reviewSidebarSnapshot } from "../lib/review-sidebar-state.ts";
+import { createReviewSidebarPublisher, REVIEW_SCOPE_UNAVAILABLE, REVIEW_SIDEBAR_LABELS, reviewSidebarSnapshot } from "../lib/review-sidebar-state.ts";
 import { __testing } from "../extensions/gentle-ai.ts";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 import { decodeReviewStatusV3 } from "../lib/review-integration-v2.ts";
@@ -38,7 +38,8 @@ test("RDD maps explicit native evidence conservatively without parsing opaque bi
 			authority: { state }, projection: { paths }, next_transition: { kind: "collect" },
 		},
 	});
-	assert.deepEqual(reviewSidebarSnapshot("status", nativeStatus("reviewing")), { state: "in_review", scope: "app.ts +2" });
+	assert.deepEqual(reviewSidebarSnapshot("status", nativeStatus("reviewing")), { state: "in_review", scope: "app.ts +2 files" });
+	assert.equal(reviewSidebarSnapshot("status", nativeStatus("reviewing", ["src/app.ts", "test/app.test.ts"])).scope, "app.ts +1 file");
 	for (const [state, expected] of [["approved", "approved"], ["correction_required", "correction"], ["invalidated", "invalidated"], ["validating", "in_review"]] as const) {
 		assert.equal(reviewSidebarSnapshot("status", nativeStatus(state)).state, expected);
 	}
@@ -95,15 +96,15 @@ test("RDD completed STATUS evidence does not imply capture execution", () => {
 			});
 			assert.deepEqual(snapshot, { state: "in_review", scope: "app.ts" });
 			const pending = renderShellSidebarBar({ ...model(), review: snapshot }, theme, 46).join("\n");
-			assert.match(pending, /In review/);
-			assert.doesNotMatch(pending, /Reviewing/);
+			assert.match(pending, /Review in progress/);
+			assert.doesNotMatch(pending, /Reviewers running/);
 		}
 	}
 	// The future publisher owns execution evidence; this slice only renders its
 	// explicit display state, never inferring it from a completed native result.
 	const active = renderShellSidebarBar(model({ state: "reviewing", scope: "app.ts" }), theme, 46).join("\n");
-	assert.match(active, /Reviewing/);
-	assert.doesNotMatch(active, /In review/);
+	assert.match(active, /Reviewers running…/);
+	assert.doesNotMatch(active, /Review in progress/);
 });
 
 test("publisher retains scope only for issued capture bindings and matching closure", async () => {
@@ -316,24 +317,44 @@ test("foreign sessions, disabled publisher and event failures never change tool 
 	assert.equal(await tool.execute("call", { operation: "status" } as never, undefined, undefined, h.ctx), result);
 });
 
+test("RDD labels say what is happening and who acts", () => {
+	assert.deepEqual(REVIEW_SIDEBAR_LABELS, {
+		checking: "Updating…",
+		reviewing: "Reviewers running…",
+		in_review: "Review in progress",
+		forecast: "Preparing reviewers…",
+		ready: "Not reviewed yet",
+		consent: "Needs your consent",
+		correction: "Fixing findings…",
+		approved: "Approved · finalizing…",
+		closed: "✓ Approved",
+		declined: "Skipped for this change",
+		invalidated: "Outdated · code changed",
+		unavailable: "Review unavailable",
+		unknown: "Status unknown",
+	});
+});
+
 test("RDD stays hidden without current-session evidence and occupies one group between Changes and Integrations", () => {
 	assert.doesNotMatch(renderShellSidebarBar(model(), theme, 46).join("\n"), /RDD/);
-	const text = renderShellSidebarBar(model({ state: "reviewing", scope: "app.ts +2" }), theme, 46).join("\n");
+	const text = renderShellSidebarBar(model({ state: "reviewing", scope: "app.ts +2 files" }), theme, 46).join("\n");
 	assert.equal((text.match(/RDD/g) ?? []).length, 1);
 	assert.ok(text.indexOf("Changes") < text.indexOf("RDD"));
 	assert.ok(text.indexOf("RDD") < text.indexOf("Integrations"));
-	assert.match(text, /Reviewing/);
-	assert.match(text, /app\.ts \+2/);
+	assert.match(text, /Reviewers running…/);
+	assert.match(text, /app\.ts \+2 files/);
 });
 
-test("RDD distinguishes approval awaiting acknowledgement from confirmed closure and wraps narrow scopes", () => {
-	const approved = renderShellSidebarBar(model({ state: "approved", scope: "Candidate scope unavailable" }), theme, 60).join("\n");
-	assert.match(approved, /Approved.*awaiting acknowledgement/);
-	assert.doesNotMatch(approved, /Closed/);
+test("RDD distinguishes approval still finalizing from confirmed closure and wraps narrow scopes", () => {
+	const approved = renderShellSidebarBar(model({ state: "approved", scope: REVIEW_SCOPE_UNAVAILABLE }), theme, 60).join("\n");
+	assert.match(approved, /Approved · finalizing…/);
+	assert.doesNotMatch(approved, /✓ Approved/);
+	assert.doesNotMatch(approved, /Candidate scope unavailable/);
 	const closed = renderShellSidebarBar(model({ state: "closed", scope: "app.ts" }), theme, 46).join("\n");
-	assert.match(closed, /Closed/);
+	assert.match(closed, /✓ Approved/);
+	assert.doesNotMatch(closed, /finalizing/);
 	for (const width of [20, 32, 46]) {
-		const lines = renderShellSidebarBar(model({ state: "reviewing", scope: "長い候補ファイル-name-with-many-characters.ts +2" }), theme, width);
+		const lines = renderShellSidebarBar(model({ state: "reviewing", scope: "長い候補ファイル-name-with-many-characters.ts +2 files" }), theme, width);
 		assert.ok(lines.every((line) => visibleWidth(line) <= width), `RDD must fit ${width} columns`);
 	}
 });
