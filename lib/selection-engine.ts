@@ -8,13 +8,13 @@ import { isKeyRelease, matchesKey, truncateToWidth, visibleWidth, type EditorCom
  * Ported from @exopro/pi-select-del so the petal prompt owns the feature
  * natively — no factory composition, no cross-extension focus handoff.
  *
- * Behavior contract (identical to pi-select-del):
+ * Behavior contract (ported from pi-select-del, with atomic paste replacement):
  *   - shift+home — anchor at the cursor, move to line start (held presses at
  *     the edge keep the selection; only a zero-width span collapses)
  *   - shift+end — anchor at the cursor, move to line end
  *   - alt+a — select all
- *   - backspace / delete / printable character over an active selection —
- *     replace it in one atomic edit (undo restores text AND cursor)
+ *   - backspace / delete / printable character or bracketed paste over an
+ *     active selection — replace it in one atomic edit (undo restores text AND cursor)
  *   - any other key — collapse the selection first, then behave natively
  *
  * The engine drives the host editor's own internals (the EditorInternals
@@ -181,6 +181,7 @@ export function isSgrReset(seq: string): boolean {
 export class SelectionEngine {
 	/** Selection anchor in logical (line, col) coordinates; adapter-exposed state. */
 	anchor: Point | null = null;
+	private pasteFrame: string | undefined;
 
 	/**
 	 * Capability probe cache for the host internals: null until first use, then
@@ -252,6 +253,17 @@ export class SelectionEngine {
 			native(data);
 			return;
 		}
+		if (this.pasteFrame !== undefined || (this.anchor && data.startsWith("\x1b[200~"))) {
+			this.pasteFrame = (this.pasteFrame ?? "") + data;
+			const end = this.pasteFrame.indexOf("\x1b[201~");
+			if (end < 0) return;
+			const frame = this.pasteFrame.slice(0, end + 6);
+			const remaining = this.pasteFrame.slice(end + 6);
+			this.pasteFrame = undefined;
+			this.replaceSelectionWithPaste(frame, native);
+			if (remaining) this.handleInput(remaining, native);
+			return;
+		}
 		// Kitty flag 2 release byte strings still match their own key, so
 		// releases must be dropped before any matchesKey.
 		if (isKeyRelease(data)) return;
@@ -282,6 +294,36 @@ export class SelectionEngine {
 		}
 
 		native(data);
+	}
+
+	/** Let Pi normalize/register paste and take its one undo snapshot, then remove
+	 * the selected text around the inserted text or marker in that transaction. */
+	private replaceSelectionWithPaste(frame: string, native: (data: string) => void): void {
+		const range = this.range();
+		this.anchor = null;
+		if (!range || frame === "\x1b[200~\x1b[201~") return native(frame);
+		const lines = this.s.lines;
+		const before = lines.join("\n");
+		const offset = (p: Point): number => lines.slice(0, p.line).reduce((n, line) => n + line.length + 1, 0) + p.col;
+		const [start, end] = range.map(offset);
+		if (start === end) return native(frame);
+		const cursor = offset(this.cursor());
+		native(frame);
+		const after = this.s.lines.join("\n");
+		const prefix = before.slice(0, cursor);
+		const suffix = before.slice(cursor);
+		// If Pi did not perform a plain insertion, retain its native result.
+		if (!after.startsWith(prefix) || !after.endsWith(suffix)) return;
+		const inserted = after.slice(prefix.length, after.length - suffix.length);
+		if (!inserted) return;
+		const result = before.slice(0, start) + inserted + before.slice(end);
+		this.s.lines = result.split("\n");
+		const caret = result.slice(0, start + inserted.length).split("\n");
+		this.s.cursorLine = caret.length - 1;
+		this.internals.setCursorCol(caret.at(-1)!.length);
+		this.internals.lastAction = null;
+		this.editor.onChange?.(this.editor.getText());
+		this.internals.tui.requestRender();
 	}
 
 	/** Keys whose native effect replaces a selection: backspace/delete (and shift variants) or a printable character. */

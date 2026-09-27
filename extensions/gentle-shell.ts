@@ -525,6 +525,12 @@ export class GentlePromptEditor extends CustomEditor {
 	 * and never reach this branch.
 	 */
 	override handleInput(data: string): void {
+		// Selection and Vim handlers can consume input before the native chain;
+		// any intervening key invalidates an idle Esc confirmation.
+		if (this.pendingIdleClearDeadline !== undefined && !this.keybindingsManager.matches(data, "app.interrupt")) {
+			this.pendingIdleClearDeadline = undefined;
+			this.pendingIdleClearText = undefined;
+		}
 		// Vim owns its modal keys and paste frames. Ordinary editing retains
 		// native selection before the prompt's existing input chain.
 		if (this.vimPolicy === "on") this.handleInputNative(data);
@@ -848,12 +854,6 @@ export class GentlePromptEditor extends CustomEditor {
 			// Encoded Return, Tab, IME and paste are editor input, not
 			// app actions. Never forward an unowned NORMAL byte to insertion.
 			if (this.vimNormal && !this.keybindingsManager.matches(data, "app.interrupt") && !matchesKey(data, "escape")) return;
-		}
-		// Any keystroke that is not the confirming Esc ends the pending idle
-		// clear, even one that leaves the text identical (type, then delete).
-		if (this.pendingIdleClearDeadline !== undefined && !this.keybindingsManager.matches(data, "app.interrupt")) {
-			this.pendingIdleClearDeadline = undefined;
-			this.pendingIdleClearText = undefined;
 		}
 		if (
 			this.promptState === PROMPT_STATE.WORKING &&

@@ -180,6 +180,19 @@ test("CSI-u DEL and C1 codepoints replace the selection with a pure delete", () 
 	}
 });
 
+test("bracketed paste replaces a multiline interior selection and restores it with one undo", () => {
+	const editor = makeEditor();
+	const engine = new SelectionEngine(editor);
+	const native = (d: string) => editor.handleInput(d);
+	editor.setText("prefix old\ntext suffix");
+	editor.handleInput(HOME);
+	engine.handleInput(SHIFT_END, native);
+	engine.handleInput("\x1b[200~new\nlines\x1b[201~", native);
+	assert.equal(editor.getText(), "prefix old\nnew\nlines");
+	(editor as unknown as { undo(): void }).undo();
+	assert.equal(editor.getText(), "prefix old\ntext suffix");
+});
+
 test("printable replacement is exactly one undo transaction", () => {
 	const editor = makeEditor();
 	const engine = new SelectionEngine(editor);
