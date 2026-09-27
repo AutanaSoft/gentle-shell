@@ -37,6 +37,8 @@ The label is driven only by the model calling `gentle_odd_phase`. The prompt ins
 - [x] T1 — Pure inference module `lib/odd-phase-inference.ts` + `tests/odd-phase-inference.test.ts` (strict test-first). Route: delegated direct (one writer for T1+T2, 2+ non-trivial files).
 - [x] T2 — Registry source marker + `tool_execution_start` wiring in `extensions/gentle-shell.ts` + tests; prompt wording in `extensions/gentle-ai.ts` and `assets/orchestrator-delegation.md`.
 
+- [x] T3 — Shell classifier covers real orchestrator commands: quote- and `$(...)`-aware splitting, loop keywords and no-op builtins as neutral, harmless redirects ignored, wider read-only allowlist (git listing, gh read, text tools). Reason: live use showed the label stuck on "working" because 30 of 41 real `bash` calls were compound commands the first classifier left unchanged. Route: direct inline (one module plus test additions, design already understood; declared deviation from the 2-file writer trigger).
+
 ## Acceptance criteria
 
 - Reading/grepping files shows `exploring`; editing shows `implementing`; running tests shows `checking`; asking the user shows `deciding` — without any model call to `gentle_odd_phase`.
@@ -75,3 +77,9 @@ Forecast ~300 authored changed lines; strategy `ask-on-risk`; single PR expected
 - Native review: lineage `review-022bb282059e89e5`, risk high (4 lenses), approved and acknowledged (authority burned).
 - Advisory follow-ups (non-blocking): R2-001 readability of the checker table (odd-phase-inference.ts:40); R2-002 wording of assets/orchestrator-delegation.md:99; R3-find-exclusions (:48); R3-make-overbroad (:40); R3-quote-unaware-checking (:87-91); R3-redirect-unproved (:102-104).
 - Next: live check in Gentle Shell after switching the daily checkout to this branch or merging; push/PR is the user's decision.
+
+### T3 evidence
+
+- RED: new tests failed on real session commands (loops, quoted pipes, substitutions) and exposed a false positive (`ls $(touch marker)` read as exploring).
+- GREEN: focused ODD phase tests 46/46; unit stage 3928 pass / 0 fail / 43 skipped; check-types 188 baseline, no regressions; provider-contract pass; runtime-harness exit 0.
+- Measured on this session's log: bash calls inferred as exploring went from 4 to 23; the 10 left unchanged are mutations (switch, commit, sed -i, ln, worktree add), sleep, or a fetch.
