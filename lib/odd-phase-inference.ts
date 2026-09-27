@@ -67,7 +67,9 @@ const NEUTRAL_COMMANDS: readonly RegExp[] = [
 	/^(cd|pushd|popd|echo|printf|sleep|true|false|export|set)\b/,
 	/^(done|fi|esac|\}|\))$/,
 	/^for\s+\w+(\s+in\b.*)?$/,
-	/^([A-Za-z_][A-Za-z0-9_]*=("[^"]*"|'[^']*'|[^\s"'])*\s*)+$/,
+	// Each assignment must end at whitespace or the end: an optional separator
+	// would let `a=a=a=…` split anywhere and backtrack exponentially.
+	/^([A-Za-z_][A-Za-z0-9_]*=("[^"]*"|'[^']*'|[^\s"'])*(\s+|$))+$/,
 ];
 
 // Shell keywords that prefix the command they introduce (`do grep x`).

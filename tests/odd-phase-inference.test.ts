@@ -131,6 +131,16 @@ test("compound commands that mutate anything leave the label unchanged", () => {
 	}
 });
 
+// Inference runs synchronously on tool_execution_start, so a pathological
+// command must never backtrack exponentially and freeze the host.
+test("adversarial assignment runs classify in bounded time", () => {
+	for (const command of ["a=".repeat(26) + '"', "a=".repeat(26) + "\\\"", "a=".repeat(26) + "'"]) {
+		const start = performance.now();
+		assert.equal(inferOddPhase("bash", { command }), undefined, command);
+		assert.ok(performance.now() - start < 50, `${command} took ${performance.now() - start}ms`);
+	}
+});
+
 test("no-op-only commands leave the label unchanged", () => {
 	for (const command of ["sleep 4", "echo ===", "cd /repo && echo done", "true"]) {
 		assert.equal(inferOddPhase("bash", { command }), undefined, command);
