@@ -7095,6 +7095,9 @@ async function resolveNegotiatedReviewStatusForSession(
 ): Promise<ReviewStatusV3 | undefined> {
 	if (nativeReviewCli?.reviewMode === undefined || nativeReviewCli.targetStatus === undefined) return undefined;
 	if (ctx.hasUI !== true) return undefined;
+	// Passive status negotiation cannot bootstrap a repository. Explicit review
+	// controller requests retain their separate workspace validation path.
+	if (resolveSessionWorktree(ctx.cwd, ctx.cwd) === undefined) return undefined;
 	let modeEffective: "on" | "off";
 	try {
 		const mode = await nativeReviewCli.reviewMode({ cwd: ctx.cwd, operation: NATIVE_REVIEW_MODE_OPERATION.STATUS });
