@@ -23,6 +23,8 @@ import { agentsViewKey } from "../lib/agents-keys.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
 import { DOUBLE_ESC_CANCEL_HINT, framePromptLines, IDLE_ESC_CLEAR_HINT, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
+import { inferOddPhase } from "../lib/odd-phase-inference.ts";
+import { isInteractiveMode } from "../lib/rpc-host.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import { resolveAnimationPolicy, writeAnimationPolicy, type AnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy, type VimPolicy } from "../lib/vim-policy.ts";
@@ -2088,12 +2090,24 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// is mid-turn, so the text simply waits and goes out, once, when that
 		// turn settles. It is never dropped.
 		// A new turn always starts unlabeled: any ODD phase reported for the
-		// previous turn must never leak into this one. The orchestrator
-		// reports the new turn's phase explicitly once it knows it.
+		// previous turn must never leak into this one. The new turn's tool
+		// activity, or an explicit orchestrator report, labels it again.
 		oddPhaseRegistry.clear(ctx.sessionManager.getSessionId());
 		prompt?.setWorking(true);
 		// The dev-binary card is a startup notice: it leaves with the first prompt.
 		if (ctx.hasUI) ctx.ui.setWidget(DEV_BINARY_WIDGET_KEY, undefined);
+	});
+	pi.on("tool_execution_start", (event, ctx) => {
+		// The working label follows the primary session's own tool activity so
+		// it never depends on the model remembering gentle_odd_phase, which
+		// stays the explicit refinement (its report is already explicit).
+		// Subagents run as headless `pi --mode rpc` children whose env never
+		// carries the interactive-host signal (lib/agents-runner.ts), so they
+		// never infer; their process-local registry could not reach this
+		// label anyway.
+		if (!ctx.hasUI || !isInteractiveMode(ctx.mode) || event.toolName === "gentle_odd_phase") return;
+		const phase = inferOddPhase(event.toolName, event.args);
+		if (phase) oddPhaseRegistry.infer(ctx.sessionManager.getSessionId(), phase);
 	});
 	pi.on("agent_settled", (_event, ctx) => {
 		// Pi clears its own run-active flag before emitting agent_settled, so

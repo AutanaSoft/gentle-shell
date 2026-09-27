@@ -1,0 +1,69 @@
+# ODD phase inference
+
+Locator: `odd/tasks/odd-phase-inference.md` (worktree `gentle-pi-worktrees/odd-phase-inference`, branch `feat/odd-phase-inference` from `origin/main` 4f5ab3973).
+
+## Objective
+
+Make the Gentle Shell working label (exploring / deciding / planning / implementing / checking) update deterministically from observed tool calls, so it no longer depends on the model remembering to call `gentle_odd_phase`.
+
+## Problem / why
+
+The label is driven only by the model calling `gentle_odd_phase`. The prompt instruction is one negatively-phrased line framed as best-effort, and models skip it (observed live under Claude Bridge: zero calls across a whole session). A prompt cannot guarantee the behavior; code can.
+
+## Scope
+
+- New pure module `lib/odd-phase-inference.ts`: `inferOddPhase(toolName, input)` → phase or `undefined`.
+- `OddPhaseRegistry` records the source of a report (`explicit` vs `inferred`).
+- One `tool_execution_start` handler in `extensions/gentle-shell.ts` that reports inferred phases for the primary session.
+- Prompt/doc wording: the label is inferred automatically; `gentle_odd_phase` refines it.
+
+## Constraints and decisions
+
+- `gentle_odd_phase` stays as an explicit override.
+- Precedence: an explicit report in the current turn is not overridden by an inferred `exploring` (read-only tools); inferred `deciding`, `planning`, `implementing`, `checking` do override (they are stronger progression signals). The existing per-turn clears in `gentle-shell.ts` are unchanged.
+- Mapping (conservative; unknown → no change):
+  - `read`, `grep`, `find`, `ls`, `codegraph` → `exploring`
+  - `ask_user_choice`, `ask_user_question` → `deciding`
+  - `todo`; `write`/`edit` under `odd/tasks/` → `planning`
+  - `edit`, `write` (other paths) → `implementing`
+  - `gentle_review*` → `checking`
+  - `bash`/`powershell`: test/typecheck/lint/build commands → `checking`; read-only inspection (`git status|log|diff|show`, `ls`, `cat`, `grep`, `rg`, `find`) → `exploring`; anything else → no change
+  - `subagent_*` and any other tool → no change
+- Never infer for a subagent/child session.
+- No change to the `gentle_odd_phase` tool contract or invalid-token semantics.
+
+## Tasks
+
+- [ ] T1 — Pure inference module `lib/odd-phase-inference.ts` + `tests/odd-phase-inference.test.ts` (strict test-first). Route: delegated direct (one writer for T1+T2, 2+ non-trivial files).
+- [ ] T2 — Registry source marker + `tool_execution_start` wiring in `extensions/gentle-shell.ts` + tests; prompt wording in `extensions/gentle-ai.ts` and `assets/orchestrator-delegation.md`.
+
+## Acceptance criteria
+
+- Reading/grepping files shows `exploring`; editing shows `implementing`; running tests shows `checking`; asking the user shows `deciding` — without any model call to `gentle_odd_phase`.
+- An explicit `researching` survives a following `grep` in the same turn.
+- Unknown tools and ambiguous bash commands leave the label unchanged.
+
+## Checks
+
+- `node --experimental-strip-types --test tests/odd-phase-inference.test.ts tests/odd-phase.test.ts tests/odd-phase-loader.test.ts`
+- `pnpm typecheck` (no new diagnostics vs baseline)
+- `pnpm test` (all stages; pnpm stages may abort with symlinked node_modules — run stages directly if so)
+
+## Delivery
+
+Forecast ~300 authored changed lines; strategy `ask-on-risk`; single PR expected. Push/PR are the user's decision.
+
+## Progress
+
+- Exploration done (gentle-ai-explore task muk3flub-1-c4et).
+- T1 implemented (delegated writer, uncommitted): `lib/odd-phase-inference.ts` (pure `inferOddPhase`, table + per-segment shell classification: any checking segment → `checking`; every non-`cd` segment read-only → `exploring`; otherwise unchanged; `mcp__<server>__` prefix stripped; output redirection to a file is not inspection) + `tests/odd-phase-inference.test.ts` (11 tests).
+  - RED: `ERR_MODULE_NOT_FOUND` for `lib/odd-phase-inference.ts`. GREEN: 11/11 pass.
+- T2 implemented (delegated writer, uncommitted): `OddPhaseRegistry` stores `{phase, source}`; `report(..., source = "explicit")`; new `infer()` (explicit phase survives inferred `exploring`; other inferred phases override; same-phase inference is a no-op that keeps the source and skips redraw); `clear` drops the source. `gentle-shell.ts` wires one `tool_execution_start` handler guarded by `ctx.hasUI && isInteractiveMode(ctx.mode)` (subagents are headless `pi --mode rpc` children without the interactive-host env) and skipping `gentle_odd_phase`. `gentle_odd_phase` reports `"explicit"`. Prompt (`gentle-ai.ts`) and `assets/orchestrator-delegation.md` now say the label is inferred from tool activity and `gentle_odd_phase` refines it; the ordered contract clause asserted by `tests/odd-routing-contract.test.ts` is preserved verbatim.
+  - RED: 10 new registry tests failed (`infer` missing); new loader wiring test failed at "reading a file shows exploring". GREEN: 43/43 across the three ODD phase test files.
+- Verification (writer, before parent commit):
+  - `node --experimental-strip-types --test tests/odd-phase-inference.test.ts tests/odd-phase.test.ts tests/odd-phase-loader.test.ts`: 43 pass, 0 fail.
+  - `pnpm typecheck`: pnpm aborts (`ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`, symlinked node_modules); `node scripts/check-types.mjs` exit 0, "188 recorded diagnostic(s), no regressions" — identical to the pre-change baseline.
+  - `node --experimental-strip-types --test tests/*.test.ts`: 3968 tests, 3925 pass, 0 fail, 43 skipped.
+  - `node scripts/check-provider-contract.mjs`: exit 0, mirror check passed.
+  - `node --experimental-strip-types tests/runtime-harness.mjs`: exit 0 (no output).
+- Next: parent review, work-unit commit(s), tick T1/T2.
