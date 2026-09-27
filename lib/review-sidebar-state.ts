@@ -7,19 +7,19 @@ export const REVIEW_SIDEBAR_EVENT = "gentle-ai:review-sidebar";
 export const REVIEW_SCOPE_UNAVAILABLE = "Candidate scope unavailable";
 
 export const REVIEW_SIDEBAR_LABELS = {
-	reviewing: "Reviewing",
-	in_review: "In review",
-	checking: "Checking review",
-	approved: "Approved · awaiting acknowledgement",
-	closed: "Closed",
-	correction: "Correction required",
-	declined: "Declined",
-	invalidated: "Invalidated",
-	unavailable: "Unavailable",
-	unknown: "Unknown",
-	ready: "Ready for review",
-	consent: "Awaiting consent",
-	forecast: "Awaiting reviewer run",
+	reviewing: "Reviewers running…",
+	in_review: "Review in progress",
+	checking: "Updating…",
+	approved: "Approved · finalizing…",
+	closed: "✓ Approved",
+	correction: "Fixing findings…",
+	declined: "Skipped for this change",
+	invalidated: "Outdated · code changed",
+	unavailable: "Review unavailable",
+	unknown: "Status unknown",
+	ready: "Not reviewed yet",
+	consent: "Needs your consent",
+	forecast: "Preparing reviewers…",
 } as const;
 
 export interface ReviewSidebarSnapshot {
@@ -35,7 +35,8 @@ function candidateScope(paths: unknown): string {
 	const unique = [...new Set(paths as string[])];
 	const first = sanitizeTerminalText(unique[0]!.replaceAll("\\", "/").split("/").pop() ?? "").trim();
 	if (!first || first === "." || first === "..") return REVIEW_SCOPE_UNAVAILABLE;
-	return `${first}${unique.length > 1 ? ` +${unique.length - 1}` : ""}`;
+	const more = unique.length - 1;
+	return more > 0 ? `${first} +${more} ${more === 1 ? "file" : "files"}` : first;
 }
 
 /** Interpret only the facade's explicit evidence, not tool success or opaque bindings. */
