@@ -1952,6 +1952,63 @@ test("bracketed paste replaces native selection atomically while Vim VISUAL over
 	} finally { editor.dispose(); }
 });
 
+test("incomplete bracketed paste buffered up to exactly the 16 MiB bound still completes with one-step undo", () => {
+	const BOUND = 16 * 1024 * 1024;
+	const deps = {
+		fg: (_color: string, text: string) => text, bold: (text: string) => text, requestRender() {}, pending: () => false,
+		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, tuiVersion: () => "0.87.1",
+	};
+	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, deps);
+	try {
+		editor.setText("hello");
+		editor.handleInput("\x1b[1;2H");
+		editor.handleInput("\x1b[200~");
+		const payload = "z".repeat(BOUND - "\x1b[200~".length);
+		editor.handleInput(payload);
+		editor.handleInput("\x1b[201~");
+		assert.equal(editor.getExpandedText(), payload, "a frame buffered up to exactly the bound still completes");
+		(editor as unknown as { undo(): void }).undo();
+		assert.equal(editor.getText(), "hello", "one undo restores the selection's original text");
+	} finally { editor.dispose(); }
+});
+
+test("a complete bracketed paste larger than the 16 MiB incomplete-frame bound, delivered as one chunk, is never capped", () => {
+	const BOUND = 16 * 1024 * 1024;
+	const deps = {
+		fg: (_color: string, text: string) => text, bold: (text: string) => text, requestRender() {}, pending: () => false,
+		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, tuiVersion: () => "0.87.1",
+	};
+	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, deps);
+	try {
+		editor.setText("hello");
+		editor.handleInput("\x1b[1;2H");
+		const payload = "z".repeat(BOUND + 1024);
+		editor.handleInput(`\x1b[200~${payload}\x1b[201~`);
+		assert.equal(editor.getExpandedText(), payload, "a complete frame larger than the incomplete-frame bound is never capped");
+		(editor as unknown as { undo(): void }).undo();
+		assert.equal(editor.getText(), "hello");
+	} finally { editor.dispose(); }
+});
+
+test("an incomplete bracketed paste that crosses the 16 MiB bound without a terminator is abandoned, never forwarded to native", () => {
+	const BOUND = 16 * 1024 * 1024;
+	const deps = {
+		fg: (_color: string, text: string) => text, bold: (text: string) => text, requestRender() {}, pending: () => false,
+		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, tuiVersion: () => "0.87.1",
+	};
+	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, deps);
+	try {
+		editor.setText("hello");
+		editor.handleInput("\x1b[1;2H");
+		editor.handleInput("\x1b[200~");
+		const payload = "z".repeat(BOUND - "\x1b[200~".length + 1);
+		editor.handleInput(payload);
+		assert.equal(editor.getText(), "hello", "no partial paste bytes are ever forwarded to the native editor");
+		editor.handleInput("x");
+		assert.equal(editor.getText(), "x", "input after abandonment behaves like a fresh keystroke over the still-active selection");
+	} finally { editor.dispose(); }
+});
+
 test("vim paste overflow and policy cancellation discard partial frames without leaking modal commands", () => {
 	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, {
 		fg: (_color, text) => text, bold: (text) => text, requestRender() {}, pending: () => false,

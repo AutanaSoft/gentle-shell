@@ -178,10 +178,38 @@ export function isSgrReset(seq: string): boolean {
  * selection keys are handled here; everything else collapses the anchor first,
  * then behaves natively.
  */
+const PASTE_START = "\x1b[200~";
+const PASTE_END = "\x1b[201~";
+const PASTE_END_TAIL_LENGTH = PASTE_END.length - 1;
+/**
+ * Safety bound (UTF-8 bytes) for a bracketed-paste frame that has not yet
+ * seen its terminator. Checked only against a per-chunk byte count (never a
+ * full-buffer rescan), so it costs one Buffer.byteLength call per NEW chunk.
+ * Never applied once the terminator is found: a complete frame of any size,
+ * even one exceeding this bound, still reaches replaceSelectionWithPaste with
+ * one-step undo intact.
+ */
+const MAX_INCOMPLETE_PASTE_BYTES = 16 * 1024 * 1024;
+
 export class SelectionEngine {
 	/** Selection anchor in logical (line, col) coordinates; adapter-exposed state. */
 	anchor: Point | null = null;
-	private pasteFrame: string | undefined;
+	/**
+	 * Chunks of an in-progress bracketed-paste frame (undefined when none is
+	 * open). Chunks are only ever appended, never re-concatenated, so buffering
+	 * N chunks stays O(N) total; the full frame is joined once, at completion.
+	 */
+	private pasteChunks: string[] | undefined;
+	/** Total code-unit length of `pasteChunks` before the chunk being processed; used to locate the terminator inside the joined frame. */
+	private pasteBufferedLength = 0;
+	/** Total UTF-8 byte length buffered so far while no terminator has been seen; compared against MAX_INCOMPLETE_PASTE_BYTES. */
+	private pasteBufferedBytes = 0;
+	/**
+	 * Up to the last `PASTE_END_TAIL_LENGTH` characters buffered so far, carried
+	 * forward so the terminator can be found even when split across chunk
+	 * boundaries, without rescanning every previously buffered chunk.
+	 */
+	private pasteTail = "";
 
 	/**
 	 * Capability probe cache for the host internals: null until first use, then
@@ -253,13 +281,38 @@ export class SelectionEngine {
 			native(data);
 			return;
 		}
-		if (this.pasteFrame !== undefined || (this.anchor && data.startsWith("\x1b[200~"))) {
-			this.pasteFrame = (this.pasteFrame ?? "") + data;
-			const end = this.pasteFrame.indexOf("\x1b[201~");
-			if (end < 0) return;
-			const frame = this.pasteFrame.slice(0, end + 6);
-			const remaining = this.pasteFrame.slice(end + 6);
-			this.pasteFrame = undefined;
+		if (this.pasteChunks !== undefined || (this.anchor && data.startsWith(PASTE_START))) {
+			const priorLength = this.pasteBufferedLength;
+			const window = this.pasteTail + data;
+			const idx = window.indexOf(PASTE_END);
+			const chunks = (this.pasteChunks ??= []);
+			chunks.push(data);
+			this.pasteBufferedLength = priorLength + data.length;
+			if (idx < 0) {
+				this.pasteBufferedBytes += Buffer.byteLength(data, "utf8");
+				if (this.pasteBufferedBytes > MAX_INCOMPLETE_PASTE_BYTES) {
+					// Never seen a terminator and the buffered frame outgrew the safety
+					// bound: abandon it. The host editor started its own paste buffer at
+					// PASTE_START and is still waiting for PASTE_END, so forwarding the
+					// incomplete bytes to `native` could let it swallow later keystrokes
+					// — drop them instead of forwarding anything.
+					this.pasteChunks = undefined;
+					this.pasteBufferedLength = 0;
+					this.pasteBufferedBytes = 0;
+					this.pasteTail = "";
+					return;
+				}
+				this.pasteTail = window.slice(-PASTE_END_TAIL_LENGTH);
+				return;
+			}
+			const frameEnd = priorLength - this.pasteTail.length + idx + PASTE_END.length;
+			const buffered = chunks.join("");
+			const frame = buffered.slice(0, frameEnd);
+			const remaining = buffered.slice(frameEnd);
+			this.pasteChunks = undefined;
+			this.pasteBufferedLength = 0;
+			this.pasteBufferedBytes = 0;
+			this.pasteTail = "";
 			this.replaceSelectionWithPaste(frame, native);
 			if (remaining) this.handleInput(remaining, native);
 			return;
@@ -301,7 +354,7 @@ export class SelectionEngine {
 	private replaceSelectionWithPaste(frame: string, native: (data: string) => void): void {
 		const range = this.range();
 		this.anchor = null;
-		if (!range || frame === "\x1b[200~\x1b[201~") return native(frame);
+		if (!range || frame === PASTE_START + PASTE_END) return native(frame);
 		const lines = this.s.lines;
 		const before = lines.join("\n");
 		const offset = (p: Point): number => lines.slice(0, p.line).reduce((n, line) => n + line.length + 1, 0) + p.col;

@@ -211,3 +211,102 @@ test("printable replacement is exactly one undo transaction", () => {
 	assert.equal(editor.getText(), "x");
 	assert.equal(snapshots, 1);
 });
+
+const PASTE_START = "\x1b[200~";
+const PASTE_END = "\x1b[201~";
+const MAX_INCOMPLETE_PASTE_BYTES = 16 * 1024 * 1024;
+
+test("bracketed paste terminator split across six single-byte chunks still completes the paste", () => {
+	const editor = makeEditor();
+	const engine = new SelectionEngine(editor);
+	const native = (d: string) => editor.handleInput(d);
+	editor.setText("prefix old\ntext suffix");
+	editor.handleInput(HOME);
+	engine.handleInput(SHIFT_END, native);
+	engine.handleInput(PASTE_START, native);
+	engine.handleInput("new\nlines", native);
+	for (const byte of PASTE_END) engine.handleInput(byte, native);
+	assert.equal(editor.getText(), "prefix old\nnew\nlines");
+	(editor as unknown as { undo(): void }).undo();
+	assert.equal(editor.getText(), "prefix old\ntext suffix");
+});
+
+test("an incomplete bracketed paste that crosses the 16 MiB bound without a terminator is abandoned, never forwarded to native", () => {
+	const editor = makeEditor();
+	const engine = new SelectionEngine(editor);
+	const native = (d: string) => editor.handleInput(d);
+	editor.setText("hello");
+	engine.handleInput(ALT_A, native);
+	engine.handleInput(PASTE_START, native);
+	const payload = "z".repeat(MAX_INCOMPLETE_PASTE_BYTES - PASTE_START.length + 1);
+	engine.handleInput(payload, native);
+	assert.equal(editor.getText(), "hello", "no partial paste bytes are ever forwarded to the native editor");
+	engine.handleInput("x", native);
+	assert.equal(editor.getText(), "x", "input after abandonment behaves like a fresh keystroke over the still-active selection");
+});
+
+test("the 16 MiB incomplete-frame bound counts UTF-8 bytes, not UTF-16 code units", () => {
+	const editor = makeEditor();
+	const engine = new SelectionEngine(editor);
+	const native = (d: string) => editor.handleInput(d);
+	editor.setText("hello");
+	engine.handleInput(ALT_A, native);
+	engine.handleInput(PASTE_START, native);
+	// "é" is one UTF-16 code unit but two UTF-8 bytes: 10M code units is under
+	// the 16 MiB code-unit count but 20 MB in UTF-8 bytes, over the bound.
+	const payload = "é".repeat(10 * 1024 * 1024);
+	engine.handleInput(payload, native);
+	assert.equal(editor.getText(), "hello", "a multibyte payload under 16M code units but over 16 MiB in UTF-8 bytes must still be abandoned");
+	engine.handleInput("x", native);
+	assert.equal(editor.getText(), "x");
+});
+
+test("many-chunk bracketed paste never rescans the full accumulated buffer for the terminator", () => {
+	const editor = makeEditor();
+	const engine = new SelectionEngine(editor);
+	const native = (d: string) => editor.handleInput(d);
+	editor.setText("hello");
+	engine.handleInput(ALT_A, native);
+	const chunkCount = 1500; // > 1000 chars so the host editor collapses it into its own marker
+	// Deterministic regression check (avoids flaky wall-clock timing on slow/CI
+	// hardware): instrument String.prototype.indexOf while chunks are buffered
+	// and record the length of every string searched for PASTE_END. A
+	// full-buffer rescan (the pre-fix O(n^2) bug) would search a string that
+	// grows with every chunk; the tail-bounded scan only ever searches
+	// `pasteTail + <this chunk>`, so its length stays bounded regardless of how
+	// many chunks were already buffered.
+	const originalIndexOf = String.prototype.indexOf;
+	const searchedLengths: number[] = [];
+	// biome-ignore lint: intentional prototype patch, restored in `finally` below.
+	String.prototype.indexOf = function (this: string, searchString: string, position?: number): number {
+		if (searchString === PASTE_END) searchedLengths.push(this.length);
+		return originalIndexOf.call(this, searchString, position);
+	};
+	try {
+		engine.handleInput(PASTE_START, native);
+		for (let i = 0; i < chunkCount; i++) engine.handleInput("z", native);
+		engine.handleInput(PASTE_END, native);
+	} finally {
+		String.prototype.indexOf = originalIndexOf;
+	}
+	assert.match(editor.getText(), /^\[paste #1 \d+ chars\]$/, "the oversized paste still completed (collapsed into the host editor's own marker)");
+	// Bound: PASTE_END tail carry (5 chars) + the largest single chunk sent
+	// here (the 6-char PASTE_END chunk itself) = 11 chars, never the ~1500+
+	// char accumulated buffer a full-buffer rescan would search. The final
+	// `native(frame)` call hands the fully assembled frame to the underlying
+	// host editor exactly once, and that editor's own paste handling does its
+	// own one-time scan over the assembled length — a single unavoidable O(final
+	// length) cost outside SelectionEngine, not a per-chunk rescan; exactly one
+	// such large search is tolerated below.
+	const smallSearches = searchedLengths.filter((len) => len <= 11);
+	const largeSearches = searchedLengths.filter((len) => len > 11);
+	assert.equal(
+		smallSearches.length,
+		chunkCount + 2,
+		`expected exactly one tail-bounded terminator search per input chunk (start + ${chunkCount} z's + end), saw ${smallSearches.length}`,
+	);
+	assert.ok(
+		largeSearches.length <= 1,
+		`expected at most one full-frame scan (the host editor's own one-time assembled-paste handling), saw ${largeSearches.length} large searches (lengths: ${largeSearches.join(", ")}) — a full-buffer rescan during chunk intake regressed`,
+	);
+});
