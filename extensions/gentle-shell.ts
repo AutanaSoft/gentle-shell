@@ -17,7 +17,7 @@ import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
 import { VisualCustomizeView, type CustomizeCategory, type CustomizeRow, type ProfileActions } from "../lib/visual-customize-view.ts";
 import { deleteVisualProfile, getVisualProfile, listVisualProfiles, resetVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts";
 import { sourcePalettePreview } from "../lib/theme-customization.ts";
-import { DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, STATUS_PLACEMENT, resolveVisualSettings, writeVisualSettings } from "../lib/visual-customization-policy.ts";
+import { DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, STATUS_PLACEMENT, VISUAL_SECTION_KEYS, resolveVisualSettings, writeVisualSettings } from "../lib/visual-customization-policy.ts";
 import { BANNER_COLORS, DEFAULT_BANNER_CONFIG, readBannerConfig, readBannerConfigForEdit, writeBannerConfig } from "./startup-banner.ts";
 import { agentsViewKey } from "../lib/agents-keys.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
@@ -1904,7 +1904,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			for (const value of Object.values(HEADER_PLACEMENT)) add(() => `Header placement: ${value}${visual().headerPlacement === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, headerPlacement: value })), () => layoutPreview({ ...visual(), headerPlacement: value }));
 			for (const value of Object.values(DENSITY)) add(() => `Density: ${value}${visual().density === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, density: value })), () => layoutPreview({ ...visual(), density: value }));
 			category = "Sections";
-			for (const key of ["changes", "agents", "todo", "usageCost", "modelDetails"] as const) add(
+			for (const key of VISUAL_SECTION_KEYS) add(
 				() => `Section ${key}: ${visual().visibility[key] ? "shown" : "hidden"}`,
 				pending,
 				() => updateVisual((settings) => ({ ...settings, visibility: { ...settings.visibility, [key]: !settings.visibility[key] } })),
