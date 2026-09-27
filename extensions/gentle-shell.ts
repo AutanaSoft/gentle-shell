@@ -111,6 +111,7 @@ import { sidebarHeader, sidebarPart, sidebarState, VISUAL_SETTINGS_CHANGED } fro
 import { installSidebar, invalidateSidebar, narrowStatusOwner, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
 import { SessionChanges, SESSION_CHANGE_EVENT } from "../lib/session-changes.ts";
 import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
+import { SelectionEngine } from "../lib/selection-engine.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
 
 // Gentle Shell: the visual layer gentle-pi puts on top of pi. It installs the
@@ -376,6 +377,11 @@ export class GentlePromptEditor extends CustomEditor {
 	private visualAnchor: { line: number; col: number } | undefined;
 	private pulse: NodeJS.Timeout | undefined;
 	private readonly deps: PromptEditorDeps;
+	// Native selection engine (shift+home/end, alt+a, replace-on-key): ported
+	// from pi-select-del so the petal prompt owns the feature without factory
+	// composition. Constructed with `this`; the internals probe degrades to
+	// passthrough on pi drift, costing only the selection features.
+	private readonly selectionEngine: SelectionEngine;
 	// CustomEditor keeps its own `keybindings` private, so this class holds
 	// its own reference to run the same app.interrupt match before deciding
 	// whether to swallow the keystroke.
@@ -389,6 +395,7 @@ export class GentlePromptEditor extends CustomEditor {
 
 	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, deps: PromptEditorDeps) {
 		super(tui, theme, keybindings);
+		this.selectionEngine = new SelectionEngine(this);
 		this.deps = deps;
 		this.keybindingsManager = keybindings;
 	}
@@ -518,6 +525,19 @@ export class GentlePromptEditor extends CustomEditor {
 	 * and never reach this branch.
 	 */
 	override handleInput(data: string): void {
+		// Selection and Vim handlers can consume input before the native chain;
+		// any intervening key invalidates an idle Esc confirmation.
+		if (this.pendingIdleClearDeadline !== undefined && !this.keybindingsManager.matches(data, "app.interrupt")) {
+			this.pendingIdleClearDeadline = undefined;
+			this.pendingIdleClearText = undefined;
+		}
+		// Vim owns its modal keys and paste frames. Ordinary editing retains
+		// native selection before the prompt's existing input chain.
+		if (this.vimPolicy === "on") this.handleInputNative(data);
+		else this.selectionEngine.handleInput(data, (d) => this.handleInputNative(d));
+	}
+
+	private handleInputNative(data: string): void {
 		if ((this.vimPolicy === "on" || this.vimRejected) && this.handleVimPasteFrame(data)) return;
 		if (this.vimPolicy === "on" && isKeyRelease(data)) return;
 		if (this.vimPolicy === "on" && this.vimNormal && matchesKey(data, "escape") && this.vimVisual.active) {
@@ -835,12 +855,6 @@ export class GentlePromptEditor extends CustomEditor {
 			// app actions. Never forward an unowned NORMAL byte to insertion.
 			if (this.vimNormal && !this.keybindingsManager.matches(data, "app.interrupt") && !matchesKey(data, "escape")) return;
 		}
-		// Any keystroke that is not the confirming Esc ends the pending idle
-		// clear, even one that leaves the text identical (type, then delete).
-		if (this.pendingIdleClearDeadline !== undefined && !this.keybindingsManager.matches(data, "app.interrupt")) {
-			this.pendingIdleClearDeadline = undefined;
-			this.pendingIdleClearText = undefined;
-		}
 		if (
 			this.promptState === PROMPT_STATE.WORKING &&
 			!this.isShowingAutocomplete() &&
@@ -969,7 +983,8 @@ export class GentlePromptEditor extends CustomEditor {
 	}
 
 	render(width: number): string[] {
-		const lines = super.render(Math.max(1, width - 2));
+		const inner = Math.max(1, width - 2);
+		const lines = super.render(inner);
 		if (this.getText() === "" && lines.length === 3) lines[1] = withPromptHint(lines[1], PROMPT_HINT, this.deps.fg);
 		const state = this.promptState === PROMPT_STATE.WORKING && this.deps.pending() ? PROMPT_STATE.QUEUED : this.promptState;
 		// The frame keeps the theme's border color rather than pi's thinking-level
@@ -984,6 +999,7 @@ export class GentlePromptEditor extends CustomEditor {
 				if (range) editorLines = adapter.renderSelection(Math.max(1, width - 2), range.start, range.end, lines);
 			} catch { /* Unknown layout: keep the original rendered prompt. */ }
 		}
+		if (this.vimPolicy !== "on") editorLines = this.selectionEngine.decorateRows(editorLines, inner, 0);
 		const visibleCount = (this as unknown as { renderedVisibleLineCount?: number }).renderedVisibleLineCount;
 		const borderEnd = Number.isInteger(visibleCount) && visibleCount! >= 1 && visibleCount! + 2 <= editorLines.length
 			? visibleCount! + 2 : editorLines.length;
@@ -1003,6 +1019,9 @@ export class GentlePromptEditor extends CustomEditor {
 						: undefined,
 			].filter(Boolean).join(" · ") || undefined,
 		});
+		if (this.vimPolicy !== "on") {
+			framed[framed.length - 1] = this.selectionEngine.decorateBottomRule(framed[framed.length - 1] ?? "", width, "╯");
+		}
 		// Pi places autocomplete after its bottom border. Keep those rows below
 		// Gentle's frame and preserve their terminal width and row coordinates.
 		for (const line of editorLines.slice(borderEnd)) {
