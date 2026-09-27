@@ -221,7 +221,7 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 				label("/gentle:changes"),
 			],
 		}]),
-		...(model.review ? [{
+		...(model.review && presentation?.visibility.rdd !== false ? [{
 			title: "🌹 RDD",
 			lines: [value(REVIEW_SIDEBAR_LABELS[model.review.state]), label(sanitizeStatus(model.review.scope))],
 		}] : []),

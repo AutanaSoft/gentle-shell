@@ -76,6 +76,14 @@ test("Status title stays plain above the review lifecycle block", () => {
 	assert.match(lines.slice(1).join("\n"), /🌹 RDD[\s\S]*Reviewing[\s\S]*first\.ts \+2/);
 });
 
+test("rdd visibility hides only the review lifecycle block", () => {
+	const data = model({ review: { state: "reviewing", scope: "first.ts +2" }, changes: { files: 2, added: 1, deleted: 1 } });
+	assert.match(renderShellSidebarBar(data, plainTheme, 60, DEFAULT_VISUAL_SETTINGS).join("\n"), /🌹 RDD[\s\S]*Reviewing/);
+	const hidden = renderShellSidebarBar(data, plainTheme, 60, { ...DEFAULT_VISUAL_SETTINGS, visibility: { ...DEFAULT_VISUAL_SETTINGS.visibility, rdd: false } }).join("\n");
+	assert.doesNotMatch(hidden, /🌹 RDD|Reviewing|first\.ts \+2/);
+	assert.match(hidden, /Changes[\s\S]*2 files/);
+});
+
 test("Status and review lifecycle block respect terminal width", () => {
 	for (const width of [8, 12, 16, 20, 32, 60]) {
 		for (const review of [undefined, { state: "reviewing" as const, scope: "first.ts +2" }]) {
