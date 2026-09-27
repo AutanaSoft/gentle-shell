@@ -27,9 +27,9 @@ Prevent passive Pi session hooks from invoking native review negotiation in an u
 
 ## Delivery
 
-- Existing issue branch: `dnlrsls/issue-656-passive-git-init`.
-- One work unit: test plus guard. Push and PR require a separate user decision.
-- Commit pending explicit authorization under the session's no-commit-without-request rule.
+- Delivery branch: `fix/passive-review-status-git-boundary` (renamed from the issue workspace's original branch for PR naming policy).
+- One work unit: test plus guard. User authorized push and PR after issue #656 received `status:approved`.
+- Reviewed work-unit commit: `8dae7fa7` (`fix(review): skip passive status outside Git`).
 
 ## Progress
 
@@ -40,4 +40,5 @@ Prevent passive Pi session hooks from invoking native review negotiation in an u
 - Runtime boundary: the test exercises real Git discovery and Pi event handlers, but mocks the native provider; no live Pi/native bootstrap was run.
 - Rollback boundary: the guard in `extensions/gentle-ai.ts` and regression in `tests/review-agent-end-preflight.test.ts` (plus this task record).
 - Dependency setup: `pnpm install --frozen-lockfile --ignore-scripts` populated ignored `node_modules`; package and lockfile unchanged.
-- Native review outcome and commit: pending; no commit without explicit request.
+- Native review approved and acknowledged: lineage `review-b9df31fb8fc6ab6c`, target `sha256:32d235ecff07e297de78b84a38daf7ff5e78a07ef2df5e255d5de89539ad8b7d`; authority burned before commit. The commit contains the exact reviewed three-file candidate.
+- This bookkeeping update records the reviewed work-unit commit; it changes only this passive task document after acknowledgement.
