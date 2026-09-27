@@ -884,6 +884,7 @@ export class AgentRunner {
 			if (this.deps.now() >= (live.cleanupDeadlineAt ?? 0)) {
 				live.cancelGrace();
 				live.quarantined = true;
+				this.cleanupLive(live);
 				this.finish(id, TASK_STATUS.FAILED, `process cleanup unconfirmed after ${GROUP_CONFIRM_DEADLINE_MS}ms; capacity quarantined`, live);
 				return;
 			}
@@ -908,6 +909,7 @@ export class AgentRunner {
 		if (this.deps.now() >= (live.cleanupDeadlineAt ?? 0)) {
 			live.cancelGrace();
 			live.quarantined = true;
+			this.cleanupLive(live);
 			this.finish(id, TASK_STATUS.FAILED, `child exit unconfirmed after ${GROUP_CONFIRM_DEADLINE_MS}ms; capacity quarantined`, live);
 			return;
 		}
