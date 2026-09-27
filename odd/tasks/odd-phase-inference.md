@@ -34,8 +34,8 @@ The label is driven only by the model calling `gentle_odd_phase`. The prompt ins
 
 ## Tasks
 
-- [ ] T1 — Pure inference module `lib/odd-phase-inference.ts` + `tests/odd-phase-inference.test.ts` (strict test-first). Route: delegated direct (one writer for T1+T2, 2+ non-trivial files).
-- [ ] T2 — Registry source marker + `tool_execution_start` wiring in `extensions/gentle-shell.ts` + tests; prompt wording in `extensions/gentle-ai.ts` and `assets/orchestrator-delegation.md`.
+- [x] T1 — Pure inference module `lib/odd-phase-inference.ts` + `tests/odd-phase-inference.test.ts` (strict test-first). Route: delegated direct (one writer for T1+T2, 2+ non-trivial files).
+- [x] T2 — Registry source marker + `tool_execution_start` wiring in `extensions/gentle-shell.ts` + tests; prompt wording in `extensions/gentle-ai.ts` and `assets/orchestrator-delegation.md`.
 
 ## Acceptance criteria
 
@@ -67,3 +67,11 @@ Forecast ~300 authored changed lines; strategy `ask-on-risk`; single PR expected
   - `node scripts/check-provider-contract.mjs`: exit 0, mirror check passed.
   - `node --experimental-strip-types tests/runtime-harness.mjs`: exit 0 (no output).
 - Next: parent review, work-unit commit(s), tick T1/T2.
+
+## Closure evidence
+
+- Commits: T1 `aa8e5c094` (feat(odd-phase): add deterministic tool-activity phase inference); T2 `5b37c261a` (feat(shell): infer the ODD working label from primary-session tool calls). Route: delegated direct, one writer (gentle-ai-worker) for T1+T2.
+- Parent spot check: focused ODD phase tests 43/43 pass.
+- Native review: lineage `review-022bb282059e89e5`, risk high (4 lenses), approved and acknowledged (authority burned).
+- Advisory follow-ups (non-blocking): R2-001 readability of the checker table (odd-phase-inference.ts:40); R2-002 wording of assets/orchestrator-delegation.md:99; R3-find-exclusions (:48); R3-make-overbroad (:40); R3-quote-unaware-checking (:87-91); R3-redirect-unproved (:102-104).
+- Next: live check in Gentle Shell after switching the daily checkout to this branch or merging; push/PR is the user's decision.
