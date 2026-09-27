@@ -83,3 +83,6 @@ Forecast ~300 authored changed lines; strategy `ask-on-risk`; single PR expected
 - RED: new tests failed on real session commands (loops, quoted pipes, substitutions) and exposed a false positive (`ls $(touch marker)` read as exploring).
 - GREEN: focused ODD phase tests 46/46; unit stage 3928 pass / 0 fail / 43 skipped; check-types 188 baseline, no regressions; provider-contract pass; runtime-harness exit 0.
 - Measured on this session's log: bash calls inferred as exploring went from 4 to 23; the 10 left unchanged are mutations (switch, commit, sed -i, ln, worktree add), sleep, or a fetch.
+- Commits: `725e198c4` (classifier), `f2bbe0f1c` (review correction: ReDoS in the bare-assignment pattern; RED 819 ms on 26 pairs, GREEN 0 ms on 1000 pairs, bounded-time test added).
+- Native review: lineage `review-f3616c62793fea5d`, high, 4 lenses + refuter; one bounded correction (14 lines) for R3-assignment-redos, targeted validation approved and acknowledged.
+- Advisory follow-ups (non-blocking): backtick substitution not split; `git -c` override stripping; git ref-create flags on branch/tag listing; text tools that can write without redirect (awk/sed `w`, uniq out-file); duplicated assignment regex; GIT_LIST_FLAG placement.
