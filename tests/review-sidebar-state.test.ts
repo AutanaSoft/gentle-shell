@@ -125,6 +125,16 @@ test("publisher retains scope only for issued capture bindings and matching clos
 	assert.equal(events.at(-1)?.snapshot.scope, "Candidate scope unavailable");
 });
 
+test("nested raw workspaceRoot loses only display correlation against canonical cwd", async () => {
+	const h = publisherFixture();
+	await h.seed();
+	await h.run("gentle_review_capture", { lineageId: "lineage", collectBinding: "first", workspaceRoot: "/repo/nested" }, { outcome: "reviewer-model-run-forecast" });
+	assert.deepEqual(h.snapshot(), { state: "forecast", scope: REVIEW_SCOPE_UNAVAILABLE });
+	await h.seed();
+	await h.run("gentle_review_capture", { lineageId: "lineage", collectBinding: "first", workspaceRoot: "/repo" }, { outcome: "reviewer-model-run-forecast" });
+	assert.deepEqual(h.snapshot(), { state: "forecast", scope: "app.ts" });
+});
+
 test("real facade STATUS binding retains sidebar scope through capture forecast", async () => {
 	const raw = JSON.parse(readFileSync(new URL("./fixtures/devbinary/status-v5-capture-result-submission.captured.json", import.meta.url), "utf8"));
 	raw.action = "stop";
@@ -298,6 +308,21 @@ test("unbound operations, mismatched acknowledgements, failures and resets disca
 	h.publisher.reset(h.ctx);
 	await h.run("gentle_review_capture", { lineageId: "lineage", collectBinding: "first" }, h.closure);
 	assert.equal(h.snapshot().scope, "Candidate scope unavailable");
+});
+
+test("explicit user abort remains unknown while ordinary thrown failures are unavailable", async () => {
+	const h = publisherFixture();
+	for (const aborted of [true, false]) {
+		await h.seed();
+		const error = new Error("execution stopped");
+		const controller = new AbortController();
+		if (aborted) controller.abort();
+		const tool = h.publisher.tool({ name: "gentle_review", label: "Test", description: "Test", parameters: { type: "object" } as never,
+			async execute() { throw error; },
+		});
+		await assert.rejects(tool.execute("call", { operation: "status" } as never, controller.signal, undefined, h.ctx), (caught) => caught === error);
+		assert.deepEqual(h.snapshot(), { state: aborted ? "unknown" : "unavailable", scope: REVIEW_SCOPE_UNAVAILABLE });
+	}
 });
 
 test("foreign sessions, disabled publisher and event failures never change tool outcomes", async () => {
