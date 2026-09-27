@@ -57,3 +57,10 @@ Scope line: known scope renders `first.ts +N files` (singular `+1 file`); unknow
 ## Delivery
 
 Forecast ~60 lines; single PR.
+
+## Closure evidence
+
+- Supersedes the writer's partial Progress note: the two `tests/gentle-shell.test.ts` assertions (lines 370, 392) that still matched the old `Checking` label were updated by the parent to `Updating…`.
+- Commit `66f574b56`. Route: delegated direct (gentle-ai-worker) plus a parent mechanical test-string fix.
+- Checks: focused 279/279 (gentle-shell, review-sidebar-state, shell-bar); unit stage 3931 pass / 0 fail / 43 skipped; check-types no regressions; provider-contract pass; harness exit 0.
+- Native review `review-f837dc6e7581e272` (medium, reliability) approved and acknowledged.
