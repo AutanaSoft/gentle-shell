@@ -5,7 +5,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { renderShellSidebarBar, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
 import { createReviewSidebarPublisher, REVIEW_SCOPE_UNAVAILABLE, REVIEW_SIDEBAR_LABELS, reviewSidebarSnapshot } from "../lib/review-sidebar-state.ts";
 import { __testing } from "../extensions/gentle-ai.ts";
-import type { NativeReviewCli } from "../lib/native-review-cli.ts";
+import { NATIVE_REVIEW_ERROR_CODE, NATIVE_REVIEW_OPERATION, NativeReviewCliError, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { decodeReviewStatusV3 } from "../lib/review-integration-v2.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
@@ -310,18 +310,25 @@ test("unbound operations, mismatched acknowledgements, failures and resets disca
 	assert.equal(h.snapshot().scope, "Candidate scope unavailable");
 });
 
-test("explicit user abort remains unknown while ordinary thrown failures are unavailable", async () => {
+test("cancellation errors remain unknown while other failures are unavailable, regardless of the signal", async () => {
 	const h = publisherFixture();
-	for (const aborted of [true, false]) {
+	const abortError = () => Object.assign(new Error("Review controller operation was cancelled"), { name: "AbortError" });
+	const cases: Array<{ error: Error; aborted: boolean; state: string }> = [
+		{ error: abortError(), aborted: true, state: "unknown" },
+		{ error: new NativeReviewCliError(NATIVE_REVIEW_ERROR_CODE.CANCELLED, NATIVE_REVIEW_OPERATION.STATUS, true, false, "native process was cancelled"), aborted: true, state: "unknown" },
+		// An abort that races an ordinary failure (for example a later authorization denial) is not a cancellation.
+		{ error: new Error("destructive review operation was not authorized"), aborted: true, state: "unavailable" },
+		{ error: new Error("execution stopped"), aborted: false, state: "unavailable" },
+	];
+	for (const { error, aborted, state } of cases) {
 		await h.seed();
-		const error = new Error("execution stopped");
 		const controller = new AbortController();
 		if (aborted) controller.abort();
 		const tool = h.publisher.tool({ name: "gentle_review", label: "Test", description: "Test", parameters: { type: "object" } as never,
 			async execute() { throw error; },
 		});
 		await assert.rejects(tool.execute("call", { operation: "status" } as never, controller.signal, undefined, h.ctx), (caught) => caught === error);
-		assert.deepEqual(h.snapshot(), { state: aborted ? "unknown" : "unavailable", scope: REVIEW_SCOPE_UNAVAILABLE });
+		assert.deepEqual(h.snapshot(), { state, scope: REVIEW_SCOPE_UNAVAILABLE });
 	}
 });
 

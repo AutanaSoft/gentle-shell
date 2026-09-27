@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
+import { NATIVE_REVIEW_ERROR_CODE, NativeReviewCliError } from "./native-review-cli.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 
 /** Ephemeral display data only; this event grants no review authority. */
@@ -113,6 +114,12 @@ function isNonterminalReviewerCapture(data: Record<string, unknown>): boolean {
 		[relay.lens, relay.order, relay.subject_hash, relay.role].every((value) => value === undefined || (typeof value === "string" && value.length > 0));
 }
 
+// Classify from the thrown error: an abort that races an ordinary failure stays a failure.
+function isCancellation(error: unknown): boolean {
+	return (error instanceof Error && error.name === "AbortError") ||
+		(error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.CANCELLED);
+}
+
 // Resolve completion using only local display correlation; never interpret bindings.
 function resolveCompletion(operation: string, name: string, input: Record<string, unknown>, details: unknown,
 	prior: ReviewScope | undefined, boundCapture: boolean, workspace: string): { snapshot: ReviewSidebarSnapshot; scope?: ReviewScope } {
@@ -198,7 +205,7 @@ export function createReviewSidebarPublisher(pi: ExtensionAPI) {
 					} catch (error) {
 						if (current()) {
 							scope = undefined;
-							publish(id, { state: signal?.aborted ? "unknown" : "unavailable", scope: REVIEW_SCOPE_UNAVAILABLE });
+							publish(id, { state: isCancellation(error) ? "unknown" : "unavailable", scope: REVIEW_SCOPE_UNAVAILABLE });
 						}
 						throw error;
 					}
