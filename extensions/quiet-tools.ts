@@ -17,7 +17,7 @@ import { GentleAiElapsedTimingLedger } from "../lib/gentle-ai-elapsed-store.ts";
 import { quietToolsEnabled } from "../lib/quiet-tools-config.ts";
 import { getGentleAiRenderState, renderGentleAiLifecycleCall, renderGentleAiResult, type GentleAiRenderContext } from "../lib/gentle-ai-renderer.ts";
 import { CARD_GLYPH, CARD_TONE, cardBottom, cardInnerWidth, cardLine, type CardTheme } from "../lib/shell-card.ts";
-import { sanitizeTerminalText } from "../lib/terminal-theme.ts";
+import { sanitizeTerminalText, stripAnsi } from "../lib/terminal-theme.ts";
 
 type QuietToolName = "read" | "bash" | "grep" | "find" | "ls" | "edit" | "write";
 type ThemeLike = {
@@ -594,27 +594,33 @@ class ToolCardTop implements Component {
 	private readonly header: string;
 	private readonly tone: RailTone;
 	private readonly theme: CardTheme;
+	private readonly hint: string | undefined;
 
-	constructor(header: string, tone: RailTone, theme: CardTheme) {
+	constructor(header: string, tone: RailTone, theme: CardTheme, hint?: string) {
 		this.header = header;
 		this.tone = tone;
 		this.theme = theme;
+		this.hint = hint;
 	}
 
-	/** Renders `╭─ ✿ <call> ──╮` on one row; the call is clipped, never wrapped, so the rule stays a single line. */
+	/** Renders `╭─ ✿ <call> ── <hint> ╮` on one row; the call is clipped, never wrapped, and the hint shows only when it fits beside it, like the Gentle AI card. */
 	render(width: number): string[] {
 		const target = Math.max(0, Math.floor(width));
 		if (target === 0) return [];
 		const frame = (text: string) => this.theme.fg(this.tone, text);
 		if (target < 8) return [frame(`╭${"─".repeat(Math.max(0, target - 2))}${target > 1 ? "╮" : ""}`)];
 		// Frame columns: "╭─ " (3), glyph and space (2), a space before the fill, and at least "─╮" (2).
-		const room = target - 8;
+		const fullHintWidth = this.hint ? visibleWidth(this.hint) + 2 : 0;
+		const hint = this.hint && target - 8 - fullHintWidth >= 12 ? this.hint : undefined;
+		const hintWidth = hint ? fullHintWidth : 0;
+		const room = target - 8 - hintWidth;
 		// A multi-line call (a heredoc command) shows its first line only.
 		const [first = "", ...rest] = this.header.split("\n");
 		const header = rest.length > 0 ? `${first} …` : first;
 		const call = visibleWidth(header) > room ? truncateToWidth(header, room, "…") : header;
-		const fill = "─".repeat(Math.max(1, target - 7 - visibleWidth(call)));
-		return [`${frame("╭─ ")}${this.theme.fg("accent", CARD_GLYPH)} ${call} ${frame(`${fill}╮`)}`];
+		const fill = "─".repeat(Math.max(1, target - 7 - hintWidth - visibleWidth(call)));
+		const tail = hint ? ` ${this.theme.fg("dim", hint)} ` : "";
+		return [`${frame("╭─ ")}${this.theme.fg("accent", CARD_GLYPH)} ${call} ${frame(fill)}${tail}${frame("╮")}`];
 	}
 
 	invalidate(): void {}
@@ -735,7 +741,12 @@ function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArg
 				return renderGentleAiLifecycleCall(operationPath, theme, withElapsedTiming(renderContext as GentleAiRenderContext), detail);
 			}
 			const tone = railTone(renderContext.isPartial !== false, renderContext.isError === true);
-			if (toolFrame() === TOOL_FRAME.CARD) return new ToolCardTop(formatToolCall(toolName, callArgs, theme), tone, theme);
+			if (toolFrame() === TOOL_FRAME.CARD) {
+				// Same place and wording as the Gentle AI card: the expand key rides the top rule once the call finished.
+				const finished = renderContext.isPartial === false && (renderContext.executionStarted === true || renderContext.isError === true);
+				const hint = finished ? stripAnsi(keyHint("app.tools.expand", renderContext.expanded === true ? "to collapse" : "to expand")) : undefined;
+				return new ToolCardTop(formatToolCall(toolName, callArgs, theme), tone, theme, hint);
+			}
 			return new PetalRail(new Text(formatToolCall(toolName, callArgs, theme), 0, 0), theme.fg(tone, RAIL), theme.fg("accent", CARD_GLYPH));
 		},
 		/** Builds the card component for this render pass; collapsed cards delegate to the wrapped-line cache keyed by the tool result object. */
@@ -779,7 +790,8 @@ function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArg
 				isError,
 				args: renderContext?.args,
 			});
-			const hint = !options.expanded && !directResult && hasExpandableContent(toolName, safeResult, text)
+			// The card frame carries the expand key in its top rule instead.
+			const hint = toolFrame() !== TOOL_FRAME.CARD && !options.expanded && !directResult && hasExpandableContent(toolName, safeResult, text)
 				? `\n${keyHint("app.tools.expand", "to expand")}`
 				: "";
 			const color = options.expanded ? "toolOutput" : isError ? "error" : "muted";

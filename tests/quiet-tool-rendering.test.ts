@@ -1406,6 +1406,18 @@ test("quiet tool card frame draws a rounded petal card in the lifecycle tone", (
 	const empty = tools.get("grep").renderResult(textResult("No matches found"), { expanded: false, isPartial: false }, passthroughTheme, {}).render(width);
 	assert.deepEqual(empty, [`╰${"─".repeat(28)}╯`], "an empty result still closes the card");
 
+	// The expand key rides the top rule once the call finished, like the Gentle AI card.
+	const wide = 80;
+	const expandKey = keyHint("app.tools.expand", "to expand").replace(/\x1b\[[0-9;]*m/g, "");
+	const finishedTop = bash.renderCall(args, passthroughTheme, routineRenderContext({ args, executionStarted: true, isPartial: false })).render(wide)[0] ?? "";
+	assert.ok(finishedTop.endsWith(` ${expandKey} ╮`), finishedTop);
+	const expandedTop = bash.renderCall(args, passthroughTheme, routineRenderContext({ args, executionStarted: true, isPartial: false, expanded: true })).render(wide)[0] ?? "";
+	assert.match(expandedTop, /to collapse ╮$/);
+	const runningTop = bash.renderCall(args, passthroughTheme, routineRenderContext({ args, executionStarted: true, isPartial: true })).render(wide)[0] ?? "";
+	assert.ok(!runningTop.includes("to expand"), runningTop);
+	const collapsedBody = bash.renderResult(textResult("alpha\nbeta"), { expanded: false, isPartial: false }, passthroughTheme, { args }).render(wide);
+	assert.ok(!collapsedBody.some((line) => line.includes("to expand")), "the body no longer carries the expand key");
+
 	for (const narrow of [1, 2, 3, 4, 5, 8]) {
 		const lines = [
 			...bash.renderCall({ command: "printf " + "x".repeat(80) }, passthroughTheme, routineRenderContext({ args, isPartial: false })).render(narrow),
