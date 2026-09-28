@@ -95,3 +95,5 @@ Risk tier: medium (ordinary rendering change with focused tests). Writer self-ve
 - writer: quiet-tool-rendering 51/51, check-types no regressions, gentle-shell.test 223/223
 - parent spot check: quiet-tool-rendering 51/51 pass
 - duration not implemented (no timing data for ordinary quiet tools)
+- native review (RDD on): lineage review-319d41b8a93b4195, medium tier, lens review-reliability, approved and acknowledged (authority burned). Non-blocking advisory findings: R3-001 WARNING quiet-tools.ts:704, R3-002 SUGGESTION quiet-tools.ts:674 (follow-up only).
+- live try: `node ../gentle-pi-tool-rail/bin/gentle-shell.mjs` (launcher injects the worktree package root).
