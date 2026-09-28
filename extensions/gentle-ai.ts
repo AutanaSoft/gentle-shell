@@ -6129,10 +6129,12 @@ const OFFERED_COMMITTED_RANGE_BASE_REF = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 function offeredCommittedRangeBaseRef(target: ReviewStatusV3): string | undefined {
 	const execute = target.nextTransition?.kind === "execute" ? target.nextTransition.execute : undefined;
 	if (execute?.operation !== "review.start") return undefined;
-	if (execute.arguments.length !== 2 || new Set(execute.arguments.map((argument) => argument.name)).size !== 2) return undefined;
-	const baseRef = execute.arguments.find((argument) => argument.name === "base-ref")?.value;
-	if (baseRef === undefined || !OFFERED_COMMITTED_RANGE_BASE_REF.test(baseRef)) return undefined;
-	if (execute.arguments.find((argument) => argument.name === "committed-only")?.value !== "true") return undefined;
+	const selectors = execute.arguments.filter((argument) => argument.name === "base-ref" || argument.name === "committed-only");
+	if (selectors.length !== 2 || new Set(selectors.map((argument) => argument.name)).size !== 2) return undefined;
+	if (selectors.some((argument) => argument.token !== undefined && argument.token !== `--${argument.name}=${argument.value}`)) return undefined;
+	const baseRef = selectors.find((argument) => argument.name === "base-ref")!.value;
+	if (!OFFERED_COMMITTED_RANGE_BASE_REF.test(baseRef)) return undefined;
+	if (selectors.find((argument) => argument.name === "committed-only")!.value !== "true") return undefined;
 	return baseRef;
 }
 

@@ -1082,7 +1082,13 @@ test("ordinary START adopts a provider-offered base tree without treating it as 
 	const offered = startStatus(cwd);
 	offered.nextTransition = {
 		kind: "execute", reasonCode: "start_required",
-		execute: { operation: "review.start", arguments: [{ name: "base-ref", value: baseTree }, { name: "committed-only", value: "true" }], preconditions: [], binding: {} },
+		execute: { operation: "review.start", arguments: [
+			{ name: "target", value: offered.targetIdentity, token: `--target=${offered.targetIdentity}` },
+			{ name: "projection", value: "workspace", token: "--projection=workspace" },
+			{ name: "base-ref", value: baseTree, token: `--base-ref=${baseTree}` },
+			{ name: "committed-only", value: "true", token: "--committed-only=true" },
+			{ name: "agent", value: "pi", token: "--agent=pi" },
+		], preconditions: [], binding: {} },
 	} as unknown as ReviewStatusV3["nextTransition"];
 	const adopted = startStatus(cwd, baseCommit);
 	const requests: Array<Record<string, unknown>> = [];
@@ -1195,12 +1201,24 @@ test("provider tree adoption refuses drifted targets, malformed offers and expli
 	const drifted = startStatus(cwd);
 	const malformed = startStatus(cwd);
 	malformed.nextTransition = { kind: "execute", reasonCode: "start_required", execute: { operation: "review.start", arguments: [{ name: "base-ref", value: baseTree }, { name: "base-ref", value: baseTree }, { name: "committed-only", value: "true" }], preconditions: [], binding: {} } } as unknown as ReviewStatusV3["nextTransition"];
+	const malformedExtra = startStatus(cwd);
+	malformedExtra.nextTransition = { kind: "execute", reasonCode: "start_required", execute: { operation: "review.start", arguments: [
+		{ name: "agent", value: "pi" }, { name: "base-ref", value: baseTree, token: `--base-ref=${baseTree}` },
+		{ name: "committed-only", value: "true", token: "--committed-only=true" }, { name: "committed-only", value: "false" },
+	], preconditions: [], binding: {} } } as unknown as ReviewStatusV3["nextTransition"];
+	const malformedToken = startStatus(cwd);
+	malformedToken.nextTransition = { kind: "execute", reasonCode: "start_required", execute: { operation: "review.start", arguments: [
+		{ name: "agent", value: "pi" }, { name: "base-ref", value: baseTree, token: "--base-ref=HEAD" },
+		{ name: "committed-only", value: "true", token: "--committed-only=true" },
+	], preconditions: [], binding: {} } } as unknown as ReviewStatusV3["nextTransition"];
 	const blob = execFileSync("git", ["rev-parse", "HEAD:tracked.txt"], { cwd, encoding: "utf8" }).trim();
 	const wrongType = startStatus(cwd);
 	wrongType.nextTransition = { kind: "execute", reasonCode: "start_required", execute: { operation: "review.start", arguments: [{ name: "base-ref", value: blob }, { name: "committed-only", value: "true" }], preconditions: [], binding: {} } } as unknown as ReviewStatusV3["nextTransition"];
 	for (const scenario of [
 		{ name: "changed tree target", first: offered, second: drifted, expectedReads: 2 },
 		{ name: "malformed duplicate offer", first: malformed, second: adopted, expectedReads: 1 },
+		{ name: "conflicting selector among unrelated arguments", first: malformedExtra, second: adopted, expectedReads: 1 },
+		{ name: "selector token disagrees with value", first: malformedToken, second: adopted, expectedReads: 1 },
 		{ name: "wrong object type", first: wrongType, second: adopted, expectedReads: 2 },
 	]) {
 		let reads = 0, starts = 0;
