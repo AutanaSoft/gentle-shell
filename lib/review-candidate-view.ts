@@ -1,6 +1,6 @@
 import { execFileSync, type ExecFileSyncOptions } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, utimesSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, utimesSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -609,7 +609,9 @@ function entryContentHash(root: string, entry: CandidateTreeEntry): string {
 	if (entry.mode === "120000") {
 		if (!item.isSymbolicLink()) throw new CandidateViewError("candidate view symlink does not match its frozen tree");
 		const target = readlinkSync(path, "buffer");
-		const bytes = Buffer.isBuffer(target) ? target : Buffer.from(target);
+		const nativeBytes = Buffer.isBuffer(target) ? target : Buffer.from(target);
+		// Windows readlink may spell a relative Git target with native separators.
+		const bytes = process.platform === "win32" ? Buffer.from(nativeBytes.toString("utf8").replaceAll("\\", "/")) : nativeBytes;
 		assertSafeSymlinkTarget(root, entry.path, bytes);
 		return createHash("sha256").update(bytes).digest("hex");
 	}
@@ -817,6 +819,28 @@ export function isProviderCandidateBaseTree(contributorRoot: string, objectId: s
 	return probe.status === 0 && probe.stdout === "tree";
 }
 
+function materializeSymlinkEntries(root: string, entries: readonly CandidateTreeEntry[], executor: CandidateGitExecutor): ReadonlyMap<string, string> {
+	// Validate every original blob before any symlink is created. In particular,
+	// never use Git's core.symlinks-dependent regular-file checkout for mode 120000.
+	const links = entries.filter((entry) => entry.mode === "120000").map((entry) => {
+		const bytes = candidateGit(root, ["cat-file", "blob", entry.objectId], process.env, "buffer", executor) as Buffer;
+		assertSafeSymlinkTarget(root, entry.path, bytes);
+		return { path: entry.path, target: bytes.toString("utf8") };
+	});
+	for (const link of links) {
+		const path = join(root, link.path);
+		mkdirSync(dirname(path), { recursive: true });
+		try {
+			const targetPath = resolve(dirname(path), link.target);
+			const targetType = process.platform === "win32" && lstatSync(targetPath, { throwIfNoEntry: false })?.isDirectory() ? "dir" : "file";
+			symlinkSync(link.target, path, targetType);
+		} catch (error) {
+			throw new CandidateViewError("candidate view cannot create native symlinks; enable symlink capability out of band before retrying START", "symlink-materialization-failed", undefined, { cause: error });
+		}
+	}
+	return new Map(links.map((link) => [link.path, createHash("sha256").update(Buffer.from(link.target, "utf8")).digest("hex")]));
+}
+
 function checkoutMaterializedEntries(root: string, entries: readonly CandidateTreeEntry[], executor: CandidateGitExecutor): void {
 	let batch: string[] = [];
 	let bytes = 0;
@@ -826,6 +850,7 @@ function checkoutMaterializedEntries(root: string, entries: readonly CandidateTr
 		batch = []; bytes = 0;
 	};
 	for (const entry of entries) {
+		if (entry.mode === "120000") continue;
 		const size = Buffer.byteLength(entry.path, "utf8") + 1;
 		if (batch.length > 0 && bytes + size > 16_384) flush();
 		batch.push(entry.path); bytes += size;
@@ -975,7 +1000,12 @@ function materializeCandidateView(request: CreateCandidateViewRequest, executor:
 			git(root, ["read-tree", candidateTree], process.env, executor);
 			const tree = parseTree(root, candidateTree, executor);
 			checkoutMaterializedEntries(root, tree.entries, executor);
-			const entries = tree.entries.map((entry) => ({ ...entry, contentHash: entryContentHash(root, entry) }));
+			const symlinkHashes = materializeSymlinkEntries(root, tree.entries, executor);
+			const entries = tree.entries.map((entry) => {
+				const contentHash = entryContentHash(root, entry);
+				if (entry.mode === "120000" && contentHash !== symlinkHashes.get(entry.path)) throw new CandidateViewError("candidate view symlink does not match its frozen blob");
+				return { ...entry, contentHash };
+			});
 			const scope = deriveChangedScope(contributorRoot, base.tree, candidateTree, [...tree.entries, ...tree.gitlinks], executor);
 			for (const gitlink of tree.gitlinks) if (lstatSync(join(root, gitlink.path), { throwIfNoEntry: false })) throw new CandidateViewError("candidate view materialized a metadata-only gitlink");
 			makeReadonly(root, entries);

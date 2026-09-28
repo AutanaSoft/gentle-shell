@@ -1708,6 +1708,100 @@ test("candidate view accepts internal relative symlink targets and rejects unsaf
 	}
 });
 
+test("unchanged committed symlinks materialize as links with core.symlinks disabled or enabled", (t) => {
+	const contributorRoot = repository(t);
+	mkdirSync(join(contributorRoot, "nested"));
+	mkdirSync(join(contributorRoot, "target-dir"));
+	writeFileSync(join(contributorRoot, "target-dir", "file.txt"), "frozen target\n");
+	try {
+		symlinkSync("../target-dir/file.txt", join(contributorRoot, "nested", "link"));
+		symlinkSync("../target-dir", join(contributorRoot, "nested", "directory-link"), "dir");
+		symlinkSync("../missing-file", join(contributorRoot, "nested", "dangling-link"));
+	}
+	catch { t.skip("native symlink creation unavailable"); return; }
+	git(contributorRoot, "add", "nested/link", "nested/directory-link", "nested/dangling-link", "target-dir/file.txt");
+	git(contributorRoot, "-c", "user.name=Candidate Test", "-c", "user.email=candidate@example.invalid", "commit", "-m", "link base");
+	for (const setting of ["false", "true"]) {
+		git(contributorRoot, "config", "core.symlinks", setting);
+		writeFileSync(join(contributorRoot, "tracked.txt"), `changed ${setting}\n`);
+		const view = createCandidateView({ contributorRoot });
+		try {
+			assert.deepEqual(view.paths, ["tracked.txt"]);
+			assert.equal(lstatSync(join(view.root, "nested", "link")).isSymbolicLink(), true);
+			assert.equal(readFileSync(join(view.root, "nested", "link"), "utf8"), "frozen target\n");
+			assert.equal(readFileSync(join(view.root, "nested", "directory-link", "file.txt"), "utf8"), "frozen target\n");
+			assert.equal(lstatSync(join(view.root, "nested", "dangling-link")).isSymbolicLink(), true);
+			assert.equal(readFileSync(join(view.root, "tracked.txt"), "utf8"), `changed ${setting}\n`);
+			assert.equal(git(contributorRoot, "config", "core.symlinks"), setting);
+			view.verify();
+		} finally { view.cleanup(); }
+	}
+});
+
+test("frozen symlink bytes survive disabled checkout, while replaced links and regular files fail verification", (t) => {
+	const cwd = repository(t);
+	try { symlinkSync("tracked.txt", join(cwd, "alias")); }
+	catch { t.skip("native symlink creation unavailable"); return; }
+	git(cwd, "add", "alias");
+	git(cwd, "-c", "user.name=Candidate Test", "-c", "user.email=candidate@example.invalid", "commit", "-m", "link base");
+	git(cwd, "config", "core.symlinks", "false");
+	writeFileSync(join(cwd, "tracked.txt"), "changed\n");
+	const view = createCandidateView({ contributorRoot: cwd });
+	try {
+		assert.deepEqual(readFileSync(join(view.root, "alias"), "utf8"), "changed\n");
+		assert.equal(git(cwd, "cat-file", "blob", git(cwd, "rev-parse", "HEAD:alias")), "tracked.txt");
+		for (const replacement of ["other.txt", "../escape", null]) {
+			chmodSync(view.root, 0o755);
+			rmSync(join(view.root, "alias"));
+			if (replacement === null) writeFileSync(join(view.root, "alias"), "tracked.txt");
+			else symlinkSync(replacement, join(view.root, "alias"));
+			assert.throws(() => view.verify(), CandidateViewError);
+		}
+	} finally { view.cleanup(); }
+});
+
+test("unsafe frozen symlink blobs are rejected before any link is created with core.symlinks disabled", (t) => {
+	for (const target of ["/absolute", "../escape", ".git/config", "bad\\\\target", "bad//target"]) {
+		const cwd = repository(t);
+		git(cwd, "config", "core.symlinks", "false");
+		const safe = execFileSync("git", ["hash-object", "-w", "--stdin"], { cwd, input: "tracked.txt", encoding: "utf8" }).trim();
+		const unsafe = execFileSync("git", ["hash-object", "-w", "--stdin"], { cwd, input: target, encoding: "utf8" }).trim();
+		git(cwd, "update-index", "--add", "--cacheinfo", `120000,${safe},a-safe-link`);
+		git(cwd, "update-index", "--add", "--cacheinfo", `120000,${unsafe},z-unsafe-link`);
+		const base = git(cwd, "rev-parse", "HEAD");
+		git(cwd, "-c", "user.name=Candidate Test", "-c", "user.email=candidate@example.invalid", "commit", "-m", "unsafe frozen link");
+		let creations = 0;
+		const original = fs.symlinkSync;
+		t.mock.method(fs, "symlinkSync", (...args: Parameters<typeof fs.symlinkSync>) => { creations++; return original(...args); });
+		syncBuiltinESMExports();
+		try { assert.throws(() => createCandidateView({ contributorRoot: cwd, baseRef: base, committedOnly: true }), CandidateViewError, target); }
+		finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+		assert.equal(creations, 0, target);
+		assert.equal(git(cwd, "config", "core.symlinks"), "false");
+	}
+});
+
+test("unavailable native symlink capability fails with bounded reason and cleans owned view", (t) => {
+	const cwd = repository(t);
+	try { symlinkSync("tracked.txt", join(cwd, "alias")); }
+	catch { t.skip("native symlink creation unavailable for fixture"); return; }
+	git(cwd, "add", "alias");
+	git(cwd, "-c", "user.name=Candidate Test", "-c", "user.email=candidate@example.invalid", "commit", "-m", "link base");
+	git(cwd, "config", "core.symlinks", "false");
+	writeFileSync(join(cwd, "tracked.txt"), "changed\n");
+	const original = fs.symlinkSync;
+	t.mock.method(fs, "symlinkSync", (...args: Parameters<typeof fs.symlinkSync>) => {
+		if (String(args[1]).includes("candidate-views")) throw Object.assign(new Error("private path and user"), { code: "EPERM" });
+		return original(...args);
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	assert.throws(() => createCandidateView({ contributorRoot: cwd }), (error: unknown) => error instanceof CandidateViewError && error.reason === "symlink-materialization-failed" && !error.message.includes("private path and user"));
+	const parent = join(cwd, ".git", "gentle-ai", "candidate-views");
+	assert.deepEqual(readdirSync(parent), []);
+	assert.equal(git(cwd, "worktree", "list", "--porcelain").includes("candidate-views"), false);
+});
+
 test("candidate view detects symlink target-byte tampering after materialization", (t) => {
 	const contributorRoot = repository(t);
 	const link = join(contributorRoot, "candidate-link");
