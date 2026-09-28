@@ -9,13 +9,14 @@ import {
 	createWriteTool,
 	keyHint,
 } from "@earendil-works/pi-coding-agent";
-import { Text, type Component } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
 import { resolveGentleAiDevBinaryOverride, type GentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
 import { GentleAiElapsedTimingLedger } from "../lib/gentle-ai-elapsed-store.ts";
 import { quietToolsEnabled } from "../lib/quiet-tools-config.ts";
 import { getGentleAiRenderState, renderGentleAiLifecycleCall, renderGentleAiResult, type GentleAiRenderContext } from "../lib/gentle-ai-renderer.ts";
+import { CARD_GLYPH, CARD_TONE } from "../lib/shell-card.ts";
 import { sanitizeTerminalText } from "../lib/terminal-theme.ts";
 
 type QuietToolName = "read" | "bash" | "grep" | "find" | "ls" | "edit" | "write";
@@ -540,6 +541,46 @@ class BoundedRows implements Component {
 	invalidate(): void {}
 }
 
+// Petal rail: every quiet tool row starts with a lifecycle-toned rail so the
+// call and its output read as one block apart from assistant prose. pi does
+// not paint tool backgrounds for renderShell "self", so the rail carries the
+// status the painted Box would otherwise show.
+const RAIL = "▎";
+const RAIL_COLUMNS = 4;
+
+type RailTone = typeof CARD_TONE.WARNING | typeof CARD_TONE.SUCCESS | typeof CARD_TONE.ERROR;
+
+function railTone(pending: boolean, failed: boolean): RailTone {
+	if (failed) return CARD_TONE.ERROR;
+	return pending ? CARD_TONE.WARNING : CARD_TONE.SUCCESS;
+}
+
+class PetalRail implements Component {
+	private readonly inner: Component;
+	private readonly rail: string;
+	private readonly lead: string | undefined;
+
+	constructor(inner: Component, rail: string, lead?: string) {
+		this.inner = inner;
+		this.rail = rail;
+		this.lead = lead;
+	}
+
+	/** Renders the inner component beside the rail; the lead glyph marks only the first row, and rows never exceed the width. */
+	render(width: number): string[] {
+		const target = Math.max(0, Math.floor(width));
+		if (target === 0) return [];
+		return this.inner.render(Math.max(1, target - RAIL_COLUMNS)).map((line, index) => {
+			const row = `${this.rail} ${index === 0 && this.lead ? this.lead : " "} ${line}`;
+			return visibleWidth(row) > target ? truncateToWidth(row, target, "") : row;
+		});
+	}
+
+	invalidate(): void {
+		this.inner.invalidate?.();
+	}
+}
+
 function shouldRenderPreviewTail(
 	toolName: QuietToolName,
 	text: string,
@@ -630,7 +671,8 @@ function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArg
 				const detail = renderContext.expanded === true && typeof callArgs.command === "string" ? `$ ${callArgs.command}` : undefined;
 				return renderGentleAiLifecycleCall(operationPath, theme, withElapsedTiming(renderContext as GentleAiRenderContext), detail);
 			}
-			return new Text(formatToolCall(toolName, callArgs, theme), 0, 0);
+			const tone = railTone(renderContext.isPartial !== false, renderContext.isError === true);
+			return new PetalRail(new Text(formatToolCall(toolName, callArgs, theme), 0, 0), theme.fg(tone, RAIL), theme.fg("accent", CARD_GLYPH));
 		},
 		/** Builds the card component for this render pass; collapsed cards delegate to the wrapped-line cache keyed by the tool result object. */
 		renderResult(result, options, theme, context) {
@@ -648,21 +690,23 @@ function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArg
 			if (directResult) {
 				return renderGentleAiResult(safeResult, { expanded: options.expanded, isPartial: options.isPartial, isError }, theme, renderContext ? withElapsedTiming(renderContext as GentleAiRenderContext) : undefined);
 			}
+			const railed = (component: Component): Component =>
+				new PetalRail(component, theme.fg(railTone(options.isPartial === true, isError), RAIL));
 			if (options.isPartial) {
-				if (options.expanded) return new Text(`${theme.fg("warning", partialLabel(toolName, text))}\n${theme.fg("muted", text)}`, 0, 0);
+				if (options.expanded) return railed(new Text(`${theme.fg("warning", partialLabel(toolName, text))}\n${theme.fg("muted", text)}`, 0, 0));
 				const visible = lastOutputLines(text, PREVIEW_LINE_LIMIT);
-				return new BoundedRows([
+				return railed(new BoundedRows([
 					{ text: theme.fg("warning", partialLabel(toolName, text)), rows: 1 },
 					...(visible ? [{ text: theme.fg("muted", visible), rows: PREVIEW_LINE_LIMIT, tail: true }] : []),
-				], cacheKey);
+				], cacheKey));
 			}
 			if (options.expanded && toolName === "read" && hasImageContent(safeResult) && officialRenderResult) {
-				return officialRenderResult(
+				return railed(officialRenderResult(
 					safeResult,
 					options,
 					theme,
 					sanitizedRenderContext(renderContext) as any,
-				);
+				));
 			}
 			const output = formatToolResultOutput(toolName, safeResult, {
 				expanded: options.expanded,
@@ -673,15 +717,15 @@ function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArg
 				? `\n${keyHint("app.tools.expand", "to expand")}`
 				: "";
 			const color = options.expanded ? "toolOutput" : isError ? "error" : "muted";
-			if (options.expanded) return new Text(output ? theme.fg(color, output) : "", 0, 0);
+			if (options.expanded) return railed(new Text(output ? theme.fg(color, output.replace(/^\n/, "")) : "", 0, 0));
 			if (output) {
 				const tail = shouldRenderPreviewTail(toolName, text, isError, renderContext?.args);
-				return new BoundedRows([
+				return railed(new BoundedRows([
 					{ text: theme.fg(color, output.replace(/^\n/, "")), rows: PREVIEW_LINE_LIMIT, tail },
 					...(hint ? [{ text: theme.fg(color, hint.slice(1)), rows: 1 }] : []),
-				], cacheKey);
+				], cacheKey));
 			}
-			return new Text(hint ? theme.fg(color, hint.slice(1)) : "", 0, 0);
+			return railed(new Text(hint ? theme.fg(color, hint.slice(1)) : "", 0, 0));
 		},
 	});
 }
