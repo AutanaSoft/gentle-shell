@@ -16,7 +16,7 @@ import { resolveGentleAiDevBinaryOverride, type GentleAiDevBinaryOverride } from
 import { GentleAiElapsedTimingLedger } from "../lib/gentle-ai-elapsed-store.ts";
 import { quietToolsEnabled } from "../lib/quiet-tools-config.ts";
 import { getGentleAiRenderState, renderGentleAiLifecycleCall, renderGentleAiResult, type GentleAiRenderContext } from "../lib/gentle-ai-renderer.ts";
-import { CARD_GLYPH, CARD_TONE } from "../lib/shell-card.ts";
+import { CARD_GLYPH, CARD_TONE, cardBottom, cardInnerWidth, cardLine, type CardTheme } from "../lib/shell-card.ts";
 import { sanitizeTerminalText } from "../lib/terminal-theme.ts";
 
 type QuietToolName = "read" | "bash" | "grep" | "find" | "ls" | "edit" | "write";
@@ -581,6 +581,69 @@ class PetalRail implements Component {
 	}
 }
 
+// Card frame: the alternative look, a rounded petal card per tool call like
+// the Gentle AI card. The call owns the top rule; the result draws the sides
+// and always closes the frame. Selected with GENTLE_PI_TOOL_FRAME=card.
+const TOOL_FRAME = { RAIL: "rail", CARD: "card" } as const;
+
+function toolFrame(env: NodeJS.ProcessEnv = process.env): (typeof TOOL_FRAME)[keyof typeof TOOL_FRAME] {
+	return env.GENTLE_PI_TOOL_FRAME?.trim().toLowerCase() === TOOL_FRAME.CARD ? TOOL_FRAME.CARD : TOOL_FRAME.RAIL;
+}
+
+class ToolCardTop implements Component {
+	private readonly header: string;
+	private readonly tone: RailTone;
+	private readonly theme: CardTheme;
+
+	constructor(header: string, tone: RailTone, theme: CardTheme) {
+		this.header = header;
+		this.tone = tone;
+		this.theme = theme;
+	}
+
+	/** Renders `╭─ ✿ <call> ──╮` on one row; the call is clipped, never wrapped, so the rule stays a single line. */
+	render(width: number): string[] {
+		const target = Math.max(0, Math.floor(width));
+		if (target === 0) return [];
+		const frame = (text: string) => this.theme.fg(this.tone, text);
+		if (target < 8) return [frame(`╭${"─".repeat(Math.max(0, target - 2))}${target > 1 ? "╮" : ""}`)];
+		// Frame columns: "╭─ " (3), glyph and space (2), a space before the fill, and at least "─╮" (2).
+		const room = target - 8;
+		// A multi-line call (a heredoc command) shows its first line only.
+		const [first = "", ...rest] = this.header.split("\n");
+		const header = rest.length > 0 ? `${first} …` : first;
+		const call = visibleWidth(header) > room ? truncateToWidth(header, room, "…") : header;
+		const fill = "─".repeat(Math.max(1, target - 7 - visibleWidth(call)));
+		return [`${frame("╭─ ")}${this.theme.fg("accent", CARD_GLYPH)} ${call} ${frame(`${fill}╮`)}`];
+	}
+
+	invalidate(): void {}
+}
+
+class ToolCardBody implements Component {
+	private readonly inner: Component;
+	private readonly tone: RailTone;
+	private readonly theme: CardTheme;
+
+	constructor(inner: Component, tone: RailTone, theme: CardTheme) {
+		this.inner = inner;
+		this.tone = tone;
+		this.theme = theme;
+	}
+
+	/** Renders the inner component between the card sides and closes the frame, even when the result has no rows. */
+	render(width: number): string[] {
+		const target = Math.max(0, Math.floor(width));
+		if (target === 0) return [];
+		const body = this.inner.render(cardInnerWidth(target)).map((line) => cardLine(line.trimEnd(), this.tone, this.theme, target));
+		return [...body, cardBottom(this.tone, this.theme, target)];
+	}
+
+	invalidate(): void {
+		this.inner.invalidate?.();
+	}
+}
+
 function shouldRenderPreviewTail(
 	toolName: QuietToolName,
 	text: string,
@@ -672,6 +735,7 @@ function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArg
 				return renderGentleAiLifecycleCall(operationPath, theme, withElapsedTiming(renderContext as GentleAiRenderContext), detail);
 			}
 			const tone = railTone(renderContext.isPartial !== false, renderContext.isError === true);
+			if (toolFrame() === TOOL_FRAME.CARD) return new ToolCardTop(formatToolCall(toolName, callArgs, theme), tone, theme);
 			return new PetalRail(new Text(formatToolCall(toolName, callArgs, theme), 0, 0), theme.fg(tone, RAIL), theme.fg("accent", CARD_GLYPH));
 		},
 		/** Builds the card component for this render pass; collapsed cards delegate to the wrapped-line cache keyed by the tool result object. */
@@ -690,8 +754,10 @@ function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArg
 			if (directResult) {
 				return renderGentleAiResult(safeResult, { expanded: options.expanded, isPartial: options.isPartial, isError }, theme, renderContext ? withElapsedTiming(renderContext as GentleAiRenderContext) : undefined);
 			}
-			const railed = (component: Component): Component =>
-				new PetalRail(component, theme.fg(railTone(options.isPartial === true, isError), RAIL));
+			const resultTone = railTone(options.isPartial === true, isError);
+			const railed = (component: Component): Component => toolFrame() === TOOL_FRAME.CARD
+				? new ToolCardBody(component, resultTone, theme)
+				: new PetalRail(component, theme.fg(resultTone, RAIL));
 			if (options.isPartial) {
 				if (options.expanded) return railed(new Text(`${theme.fg("warning", partialLabel(toolName, text))}\n${theme.fg("muted", text)}`, 0, 0));
 				const visible = lastOutputLines(text, PREVIEW_LINE_LIMIT);

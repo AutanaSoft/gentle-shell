@@ -1370,6 +1370,51 @@ test("quiet tool petal rail indents every body row under the header title", () =
 	assert.deepEqual(empty, [], "an empty result must not leave a stray rail row");
 });
 
+function withToolFrame<T>(frame: string, run: () => T): T {
+	const previous = process.env.GENTLE_PI_TOOL_FRAME;
+	process.env.GENTLE_PI_TOOL_FRAME = frame;
+	try {
+		return run();
+	} finally {
+		if (previous === undefined) delete process.env.GENTLE_PI_TOOL_FRAME;
+		else process.env.GENTLE_PI_TOOL_FRAME = previous;
+	}
+}
+
+test("quiet tool card frame draws a rounded petal card in the lifecycle tone", () => withToolFrame("card", () => {
+	const tools = registeredQuietTools();
+	const bash = tools.get("bash");
+	const args = { command: "printf output" };
+	const width = 30;
+
+	const header = bash.renderCall(args, passthroughTheme, routineRenderContext({ args, isPartial: false })).render(width);
+	assert.deepEqual(header, [`╭─ ✿ $ printf output ${"─".repeat(8)}╮`]);
+	const running = bash.renderCall(args, statusTheme, routineRenderContext({ args, executionStarted: true, isPartial: true })).render(width);
+	assert.match(running[0] ?? "", /^<warning>╭─ <\/warning><accent>✿<\/accent> /);
+	assert.match(bash.renderCall(args, statusTheme, routineRenderContext({ args, isPartial: false, isError: true })).render(width)[0] ?? "", /^<error>╭─ <\/error>/);
+
+	const expanded = bash.renderResult(textResult("alpha\nbeta"), { expanded: true, isPartial: false }, passthroughTheme, { args }).render(width);
+	assert.deepEqual(expanded, [
+		`│ alpha${" ".repeat(21)} │`,
+		`│ beta${" ".repeat(22)} │`,
+		`╰${"─".repeat(28)}╯`,
+	]);
+	const failed = bash.renderResult(textResult("boom"), { expanded: true, isPartial: false, isError: true }, statusTheme, { args, isError: true }).render(width);
+	assert.match(failed.at(-1) ?? "", /^<error>╰<\/error><error>─+╯<\/error>$/);
+	assert.ok(failed.slice(0, -1).every((line) => line.startsWith("<error>│</error> ")), failed.join("\n"));
+
+	const empty = tools.get("grep").renderResult(textResult("No matches found"), { expanded: false, isPartial: false }, passthroughTheme, {}).render(width);
+	assert.deepEqual(empty, [`╰${"─".repeat(28)}╯`], "an empty result still closes the card");
+
+	for (const narrow of [1, 2, 3, 4, 5, 8]) {
+		const lines = [
+			...bash.renderCall({ command: "printf " + "x".repeat(80) }, passthroughTheme, routineRenderContext({ args, isPartial: false })).render(narrow),
+			...bash.renderResult(textResult("😀".repeat(40)), { expanded: true, isPartial: false }, passthroughTheme, { args }).render(narrow),
+		];
+		for (const line of lines) assert.ok(visibleWidth(line) <= narrow, `width ${narrow}: ${JSON.stringify(line)}`);
+	}
+}));
+
 test("quiet tool petal rail keeps every row within the render width", () => {
 	const tools = registeredQuietTools();
 	const bash = tools.get("bash");
