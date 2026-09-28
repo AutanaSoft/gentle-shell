@@ -5,7 +5,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
-import { assertCandidateOwnerParent, createCandidateOwner, prepareCandidateOwnerParent, removeCandidateOwner, samePath, sweepCandidateOwners, type CandidateViewOwner } from "./review-candidate-view-owner.ts";
+import { assertCandidateOwnerParent, createCandidateOwner, PosixCandidateOwnerParentPrivacyError, prepareCandidateOwnerParent, removeCandidateOwner, samePath, sweepCandidateOwners, type CandidateViewOwner } from "./review-candidate-view-owner.ts";
 
 const REVIEW_LENS = ["review-risk", "review-resilience", "review-readability", "review-reliability"] as const;
 export type ReviewLens = (typeof REVIEW_LENS)[number];
@@ -226,6 +226,13 @@ export interface NativeCandidateProjectionDescriptor {
 	providerManifestHashVerified?: true;
 }
 
+export interface CandidateOwnerPrivacyDiagnostic {
+	code: "candidate-owner-parent-privacy";
+	message: typeof CANDIDATE_OWNER_PARENT_PRIVACY_MESSAGE;
+}
+
+const CANDIDATE_OWNER_PARENT_PRIVACY_MESSAGE = "candidate-views parent must be owned by the current user and inaccessible to group and others; inspect its ownership and permissions, then correct them out of band before retrying START" as const;
+
 export interface CandidateViewDiagnostic {
 	phase: typeof CANDIDATE_VIEW_DIAGNOSTIC_PHASE;
 	category: CandidateViewGitFailureCategory;
@@ -237,8 +244,8 @@ export interface CandidateViewDiagnostic {
 
 export class CandidateViewError extends Error {
 	readonly reason: string;
-	readonly diagnostics?: CandidateViewDiagnostic;
-	constructor(message: string, reason = "candidate-view-invalid", diagnostics?: CandidateViewDiagnostic, options?: ErrorOptions) {
+	readonly diagnostics?: CandidateViewDiagnostic | CandidateOwnerPrivacyDiagnostic;
+	constructor(message: string, reason = "candidate-view-invalid", diagnostics?: CandidateViewDiagnostic | CandidateOwnerPrivacyDiagnostic, options?: ErrorOptions) {
 		super(message, options);
 		this.name = "CandidateViewError";
 		this.reason = reason;
@@ -281,7 +288,9 @@ function candidateGitDiagnostic(category: CandidateViewGitFailureCategory, argum
 	});
 }
 
-function sanitizeCandidateViewDiagnostic(diagnostics: CandidateViewDiagnostic): CandidateViewDiagnostic | undefined {
+function sanitizeCandidateViewDiagnostic(diagnostics: CandidateViewDiagnostic | CandidateOwnerPrivacyDiagnostic): CandidateViewDiagnostic | CandidateOwnerPrivacyDiagnostic | undefined {
+	if ("code" in diagnostics) return diagnostics.code === "candidate-owner-parent-privacy" && diagnostics.message === CANDIDATE_OWNER_PARENT_PRIVACY_MESSAGE
+		? Object.freeze({ code: diagnostics.code, message: CANDIDATE_OWNER_PARENT_PRIVACY_MESSAGE }) : undefined;
 	const { phase, category, git_subcommand, timeout_ms, max_buffer_bytes, message } = diagnostics;
 	if (
 		phase !== CANDIDATE_VIEW_DIAGNOSTIC_PHASE ||
@@ -638,7 +647,11 @@ function candidateOwnerPreparationError(error: unknown): CandidateViewError {
 	// Surface the bounded errno of the underlying failure directly in the
 	// message so CI logs are self-diagnosing without TAP printing the cause.
 	const code = (error as NodeJS.ErrnoException | undefined)?.code;
-	return new CandidateViewError(`candidate view owner preparation failed${typeof code === "string" && code ? ` (${code})` : ""}`, "candidate-owner-preparation-failed", undefined, { cause: error });
+	const safeCode = typeof code === "string" && /^(?:EACCES|EPERM|ENOENT|EIO|ETIMEDOUT)$/.test(code) ? code : undefined;
+	const diagnostics = error instanceof PosixCandidateOwnerParentPrivacyError
+		? { code: "candidate-owner-parent-privacy" as const, message: CANDIDATE_OWNER_PARENT_PRIVACY_MESSAGE }
+		: undefined;
+	return new CandidateViewError(`candidate view owner preparation failed${safeCode ? ` (${safeCode})` : ""}`, "candidate-owner-preparation-failed", diagnostics, { cause: error });
 }
 
 function candidateViewParent(commonDir: string, platform: NodeJS.Platform): string {

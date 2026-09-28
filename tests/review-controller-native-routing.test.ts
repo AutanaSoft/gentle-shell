@@ -936,6 +936,34 @@ function startStatus(cwd: string, baseRef?: string, intendedUntracked: readonly 
 	}
 }
 
+test("START reports POSIX candidate parent privacy refusal without native START or permission repair", { skip: process.platform === "win32" }, async (t) => {
+	const cwd = repository(t);
+	const target = startStatus(cwd);
+	const parent = join(cwd, ".git", "gentle-ai", "candidate-views");
+	chmodSync(parent, 0o777);
+	let starts = 0;
+	const native = {
+		targetStatus: async () => target,
+		start: async () => { starts++; throw new Error("native START must not run"); },
+	} as unknown as NativeReviewCli;
+	let result: Record<string, unknown>;
+	try {
+		result = await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify({ mode: "ordinary" }) }, cwd, native);
+	} finally {
+		assert.equal(fs.lstatSync(parent).mode & 0o777, 0o777);
+		chmodSync(parent, 0o700);
+	}
+	assert.equal(result.status, "blocked");
+	assert.equal(result.outcome, "native-operation-failed");
+	assert.equal(result.lineage_created, false);
+	assert.equal(result.mutation_outcome, "none");
+	assert.deepEqual(result.diagnostics, {
+		code: "candidate-owner-parent-privacy",
+		message: "candidate-views parent must be owned by the current user and inaccessible to group and others; inspect its ownership and permissions, then correct them out of band before retrying START",
+	});
+	assert.equal(starts, 0);
+});
+
 test("ordinary START binds the native workspace candidate and returns the native result", async (t) => {
 	const cwd = repository(t);
 	const target = startStatus(cwd);

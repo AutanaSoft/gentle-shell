@@ -364,6 +364,95 @@ test("candidate owner publication never removes a replaced marker", (t) => {
 	assert.equal(readdirSync(parent).some((name) => name.endsWith(".reaper-lock")), false);
 });
 
+test("public POSIX candidate-views parent reports bounded privacy guidance without changing permissions or adding a worktree", { skip: process.platform === "win32" }, (t) => {
+	const cwd = repository(t);
+	const parent = join(cwd, ".git", "gentle-ai", "candidate-views");
+	mkdirSync(parent, { recursive: true, mode: 0o700 });
+	chmodSync(parent, 0o777);
+	let adds = 0;
+	const registry = new CandidateViewRegistry((file, args, options) => {
+		if (args[0] === "worktree" && args[1] === "add") adds++;
+		return execFileSync(file, args, options);
+	});
+	assert.throws(() => registry.create({ contributorRoot: cwd }), (error: unknown) => {
+		assert.ok(error instanceof CandidateViewError);
+		assert.equal(error.reason, "candidate-owner-preparation-failed");
+		assert.deepEqual(error.diagnostics, {
+			code: "candidate-owner-parent-privacy",
+			message: "candidate-views parent must be owned by the current user and inaccessible to group and others; inspect its ownership and permissions, then correct them out of band before retrying START",
+		});
+		assert.doesNotMatch(JSON.stringify(error.diagnostics), new RegExp(cwd));
+		return true;
+	});
+	assert.equal(lstatSync(parent).mode & 0o777, 0o777);
+	assert.equal(adds, 0);
+	chmodSync(parent, 0o700);
+	const view = registry.create({ contributorRoot: cwd });
+	view.cleanup();
+});
+
+test("POSIX parent privacy classification does not probe a replaced path after validating it", { skip: process.platform === "win32" }, (t) => {
+	const cwd = repository(t);
+	const commonDir = realpathSync(join(cwd, ".git"));
+	const parent = join(commonDir, "gentle-ai", "candidate-views");
+	mkdirSync(parent, { recursive: true, mode: 0o700 });
+	const originalLstat = fs.lstatSync;
+	let parentProbes = 0;
+	t.mock.method(fs, "lstatSync", (path: Parameters<typeof fs.lstatSync>[0], ...args: unknown[]) => {
+		if (path === parent && ++parentProbes === 2) {
+			const moved = `${parent}-moved`;
+			renameSync(parent, moved);
+			symlinkSync(moved, parent, "dir");
+		}
+		return (originalLstat as (...args: unknown[]) => ReturnType<typeof fs.lstatSync>)(path, ...args);
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	let failure: unknown;
+	try { assertCandidateOwnerParent(commonDir); } catch (error) { failure = error; }
+	assert.equal(parentProbes, 1, "the privacy decision must share the checked directory probe");
+	assert.equal(failure, undefined);
+});
+
+test("POSIX non-directory and symlink parents never receive privacy guidance", { skip: process.platform === "win32" }, (t) => {
+	const cwd = repository(t);
+	const commonDir = realpathSync(join(cwd, ".git"));
+	const control = join(commonDir, "gentle-ai");
+	const parent = join(control, "candidate-views");
+	mkdirSync(control, { recursive: true, mode: 0o700 });
+	for (const kind of ["file", "symlink"] as const) {
+		if (kind === "file") writeFileSync(parent, "not a directory");
+		else symlinkSync(control, parent, "dir");
+		assert.throws(() => assertCandidateOwnerParent(commonDir), (error: unknown) => {
+			assert.notEqual((error as Error).name, "PosixCandidateOwnerParentPrivacyError");
+			return true;
+		});
+		rmSync(parent);
+	}
+});
+
+test("owner privacy diagnostic sanitizer rejects injected text", () => {
+	const forged = new CandidateViewError("rejected", "candidate-owner-preparation-failed", {
+		code: "candidate-owner-parent-privacy",
+		message: "private-fixture-path-and-user",
+	} as unknown as ConstructorParameters<typeof CandidateViewError>[2]);
+	assert.equal(forged.diagnostics, undefined);
+});
+
+test("unknown owner failures never expose arbitrary messages in diagnostics", (t) => {
+	const cwd = repository(t);
+	const secret = "private-fixture-path-and-user";
+	t.mock.method(fs, "fsyncSync", () => { throw new Error(secret); });
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	assert.throws(() => new CandidateViewRegistry().create({ contributorRoot: cwd }), (error: unknown) => {
+		assert.ok(error instanceof CandidateViewError);
+		assert.equal(error.diagnostics, undefined);
+		assert.doesNotMatch(error.message, /private-fixture-path-and-user/);
+		return true;
+	});
+});
+
 test("candidate owner rejects an absent POSIX getuid before worktree creation", { skip: process.platform === "win32" }, (t) => {
 	const originalGetuid = process.getuid;
 	Object.defineProperty(process, "getuid", { configurable: true, value: undefined });
