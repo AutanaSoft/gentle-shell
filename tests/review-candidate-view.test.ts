@@ -1932,6 +1932,52 @@ test("native projections recover a committed range base from its frozen tree", (
 	assert.equal(projection.committedOnly, true);
 });
 
+test("provider-owned tree remains the exact base across reuse, correction and native dispatch restoration", (t) => {
+	const contributorRoot = repository(t);
+	const baseTree = git(contributorRoot, "rev-parse", "HEAD^{tree}");
+	writeFileSync(join(contributorRoot, "tracked.txt"), "tree-backed candidate\n");
+	git(contributorRoot, "add", "tracked.txt");
+	git(contributorRoot, "-c", "user.name=Candidate Test", "-c", "user.email=candidate@example.invalid", "commit", "-m", "candidate");
+	const head = git(contributorRoot, "rev-parse", "HEAD");
+	const candidateTree = git(contributorRoot, "rev-parse", "HEAD^{tree}");
+	const registry = new CandidateViewRegistry();
+	const first = registry.createOrReuse({ contributorRoot, providerBaseTree: baseTree, committedOnly: true, replayKey: "provider-tree" });
+	try {
+		const reused = registry.createOrReuse({ contributorRoot, providerBaseTree: baseTree, committedOnly: true, replayKey: "provider-tree" });
+		assert.equal(reused.token, first.token);
+		assert.equal(first.baseTree, baseTree);
+		assert.equal(first.baseCommit, head, "HEAD anchors the worktree, not the diff base");
+		registry.retain(first.token, "tree-lineage");
+		const corrected = registry.createCorrected("tree-lineage", contributorRoot, "tree-correction");
+		assert.equal(corrected.baseTree, baseTree);
+		registry.promoteCorrected("tree-lineage", corrected.token, contributorRoot);
+		assert.equal(registry.resolveProjection("tree-lineage", contributorRoot).providerBaseTree, baseTree);
+		const restored = new CandidateViewRegistry();
+		try {
+			restored.restoreCurrentForDispatchFromNative("restored-tree", contributorRoot, { baseTree, currentCandidateTree: candidateTree, paths: ["tracked.txt"], intendedUntracked: [], projection: "staged" }, ["review-reliability"], baseTree);
+			const view = restored.resolveCurrentForLens("review-reliability", contributorRoot);
+			assert.equal(view.baseTree, baseTree);
+			assert.equal(restored.resolveProjection("restored-tree", contributorRoot).providerBaseTree, baseTree);
+		} finally { restored.cleanupAll(); }
+		const finalized = new CandidateViewRegistry();
+		try {
+			const view = finalized.restoreForFinalizeFromNative("finalized-tree", contributorRoot, { baseTree, currentCandidateTree: candidateTree, paths: ["tracked.txt"], intendedUntracked: [], projection: "staged" }, baseTree);
+			assert.equal(view.baseTree, baseTree);
+			assert.equal(finalized.resolveProjection("finalized-tree", contributorRoot).providerBaseTree, baseTree);
+		} finally { finalized.cleanupAll(); }
+	} finally { registry.cleanupAll(); }
+});
+
+test("provider tree materialization and restoration reject wrong objects and mismatched frozen bases", (t) => {
+	const contributorRoot = repository(t);
+	const head = git(contributorRoot, "rev-parse", "HEAD");
+	const baseTree = git(contributorRoot, "rev-parse", "HEAD^{tree}");
+	assert.throws(() => new CandidateViewRegistry().create({ contributorRoot, providerBaseTree: head, committedOnly: true }), (error: unknown) => error instanceof CandidateViewError && error.reason === "provider-base-tree-invalid");
+	assert.throws(() => new CandidateViewRegistry().create({ contributorRoot, baseRef: head, providerBaseTree: baseTree, committedOnly: true }), (error: unknown) => error instanceof CandidateViewError && error.reason === "provider-base-tree-invalid");
+	const registry = new CandidateViewRegistry();
+	assert.throws(() => registry.restoreProjectionFromNative("wrong-tree", contributorRoot, { baseTree, currentCandidateTree: baseTree, paths: [], intendedUntracked: [], projection: "workspace" }, head), (error: unknown) => error instanceof CandidateViewError && error.reason === "provider-base-tree-invalid");
+});
+
 test("fresh registries restore only one exact authoritative reviewing candidate and reject zero or multiple matches", (t) => {
 	const contributorRoot = repository(t);
 	writeFileSync(join(contributorRoot, "tracked.txt"), "reviewing\n");
