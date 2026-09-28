@@ -43,6 +43,8 @@ Lightweight petal rail for ordinary tools, not the full rounded card:
 
 - [x] T3 — Card frame alternative behind `GENTLE_PI_TOOL_FRAME=card` (rounded `╭─ ✿ call ─╮` top from the call, sided body + closing rule from the result, tone per lifecycle). Route: inline (user asked for no subagents after reviewing the rail live).
 
+- [x] T4 — Card frame becomes the only look (user choice after live review): rail variant, `GENTLE_PI_TOOL_FRAME` toggle, and the result-body expand hint removed; long or multi-line calls continue on card rows so every command line stays visible (a first-line-only header hid `rm -rf target` in the composed-command test). Route: inline (user asked for no subagents).
+
 ## Acceptance criteria
 
 - Every quiet tool row starts with a tone-colored rail; header shows glyph, title, args.
@@ -101,3 +103,4 @@ Risk tier: medium (ordinary rendering change with focused tests). Writer self-ve
 - live try: `node ../gentle-pi-tool-rail/bin/gentle-shell.mjs` (launcher injects the worktree package root).
 - T3: RED observed (card test got the rail row), GREEN: quiet-tool-rendering 52/52, check-types no regressions, gentle-shell.test 223/223. Risk tier: medium (inline, rendering only, opt-in env).
 - T3b: card frame moves the expand key to the top rule (dim, right-aligned, 'to collapse' when expanded, only once finished), matching the Gentle AI card; body drops the hint row. RED observed, GREEN: quiet-tool-rendering 52/52, types no regressions, gentle-shell 223/223. Review skipped at user request.
+- T4: quiet-tool-rendering 49/49 (rail tests removed, hint assertions inverted to 'not in the body'), types no regressions, gentle-shell 223/223, package-manifest 55/55. Review skipped at user request.

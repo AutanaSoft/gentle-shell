@@ -50,16 +50,30 @@ function routineRenderContext(overrides: Record<string, unknown> = {}) {
 	};
 }
 
-// Content assertions read rows without the petal rail prefix (rail, space,
-// lead glyph or space, space); the rail tests assert it on raw rows instead.
-const RAIL_PREFIX = /^(?:<[a-zA-Z]+>)?▎(?:<\/[a-zA-Z]+>)? (?:(?:<accent>)?✿(?:<\/accent>)?| ) /;
+// Content assertions read the quiet tool card content: the top rule becomes its
+// call text (glyph, fill, and hint dropped), sides are stripped, and the closing
+// rule is dropped. Gentle AI cards keep their raw frame for the card-text
+// helpers, and the quiet card tests assert the raw frame via frameLines.
+const TAG = "(?:</?[a-zA-Z]+>)*";
+const CARD_TOP = new RegExp(`^${TAG}╭─ ${TAG}✿${TAG} (.*?) ${TAG}─+${TAG}(?: .*? )?${TAG}╮${TAG}$`);
+const CARD_SIDE = new RegExp(`^${TAG}│${TAG} (.*) ${TAG}│${TAG}$`);
+const CARD_BOTTOM = new RegExp(`^${TAG}╰${TAG}─*${TAG}╯${TAG}$`);
 
-function railedLines(component: { render(width: number): string[] }, width = 120): string[] {
+function frameLines(component: { render(width: number): string[] }, width = 120): string[] {
 	return component.render(width).map((line) => line.trimEnd());
 }
 
+const QUIET_CARD_COMPONENTS = new Set(["ToolCardTop", "ToolCardBody"]);
+
 function renderLines(component: { render(width: number): string[] }, width = 120): string[] {
-	return component.render(width).map((line) => line.replace(RAIL_PREFIX, "").trimEnd());
+	if (!QUIET_CARD_COMPONENTS.has(component.constructor.name)) return component.render(width).map((line) => line.trimEnd());
+	return component.render(width).flatMap((line) => {
+		if (CARD_BOTTOM.test(line)) return [];
+		const top = CARD_TOP.exec(line);
+		if (top) return [top[1]!.trimEnd()];
+		const side = CARD_SIDE.exec(line);
+		return [(side ? side[1]! : line).trimEnd()];
+	});
 }
 
 function renderToString(component: { render(width: number): string[] }, width = 120): string {
@@ -296,9 +310,10 @@ test("quiet tool rendering uses bounded previews while preserving search summari
 	);
 	assert.match(read, /first line\nsecond line/);
 	assert.match(bash, /stdout line\nstderr line/);
+	// The expand key rides the call card's top rule, never the result body.
 	const configuredHint = keyHint("app.tools.expand", "to expand");
-	assert.ok(read.includes(configuredHint));
-	assert.ok(bash.includes(configuredHint));
+	assert.ok(!read.includes(configuredHint));
+	assert.ok(!bash.includes(configuredHint));
 
 	for (const [tool, text, label] of [
 		["grep", "src/a.ts:1:match\nsrc/b.ts:2:match", "2 matches"],
@@ -362,7 +377,7 @@ test("quiet search and placeholder summaries preserve exact-result behavior", as
 	assert.equal(cases.length, 7);
 
 	const assertSummaryCase = (current: (typeof cases)[number]) => {
-		const [, name, toolName, text, args, collapsed, expanded, rendered, forbidden, hintCount] = current;
+		const [, name, toolName, text, args, collapsed, expanded, rendered, forbidden] = current;
 		const result = textResult(text) as any;
 		const tool = tools.get(toolName);
 		assert.ok(tool, `${name}: missing ${toolName} renderer`);
@@ -371,7 +386,7 @@ test("quiet search and placeholder summaries preserve exact-result behavior", as
 		const output = renderToolResult(tool, result, { expanded: false, isPartial: false }, { args });
 		assert.match(output, rendered, name);
 		if (forbidden) assert.doesNotMatch(output, forbidden, name);
-		assert.equal(output.split(hint).length - 1, hintCount, `${name}: hint count`);
+		assert.equal(output.split(hint).length - 1, 0, `${name}: the expand key rides the call card, not the result`);
 	};
 
 	for (const [section, count] of [["grep", 2], ["exact", 3], ["collision", 2]] as const) await t.test(section, () => {
@@ -416,7 +431,7 @@ test("quiet Bash errors preserve meaningful rows for both public output ordering
 		assert.ok(collapsedLines.length <= 4, `${name}: expected at most 4 visual rows, got ${collapsedLines.length}`);
 		assert.deepEqual(collapsedLines.slice(0, 3), previewRows, `${name}: preview rows`);
 		assert.equal(collapsedLines.filter((line) => line.trim().length === 0).length, 0, `${name}: no blank preview rows`);
-		assert.equal(collapsedLines.filter((line) => line.includes(hint)).length, 1, `${name}: one expansion hint`);
+		assert.equal(collapsedLines.filter((line) => line.includes(hint)).length, 0, `${name}: the expand key rides the call card`);
 		const expanded = renderToString(renderResult(result, true), 1000);
 		assert.equal(expanded, renderedExpandedText, `${name}: complete expanded sanitized text`);
 		assert.doesNotMatch(expanded, /\x1b\[/, `${name}: expanded output is ANSI-free`);
@@ -447,7 +462,7 @@ test("quiet Bash normalizes compact JSON for bounded previews while keeping expa
 	assert.equal(previewRows.length, 3);
 	assert.ok(collapsedLines.length <= 4, `expected at most 4 visual rows, got ${collapsedLines.length}`);
 	assert.deepEqual(collapsedLines.slice(0, 3), previewRows);
-	assert.equal(collapsedLines.filter((line) => line.includes(keyHint("app.tools.expand", "to expand"))).length, 1);
+	assert.equal(collapsedLines.filter((line) => line.includes(keyHint("app.tools.expand", "to expand"))).length, 0);
 	assert.doesNotMatch(collapsed, /longTail|this must stay out of the collapsed preview|deeper/);
 
 	const expanded = renderToString(tool.renderResult(result, { expanded: true, isPartial: false }, passthroughTheme, { args: commandArgs }), 1000);
@@ -945,7 +960,7 @@ test("quiet Bash previews semantic lines for generic JSON output", () => {
 	assert.doesNotMatch(call, /🌹︎ Gentle AI/);
 	assert.doesNotMatch(collapsed, /^\n\s*[}\]]/);
 	const expandHint = keyHint("app.tools.expand", "to expand");
-	assert.equal(collapsed.split(expandHint).length - 1, 1);
+	assert.equal(collapsed.split(expandHint).length - 1, 0);
 	assert.equal(expanded, object);
 	assert.doesNotMatch(expanded, /to expand/);
 });
@@ -1009,20 +1024,21 @@ test("quiet tool rendering limits collapsed visual rows at the actual width", ()
 	const tools = registeredQuietTools();
 	const bash = tools.get("bash");
 	const hint = keyHint("app.tools.expand", "to expand");
-	// Twelve content columns beside the four-column petal rail.
+	// Twelve content columns inside the four-column card sides.
 	const narrowWidth = 16;
 	const cases = [
-		[textResult("x".repeat(80)), { expanded: false, isPartial: true }, { args: { command: "printf output" } }, 4],
+		// Preview rows plus the closing rule; a partial result adds its label row.
+		[textResult("x".repeat(80)), { expanded: false, isPartial: true }, { args: { command: "printf output" } }, 5],
 		[textResult("界".repeat(40)), { expanded: false, isPartial: false }, { args: { command: "printf output" } }, 4],
 		[textResult("e\u0301".repeat(40)), { expanded: false, isPartial: false, isError: true }, { args: { command: "false" }, isError: true }, 4],
 	] as const;
 	for (const [result, options, context, maxRows] of cases) {
-		const lines = railedLines(bash.renderResult(result, options, passthroughTheme, context), narrowWidth);
+		const lines = frameLines(bash.renderResult(result, options, passthroughTheme, context), narrowWidth);
 		assert.ok(lines.length <= maxRows, `expected at most ${maxRows} rows, got ${lines.length}`);
 		assert.ok(lines.every((line) => visibleWidth(line) <= narrowWidth));
 	}
-	const completed = railedLines(bash.renderResult(textResult("😀".repeat(40)), { expanded: false, isPartial: false }, passthroughTheme, { args: { command: "printf output" } }), narrowWidth);
-	assert.equal(completed.filter((line) => line.includes(hint)).length, 1);
+	const completed = frameLines(bash.renderResult(textResult("😀".repeat(40)), { expanded: false, isPartial: false }, passthroughTheme, { args: { command: "printf output" } }), narrowWidth);
+	assert.equal(completed.filter((line) => line.includes(hint)).length, 0);
 	assert.ok(completed.every((line) => visibleWidth(line) <= narrowWidth));
 });
 
@@ -1108,14 +1124,14 @@ test("quiet tool rendering bounds completed previews, errors, and edit/write sum
 		const rendered = renderToolResult(tools.get(toolName), textResult(text), { expanded: false, isPartial: false }, context);
 		assert.doesNotMatch(rendered, new RegExp(hidden));
 		assert.match(rendered, new RegExp(visible));
-		assert.match(rendered, /to expand/);
+		assert.doesNotMatch(rendered, /to expand/);
 	}
 
 	for (const toolName of ["read", "bash", "grep", "find", "ls", "edit", "write"] as const) {
 		const rendered = renderToolResult(tools.get(toolName), textResult("error one\nerror two\nerror three\nerror four"), { expanded: false, isPartial: false, isError: true }, { args: toolName === "bash" ? { command: "false" } : {} });
 		assert.doesNotMatch(rendered, /error one/);
 		assert.match(rendered, /error two\nerror three\nerror four/);
-		assert.match(rendered, /to expand/);
+		assert.doesNotMatch(rendered, /to expand/);
 	}
 
 	const edit = renderToolResult(tools.get("edit"), textResult("Applied", { diff: "@@\n-old\n+new" }), { expanded: false, isPartial: false }, { args: { path: "file.ts", edits: [] } });
@@ -1150,7 +1166,7 @@ test("quiet tool rendering preserves directional visual preview rows at narrow w
 	const tools = registeredQuietTools();
 	const bash = tools.get("bash");
 	const readTool = tools.get("read");
-	// Twelve content columns beside the four-column petal rail.
+	// Twelve content columns inside the four-column card sides.
 	const narrowWidth = 16;
 	const renderCollapsed = (
 		text: string,
@@ -1180,7 +1196,7 @@ test("quiet tool rendering preserves directional visual preview rows at narrow w
 		assert.match(lines.join("\n"), new RegExp(marker));
 	}
 	assert.match(partial[0] ?? "", /… bash/);
-	assert.match(completedBash.join("\n"), /to expand/);
+	assert.doesNotMatch(completedBash.join("\n"), /to expand/);
 
 	const read = renderRead(`READ-FIRST\n${oldText}\nREAD-NEW`);
 	const semanticJson = renderCollapsed(
@@ -1329,59 +1345,7 @@ test("quiet tool rendering puts the expand key in the finished call card's top r
 	assert.match(collapsedResult.split("\n").pop() ?? "", /╰─+╯$/);
 });
 
-test("quiet tool rows ride a petal rail painted in the lifecycle tone", () => {
-	const tools = registeredQuietTools();
-	const read = tools.get("read");
-	const args = { path: "/repo/extensions/quiet-tools.ts", offset: 440, limit: 61 };
-	const header = (context: Record<string, unknown>) => railedLines(read.renderCall(args, statusTheme, routineRenderContext({ args, ...context })))[0] ?? "";
-
-	const running = header({ executionStarted: true, isPartial: true });
-	assert.match(running, /^<warning>▎<\/warning> <accent>✿<\/accent> <toolTitle>read<\/toolTitle> <accent>\/repo\/extensions\/quiet-tools\.ts<\/accent>/);
-	assert.match(header({ executionStarted: true, isPartial: false }), /^<success>▎<\/success> /);
-	assert.match(header({ executionStarted: true, isPartial: false, isError: true }), /^<error>▎<\/error> /);
-
-	const result = (options: Record<string, unknown>, context: Record<string, unknown> = {}) =>
-		railedLines(read.renderResult(textResult("first line\nsecond line"), { expanded: false, isPartial: false, ...options }, statusTheme, { args, ...context }));
-	const finished = result({});
-	assert.ok(finished.length > 0);
-	assert.ok(finished.every((line) => line.startsWith("<success>▎</success>   ")), finished.join("\n"));
-	assert.ok(result({ isPartial: true }).every((line) => line.startsWith("<warning>▎</warning>   ")));
-	assert.ok(result({ isError: true }, { isError: true }).every((line) => line.startsWith("<error>▎</error>   ")));
-});
-
-test("quiet tool petal rail indents every body row under the header title", () => {
-	const tools = registeredQuietTools();
-	const bash = tools.get("bash");
-	const args = { command: "printf output" };
-	const header = railedLines(bash.renderCall(args, passthroughTheme, routineRenderContext({ args, isPartial: false })));
-	assert.deepEqual(header, ["▎ ✿ $ printf output"]);
-
-	const collapsed = railedLines(bash.renderResult(textResult("alpha\nbeta"), { expanded: false, isPartial: false }, passthroughTheme, { args }));
-	assert.deepEqual(collapsed.slice(0, 2), ["▎   alpha", "▎   beta"]);
-	assert.ok(collapsed[2]?.startsWith("▎   "), "the expand hint rides the rail too");
-
-	const expanded = railedLines(bash.renderResult(textResult("alpha\nbeta"), { expanded: true, isPartial: false }, passthroughTheme, { args }));
-	assert.deepEqual(expanded, ["▎   alpha", "▎   beta"], "expanded output follows the header without a bare blank row");
-
-	const partial = railedLines(bash.renderResult(textResult("one\ntwo"), { expanded: false, isPartial: true }, passthroughTheme, { args, isPartial: true }));
-	assert.deepEqual(partial, ["▎   … bash · 2 lines", "▎   one", "▎   two"]);
-
-	const empty = railedLines(tools.get("grep").renderResult(textResult("No matches found"), { expanded: false, isPartial: false }, passthroughTheme, {}));
-	assert.deepEqual(empty, [], "an empty result must not leave a stray rail row");
-});
-
-function withToolFrame<T>(frame: string, run: () => T): T {
-	const previous = process.env.GENTLE_PI_TOOL_FRAME;
-	process.env.GENTLE_PI_TOOL_FRAME = frame;
-	try {
-		return run();
-	} finally {
-		if (previous === undefined) delete process.env.GENTLE_PI_TOOL_FRAME;
-		else process.env.GENTLE_PI_TOOL_FRAME = previous;
-	}
-}
-
-test("quiet tool card frame draws a rounded petal card in the lifecycle tone", () => withToolFrame("card", () => {
+test("quiet tool calls draw a rounded petal card in the lifecycle tone", () => {
 	const tools = registeredQuietTools();
 	const bash = tools.get("bash");
 	const args = { command: "printf output" };
@@ -1425,23 +1389,6 @@ test("quiet tool card frame draws a rounded petal card in the lifecycle tone", (
 		];
 		for (const line of lines) assert.ok(visibleWidth(line) <= narrow, `width ${narrow}: ${JSON.stringify(line)}`);
 	}
-}));
-
-test("quiet tool petal rail keeps every row within the render width", () => {
-	const tools = registeredQuietTools();
-	const bash = tools.get("bash");
-	const command = `printf ${"wide-argument ".repeat(12)}`;
-	const args = { command };
-	for (const width of [1, 2, 3, 4, 5, 8, 24, 40]) {
-		const call = bash.renderCall(args, passthroughTheme, routineRenderContext({ args, isPartial: false })).render(width);
-		const collapsed = bash.renderResult(textResult(`${"😀".repeat(40)}\n${"x".repeat(200)}`), { expanded: false, isPartial: false }, passthroughTheme, { args }).render(width);
-		const expanded = bash.renderResult(textResult("y".repeat(200)), { expanded: true, isPartial: false }, passthroughTheme, { args }).render(width);
-		for (const line of [...call, ...collapsed, ...expanded]) {
-			assert.ok(visibleWidth(line) <= width, `width ${width}: ${JSON.stringify(line)} is ${visibleWidth(line)} columns`);
-		}
-		if (width >= 8) {
-			assert.ok(call.length > 1, `width ${width}: a long command wraps`);
-			assert.ok(call.slice(1).every((line) => line.startsWith("▎   ")), `width ${width}: wrapped header rows keep the rail`);
-		}
-	}
 });
+
+
