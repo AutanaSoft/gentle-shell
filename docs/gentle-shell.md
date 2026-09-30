@@ -151,6 +151,15 @@ Gentle notices are drawn as cards: the same rounded frame as the prompt. An info
 - An active dev-binary override shows above the editor at startup, in amber, naming the binary and its digest, and leaves with the first prompt; an invalid override shows in red with the reason.
 - Subagents draw their own card; see Gentle Agents below.
 
+### Compact Code card
+
+With quiet tools enabled, `codemode` renders as one rounded **Code** card. The collapsed view shows up to eight observed child calls in their original order, including repeats, with Pi's actual `running`, `ok`, `error`, or `cancelled` status and available nonnegative duration. Additional calls are counted; errors and cancellations outside the preview remain visible in that count.
+
+- Collapsed rows do not echo JavaScript, child arguments, output, paths, or error payloads. Expand with the key shown in the top rule to inspect the actual script, all observed children, error text, and complete available text output.
+- Overall `running`/`finished`/`failed` labels follow the host render context. `finished` does not promise that every child succeeded or that effects were rolled back. No inferred children, progress percentage, or aggregate duration is added. Pi's final wall-time text remains available in expanded output.
+- Missing metadata is reported honestly. Terminal controls are stripped from displayed text; this is terminal-spoofing protection, **not secret redaction**. Expanded content can contain sensitive data.
+- Only presentation changes: upstream execution, schema, loadout, exposure and inactive-by-default behavior stay intact. `GENTLE_PI_QUIET_TOOLS=0` leaves the upstream presentation alone and does not change tool activation.
+
 ### Native interactive tools
 
 Gentle Shell ships its own interactive tools instead of depending on third-party extensions; the built-ins replace `npm:pi-subagents-j0k3r` and `npm:@juicesharp/rpiv-todo` (see Gentle Agents and Gentle Todo below for the removal steps).
@@ -163,7 +172,7 @@ Gentle Shell ships its own interactive tools instead of depending on third-party
 
 ### Gentle Agents
 
-The current package requires Pi 0.85.1 or newer (development tests pin 0.87.1). Use the latest Pi release; gentle-pi does not update your installed Pi automatically. Children, including any `GENTLE_PI_AGENTS_PI` override, must emit `agent_settled`: `agent_end` records a run's output but is not completion because retries or queued continuations may follow.
+The current package requires Pi 0.99.1 or newer and Node >=22.19.0 (development tests pin Pi 0.99.1). Use the latest Pi release; gentle-pi does not update your installed Pi automatically. Children, including any `GENTLE_PI_AGENTS_PI` override, must emit `agent_settled`: `agent_end` records a run's output but is not completion because retries or queued continuations may follow.
 
 The `subagent_*` tools and the agents card replace the third-party subagents package (remove `npm:pi-subagents-j0k3r` from your pi packages; while it is still installed the tools stay unregistered and a warning says so at startup). Agent definitions and settings are the ones you already have: markdown agents in `~/.pi/agent/agents/`, `~/.pi/agent/subagents/`, `<cwd>/.pi/agents/`, `<cwd>/.pi/subagents/` (project beats global, `subagents/` beats `agents/`), and `subagents.json` at the global and project level (`default_model`, `default_effort`, `default_mode`, `model_profiles`, `stall_timeout_ms`, `tool_stall_timeout_ms`, `max_concurrency`, `history_max_tasks`).
 
