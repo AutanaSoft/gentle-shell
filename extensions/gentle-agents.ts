@@ -18,7 +18,7 @@ import { VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
 import { resolveVisualSettings } from "../lib/visual-customization-policy.ts";
 import { createCompletionQueue } from "../lib/agents-completion-delivery.ts";
 import { createAgentMessageQueue, type PendingAgentMessage } from "../lib/agents-message-delivery.ts";
-import { AGENT_MODE, discoverAgents, loadAgentsConfig, resolveAgentProfile, withPinnedModelProfiles, type AgentDefinition, type AgentMode } from "../lib/agents-config.ts";
+import { AGENT_MODE, discoverAgents, formatModelRef, loadAgentsConfig, resolveAgentProfile, withPinnedModelProfiles, type AgentDefinition, type AgentMode } from "../lib/agents-config.ts";
 import { resolveBackgroundSubagentsPolicy } from "../lib/background-subagents-policy.ts";
 import { installBackgroundCacheWarming } from "../lib/background-cache-warming.ts";
 import { isFinished, TASK_EVENT, TASK_STATUS, TaskStore, type AskRequest, type TaskRecord } from "../lib/agents-protocol.ts";
@@ -205,6 +205,22 @@ export function createDefaultSessionTransport(platform: NodeJS.Platform = proces
 
 function text(value: string, details: Record<string, unknown> = {}, terminate = false): ToolText {
 	return { content: [{ type: "text", text: value }], details, ...(terminate ? { terminate: true } : {}) };
+}
+
+// gentle-pi#1175: the writer profile the runtime resolved for this task,
+// carried on its review-mutation receipt so ASSESS never trusts a model
+// re-declaration. `task.model` is the child's reported model once get_state
+// answers, or the launch profile's model. An inherited model is recorded as
+// the unresolved `formatModelRef(undefined)` placeholder; the parent's current
+// model is not reliable evidence (the child resolves its own default), so it is
+// omitted and ASSESS treats the writer as unknown, i.e. small.
+function runtimeWriterProfile(task: TaskRecord): { writerModelId?: string; writerEffort?: string } {
+	const modelId = typeof task.model === "string" && task.model !== formatModelRef(undefined) && task.model.trim() ? task.model : undefined;
+	const effort = typeof task.thinking === "string" && task.thinking.trim() ? task.thinking : undefined;
+	return {
+		...(modelId === undefined ? {} : { writerModelId: modelId }),
+		...(effort === undefined ? {} : { writerEffort: effort }),
+	};
 }
 
 function taskDetails(task: TaskRecord): Record<string, unknown> {
@@ -699,7 +715,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				}
 				else if (resolvedPath !== undefined) noteDrop("evidence-path-mismatch");
 			}
-			if (!foreignTask) recordReviewMutation(pi, sessions, root, { source: "subagent", taskId: task.id, toolName: tool.toolName, toolCallId: tool.toolCallId });
+			if (!foreignTask) recordReviewMutation(pi, sessions, root, { source: "subagent", taskId: task.id, toolName: tool.toolName, toolCallId: tool.toolCallId, ...runtimeWriterProfile(task) });
 		},
 		onFinish: (task, observations) => {
 			// Completion is the only forwarding opportunity. No pending event, policy

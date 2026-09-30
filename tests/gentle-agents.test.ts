@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
-import { pendingReviewMutation, REVIEW_REMINDER_RECEIPT } from "../lib/review-reminder-receipt.ts";
+import { pendingReviewMutation, pendingReviewMutationProfiles, REVIEW_REMINDER_RECEIPT } from "../lib/review-reminder-receipt.ts";
 import { SESSION_WORKTREE_ENTRY, SESSION_WORKTREE_CHANGED, resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
 import { SessionChanges, type SessionChangeEvidence } from "../lib/session-changes.ts";
@@ -1682,6 +1682,56 @@ for (const scenario of ["own", "other-root", "escaped", "sibling", "session-swit
 		assert.equal(h.entries.filter((entry) => entry.customType === REVIEW_REMINDER_RECEIPT).length, accepted ? 1 : 0);
 		assert.equal(Boolean(pendingReviewMutation(ctx.sessionManager, cwd)), scenario === "own", "another registered root never authorizes current-root STATUS");
 		if (scenario === "other-root") assert.ok(pendingReviewMutation(ctx.sessionManager, sibling));
+		await h.fire("session_shutdown", ctx);
+		await tick();
+	});
+}
+
+// gentle-pi#1175 (T2): the subagent mutation receipt carries the model and
+// effort the runtime resolved for the task, so ASSESS never re-trusts a model
+// declaration. An inherited (unresolved) model is omitted, never "default".
+for (const scenario of ["resolved", "inherited"] as const) {
+	test(`subagent mutation receipt records the runtime-resolved writer profile: ${scenario}`, async () => {
+		const h = fakePi();
+		const d = deps();
+		const { ctx } = fakeContext();
+		if (scenario === "inherited") {
+			const fixtureHome = realpathSync(mkdtempSync(join(root, "inherited-writer-")));
+			mkdirSync(join(fixtureHome, ".pi", "agent", "agents"), { recursive: true });
+			writeFileSync(join(fixtureHome, ".pi", "agent", "agents", "explore.md"), "---\ndescription: inherits the parent model\ntools: [read]\n---\nYou map things.");
+			d.deps.home = fixtureHome;
+		}
+		ctx.sessionManager.getEntries = (() => h.entries) as typeof ctx.sessionManager.getEntries;
+		ctx.sessionManager.getBranch = (() => h.entries) as typeof ctx.sessionManager.getBranch;
+		d.deps.resolveWorktree = (path, base) => containsResolvedPath(cwd, resolve(base, path)) ? { root: cwd, commonDir: "/fixture/common" } : undefined;
+		const spawn = d.deps.spawn!;
+		d.deps.spawn = (...args) => {
+			const child = spawn(...args);
+			const on = child.on.bind(child);
+			child.on = ((event: string, listener: () => void) => {
+				if (event === "spawn") queueMicrotask(listener);
+				return on(event as "spawn", listener);
+			}) as typeof child.on;
+			return child;
+		};
+		gentleAgents(h.pi, {}, d.deps);
+		await h.fire("session_start", ctx);
+		await h.tools.get("subagent_run")!.execute("mutation", { agent: "explore", task: "Write", mode: "background", workspace_root: cwd }, undefined, undefined, ctx);
+		await tick();
+		d.children[0].emit({ type: "tool_execution_start", toolCallId: "write", toolName: "write", args: { path: "file.ts" } });
+		d.children[0].emit({ type: "tool_execution_end", toolCallId: "write", isError: false, result: { content: [] } });
+		await tick();
+		const receipts = h.entries.filter((entry) => entry.customType === REVIEW_REMINDER_RECEIPT);
+		assert.equal(receipts.length, 1);
+		const data = receipts[0].data as Record<string, unknown>;
+		if (scenario === "resolved") {
+			assert.equal(data.writerModelId, "openai-codex/gpt-5.6-terra");
+			assert.equal(data.writerEffort, "low", "the profile effort override is the runtime-resolved effort");
+		} else {
+			assert.equal(Object.hasOwn(data, "writerModelId"), false, "an inherited model is unknown here and must never be recorded as \"default\"");
+			assert.equal(Object.hasOwn(data, "writerEffort"), false);
+		}
+		assert.deepEqual(pendingReviewMutationProfiles(ctx.sessionManager, cwd), [scenario === "resolved" ? { writerModelId: "openai-codex/gpt-5.6-terra", writerEffort: "low" } : {}]);
 		await h.fire("session_shutdown", ctx);
 		await tick();
 	});
