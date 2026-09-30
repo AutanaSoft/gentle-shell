@@ -210,7 +210,9 @@ interface LiveTask {
 const STDERR_TAIL_MAX = 512;
 const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
-export const MAX_INLINE_INSTRUCTIONS_CHARS = 1000;
+// UTF-8 bytes, not characters: argv size is what kills the child on macOS.
+export const MAX_INLINE_INSTRUCTIONS_BYTES = 1000;
+const MAX_TRANSPORT_PREFIX_CHARS = 64;
 const CHILD_MARKER = "GENTLE_PI_AGENTS_CHILD";
 const IPC_MARKER = "GENTLE_PI_AGENTS_OWNED_IPC";
 const PARENT_NOTIFICATION_TOOL = "subagent_parent_message";
@@ -477,9 +479,9 @@ export class AgentRunner {
 		delete env.GENTLE_PI_RESEARCH_SELECTION;
 		let instructionsTransportDir: string | undefined;
 		let instructionsTransportPath: string | undefined;
-		if (request.agent.instructions.length > MAX_INLINE_INSTRUCTIONS_CHARS) {
+		if (Buffer.byteLength(request.agent.instructions, "utf8") > MAX_INLINE_INSTRUCTIONS_BYTES) {
 			try {
-				const prefix = (request.agent.name || "instructions").replace(/[^a-zA-Z0-9._-]/g, "_");
+				const prefix = (request.agent.name || "instructions").replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, MAX_TRANSPORT_PREFIX_CHARS);
 				instructionsTransportDir = mkdtempSync(join(tmpdir(), `gentle-pi-subagent-${prefix}-`));
 				try { chmodSync(instructionsTransportDir, DIR_MODE); } catch { /* best effort */ }
 				instructionsTransportPath = join(instructionsTransportDir, "instructions.md");

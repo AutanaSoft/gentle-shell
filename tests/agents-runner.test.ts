@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname } from "node:path";
+import fs, { existsSync, readFileSync, statSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import { basename, dirname } from "node:path";
 import { PassThrough } from "node:stream";
 import { AGENT_MODE, parseAgentsConfig, resolveAgentProfile, type AgentDefinition } from "../lib/agents-config.ts";
 import { TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
@@ -1552,11 +1552,90 @@ test("temporary instructions transport file is cleaned up if spawn throws synchr
 	assert.ok(!existsSync(dirname(capturedPromptPath)), "temporary transport directory must be cleaned up even when spawn throws");
 });
 
-test("temporary instructions transport directory is cleaned up if writing instructions fails", async () => {
-	const beforeDirs = new Set(readdirSync(tmpdir()).filter((f) => f.startsWith("gentle-pi-subagent-")));
+test("agent instructions over the byte threshold are transported via file even when under the character threshold", async () => {
+	const multibyteInstructions = "界".repeat(400);
+	assert.ok(multibyteInstructions.length < 1000 && Buffer.byteLength(multibyteInstructions, "utf8") > 1000);
+	const launches: string[][] = [];
+	const fake = fakeChild();
+	let clock = 1000;
+	const deps: RunnerDeps = {
+		spawn: (_command, args) => {
+			launches.push(args);
+			return fake.child;
+		},
+		now: () => (clock += 1),
+		schedule: (_fn, _ms) => () => {},
+		pi: { command: "pi", args: [] },
+	};
+	const runner = new AgentRunner(new TaskStore(), { maxConcurrency: 1, stallTimeoutMs: 10_000 }, deps, {
+		askUser: async () => ({ value: "yes" }),
+	});
+	const task = runner.run(request({ agent: { ...explorer, instructions: multibyteInstructions } }));
+	await tick();
+
+	assert.equal(launches.length, 1);
+	const promptValue = launches[0][launches[0].indexOf("--append-system-prompt") + 1];
+	assert.notEqual(promptValue, multibyteInstructions, "multibyte instructions over the byte threshold must not be passed inline");
+	assert.ok(existsSync(promptValue), "temporary instructions transport file must exist on disk");
+	assert.equal(readFileSync(promptValue, "utf8"), multibyteInstructions);
+
+	fake.exit(0);
+	await runner.waitFor(task.id);
+	assert.ok(!existsSync(dirname(promptValue)), "temporary transport directory must be cleaned up on child exit");
+});
+
+test("long agent names are truncated in the instructions transport directory name", async () => {
+	const largeInstructions = "Instructions header:\n" + "x".repeat(2500);
+	const launches: string[][] = [];
+	const fake = fakeChild();
+	let clock = 1000;
+	const deps: RunnerDeps = {
+		spawn: (_command, args) => {
+			launches.push(args);
+			return fake.child;
+		},
+		now: () => (clock += 1),
+		schedule: (_fn, _ms) => () => {},
+		pi: { command: "pi", args: [] },
+	};
+	const runner = new AgentRunner(new TaskStore(), { maxConcurrency: 1, stallTimeoutMs: 10_000 }, deps, {
+		askUser: async () => ({ value: "yes" }),
+	});
+	const task = runner.run(request({ agent: { ...explorer, name: "a".repeat(300), instructions: largeInstructions } }));
+	await tick();
+
+	assert.equal(launches.length, 1, "launch must succeed despite a long agent name");
+	const promptValue = launches[0][launches[0].indexOf("--append-system-prompt") + 1];
+	assert.equal(readFileSync(promptValue, "utf8"), largeInstructions);
+	const dirName = basename(dirname(promptValue));
+	assert.ok(dirName.startsWith(`gentle-pi-subagent-${"a".repeat(64)}-`), dirName);
+	assert.ok(dirName.length <= "gentle-pi-subagent-".length + 64 + 1 + 6, `directory name too long: ${dirName.length}`);
+
+	fake.exit(0);
+	await runner.waitFor(task.id);
+	assert.ok(!existsSync(dirname(promptValue)));
+});
+
+test("temporary instructions transport directory is cleaned up if writing instructions fails", async (t) => {
+	// Fail only the transport write; the ESM named import is refreshed via syncBuiltinESMExports.
+	const originalWriteFileSync = fs.writeFileSync;
+	let transportDir: string | undefined;
+	t.mock.method(fs, "writeFileSync", (...args: Parameters<typeof fs.writeFileSync>) => {
+		const [target] = args;
+		if (typeof target === "string" && basename(target) === "instructions.md" && basename(dirname(target)).startsWith("gentle-pi-subagent-")) {
+			transportDir = dirname(target);
+			throw new Error("EACCES: simulated write failure");
+		}
+		return originalWriteFileSync(...args);
+	});
+	syncBuiltinESMExports();
+	t.after(() => {
+		t.mock.restoreAll();
+		syncBuiltinESMExports();
+	});
 	const failingAgent: AgentDefinition = {
 		...explorer,
-		instructions: { length: 2500 } as unknown as string,
+		instructions: "Instructions header:\n" + "x".repeat(2500),
 	};
 	let clock = 1000;
 	const deps: RunnerDeps = {
@@ -1576,9 +1655,9 @@ test("temporary instructions transport directory is cleaned up if writing instru
 
 	const finished = await runner.waitFor(task.id);
 	assert.equal(finished.status, TASK_STATUS.FAILED);
-	assert.match(finished.error ?? "", /could not write agent instructions/);
-	const afterDirs = new Set(readdirSync(tmpdir()).filter((f) => f.startsWith("gentle-pi-subagent-")));
-	assert.deepEqual(afterDirs, beforeDirs, "transport directory must be cleaned up on write failure");
+	assert.match(finished.error ?? "", /could not write agent instructions: EACCES: simulated write failure/);
+	assert.ok(transportDir, "transport directory must have been created before the write failed");
+	assert.ok(!existsSync(transportDir), "transport directory must be cleaned up on write failure");
 });
 
 test("temporary instructions transport file is cleaned up if child emits an early error before PID", async () => {
