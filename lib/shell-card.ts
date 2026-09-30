@@ -41,7 +41,7 @@ const CARD_STYLE_SLOT = Symbol.for("gentle-pi.card-style");
 const styleState = globalThis as typeof globalThis & { [CARD_STYLE_SLOT]?: unknown };
 
 export function cardStyle(): CardStyle {
-	return styleState[CARD_STYLE_SLOT] === CARD_STYLE.FLOAT ? CARD_STYLE.FLOAT : CARD_STYLE.NEON;
+	return styleState[CARD_STYLE_SLOT] === CARD_STYLE.NEON ? CARD_STYLE.NEON : CARD_STYLE.FLOAT;
 }
 
 export function setCardStyle(style: CardStyle): void {

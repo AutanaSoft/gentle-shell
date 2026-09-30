@@ -160,8 +160,8 @@ Pick how conversation cards look in `/gentle:customize` → **Cards**. The choic
 
 | Style | Look |
 |-------|------|
-| `neon` (default) | The outlined rounded card shown above. |
-| `float` | A borderless panel on the tone's tool background (success/info, pending, error), with a tone-colored `▎` accent bar, a one-column margin on each side, a blank row above the heading and at the bottom, and a blank row between the heading and the body. |
+| `neon` | The outlined rounded card shown above. |
+| `float` (default) | A borderless panel on the tone's tool background (success/info, pending, error), with a tone-colored `▎` accent bar, a one-column margin on each side, a blank row above the heading and at the bottom, and a blank row between the heading and the body. |
 
 ```text
  ▎
@@ -172,7 +172,7 @@ Pick how conversation cards look in `/gentle:customize` → **Cards**. The choic
 ```
 
 - `float` applies to tool, Code and 🌹 cards, Agent result and stale cards, the review preflight reminder, and the dev-binary notice. The Agents, Todos and Status panels keep the outlined frame in both styles.
-- A theme without a tool background, or a card narrower than 10 columns, falls back to `neon`. A malformed `card-style.json` reads as `neon` and the panel refuses to overwrite it.
+- A theme without a tool background, or a card narrower than 10 columns, falls back to `neon`. A malformed `card-style.json` reads as `float` and the panel refuses to overwrite it.
 
 ### Compact Code card
 

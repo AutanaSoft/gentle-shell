@@ -244,15 +244,16 @@ function cellBackgrounds(line: string): (number | undefined)[] {
 
 const floatCard = (overrides: Partial<Card> = {}) => card({ title: "read", subtitle: undefined, glyph: "⌖", body: ["alpha", "beta"], tone: CARD_TONE.SUCCESS, ...overrides });
 
-test("card style defaults to the outlined neon style and lives in a process-wide slot", () => {
-	assert.equal(cardStyle(), CARD_STYLE.NEON);
+test("card style defaults to the float style and lives in a process-wide slot", () => {
 	const slot = Symbol.for("gentle-pi.card-style");
 	const state = globalThis as typeof globalThis & { [slot]?: string };
+	assert.equal(state[slot], undefined, "no earlier test in this file touched the slot");
+	assert.equal(cardStyle(), CARD_STYLE.FLOAT);
 	withCardStyle(CARD_STYLE.FLOAT, () => assert.equal(state[slot], CARD_STYLE.FLOAT));
-	state[slot] = "float";
-	assert.equal(cardStyle(), CARD_STYLE.FLOAT, "another loader's copy sees the same slot");
+	state[slot] = "neon";
+	assert.equal(cardStyle(), CARD_STYLE.NEON, "another loader's copy sees the same slot");
 	state[slot] = "bogus";
-	assert.equal(cardStyle(), CARD_STYLE.NEON, "unknown values read as the neon style");
+	assert.equal(cardStyle(), CARD_STYLE.FLOAT, "unknown values read as the float style");
 	setCardStyle(CARD_STYLE.NEON);
 });
 

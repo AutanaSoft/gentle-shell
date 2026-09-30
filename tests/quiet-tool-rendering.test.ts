@@ -4,7 +4,7 @@ import test from "node:test";
 import { initTheme, keyHint } from "@earendil-works/pi-coding-agent";
 import { imageFallback, visibleWidth } from "@earendil-works/pi-tui";
 import { cardBody, cardHint, cardTitle, cardTone } from "./gentle-card-text.ts";
-import { CARD_STYLE, setCardStyle } from "../lib/shell-card.ts";
+import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import piPretty from "../extensions/pi-pretty.ts";
 import quietTools, {
@@ -1367,7 +1367,10 @@ test("long finished quiet headings retain the applicable expansion hint and comp
 	}
 });
 
-test("quiet components repaint after theme invalidation and retain transparent error frames", () => {
+test("quiet components repaint after theme invalidation and retain transparent error frames", (t) => {
+	const found = cardStyle();
+	t.after(() => setCardStyle(found));
+	setCardStyle(CARD_STYLE.NEON);
 	const bash = registeredQuietTools().get("bash");
 	let paint = "\x1b[31m";
 	const theme = { bold: (text: string) => text, fg: (_role: string, text: string) => `${paint}${text}\x1b[0m`, bg: (_role: string, text: string) => `\x1b[44m${text}\x1b[49m` };

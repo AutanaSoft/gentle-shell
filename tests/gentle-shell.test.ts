@@ -2828,53 +2828,57 @@ test("customize History rows persist prompt history capture and keep stored hist
 
 test("customize Cards rows persist the card style and switch live conversation cards", async (t) => {
 	const home = scopedDoubleEscCancelConfigHome(t);
-	t.after(() => setCardStyle(CARD_STYLE.NEON));
+	const found = cardStyle();
+	t.after(() => setCardStyle(found));
 	const { pi, commands } = fakePi();
 	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
-	assert.equal(cardStyle(), CARD_STYLE.NEON, "no preference file means neon");
+	assert.equal(cardStyle(), CARD_STYLE.FLOAT, "no preference file means float");
 	const { ctx, ui, overlayReady } = fakeContext();
 	const pending = commands.get("gentle:customize")!.handler("", ctx);
 	await overlayReady;
-	assert.ok(findCustomizeRow(ui, "Card style: neon (current)"));
-	assert.match(ui.overlayView!.render(90).join("\n"), /Cards · 1\/2/);
-	assert.ok(findCustomizeRow(ui, "Card style: float"));
+	assert.ok(findCustomizeRow(ui, "Card style: float (current)"));
+	assert.match(ui.overlayView!.render(90).join("\n"), /Cards · 2\/2/);
+	assert.ok(findCustomizeRow(ui, "Card style: neon"));
+	assert.ok(!ui.overlayView!.render(90).some((line) => line.includes("▸ Card style: neon (current)")), "neon is not current without a saved preference");
 	assert.equal(existsSync(join(home, "card-style.json")), false, "highlighting never applies");
 	const requestRender = fakeTui.requestRender;
 	let renders = 0;
 	fakeTui.requestRender = () => { renders++; };
 	try {
-		await customizeAction(ui, "Card style: float");
+		await customizeAction(ui, "Card style: neon");
 	} finally {
 		fakeTui.requestRender = requestRender;
 	}
-	assert.equal(resolveCardStyle({ gentlePiConfigHome: home }).style, "float");
-	assert.equal(cardStyle(), CARD_STYLE.FLOAT, "the live slot follows the choice");
-	assert.ok(renders > 0, "conversation cards redraw");
-	assert.match(ui.notices.at(-1)!, /Card style: float/);
-	assert.ok(findCustomizeRow(ui, "Card style: float (current)"));
-	assert.ok(findCustomizeRow(ui, "Card style: neon"));
-	await customizeAction(ui, "Card style: neon");
 	assert.equal(resolveCardStyle({ gentlePiConfigHome: home }).style, "neon");
-	assert.equal(cardStyle(), CARD_STYLE.NEON);
+	assert.equal(cardStyle(), CARD_STYLE.NEON, "the live slot follows the choice");
+	assert.ok(renders > 0, "conversation cards redraw");
+	assert.match(ui.notices.at(-1)!, /Card style: neon/);
+	assert.ok(findCustomizeRow(ui, "Card style: neon (current)"));
+	assert.ok(findCustomizeRow(ui, "Card style: float"));
+	await customizeAction(ui, "Card style: float");
+	assert.equal(resolveCardStyle({ gentlePiConfigHome: home }).style, "float");
+	assert.equal(cardStyle(), CARD_STYLE.FLOAT);
 	ui.overlayView!.handleInput("\x1b"); await pending;
 });
 
 test("the saved card style applies at startup and on every session start", async (t) => {
 	const home = scopedDoubleEscCancelConfigHome(t);
-	t.after(() => setCardStyle(CARD_STYLE.NEON));
-	writeCardStyle("float", { gentlePiConfigHome: home });
+	const found = cardStyle();
+	t.after(() => setCardStyle(found));
+	writeCardStyle("neon", { gentlePiConfigHome: home });
 	const { pi, handlers } = fakePi();
 	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
-	assert.equal(cardStyle(), CARD_STYLE.FLOAT);
-	writeCardStyle("neon", { gentlePiConfigHome: home });
+	assert.equal(cardStyle(), CARD_STYLE.NEON);
+	writeCardStyle("float", { gentlePiConfigHome: home });
 	const { ctx } = fakeContext({ hasUI: false });
 	for (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);
-	assert.equal(cardStyle(), CARD_STYLE.NEON);
+	assert.equal(cardStyle(), CARD_STYLE.FLOAT);
 });
 
 test("customize Cards rows refuse to overwrite a malformed preference", async (t) => {
 	const home = scopedDoubleEscCancelConfigHome(t);
-	t.after(() => setCardStyle(CARD_STYLE.NEON));
+	const found = cardStyle();
+	t.after(() => setCardStyle(found));
 	writeFileSync(join(home, "card-style.json"), "{");
 	const { pi, commands } = fakePi();
 	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
@@ -2887,7 +2891,7 @@ test("customize Cards rows refuse to overwrite a malformed preference", async (t
 	for (let attempt = 0; attempt < 100 && !ui.notices.some(n => /malformed or unreadable card style/i.test(n)); attempt++) await new Promise<void>((resolve) => setTimeout(resolve, 5));
 	assert.ok(ui.notices.some(n => /Cannot update malformed or unreadable card style preference/i.test(n)), ui.notices.join("\n"));
 	assert.equal(readFileSync(join(home, "card-style.json"), "utf8"), "{");
-	assert.equal(cardStyle(), CARD_STYLE.NEON);
+	assert.equal(cardStyle(), CARD_STYLE.FLOAT);
 	ui.overlayView!.handleInput("\x1b"); await pending;
 });
 
@@ -4813,9 +4817,12 @@ test("gentleShell binds the usage shortcut to the same handler as /gentle:usage"
 	assert.equal(silent.shortcuts.has("alt+u"), false, "the usage shortcut must not register when disabled");
 });
 
-test("gentleShell draws the review preflight message as a Gentle card", () => {
+test("gentleShell draws the review preflight message as a Gentle card", (t) => {
+	const found = cardStyle();
+	t.after(() => setCardStyle(found));
 	const { pi } = fakePi();
 	gentleShell(pi, {});
+	setCardStyle(CARD_STYLE.NEON);
 	const renderer = renderers.get("gentle-pi.review-preflight");
 	assert.ok(renderer, "renderer not registered");
 	const message = { customType: "gentle-pi.review-preflight", content: "Receipt-driven development is enabled.\n\nCall the gentle_review tool." };
@@ -4850,12 +4857,15 @@ test("the review preflight card paints the rose INFO frame (border) and title (a
 	assert.match(lines[0]!, /<accent>✿ Gentle AI<\/accent>/);
 });
 
-test("gentleShell keeps a dev-binary override visible above the editor for the whole session", async () => {
+test("gentleShell keeps a dev-binary override visible above the editor for the whole session", async (t) => {
+	const found = cardStyle();
+	t.after(() => setCardStyle(found));
 	const { pi, handlers } = fakePi();
 	const deps = { fetch: fakeFetch({}, false).fetchFn, now: () => 0, devBinary: () => ({ state: "active" as const, path: "/Users/me/go/bin/gentle-ai", sha256: "6e53bfc6305a3949deadbeef" }) };
 	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, deps);
 	const { ctx, ui } = fakeContext();
 	await fire(handlers, "session_start", ctx);
+	setCardStyle(CARD_STYLE.NEON);
 	const factory = ui.widgets.get("gentle-shell-dev-binary") as (tui: unknown, theme: unknown) => { render(width: number): string[] };
 	assert.ok(factory, "dev binary widget missing");
 	const lines = factory(fakeTui, plainTheme).render(100).map(stripAnsi);
