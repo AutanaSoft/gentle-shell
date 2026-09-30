@@ -5,7 +5,42 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { __testing } from "../extensions/gentle-ai.ts";
 
-const { classifyGuardedCommand, evaluateGuardedCommand, guardedCommandPreview, guardedCommandTitle } = __testing;
+const { classifyGuardedCommand, evaluateGuardedCommand, guardedCommandPreview, guardedCommandTitle, isOrdinaryYoloPush, yoloPushConfiguredRestriction } = __testing;
+
+test("YOLO waiver only selects a single ordinary default-confirm push after full evaluation", () => {
+	const config = { autonomousMode: false, guardedCommands: {} };
+	for (const command of ["git push", "git push -u origin feature/test", "git push --set-upstream origin main"]) {
+		assert.equal(isOrdinaryYoloPush(command, evaluateGuardedCommand(command, config)), true, command);
+	}
+	for (const command of [
+		"git push --delete origin main", "git push origin :main", "git push --mirror origin",
+		"git push --prune origin", "git push -f origin main", "git -C /other push origin main",
+		"git push origin main; git status", "env X=1 git push origin main", "sudo git push origin main",
+		"git push origin main && git rebase main", "git push origin main && npm publish",
+		`sh -c 'git push origin main'`, `git push origin main && sh -c "psql -c 'DROP TABLE users'"`,
+		"git push origin main && find data -delete", "git push origin main && rm -r data",
+	]) assert.equal(isOrdinaryYoloPush(command, evaluateGuardedCommand(command, config)), false, command);
+});
+
+test("YOLO preserves explicit push restrictions in either config layer independently of persistent autonomy", () => {
+	const root = makeTmpDir();
+	const cwd = join(root, "repo");
+	const home = join(root, "home");
+	try {
+		assert.equal(yoloPushConfiguredRestriction(cwd, { gentlePiConfigHome: home }), undefined);
+		writeConfig(home, "runtime-guardrails.json", { autonomousMode: false, guardedCommands: { gitPush: "confirm" } });
+		writeConfig(cwd, ".pi/gentle-ai/runtime-guardrails.json", { autonomousMode: true, guardedCommands: { gitPush: "allow" } });
+		assert.equal(yoloPushConfiguredRestriction(cwd, { gentlePiConfigHome: home }), "confirm");
+		writeConfig(home, "runtime-guardrails.json", { autonomousMode: true, guardedCommands: { gitPush: "allow" } });
+		assert.equal(yoloPushConfiguredRestriction(cwd, { gentlePiConfigHome: home }), undefined);
+		writeConfig(cwd, ".pi/gentle-ai/runtime-guardrails.json", { guardedCommands: { gitPush: "block" } });
+		assert.equal(yoloPushConfiguredRestriction(cwd, { gentlePiConfigHome: home }), "block");
+		writeConfig(cwd, ".pi/gentle-ai/runtime-guardrails.json", { guardedCommands: { gitPush: "confirm" } });
+		assert.equal(yoloPushConfiguredRestriction(cwd, { gentlePiConfigHome: home }), "confirm");
+		writeConfig(cwd, ".pi/gentle-ai/runtime-guardrails.json", null);
+		assert.equal(yoloPushConfiguredRestriction(cwd, { gentlePiConfigHome: home }), "confirm");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 test("recognized data loss requires fresh confirmation across autonomous and mixed commands", () => {
 	for (const command of [

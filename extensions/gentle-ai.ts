@@ -234,6 +234,7 @@ import {
 	type ReviewStatusV3,
 } from "../lib/review-integration-v2.ts";
 import { reconcileUnknownReviewLastEventCapture } from "../lib/review-last-event-controller.ts";
+import { registerYoloSessionPolicy, updateYoloPrompt } from "../lib/yolo-session-policy.ts";
 import { acquireChildStandingReviewPermissionClient, type ChildStandingReviewPermissionClient } from "../lib/review-session-standing-permission-ipc.ts";
 import { isPiConsentV3, presentReviewConsentUi } from "../lib/review-consent-ui.ts";
 import {
@@ -1755,15 +1756,47 @@ function createHerdrConfirmationLifecycle(events: ExtensionAPI["events"]): Herdr
 	};
 }
 
+/** Conservative waiver surface: one plain push in the current repository, no shell/wrapper or destination-changing options. */
+function isOrdinaryYoloPush(command: string, evaluation: GuardEvaluation): boolean {
+	if (evaluation.action !== "confirm" || evaluation.dataLoss || evaluation.matches.length !== 1 || evaluation.key !== "gitPush") return false;
+	return /^git\s+push(?:\s+(?:-u|--set-upstream|[A-Za-z0-9_][A-Za-z0-9_./-]*))*\s*$/.test(command);
+}
+
+/** Preserve explicitly configured confirmations even when legacy env/autonomy resolution ignores them. */
+function yoloPushConfiguredRestriction(cwd: string, options: LoadGuardrailsOptions = {}): GuardAction | undefined {
+	let restriction: GuardAction | undefined;
+	for (const path of [join(options.gentlePiConfigHome ?? gentleAiConfigHome(), "runtime-guardrails.json"), join(cwd, ".pi", "gentle-ai", "runtime-guardrails.json")]) {
+		try {
+			if (!existsSync(path)) continue;
+			const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+			if (!isRecord(parsed) || (parsed.guardedCommands !== undefined && !isRecord(parsed.guardedCommands))) {
+				restriction ??= "confirm";
+				continue;
+			}
+			const action = isRecord(parsed.guardedCommands) ? parsed.guardedCommands.gitPush : undefined;
+			if (action === "block") return "block";
+			if (action !== undefined && action !== "allow") restriction = "confirm";
+		} catch { restriction ??= "confirm"; }
+	}
+	return restriction;
+}
+
 async function confirmCommand(
 	command: string,
 	ctx: ExtensionContext,
 	events: ExtensionAPI["events"],
 	herdrLifecycle: HerdrConfirmationLifecycle,
+	yoloActive = false,
 ): Promise<ToolCallEventResult | undefined> {
 	const guardrailsConfig = loadRuntimeGuardrailsConfig(ctx.cwd);
 	const evaluation = evaluateGuardedCommand(command, guardrailsConfig);
-	const { action: classification } = evaluation;
+	// Configuration provenance is distinct from legacy autonomy resolution, which
+	// can ignore confirmations when an environment override is present. Activation
+	// cannot waive a restriction from either user or project configuration layer.
+	const configuredRestriction = yoloActive && evaluation.matches.some((match) => match.key === "gitPush")
+		? yoloPushConfiguredRestriction(ctx.cwd) : undefined;
+	const classification = evaluation.action === "block" || configuredRestriction === "block"
+		? "block" : configuredRestriction ?? evaluation.action;
 
 	if (classification === "block") {
 		return {
@@ -1777,6 +1810,9 @@ async function confirmCommand(
 
 	// classification is "allow" or "confirm" from this point on
 	if (classification === "allow") return undefined;
+
+	// Full T1 evaluation has already run. YOLO never changes persistent autonomy.
+	if (yoloActive && configuredRestriction === undefined && isOrdinaryYoloPush(command, evaluation)) return undefined;
 
 	// classification === "confirm"
 	if (!ctx.hasUI) {
@@ -8791,6 +8827,8 @@ export const __testing = {
 	guardedCommandPreview,
 	guardedCommandTitle,
 	loadRuntimeGuardrailsConfig,
+	isOrdinaryYoloPush,
+	yoloPushConfiguredRestriction,
 	buildGentlePrompt,
 	nativeStatusUnsupported,
 	nativeStartRejection,
@@ -8884,6 +8922,7 @@ function createGentleAiExtensionForTesting(
 	const candidateViews = dependencies.candidateViews === undefined ? new CandidateViewRegistry() : dependencies.candidateViews;
 	const herdrLifecycle = createHerdrConfirmationLifecycle(pi.events);
 	const permissionEnvironment = dependencies.processEnv ?? process.env;
+	const yolo = registerYoloSessionPolicy(pi, permissionEnvironment);
 
 	const setReviewSessionPermissionStatus = (context: ExtensionContext, active: boolean): void => {
 		try {
@@ -8920,6 +8959,7 @@ function createGentleAiExtensionForTesting(
 	let reminderManager: ExtensionContext["sessionManager"] | undefined;
 	let unbindPreparation: (() => void) | undefined;
 	pi.on("session_shutdown", (event, context) => {
+		yolo.reset(context);
 		reviewSidebar.reset();
 		reminderSessionActive = false;
 		reminderEpoch += 1;
@@ -9295,6 +9335,7 @@ function createGentleAiExtensionForTesting(
 	}));
 
 	pi.on("session_start", async (event, ctx) => {
+		yolo.reset(ctx);
 		reviewSidebar.reset(ctx);
 		elapsedTiming = new GentleAiElapsedTimingLedger(ctx.sessionManager, pi);
 		reminderSessionActive = true;
@@ -9426,6 +9467,7 @@ function createGentleAiExtensionForTesting(
 		// and forwards only systemPromptOptions, so the harness is delivered
 		// through the mutable appendSystemPrompt section instead of a replacement.
 		appendSystemPromptOnce(event.systemPromptOptions, `${gentlePrompt}${reviewContractPrompt}`);
+		updateYoloPrompt(event.systemPromptOptions, isPrimarySession && await yolo.active(ctx));
 		return undefined;
 	});
 
@@ -9484,6 +9526,8 @@ function createGentleAiExtensionForTesting(
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
+		const primaryToolCall = (processAgentEndSubagentDepth.get(pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey)) ?? 0) === 0;
+		const yoloActive = primaryToolCall && await yolo.active(ctx);
 		const sensitivePathDenied = evaluateSensitivePathTool(
 			event.toolName,
 			event.input,
@@ -9512,7 +9556,7 @@ function createGentleAiExtensionForTesting(
 			const childDenied = blockChildDestructiveCommand(event.input.command);
 			if (childDenied) return childDenied;
 		}
-		return await confirmCommand(event.input.command, ctx, pi.events, herdrLifecycle);
+		return await confirmCommand(event.input.command, ctx, pi.events, herdrLifecycle, yoloActive);
 	});
 
 	for (const owner of ["delegation", "review"] as const) {
