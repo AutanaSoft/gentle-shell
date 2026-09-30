@@ -30,12 +30,12 @@ The human selected the installed development binary, offline deterministic provi
 - Human selected `Closes #1567` and one PR with `size:exception`.
 - Rationale: native preparation, retained authority, lifecycle revocation and genuine writer continuation form one integration behavior. Keep their negative and real-process regressions together instead of omitting tests or splitting artificial review slices.
 - Source/test slice: **1,592 authored lines**, excluding this document (960 tracked additions +197 deletions +435 untracked lines). Earlier 1,435 was an arithmetic error; prior corrected counts were 1,335 and 1,482.
-- This is one coherent parity work unit. Commit identities and final PR counts remain pending; no commit, push, PR or merge yet.
+- Cohesive parity work-unit commit: `d2dd989488fb8b553760ef08b936a23348563f8e` (`fix(review): prepare native Git safely for same-session writers`). Its 14 implementation paths exactly match the approved immutable candidate; only this passive task document differs. Initial commit:1,699 authored lines including the107-line document. A passive documentation closure records the observed evidence; no source mutation after checks. Push, PR and merge remain pending.
 
 ## Tasks and routing
-- [ ] **T1 — Guard native preparation entry.** Implementation and functional checks observed; final independent disposition and commit closure pending. Route: delegated multi-file writer with shared admission and validation before preparation. Trigger: multiple nontrivial source files and preparatory reading.
-- [ ] **T2 — Preserve same-session Git authority and prove real writers.** Functional process proof observed; final independent disposition and commit closure pending. Route: delegated mapping/writer and independent high-risk verification. Trigger: cross-module flow across four or more files.
-- [ ] **T3 — Reject revoked explicit-review incarnation.** RED/GREEN observed; final independent disposition and commit closure pending. Route: one additional narrowly bounded correction explicitly authorized by the human, followed by independent verification. Trigger: shared lifecycle helper plus explicit review entry paths.
+- [x] **T1 — Guard native preparation entry.** Verified with full/focused/native/independent checks; closed in work-unit commit `d2dd989488fb8b553760ef08b936a23348563f8e`. Route: delegated multi-file writer with shared admission and validation before preparation. Trigger: multiple nontrivial source files and preparatory reading.
+- [x] **T2 — Preserve same-session Git authority and prove real writers.** Verified with actual SDK children and independent checks; closed in work-unit commit `d2dd989488fb8b553760ef08b936a23348563f8e`. Route: delegated mapping/writer and independent high-risk verification. Trigger: cross-module flow across four or more files.
+- [x] **T3 — Reject revoked explicit-review incarnation.** RED/GREEN and independent PASS observed; closed in work-unit commit `d2dd989488fb8b553760ef08b936a23348563f8e`. Route: one additional narrowly bounded correction explicitly authorized by the human, followed by independent verification. Trigger: shared lifecycle helper plus explicit review entry paths.
 
 T3 edit surfaces were exactly `extensions/gentle-ai.ts`, `lib/bounded-writer-admission.ts`, `tests/bounded-writer-admission.test.ts` and `tests/review-controller-workspace-root.test.ts`. No automatic further correction loop is authorized.
 
@@ -104,4 +104,4 @@ Review closure is not delivery authorization or a substitute for independent fun
 ## Gaps and next step
 Published-pin, native-platform and unavailable PATH-Pi exclusions remain **51 skips**, not passes. No modified scripts or skills require shellcheck/skill-load proof. Repository has no PR template; use the issue/type/summary/changes/test/checklist structure from the branch/PR skill without inventing a template.
 
-Independent disposition and native review are complete. Close the coherent work unit with authorized Conventional Commit and record identity, prepare one linked PR with `type:bug` and `size:exception`, confirm target-policy CI, then merge under the human's authorization. No merge on an unverified green claim or a remaining blocker.
+Independent disposition, native review and work-unit commit are complete. Publish the authorized branch and one linked PR with `type:bug` and `size:exception`, confirm target-policy CI, then merge under the human's authorization. No merge on an unverified green claim or a remaining blocker.
