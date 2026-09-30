@@ -132,6 +132,22 @@ triggers in the Gentle Shell prompt assets with the measured evidence-budget rul
   - Authored lines: +65 −34 = 99.
 - Running authored total: ~600 lines (T1 ~500, tests-heavy; T2 99).
 
+- T3: PR https://github.com/Gentleman-Programming/gentle-shell/pull/1590 (`type:feature`). First CI
+  run on head 73c00efe2: all jobs green; verify `pnpm test` 4289 tests, 4255 pass, 0 fail.
+  CodeRabbit (🟡 Minor, same spot as native advisory R3-002): the child-context wiring test built
+  the expected path with `URL.pathname` (percent-encoding, `/C:/` on Windows). RED reproduced in a
+  worktree under a path with a space (0/1); fixed with `fileURLToPath` → GREEN 1/1, file 160/160,
+  typecheck no regressions. Native review lineage review-deab0e498746b6ac approved with no
+  findings, acknowledged BEFORE committing → commit `31a04c252`, tree 375e42c3… = reviewed tree.
+
+## Follow-ups
+
+- Context backstop (~150k) relies on the model knowing its context size; consider a mechanical
+  signal (relates to #1117).
+- Gentle AI generated assets and canon: apply the same rule and child-context scoping
+  (gentle-ai#5139).
+- Parent prefix reduction (duplicated managed blocks, tool schemas) tracked in gentle-ai#5139.
+
 ## Next step
 
-T3: commit this document, push, open the PR closing #1587, wait for CI, merge commit if green.
+Wait for CI on the final head, merge commit if green and conflict-free.
