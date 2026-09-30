@@ -700,6 +700,56 @@ function safely(label, path, fallback, fn) {
 	}
 }
 
+// gentle-pi replaces Pi's replaceable builtin codemode with its own decorated
+// codemode tool (extensions/quiet-tools.ts -> registerCompactCodemode in
+// lib/codemode-renderer.ts), and Pi prints a startup warning whenever a
+// builtin loses its tool to another extension. Pi's only per-builtin opt-out
+// is a `-builtin:<name>` entry in the settings `extensions` array, so every
+// normal launch ensures that entry in the settings.json of a home
+// gentle-shell owns (see main, below).
+const BUILTIN_CODEMODE_EXTENSION = "builtin:codemode";
+
+// Pure: returns `settingsText` with `-<builtin>` appended to its `extensions`
+// array (created when absent), or undefined when nothing should change — the
+// text does not parse as a JSON object, `extensions` exists but is not an
+// array, or the array already holds any explicit entry for the builtin
+// (`+`, `-`, `!`, or bare), which is the user's own decision. Keeps every
+// other key and entry in place, plus the text's own indentation and trailing
+// newline (same detection as detectJsonFormatting in
+// lib/gentle-shell-launcher.ts).
+function withBuiltinExtensionExcluded(settingsText, builtin) {
+	let settings;
+	try {
+		settings = JSON.parse(settingsText);
+	} catch {
+		return undefined;
+	}
+	if (typeof settings !== "object" || settings === null || Array.isArray(settings)) return undefined;
+	const extensions = Object.prototype.hasOwnProperty.call(settings, "extensions") ? settings.extensions : [];
+	if (!Array.isArray(extensions)) return undefined;
+	if (extensions.some((entry) => typeof entry === "string" && entry.replace(/^[+!-]/, "") === builtin)) return undefined;
+	const indent = settingsText.match(/\{\r?\n([ \t]+)/)?.[1];
+	const serialized = JSON.stringify({ ...settings, extensions: [...extensions, `-${builtin}`] }, null, indent);
+	return settingsText.endsWith("\n") ? `${serialized}\n` : serialized;
+}
+
+// Applies withBuiltinExtensionExcluded to an existing settings.json with the
+// same atomic temp-file-then-rename write as the restores above. A missing
+// settings.json is left missing: only the brand-new-home bootstrap
+// (installIsolatedTuiModeSetting) seeds that file, and this launch-time step
+// never takes over that role. Returns true when it actually wrote the file.
+function ensureBuiltinCodemodeExcluded(settingsPath) {
+	const currentText = readJsonIfExists(settingsPath);
+	if (currentText === undefined) return false;
+	const newText = withBuiltinExtensionExcluded(currentText, BUILTIN_CODEMODE_EXTENSION);
+	if (newText === undefined) return false;
+	const mode = statSync(settingsPath).mode & 0o777;
+	const tempPath = join(dirname(settingsPath), `.${basenameOf(settingsPath)}.gentle-shell-update-${process.pid}.tmp`);
+	writeFileSync(tempPath, newText, { mode });
+	renameSync(tempPath, settingsPath);
+	return true;
+}
+
 // Provisions `home` with everything `gentle-ai install --agent pi` installs
 // into a regular Pi, by spawning the package-local pinned gentle-ai binary
 // (never a PATH `gentle-ai`) with PI_CODING_AGENT_DIR/GENTLE_PI_AGENT_HOME set
@@ -1198,6 +1248,21 @@ async function main() {
 		// exits with the same signal-derived code instead of falling through
 		// to launch pi.
 		if (autoProvisionResult !== undefined) process.exit(autoProvisionResult.exitCode);
+
+		// Runs after auto-provision, so it sees settings.json exactly as that
+		// run left it. Only a home gentle-shell owns, by the same rule
+		// auto-provisioning uses (homeIsForeign): never --link (excluded above),
+		// a foreign --home, or pi's own default agent home, since plain pi may
+		// share those and would lose its builtin codemode. `setup` (including
+		// --dry-run) returned before this point.
+		const settingsPath = join(home.dir, "settings.json");
+		const excluded = safely("exclude Pi's builtin codemode in your Gentle Shell settings", settingsPath, false, () => {
+			const previous = provisionedEntry(readRawConfig(resolveConfigPath()), safeRealpath(home.dir));
+			return !homeIsForeign(home, previous, homeHadContentBeforeBootstrap) && ensureBuiltinCodemodeExcluded(settingsPath);
+		});
+		if (excluded) {
+			process.stderr.write(`gentle-shell: disabled Pi's builtin codemode in ${settingsPath} (Gentle Shell ships its own codemode tool)\n`);
+		}
 	}
 
 	const packageRootExplicit = args.packageRoot !== undefined;
