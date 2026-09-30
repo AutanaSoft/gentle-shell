@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import { join, resolve, isAbsolute } from "node:path";
+import { fileURLToPath } from "node:url";
 import { keyHint, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text, type TUI } from "@earendil-works/pi-tui";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
@@ -96,6 +97,21 @@ export interface AgentsDeps extends RunnerDeps {
 	runtimeMetricsPolicy?: RuntimeMetricsPolicyDeps;
 	metricsNow?: () => number;
 	metricsSchedule?: RunnerDeps["schedule"];
+	// Extensions every child loads with --extension (gentle-shell#1587).
+	childExtensionPaths?: string[];
+}
+
+// gentle-shell#1587: children do not load the gentle-pi package in the
+// isolated Gentle Shell home, so the child-context extension (which drops the
+// orchestrator-only managed blocks from their context files) is passed to
+// every child explicitly. A missing file fails safe to no extension.
+export function childContextExtensionPaths(exists: (path: string) => boolean = existsSync): string[] {
+	try {
+		const path = fileURLToPath(new URL("./child-context.ts", import.meta.url));
+		return exists(path) ? [path] : [];
+	} catch {
+		return [];
+	}
 }
 
 export function agentRuntimePaths(home: string, agentHome = join(home, ".pi", "agent")): { sessions: string; transcripts: string } {
@@ -122,6 +138,7 @@ const defaultDeps = (env: NodeJS.ProcessEnv): AgentsDeps => ({
 	home: os.homedir(),
 	resolveWorktree: resolveSessionWorktree,
 	env,
+	childExtensionPaths: childContextExtensionPaths(),
 });
 
 export function agentsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -1106,6 +1123,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			thinking: profile.thinking,
 			sessionDir,
 			resumeSessionPath: resume,
+			...(deps.childExtensionPaths && deps.childExtensionPaths.length > 0 ? { extensionPaths: [...deps.childExtensionPaths] } : {}),
 			env: childEnv,
 			...(foreign || parentRepositoryIdentity === undefined ? {} : {
 				authorizeParentStandingReviewPermission: (repositoryIdentity: string) => {
