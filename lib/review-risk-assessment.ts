@@ -132,6 +132,28 @@ function isReviewDueReason(value: unknown): value is ReviewDueReason {
 	return Object.values(REVIEW_DUE_REASON).includes(value as ReviewDueReason);
 }
 
+// The native schema fixes review_due by reason: due for high_risk and
+// slice_budget_reached, not due for passive, under_budget, and
+// already_reviewed (gentle-pi#1175).
+const DUE_REVIEW_REASONS: readonly ReviewDueReason[] = [REVIEW_DUE_REASON.HIGH_RISK, REVIEW_DUE_REASON.SLICE_BUDGET_REACHED];
+
+/**
+ * Rejects a review_due/review_due_reason/consumed combination the native
+ * schema can never produce. `already_reviewed` takes precedence exactly when
+ * the candidate is consumed, so the two must agree in both directions. A
+ * contradictory envelope is never trusted, least of all as closure evidence.
+ * Envelopes without the pair (older binaries) are not checked here.
+ */
+function validateReviewDueConsistency(reviewDue: boolean, reviewDueReason: ReviewDueReason, candidate: ReviewAssessmentCandidate): void {
+	if (reviewDue !== DUE_REVIEW_REASONS.includes(reviewDueReason)) {
+		throw new TypeError(`review assessment review_due ${reviewDue} contradicts review_due_reason ${reviewDueReason}`);
+	}
+	const alreadyReviewed = reviewDueReason === REVIEW_DUE_REASON.ALREADY_REVIEWED;
+	if (alreadyReviewed !== (candidate.consumed === true)) {
+		throw new TypeError("review assessment review_due_reason already_reviewed must be reported exactly when candidate.consumed is true");
+	}
+}
+
 function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
 	return Object.keys(value).every((key) => allowed.includes(key));
 }
@@ -176,7 +198,9 @@ function decodeNextTransition(value: unknown): ReviewAssessmentNextTransition {
  *
  * `review_due` and `review_due_reason` were added together natively: both
  * absent (an older binary) or both present are accepted; only one of them is
- * rejected. `next_transition` is accepted only alongside `review_due: true`.
+ * rejected. When present, the pair must agree with each other and with
+ * `candidate.consumed` (see `validateReviewDueConsistency`).
+ * `next_transition` is accepted only alongside `review_due: true`.
  * Unknown extra top-level fields are ignored and never projected, so a newer
  * binary stays decodable (gentle-pi#1175).
  */
@@ -209,13 +233,15 @@ export function decodeReviewAssessmentV1(value: unknown): ReviewAssessmentV1 {
 	if (nextTransition !== undefined && reviewDue !== true) {
 		throw new TypeError("review assessment next_transition is only valid when review_due is true");
 	}
+	const decodedCandidate = decodeCandidate(candidate);
+	if (reviewDue !== undefined) validateReviewDueConsistency(reviewDue as boolean, reviewDueReason as ReviewDueReason, decodedCandidate);
 	return Object.freeze({
 		schema: REVIEW_ASSESSMENT_SCHEMA,
 		risk,
 		reasons: Object.freeze(reasons.map(decodeReason)),
 		changedPaths: changedPaths as number,
 		changedLines: changedLines as number,
-		candidate: decodeCandidate(candidate),
+		candidate: decodedCandidate,
 		...(reviewDue === undefined ? {} : { reviewDue: reviewDue as boolean, reviewDueReason: reviewDueReason as ReviewDueReason }),
 		...(nextTransition === undefined ? {} : { nextTransition: decodeNextTransition(nextTransition) }),
 	});

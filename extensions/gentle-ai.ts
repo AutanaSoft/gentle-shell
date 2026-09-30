@@ -1,6 +1,6 @@
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
 import { allowedEditSurfaces as hasTaskScopedAllowedEditSurfaces, bindSessionRepositoryPreparation, captureBoundSessionRepositoryAuthority, prepareBoundSessionRepository, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sourcePathWithinProject } from "../lib/bounded-writer-admission.ts";
-import { consumeReviewMutation, pendingReviewMutation, recordReviewMutation } from "../lib/review-reminder-receipt.ts";
+import { consumeReviewMutation, pendingReviewMutation, pendingReviewMutationProfiles, recordReviewMutation, type ReceiptSession } from "../lib/review-reminder-receipt.ts";
 import { createReviewSidebarPublisher } from "../lib/review-sidebar-state.ts";
 import { isOddPhase, oddPhaseRegistry, ODD_PHASES } from "../lib/odd-phase.ts";
 import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
@@ -207,8 +207,10 @@ import {
 } from "../lib/native-review-cli.ts";
 import {
 	verificationPlan,
+	isSmallWriterProfile,
 	resolveWriterProfile,
 	RDD_LINE,
+	WRITER_PROFILE,
 	VERIFICATION_TIER,
 	NATIVE_REVIEW_OUTCOME,
 	type RddLine,
@@ -218,6 +220,7 @@ import {
 	type ReviewAssessmentReason,
 	type ReviewDueReason,
 	type NativeReviewOutcome,
+	type WriterProfile,
 } from "../lib/review-risk-assessment.ts";
 import {
 	assertReviewApprovedAcknowledgementExecuteV1,
@@ -763,8 +766,9 @@ function clearRddStatusMemoForTesting(): void {
 // repository realpath AND targetIdentity -- never repository alone, or one
 // candidate's outcome would leak into every other candidate's `assess` call.
 // Only declined/unavailable are ever written (from ANSWER_CONSENT); `closed`
-// is never written/derived -- pass it explicitly. A missing entry reads back
-// `undefined`, treated as `unknown` (fail closed, exactly like `off`).
+// is never written here -- it is derived per assess call only from that
+// call's own native `candidate.consumed` evidence (gentle-pi#1175). A missing
+// entry reads back `undefined`, treated as `unknown` (fail closed, like `off`).
 const nativeReviewOutcomeByCandidate = new Map<string, "declined" | "unavailable">();
 
 function nativeReviewOutcomeMemoKey(cwd: string, targetIdentity: string): string {
@@ -852,10 +856,15 @@ interface ReviewAssessmentPlanDetails {
 	nextTransition?: ReviewAssessmentNextTransition;
 	rddLine: RddLine;
 	nativeReviewOutcome: NativeReviewOutcome;
-	// gentle-pi#668: where nativeReviewOutcome came from -- explicit (caller
-	// passed it), derived (matched this exact candidate), or unknown.
-	outcome_source: "explicit" | "derived" | "unknown";
-	writerProfile: "small" | "large";
+	// gentle-pi#668/#1175: where nativeReviewOutcome came from -- explicit
+	// (a caller-supplied declined/unavailable/unknown), derived (native
+	// consumed evidence or the per-candidate memo for this exact candidate),
+	// or unknown.
+	outcome_source: NativeReviewOutcomeSource;
+	writerProfile: WriterProfile;
+	// gentle-pi#1175: runtime (pending mutation receipts), caller (input,
+	// only when no runtime receipt is pending), or fallback (small).
+	writerProfileSource: WriterProfileSource;
 	plan: {
 		writerSelfVerification: boolean;
 		structuralReadbackOnly: boolean;
@@ -864,21 +873,104 @@ interface ReviewAssessmentPlanDetails {
 	};
 }
 
+type NativeReviewOutcomeSource = "explicit" | "derived" | "unknown";
+type WriterProfileSource = "runtime" | "caller" | "fallback";
+
+/**
+ * gentle-pi#1175: the writer profile for ASSESS. Pending runtime mutation
+ * receipts for this root are the evidence: any writer without a recorded
+ * model id, or any small writer (`isSmallWriterProfile`), makes the profile
+ * small. Caller-declared writerModelId/writerEffort are consulted only when no
+ * runtime receipt is pending, and can never override runtime evidence. An
+ * unreadable receipt ledger fails closed to small.
+ */
+function resolveAssessWriterProfile(
+	session: ReceiptSession | undefined,
+	root: string,
+	input: ReviewAssessInput,
+): { writerProfile: WriterProfile; writerProfileSource: WriterProfileSource } {
+	let pending: ReturnType<typeof pendingReviewMutationProfiles> = [];
+	try {
+		if (session !== undefined) pending = pendingReviewMutationProfiles(session, root);
+	} catch {
+		return { writerProfile: WRITER_PROFILE.SMALL, writerProfileSource: "fallback" };
+	}
+	if (pending.length > 0) {
+		const small = pending.some((profile) => profile.writerModelId === undefined ||
+			isSmallWriterProfile({ model: { id: profile.writerModelId }, thinking: profile.writerEffort }));
+		return { writerProfile: small ? WRITER_PROFILE.SMALL : WRITER_PROFILE.LARGE, writerProfileSource: "runtime" };
+	}
+	if (input.writerModelId === undefined && input.writerEffort === undefined) {
+		return { writerProfile: WRITER_PROFILE.SMALL, writerProfileSource: "fallback" };
+	}
+	return {
+		writerProfile: resolveWriterProfile({
+			...(input.writerModelId === undefined ? {} : { model: { id: input.writerModelId } }),
+			thinking: input.writerEffort,
+		}),
+		writerProfileSource: "caller",
+	};
+}
+
+/**
+ * gentle-pi#1175: the parent session's own current model and thinking level,
+ * recorded on its direct mutation receipt. Omits whatever the runtime cannot
+ * report, so an unknown writer stays small for ASSESS.
+ */
+function directWriterProfile(
+	pi: Pick<ExtensionAPI, "getThinkingLevel">,
+	ctx: Pick<ExtensionContext, "model">,
+): { writerModelId?: string; writerEffort?: string } {
+	const model = ctx.model;
+	const modelId = typeof model?.provider === "string" && model.provider && typeof model.id === "string" && model.id
+		? `${model.provider}/${model.id}`
+		: undefined;
+	let effort: string | undefined;
+	try {
+		const level: unknown = pi.getThinkingLevel();
+		if (typeof level === "string" && level) effort = level;
+	} catch { /* No runtime effort evidence. */ }
+	return {
+		...(modelId === undefined ? {} : { writerModelId: modelId }),
+		...(effort === undefined ? {} : { writerEffort: effort }),
+	};
+}
+
+/**
+ * gentle-pi#1175: closure comes only from exact native evidence. `closed` is
+ * derived solely from THIS assessment's `candidate.consumed === true`, which
+ * native writes only inside the approved-acknowledgement burn for that exact
+ * target identity; a caller-declared `closed` is only a claim and, without
+ * that corroboration, fails closed to `unknown`. Explicit declined,
+ * unavailable, or unknown are honored (they only raise the bar), and a
+ * declined/unavailable recorded for this exact candidate beats closure.
+ */
+function resolveAssessNativeReviewOutcome(
+	input: ReviewAssessInput,
+	assessment: ReviewAssessmentV1 | undefined,
+	memoOutcome: "declined" | "unavailable" | undefined,
+): { nativeReviewOutcome: NativeReviewOutcome; outcomeSource: NativeReviewOutcomeSource } {
+	if (input.nativeReviewOutcome !== undefined && input.nativeReviewOutcome !== NATIVE_REVIEW_OUTCOME.CLOSED) {
+		return { nativeReviewOutcome: input.nativeReviewOutcome, outcomeSource: "explicit" };
+	}
+	if (memoOutcome !== undefined) return { nativeReviewOutcome: memoOutcome, outcomeSource: "derived" };
+	if (assessment?.candidate.consumed === true) return { nativeReviewOutcome: NATIVE_REVIEW_OUTCOME.CLOSED, outcomeSource: "derived" };
+	return { nativeReviewOutcome: NATIVE_REVIEW_OUTCOME.UNKNOWN, outcomeSource: "unknown" };
+}
+
 async function resolveReviewAssessmentPlan(
 	nativeReviewCli: Pick<NativeReviewCli, "reviewMode" | "assess" | "targetStatus"> | null | undefined,
 	cwd: string,
 	input: ReviewAssessInput,
 	signal?: AbortSignal,
+	receiptSession?: ReceiptSession,
 ): Promise<ReviewAssessmentPlanDetails> {
 	if (input.baseRef !== undefined && input.committedOnly !== true) throw new Error("Review assess baseRef requires committedOnly: true");
 	if (input.baseRef === undefined && input.committedOnly !== undefined) throw new Error("Review assess committedOnly requires an explicit baseRef");
 
 	const status = await readRddModeStatusOnce(nativeReviewCli, cwd, signal);
 	const rddLine: RddLine = isValidRddModeStatus(status) ? status.effective : RDD_LINE.UNKNOWN;
-	const writerProfile = resolveWriterProfile({
-		...(input.writerModelId === undefined ? {} : { model: { id: input.writerModelId } }),
-		thinking: input.writerEffort,
-	});
+	const { writerProfile, writerProfileSource } = resolveAssessWriterProfile(receiptSession, cwd, input);
 
 	let assessment: ReviewAssessmentV1 | undefined;
 	let unassessableDetail: string | undefined;
@@ -906,13 +998,13 @@ async function resolveReviewAssessmentPlan(
 	}
 
 	const risk: VerificationTier = assessment?.risk ?? VERIFICATION_TIER.UNASSESSABLE;
-	// gentle-pi#668: explicit always wins; otherwise derive only for THIS
-	// candidate's own target identity, never repository-only. `closed` is
-	// never derived.
-	const targetIdentity = input.nativeReviewOutcome === undefined ? await readCurrentTargetIdentityBestEffort(nativeReviewCli, cwd, signal) : undefined;
-	const derived = targetIdentity === undefined ? undefined : readNativeReviewOutcome(cwd, targetIdentity);
-	const nativeReviewOutcome: NativeReviewOutcome = input.nativeReviewOutcome ?? derived ?? NATIVE_REVIEW_OUTCOME.UNKNOWN;
-	const outcomeSource: "explicit" | "derived" | "unknown" = input.nativeReviewOutcome !== undefined ? "explicit" : derived === undefined ? "unknown" : "derived";
+	// gentle-pi#668: the memo is read only for THIS candidate's own target
+	// identity, never repository-only. It is still needed when the caller
+	// claims `closed`, because a recorded decline beats closure (gentle-pi#1175).
+	const needsMemo = input.nativeReviewOutcome === undefined || input.nativeReviewOutcome === NATIVE_REVIEW_OUTCOME.CLOSED;
+	const targetIdentity = needsMemo ? await readCurrentTargetIdentityBestEffort(nativeReviewCli, cwd, signal) : undefined;
+	const memoOutcome = targetIdentity === undefined ? undefined : readNativeReviewOutcome(cwd, targetIdentity);
+	const { nativeReviewOutcome, outcomeSource } = resolveAssessNativeReviewOutcome(input, assessment, memoOutcome);
 	const plan = verificationPlan({ rddLine, risk, writerProfile, nativeReviewOutcome });
 	return {
 		schema: "gentle-pi.review-assessment-plan/v1",
@@ -936,6 +1028,7 @@ async function resolveReviewAssessmentPlan(
 		nativeReviewOutcome,
 		outcome_source: outcomeSource,
 		writerProfile,
+		writerProfileSource,
 		plan,
 	};
 }
@@ -7671,7 +7764,7 @@ async function executeReviewControllerOperation(
 		// authorizeDestructiveReviewOperation (it returns early for any
 		// operation that is neither RESET nor a maintenance operation).
 		const input = parseReviewAssessInput(parameters.operation, parameters.input);
-		const details = await resolveReviewAssessmentPlan(nativeReviewCli, defaultCwd, input, signal);
+		const details = await resolveReviewAssessmentPlan(nativeReviewCli, defaultCwd, input, signal, context?.sessionManager as ReceiptSession | undefined);
 		return { operation: parameters.operation, ...details, ...(includeWorkspaceRoot ? { workspace_root: defaultCwd } : {}) };
 	}
 	if (parameters.operation === REVIEW_CONTROLLER_OPERATION.REPAIR_LEGACY_ALIAS) {
@@ -8090,9 +8183,10 @@ async function executeReviewControllerOperation(
 		// The registry owns restoring writability of its 0555 views before
 		// removal; a terminal approved cleanup keeps the lineage projection.
 		const candidateViewCleanup = deferredPostBurnCleanup(POST_BURN_CLEANUP.candidateView, () => candidateViews?.cleanupTerminal(parameters.lineageId, "approved", defaultCwd));
-		// gentle-pi#668: `closed` is never auto-derived or recorded here --
-		// a parent that wants the on-path passes nativeReviewOutcome:
-		// "closed" explicitly on its next assess call for this candidate.
+		// gentle-pi#668/#1175: `closed` is never recorded here -- the burn this
+		// acknowledgement completed makes native report candidate.consumed for
+		// this exact candidate, and the next assess call derives closure from
+		// that evidence alone.
 		return {
 			operation: parameters.operation,
 			status: "closed",
@@ -9370,7 +9464,7 @@ function createGentleAiExtensionForTesting(
 			const root = identity?.root ?? prospectiveRoot;
 			// Persist the observed own write before any await. Preparation is not
 			// mutation evidence, and cannot invent a pre-write Changes baseline.
-			if (root) recordReviewMutation(pi, ctx.sessionManager, root, { source: "direct", toolName: event.toolName, toolCallId: event.toolCallId });
+			if (root) recordReviewMutation(pi, ctx.sessionManager, root, { source: "direct", toolName: event.toolName, toolCallId: event.toolCallId, ...directWriterProfile(pi, ctx) });
 			if (prospectiveRoot && !resolveSessionWorktree(ctx.cwd, ctx.cwd)) await prepareBoundSessionRepository(ctx.sessionManager, ctx.sessionManager.getCwd?.() ?? ctx.cwd, ctx.signal);
 		} catch { /* Preparation and receipt persistence cannot change a successful tool result. */ }
 	});

@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { realpathSync } from "node:fs";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createGentleAiExtension, __testing } from "../extensions/gentle-ai.ts";
@@ -26,6 +28,7 @@ import {
 	type WriterProfile,
 	type NativeReviewOutcome,
 } from "../lib/review-risk-assessment.ts";
+import { consumeReviewMutation, pendingReviewMutation, recordReviewMutation } from "../lib/review-reminder-receipt.ts";
 
 // ---------------------------------------------------------------------------
 // gentle-pi#662: decoder for the native `gentle-ai review assess` envelope
@@ -163,8 +166,8 @@ test("decodeReviewAssessmentV1 decodes consumed, review_due, review_due_reason, 
 	assert.equal(consumed.reviewDueReason, "already_reviewed");
 	assert.equal(Object.hasOwn(consumed, "nextTransition"), false);
 
-	for (const reason of ["high_risk", "slice_budget_reached", "passive", "under_budget", "already_reviewed"]) {
-		assert.equal(decodeReviewAssessmentV1(newEnvelope({ review_due_reason: reason, next_transition: undefined })).reviewDueReason, reason);
+	for (const pair of CONSISTENT_REVIEW_DUE_PAIRS) {
+		assert.equal(decodeReviewAssessmentV1(consistentEnvelope(pair)).reviewDueReason, pair.reason);
 	}
 
 	const noToken = decodeReviewAssessmentV1(newEnvelope({ next_transition: nextTransition({ arguments: [] }) }));
@@ -181,6 +184,87 @@ test("decodeReviewAssessmentV1 rejects malformed consumed, review_due, and revie
 	for (const reviewDue of ["true", 1, null]) {
 		assert.throws(() => decodeReviewAssessmentV1(newEnvelope({ review_due: reviewDue })), TypeError, `review_due ${JSON.stringify(reviewDue)} must be rejected`);
 	}
+});
+
+// gentle-pi#1175 (T2): the native schema fixes review_due by reason
+// (true for high_risk and slice_budget_reached, false for passive,
+// under_budget, and already_reviewed), and already_reviewed is reported
+// exactly when the candidate is consumed. A contradictory envelope can never
+// be trusted as closure evidence, so it fails decoding.
+interface ReviewDuePair {
+	reason: string;
+	due: boolean;
+	consumed: boolean;
+}
+
+const CONSISTENT_REVIEW_DUE_PAIRS: readonly ReviewDuePair[] = [
+	{ reason: "high_risk", due: true, consumed: false },
+	{ reason: "slice_budget_reached", due: true, consumed: false },
+	{ reason: "passive", due: false, consumed: false },
+	{ reason: "under_budget", due: false, consumed: false },
+	{ reason: "already_reviewed", due: false, consumed: true },
+];
+
+function consistentEnvelope(pair: ReviewDuePair): Record<string, unknown> {
+	return newEnvelope({
+		candidate: { kind: "current-changes", consumed: pair.consumed },
+		review_due: pair.due,
+		review_due_reason: pair.reason,
+		next_transition: pair.due ? nextTransition() : undefined,
+	});
+}
+
+test("decodeReviewAssessmentV1 accepts every consistent review_due/review_due_reason/consumed combination", () => {
+	for (const pair of CONSISTENT_REVIEW_DUE_PAIRS) {
+		const decoded = decodeReviewAssessmentV1(consistentEnvelope(pair));
+		assert.equal(decoded.reviewDue, pair.due, pair.reason);
+		assert.equal(decoded.reviewDueReason, pair.reason);
+		assert.equal(decoded.candidate.consumed, pair.consumed, pair.reason);
+	}
+	// Without next_transition the due pairs stay consistent too.
+	assert.equal(decodeReviewAssessmentV1(newEnvelope({ next_transition: undefined })).reviewDueReason, "high_risk");
+});
+
+test("decodeReviewAssessmentV1 rejects a review_due boolean that contradicts review_due_reason", () => {
+	for (const pair of CONSISTENT_REVIEW_DUE_PAIRS) {
+		const contradictory = newEnvelope({
+			candidate: { kind: "current-changes", consumed: pair.consumed },
+			review_due: !pair.due,
+			review_due_reason: pair.reason,
+			next_transition: undefined,
+		});
+		assert.throws(() => decodeReviewAssessmentV1(contradictory), TypeError, `review_due ${!pair.due} with ${pair.reason} must be rejected`);
+	}
+});
+
+test("decodeReviewAssessmentV1 rejects already_reviewed unless the candidate is consumed", () => {
+	for (const candidate of [{ kind: "current-changes", consumed: false }, { kind: "current-changes" }]) {
+		assert.throws(
+			() => decodeReviewAssessmentV1(newEnvelope({ candidate, review_due: false, review_due_reason: "already_reviewed", next_transition: undefined })),
+			TypeError,
+			`already_reviewed with ${JSON.stringify(candidate)} must be rejected`,
+		);
+	}
+});
+
+test("decodeReviewAssessmentV1 rejects a consumed candidate reported with any reason other than already_reviewed", () => {
+	for (const pair of CONSISTENT_REVIEW_DUE_PAIRS.filter((entry) => entry.reason !== "already_reviewed")) {
+		assert.throws(
+			() => decodeReviewAssessmentV1(newEnvelope({
+				candidate: { kind: "current-changes", consumed: true },
+				review_due: pair.due,
+				review_due_reason: pair.reason,
+				next_transition: pair.due ? nextTransition() : undefined,
+			})),
+			TypeError,
+			`consumed with ${pair.reason} must be rejected`,
+		);
+	}
+});
+
+test("decodeReviewAssessmentV1 still accepts an older envelope without the review_due pair", () => {
+	assert.equal(decodeReviewAssessmentV1(validEnvelope()).risk, "medium");
+	assert.equal(Object.hasOwn(decodeReviewAssessmentV1(validEnvelope({ risk: "passive", reasons: [] })), "reviewDue"), false);
 });
 
 test("decodeReviewAssessmentV1 rejects only one of the review_due/review_due_reason pair", () => {
@@ -632,7 +716,7 @@ function assessOnNativeCli(currentTargetIdentity: () => string): Partial<NativeR
 	};
 }
 
-test("gentle_review assess: derivation is bound to the exact candidate recorded, closed can only ever be passed explicitly (gentle-pi#668 correction)", async (t) => {
+test("gentle_review assess: derivation is bound to the exact candidate recorded, and a caller-declared closed is never trusted without native evidence (gentle-pi#668 correction, gentle-pi#1175)", async (t) => {
 	t.after(() => __testing.clearNativeReviewOutcomeMemoForTesting());
 	__testing.clearNativeReviewOutcomeMemoForTesting();
 	let current = "target-a";
@@ -660,12 +744,240 @@ test("gentle_review assess: derivation is bound to the exact candidate recorded,
 	assert.equal(forB.outcome_source, "unknown");
 	assert.equal(forB.plan.independentVerifier, true);
 
-	// Explicit input always wins, and is the only way to reach "closed".
+	// gentle-pi#1175: a caller-declared closed is only a claim. This older
+	// assessment carries no candidate.consumed, so it fails closed to unknown.
 	const closed = (await tool.execute("call-14", { operation: "assess", input: JSON.stringify({ nativeReviewOutcome: "closed" }) }, undefined, undefined, ctx)).details as { nativeReviewOutcome: string; outcome_source: string; plan: { independentVerifier: boolean; writerSelfVerification: boolean } };
-	assert.equal(closed.nativeReviewOutcome, "closed");
-	assert.equal(closed.outcome_source, "explicit");
+	assert.equal(closed.nativeReviewOutcome, "unknown");
+	assert.equal(closed.outcome_source, "unknown");
 	assert.equal(closed.plan.writerSelfVerification, true);
-	assert.equal(closed.plan.independentVerifier, false, "an explicit closed outcome restores the on-path: no separate verifier");
+	assert.equal(closed.plan.independentVerifier, true, "an uncorroborated closed claim must keep the separate verifier");
+});
+
+// ---------------------------------------------------------------------------
+// gentle-pi#1175 (T2): closure comes only from the exact native evidence of
+// THIS assess call -- candidate.consumed === true, which native writes only
+// inside the approved-acknowledgement burn for that exact target identity.
+// ---------------------------------------------------------------------------
+
+interface ClosureCliOptions {
+	rdd?: "on" | "off";
+	risk?: "passive" | "medium" | "high";
+	/** undefined models an older binary that reports no consumed/review_due. */
+	consumed?: boolean;
+	targetIdentity?: () => string;
+	unassessable?: boolean;
+}
+
+function closureCli(options: ClosureCliOptions): Partial<NativeReviewCli> {
+	const rdd = options.rdd ?? "on";
+	const risk = options.risk ?? "high";
+	const raw = options.consumed === undefined
+		? validEnvelope({ risk, reasons: [] })
+		: validEnvelope({
+			risk,
+			reasons: [],
+			candidate: { kind: "current-changes", consumed: options.consumed },
+			review_due: options.consumed ? false : risk === "high",
+			review_due_reason: options.consumed ? "already_reviewed" : risk === "high" ? "high_risk" : risk === "passive" ? "passive" : "under_budget",
+		});
+	return {
+		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: rdd, cloneLocal: "", effective: rdd, source: NATIVE_REVIEW_MODE_SOURCE.GLOBAL } }),
+		assess: async () => {
+			if (options.unassessable) throw new Error("native process failed");
+			return decodeReviewAssessmentV1(raw);
+		},
+		...(options.targetIdentity === undefined ? {} : {
+			targetStatus: (async () => ({ applicability: "current_target", targetIdentity: options.targetIdentity!() })) as unknown as NativeReviewCli["targetStatus"],
+		}),
+	};
+}
+
+interface AssessDetails {
+	risk: string;
+	nativeReviewOutcome: string;
+	outcome_source: string;
+	writerProfile: string;
+	writerProfileSource: string;
+	plan: { writerSelfVerification: boolean; independentVerifier: boolean; structuralReadbackOnly: boolean };
+}
+
+async function assessWith(cli: Partial<NativeReviewCli>, input?: Record<string, unknown>, context: ExtensionContext = ctx): Promise<AssessDetails> {
+	const params = input === undefined ? { operation: "assess" } : { operation: "assess", input: JSON.stringify(input) };
+	return (await reviewControllerTool(cli).execute("closure", params, undefined, undefined, context)).details as AssessDetails;
+}
+
+test("gentle_review assess: native consumed true derives closed for this candidate", async () => {
+	const details = await assessWith(closureCli({ consumed: true }));
+	assert.equal(details.nativeReviewOutcome, "closed");
+	assert.equal(details.outcome_source, "derived");
+	assert.equal(details.plan.writerSelfVerification, true);
+	assert.equal(details.plan.independentVerifier, false, "a natively closed candidate restores the RDD on-path");
+});
+
+test("gentle_review assess: a caller-declared closed without native consumed evidence fails closed to unknown", async () => {
+	for (const consumed of [false, undefined]) {
+		const details = await assessWith(closureCli({ consumed }), { nativeReviewOutcome: "closed" });
+		assert.equal(details.nativeReviewOutcome, "unknown", `consumed ${String(consumed)}`);
+		assert.equal(details.outcome_source, "unknown");
+		assert.equal(details.plan.independentVerifier, true);
+	}
+});
+
+test("gentle_review assess: a caller-declared closed corroborated by native consumed stays closed", async () => {
+	const details = await assessWith(closureCli({ consumed: true }), { nativeReviewOutcome: "closed" });
+	assert.equal(details.nativeReviewOutcome, "closed");
+	assert.equal(details.outcome_source, "derived", "closure is attributed to the native evidence, not to the caller's claim");
+	assert.equal(details.plan.independentVerifier, false);
+});
+
+test("gentle_review assess: explicit declined, unavailable, or unknown beats native consumed (only ever raises the bar)", async () => {
+	for (const outcome of ["declined", "unavailable", "unknown"]) {
+		const details = await assessWith(closureCli({ consumed: true }), { nativeReviewOutcome: outcome });
+		assert.equal(details.nativeReviewOutcome, outcome);
+		assert.equal(details.outcome_source, "explicit");
+		assert.equal(details.plan.independentVerifier, true, `${outcome} must keep the risk-gated verifier`);
+	}
+});
+
+test("gentle_review assess: a recorded decline for the same candidate beats native consumed and a caller-declared closed", async (t) => {
+	t.after(() => __testing.clearNativeReviewOutcomeMemoForTesting());
+	__testing.clearNativeReviewOutcomeMemoForTesting();
+	__testing.recordNativeReviewOutcome(ctx.cwd, "target-a", "declined");
+	const cli = closureCli({ consumed: true, targetIdentity: () => "target-a" });
+	for (const input of [undefined, { nativeReviewOutcome: "closed" }]) {
+		const details = await assessWith(cli, input);
+		assert.equal(details.nativeReviewOutcome, "declined", JSON.stringify(input));
+		assert.equal(details.outcome_source, "derived");
+		assert.equal(details.plan.independentVerifier, true);
+	}
+});
+
+test("gentle_review assess: a different candidate never inherits closure or a recorded decline", async (t) => {
+	t.after(() => __testing.clearNativeReviewOutcomeMemoForTesting());
+	__testing.clearNativeReviewOutcomeMemoForTesting();
+	__testing.recordNativeReviewOutcome(ctx.cwd, "target-a", "declined");
+	// Candidate B was natively closed: A's recorded decline must not leak into it.
+	const closedB = await assessWith(closureCli({ consumed: true, targetIdentity: () => "target-b" }));
+	assert.equal(closedB.nativeReviewOutcome, "closed");
+	// Candidate C follows B, but its own assessment is not consumed: B's closure never carries over.
+	const openC = await assessWith(closureCli({ consumed: false, targetIdentity: () => "target-c" }));
+	assert.equal(openC.nativeReviewOutcome, "unknown");
+	assert.equal(openC.outcome_source, "unknown");
+	assert.equal(openC.plan.independentVerifier, true);
+});
+
+test("gentle_review assess: an unassessable candidate is never closed", async () => {
+	for (const input of [undefined, { nativeReviewOutcome: "closed" }]) {
+		const details = await assessWith(closureCli({ unassessable: true }), input);
+		assert.equal(details.risk, VERIFICATION_TIER.UNASSESSABLE);
+		assert.equal(details.nativeReviewOutcome, "unknown");
+		assert.equal(details.plan.independentVerifier, true);
+	}
+});
+
+test("gentle_review assess: derived closure only changes the RDD on-path; RDD off plans are unchanged", async () => {
+	for (const risk of ["passive", "medium", "high"] as const) {
+		for (const consumed of [true, false]) {
+			const off = await assessWith(closureCli({ rdd: "off", risk, consumed }), { writerModelId: "claude-sonnet-5", writerEffort: "high" });
+			const expectedOff = verificationPlan({ rddLine: RDD_LINE.OFF, risk, writerProfile: WRITER_PROFILE.LARGE });
+			assert.deepEqual(off.plan, { ...expectedOff }, `off ${risk} consumed ${consumed}`);
+			const on = await assessWith(closureCli({ rdd: "on", risk, consumed }), { writerModelId: "claude-sonnet-5", writerEffort: "high" });
+			const expectedOn = verificationPlan({ rddLine: RDD_LINE.ON, risk, writerProfile: WRITER_PROFILE.LARGE, nativeReviewOutcome: consumed ? NATIVE_REVIEW_OUTCOME.CLOSED : NATIVE_REVIEW_OUTCOME.UNKNOWN });
+			assert.deepEqual(on.plan, { ...expectedOn }, `on ${risk} consumed ${consumed}`);
+		}
+	}
+});
+
+// ---------------------------------------------------------------------------
+// gentle-pi#1175 (T2): the writer profile comes from the runtime-recorded
+// mutation receipts for this root; caller input is used only when no pending
+// runtime receipt exists.
+// ---------------------------------------------------------------------------
+
+interface RuntimeProfileFields {
+	writerModelId?: string;
+	writerEffort?: string;
+}
+
+function receiptContext(): { context: ExtensionContext; record(evidence: RuntimeProfileFields & { toolCallId: string }): void; consumeAll(): void } {
+	const entries: Array<{ type: string; customType: string; data: unknown }> = [];
+	const session = { getSessionId: () => "assess-session", getBranch: () => entries, getCwd: () => process.cwd() };
+	const host = { appendEntry: (customType: string, data: unknown) => { entries.push({ type: "custom", customType, data }); } };
+	const root = workspaceRoot();
+	return {
+		context: { cwd: process.cwd(), sessionManager: session } as unknown as ExtensionContext,
+		record: (evidence) => recordReviewMutation(host, session, root, { source: "direct", toolName: "write", ...evidence }),
+		consumeAll: () => consumeReviewMutation(host, session, root, pendingReviewMutation(session, root), "acknowledged", "target"),
+	};
+}
+
+function workspaceRoot(): string {
+	return realpathSync(execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: process.cwd(), encoding: "utf8" }).trim());
+}
+
+const mediumOffCli = (): Partial<NativeReviewCli> => closureCli({ rdd: "off", risk: "medium" });
+
+test("gentle_review assess: the runtime writer profile wins over contradicting caller input", async () => {
+	const small = receiptContext();
+	small.record({ toolCallId: "w1", writerModelId: "openai/gpt-5-mini", writerEffort: "high" });
+	const claimedLarge = await assessWith(mediumOffCli(), { writerModelId: "claude-sonnet-5", writerEffort: "high" }, small.context);
+	assert.equal(claimedLarge.writerProfile, "small");
+	assert.equal(claimedLarge.writerProfileSource, "runtime");
+	assert.equal(claimedLarge.plan.independentVerifier, true, "a caller can never talk a runtime mini writer into a large profile");
+
+	const large = receiptContext();
+	large.record({ toolCallId: "w1", writerModelId: "google/gemini-2.5-pro", writerEffort: "high" });
+	const claimedSmall = await assessWith(mediumOffCli(), { writerEffort: "low" }, large.context);
+	assert.equal(claimedSmall.writerProfile, "large", "gemini must never count as mini");
+	assert.equal(claimedSmall.writerProfileSource, "runtime");
+	assert.equal(claimedSmall.plan.independentVerifier, false);
+});
+
+test("gentle_review assess: any small or unknown pending runtime writer makes the profile small", async () => {
+	const cases: Array<{ name: string; receipts: RuntimeProfileFields[] }> = [
+		{ name: "missing model id", receipts: [{ writerModelId: "claude-sonnet-5", writerEffort: "high" }, { writerEffort: "high" }] },
+		{ name: "no profile at all", receipts: [{}] },
+		{ name: "gpt-5-mini", receipts: [{ writerModelId: "claude-sonnet-5", writerEffort: "high" }, { writerModelId: "gpt-5-mini", writerEffort: "high" }] },
+		{ name: "low effort", receipts: [{ writerModelId: "claude-sonnet-5", writerEffort: "low" }] },
+	];
+	for (const entry of cases) {
+		const fixture = receiptContext();
+		entry.receipts.forEach((receipt, index) => fixture.record({ toolCallId: `w${index}`, ...receipt }));
+		const details = await assessWith(mediumOffCli(), { writerModelId: "claude-sonnet-5", writerEffort: "high" }, fixture.context);
+		assert.equal(details.writerProfile, "small", entry.name);
+		assert.equal(details.writerProfileSource, "runtime", entry.name);
+		assert.equal(details.plan.independentVerifier, true, entry.name);
+	}
+
+	const known = receiptContext();
+	known.record({ toolCallId: "w1", writerModelId: "google/gemini-2.5-pro", writerEffort: "high" });
+	known.record({ toolCallId: "w2", writerModelId: "anthropic/claude-sonnet-5", writerEffort: "medium" });
+	const details = await assessWith(mediumOffCli(), undefined, known.context);
+	assert.equal(details.writerProfile, "large");
+	assert.equal(details.writerProfileSource, "runtime");
+});
+
+test("gentle_review assess: without pending runtime receipts the caller input path is unchanged", async () => {
+	const fixture = receiptContext();
+	fixture.record({ toolCallId: "w1", writerModelId: "gpt-5-mini" });
+	fixture.consumeAll();
+	const caller = await assessWith(mediumOffCli(), { writerModelId: "claude-sonnet-5", writerEffort: "high" }, fixture.context);
+	assert.equal(caller.writerProfile, "large", "a consumed runtime receipt is no longer evidence for the next candidate");
+	assert.equal(caller.writerProfileSource, "caller");
+
+	const callerSmall = await assessWith(mediumOffCli(), { writerEffort: "low" }, fixture.context);
+	assert.equal(callerSmall.writerProfile, "small");
+	assert.equal(callerSmall.writerProfileSource, "caller");
+
+	const fallback = await assessWith(mediumOffCli(), undefined, fixture.context);
+	assert.equal(fallback.writerProfile, "small");
+	assert.equal(fallback.writerProfileSource, "fallback");
+	assert.equal(fallback.plan.independentVerifier, true);
+
+	// No session at all behaves exactly the same way.
+	const noSession = await assessWith(mediumOffCli());
+	assert.equal(noSession.writerProfile, "small");
+	assert.equal(noSession.writerProfileSource, "fallback");
 });
 
 test("gentle_review assess never requires a lineageId (unlike most other operations)", async () => {
