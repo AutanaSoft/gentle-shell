@@ -1,4 +1,6 @@
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
+import { recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
+import { blockChildDestructiveCommand } from "./child-safety.ts";
 import { allowedEditSurfaces as hasTaskScopedAllowedEditSurfaces, bindSessionRepositoryPreparation, captureBoundSessionRepositoryAuthority, prepareBoundSessionRepository, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sourcePathWithinProject } from "../lib/bounded-writer-admission.ts";
 import { consumeReviewMutation, pendingReviewMutation, pendingReviewMutationProfiles, recordReviewMutation, type ReceiptSession } from "../lib/review-reminder-receipt.ts";
 import { createReviewSidebarPublisher } from "../lib/review-sidebar-state.ts";
@@ -1278,8 +1280,8 @@ const DENIED_BASH_PATTERNS: RegExp[] = [
 	/\bgit\s+reset\s+--hard\b/,
 	/\bgit\s+clean\b(?=[^\n]*(?:-[^\n]*f|--force))(?=[^\n]*(?:-[^\n]*d|--directories))/,
 	// Force-push deny: tolerates git global flags (e.g. -C /repo) before the subcommand
-	new RegExp(String.raw`\bgit${GIT_GLOBAL_FLAGS_SRC}push\b(?=[^\n]*\s--force(?:-with-lease)?\b)`),
-	new RegExp(String.raw`\bgit${GIT_GLOBAL_FLAGS_SRC}push\b(?=[^\n]*\s-[^\s-]*f)`),
+	new RegExp(String.raw`\bgit${GIT_GLOBAL_FLAGS_SRC}push\b(?=[^\r\n;&|]*\s--force(?:-with-lease)?\b)`),
+	new RegExp(String.raw`\bgit${GIT_GLOBAL_FLAGS_SRC}push\b(?=[^\r\n;&|]*\s-[^\s-]*f)`),
 	/\bchmod\s+-R\s+777\b/,
 	/\bchown\s+-R\b/,
 ];
@@ -1305,6 +1307,7 @@ interface GuardMatch {
 
 interface GuardEvaluation {
 	action: GuardClassification;
+	dataLoss?: boolean;
 	key?: GuardedCommandKey;
 	triggerIndex: number;
 	matches: GuardMatch[];
@@ -1400,6 +1403,9 @@ function evaluateGuardedCommand(
 	config: RuntimeGuardrailsConfig,
 ): GuardEvaluation {
 	const matches = collectGuardedMatches(command, config);
+	const destructive = recognizeDestructiveCommands(command);
+	const hardDeny = destructive.find((match) => match.hardDeny);
+	if (hardDeny) return { action: "block", triggerIndex: hardDeny.triggerIndex, matches };
 
 	// Hard denies override every configured action across the complete command.
 	for (const pattern of DENIED_BASH_PATTERNS) {
@@ -1416,7 +1422,13 @@ function evaluateGuardedCommand(
 		};
 	}
 
-	// Configured block, then confirmation, then allow win across all matches.
+	// Explicit configured blocks outrank recognized data-loss confirmation.
+	const configuredBlock = matches.find((match) => match.action === "block");
+	if (configuredBlock) return { ...configuredBlock, matches };
+	const dataLoss = destructive.find((match) => match.kind !== "git");
+	if (dataLoss) return { action: "confirm", dataLoss: true, triggerIndex: dataLoss.triggerIndex, matches };
+
+	// Confirmation, then allow win across remaining matches.
 	const selected = matches.find((match) => match.action === "block")
 		?? matches.find((match) => match.action === "confirm")
 		?? matches.find((match) => match.action === "allow");
@@ -1774,7 +1786,9 @@ async function confirmCommand(
 				"Gentle AI safety policy requires interactive confirmation before this command.",
 		};
 	}
-	const title = guardedCommandTitle(evaluation.key, evaluation.matches);
+	const title = evaluation.dataLoss
+		? "Allow recognized data-loss command?"
+		: guardedCommandTitle(evaluation.key, evaluation.matches);
 	const preview = guardedCommandPreview(command, evaluation.triggerIndex);
 	const requestId = randomUUID();
 	const emitPermissionRequest = (
@@ -1794,7 +1808,7 @@ async function confirmCommand(
 	emitPermissionRequest("waiting");
 	herdrLifecycle.begin();
 	try {
-		approved = await ctx.ui.confirm(title, preview);
+		approved = (await ctx.ui.confirm(title, preview)) === true;
 	} catch (error) {
 		confirmationFailed = true;
 		confirmationError = error;
@@ -9493,6 +9507,10 @@ function createGentleAiExtensionForTesting(
 		if (event.toolName !== "bash") return undefined;
 		if (!isRecord(event.input) || typeof event.input.command !== "string") {
 			return undefined;
+		}
+		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1") {
+			const childDenied = blockChildDestructiveCommand(event.input.command);
+			if (childDenied) return childDenied;
 		}
 		return await confirmCommand(event.input.command, ctx, pi.events, herdrLifecycle);
 	});

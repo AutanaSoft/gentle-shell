@@ -7,6 +7,39 @@ import { __testing } from "../extensions/gentle-ai.ts";
 
 const { classifyGuardedCommand, evaluateGuardedCommand, guardedCommandPreview, guardedCommandTitle } = __testing;
 
+test("recognized data loss requires fresh confirmation across autonomous and mixed commands", () => {
+	for (const command of [
+		`psql -c 'DROP TABLE users'`,
+		`mysql -e 'TRUNCATE TABLE users'`,
+		`sqlite3 app.db 'DELETE FROM users'`,
+		`git push origin main && rm -rf ./data`,
+		`sh -c "psql -c 'DROP DATABASE app'"`,
+	]) {
+		assert.equal(classifyGuardedCommand(command, { autonomousMode: true, guardedCommands: { gitPush: "allow" } }), "confirm", command);
+	}
+	assert.equal(classifyGuardedCommand(`psql -c 'DROP TABLE users' && npm publish`, {
+		autonomousMode: true, guardedCommands: { npmPublish: "block" },
+	}), "block", "configured blocks still take precedence");
+});
+
+test("quoted separator arguments cannot waive hard denial or invent destruction", () => {
+	const config = { autonomousMode: true, guardedCommands: { gitPush: "allow" as const } };
+	for (const command of [`git push ';' -f main`, `git push '|' --force main`, `rm -r ';' /`]) {
+		assert.equal(classifyGuardedCommand(command, config), "block", command);
+	}
+	for (const command of [
+		String.raw`sh -c "psql -c \"DROP TABLE users\""`,
+		`psql -c 'DELETE FROM "where"'`,
+		String.raw`find cache -exec echo {} \; -exec rm -r {} \;`,
+		`sudo -n rm -r ./data`, `command -p psql -c 'DROP TABLE users'`,
+	]) {
+		assert.equal(classifyGuardedCommand(command, config), "confirm", command);
+	}
+	for (const command of [`echo ';' rm -r cache`, `printf '%s ' ';' rm -r ./data`]) {
+		assert.equal(classifyGuardedCommand(command, config), "not-guarded", command);
+	}
+});
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
