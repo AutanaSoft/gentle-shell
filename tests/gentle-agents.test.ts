@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
+import { fileURLToPath } from "node:url";
 import { pendingReviewMutation, pendingReviewMutationProfiles, REVIEW_REMINDER_RECEIPT } from "../lib/review-reminder-receipt.ts";
 import { SESSION_WORKTREE_ENTRY, SESSION_WORKTREE_CHANGED, resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
@@ -4308,7 +4309,7 @@ test("issue #1162: task-mode subagent_run includes question directly in waiting 
 // isolated Gentle Shell home, so every child receives the child-context
 // extension explicitly through --extension.
 test("children receive the child-context extension, and a missing file is omitted", async () => {
-	const expected = join(dirname(new URL(import.meta.url).pathname), "..", "extensions", "child-context.ts");
+	const expected = join(dirname(fileURLToPath(import.meta.url)), "..", "extensions", "child-context.ts");
 	assert.deepEqual(childContextExtensionPaths(), [resolve(expected)]);
 	assert.deepEqual(childContextExtensionPaths(() => false), [], "a missing extension file fails safe to no --extension");
 	const extensionArguments = (args: string[]) => args.filter((_, index) => args[index - 1] === "--extension");
