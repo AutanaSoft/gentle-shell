@@ -28,6 +28,8 @@ Option A: the launcher idempotently ensures `-builtin:codemode` in the `extensio
 
 - [x] T1 — Launcher ensures `-builtin:codemode` in isolated home settings `extensions` on launch (not `--link`, not `--dry-run`), idempotent, with tests. Route: delegated (writer trigger: launcher + tests, 2+ non-trivial files). Risk: high (edits user-visible settings file, installer/launcher).
 - [x] T2 — Startup banner reads `mcp.json` from the active Pi agent dir (`getAgentDir()`) instead of `~/.pi/agent`. Route: delegated with T1 writer (same session, separate commit). Risk: medium.
+- [x] T3 — Startup banner uses the active agent dir (`getAgentDir()`) for every count still reading the hardcoded `PI_AGENT_DIR` (`~/.pi/agent`): settings.json packages/extensions (~line 707), npm node_modules (`PI_NPM_DIR`), agents dir (~line 518). Authorized by user 2026-10-01. Route: delegated. Risk: medium.
+- [x] T4 — Launcher atomic settings/config writes preserve symlinks (RDD advisory R3-001, bin/gentle-shell.mjs:746-749; same pattern at ~318, 576, 639, 683): one shared helper resolves the real target before temp-write + rename. Authorized by user 2026-10-01. Route: delegated. Risk: high (user config files, launcher).
 
 ## Acceptance criteria
 
@@ -38,7 +40,7 @@ Option A: the launcher idempotently ensures `-builtin:codemode` in the `extensio
 
 ## Delivery
 
-Forecast: ~150 authored changed lines. Strategy: `ask-on-risk` (under budget, single PR). Push/PR are user decisions.
+Forecast: ~150 authored changed lines (T1-T2). Running count after T3+T4 (git diff --stat 1403d0397~1..662d3b487, excluding odd/): 494 lines (472 additions + 22 deletions), over the ~400 budget; `ask-on-risk` requires a chain-strategy decision from the user before the PR. Strategy: `ask-on-risk`. Push/PR are user decisions.
 
 ## Progress / evidence
 
@@ -61,6 +63,20 @@ Forecast: ~150 authored changed lines. Strategy: `ask-on-risk` (under budget, si
   - `node scripts/check-types.mjs`: exit 0, no regressions.
   - `npm test`: FAIL in the delegated-worker environment, 4424 pass / 5 fail / 34 skipped; all 5 in `tests/gentle-ai.test.ts` (Herdr/permission lifecycle), caused by the inherited `GENTLE_PI_AGENTS_CHILD` env var (that file passes 90/90 with it unset). `env -u GENTLE_PI_AGENTS_CHILD npm test`: all stages PASS, 4429 pass / 0 fail / 34 skipped.
 
+- 2026-10-01 T3 (delegated writer, risk medium): removed the `PI_AGENT_DIR`/`PI_NPM_DIR` constants from `extensions/startup-banner.ts`; `settings.json` (packages/extensions), `npm/node_modules/<pkg>/package.json` and `agents/` now resolve from `getAgentDir()` at call time.
+  - RED: new `tests/startup-banner.test.ts` case rendered `PLUGINS: 4 package(s)`, `AGENTS: 7 agents`, `EXTENSIONS: 20 active` (the non-active dir). GREEN: `1 package(s)`, `2 active`, `3 agents` from `<PI_CODING_AGENT_DIR>`; file 11/11 pass.
+  - Commit: `1393db7ca` fix(banner): read every startup count from the active agent dir.
+- 2026-10-01 T4 (delegated writer, risk high): one `writeFileAtomically(path, data, { mode })` helper in `bin/gentle-shell.mjs` now backs all five atomic writes (`writeRawConfig`, `restoreFile`, `restoreManagedAssetDigestField`, `enforceDefaultThemeField`, `ensureBuiltinCodemodeExcluded`). It `realpathSync`s the path, writes the temp file next to the real target, `chmod`s it to the explicit `mode` (restoreFile's snapshot mode) or the real target's own bits (umask-proof), renames onto the real target, and removes the temp file before rethrowing on failure.
+  - Decision: a missing path or dangling symlink (`realpathSync` ENOENT) is written at `path` itself, as before, instead of creating a file wherever the dangling link points (never follows a link to create an arbitrary file); other realpath errors propagate to the existing `safely(...)` wrappers.
+  - Semantics note: `writeRawConfig` passed no mode, so a rewrite used the default creation mode; it now keeps an existing config.json's bits. Temp names unified to `.<name>.gentle-shell-<pid>.tmp`.
+  - RED: 3 new `tests/gentle-shell-bin.test.ts` cases (codemode exclusion, setup theme restore, `home link` config persistence) failed with `... is still a symlink`. GREEN: all pass, targets keep 0o640/0o600 and no `.tmp` remains; a triangulation case pins the dangling-link fallback. Symlink tests skip where file symlinks are unavailable (Windows without privileges).
+  - Commit: `662d3b487` fix(shell): keep symlinked settings intact on atomic writes.
+- 2026-10-01 verification after T3+T4 (all with `GENTLE_PI_AGENTS_CHILD` unset):
+  - `node --experimental-strip-types --test tests/gentle-shell-bin.test.ts tests/startup-banner.test.ts`: 138/138 pass.
+  - `node --experimental-strip-types --test tests/gentle-shell-launcher.test.ts`: 206/206 pass.
+  - `node scripts/check-types.mjs`: exit 0, 187 recorded diagnostics, no regressions.
+  - `npm test`: exit 0, stages unit-tests / provider-contract / runtime-harness PASS; 4434 pass / 0 fail / 34 skipped.
+
 ## Next step
 
-Parent review of both commits; push/PR remain user decisions.
+Parent review of the T3/T4 commits; push/PR remain user decisions.
