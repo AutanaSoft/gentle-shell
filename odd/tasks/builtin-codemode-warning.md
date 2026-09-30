@@ -52,6 +52,7 @@ Forecast: ~150 authored changed lines. Strategy: `ask-on-risk` (under budget, si
   - Commit: `1403d0397` fix(shell): exclude builtin codemode in the isolated home settings.
 - 2026-10-01 T2 (delegated writer, risk medium): the planned `PI_AGENT_DIR` reuse was a wrong premise — `extensions/startup-banner.ts` defines it as the constant `~/.pi/agent`, so it would not follow Gentle Shell. The MCP read now uses Pi's own `getAgentDir()` (honors `PI_CODING_AGENT_DIR`), matching Pi's loader `join(agentDir, "mcp.json")` and `extensions/resume-hint.ts`.
   - RED: new `tests/startup-banner.test.ts` case rendered `MCP: 5 server(s)` (the non-active mcp.json). GREEN: renders `MCP: 2 server(s)` from `<PI_CODING_AGENT_DIR>/mcp.json`; file 10/10 pass.
+  - Commit: `39c8d870d` fix(banner): count MCP servers from the active agent dir.
   - Follow-up (not authorized, not changed): the banner's `PI_AGENT_DIR` constant still drives `settings.json` (plugins/extensions counts), `agents/` and `npm/node_modules`, so those counts also read `~/.pi/agent` under Gentle Shell.
 - 2026-10-01 verification after T1+T2:
   - `node --experimental-strip-types --test tests/gentle-shell-bin.test.ts`: 123/123 pass.
