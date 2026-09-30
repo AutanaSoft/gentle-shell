@@ -17,7 +17,10 @@ import { GentleAiElapsedTimingLedger } from "../lib/gentle-ai-elapsed-store.ts";
 import { quietToolsEnabled } from "../lib/quiet-tools-config.ts";
 import { registerCompactCodemode } from "../lib/codemode-renderer.ts";
 import { getGentleAiRenderState, renderGentleAiLifecycleCall, renderGentleAiResult, type GentleAiRenderContext } from "../lib/gentle-ai-renderer.ts";
-import { CARD_TONE, cardBottom, cardInnerWidth, cardLine, cardTopRows, floatRows, type CardTheme } from "../lib/shell-card.ts";
+import {
+	CARD_TONE, cardAwaitingResult, cardBottom, cardInnerWidth, cardLine, cardRunningLine, cardTopRows, floatRows, markCardResult,
+	type CardRowContext, type CardTheme,
+} from "../lib/shell-card.ts";
 import { sanitizeTerminalText, stripAnsi } from "../lib/terminal-theme.ts";
 
 type QuietToolName = "read" | "bash" | "grep" | "find" | "ls" | "edit" | "write";
@@ -558,6 +561,7 @@ class BoundedRows implements Component {
 // prose. pi does not paint tool backgrounds for renderShell "self", so the
 // frame tone carries the status the painted Box would otherwise show. The call
 // owns the top rule; the result draws the sides and always closes the frame.
+// Until the first result exists, the call closes the frame itself.
 type ToolTone = typeof CARD_TONE.WARNING | typeof CARD_TONE.SUCCESS | typeof CARD_TONE.ERROR;
 
 function toolTone(pending: boolean, failed: boolean): ToolTone {
@@ -571,21 +575,26 @@ class ToolCardTop implements Component {
 	private readonly tone: ToolTone;
 	private readonly theme: CardTheme;
 	private readonly hint: string | undefined;
+	private readonly row: CardRowContext | undefined;
 
-	constructor(header: () => string, tone: ToolTone, theme: CardTheme, glyph: string, hint?: string) {
+	constructor(header: () => string, tone: ToolTone, theme: CardTheme, glyph: string, hint?: string, row?: CardRowContext) {
 		this.header = header;
 		this.glyph = glyph;
 		this.tone = tone;
 		this.theme = theme;
 		this.hint = hint;
+		this.row = row;
 	}
 
 	/** Renders `╭─ <icon> <call> ── <hint> ╮`, reserving applicable hint space before wrapping the call. A call that does not fit the rule (a long or multi-line command) continues on card rows below it, so every line of the command stays visible. */
 	render(width: number): string[] {
 		const target = Math.max(0, Math.floor(width));
 		if (target === 0) return [];
+		const running = this.row !== undefined && cardAwaitingResult(this.row);
 		return floatRows(this.tone, this.theme, target, (inner) => ({
 			head: cardTopRows({ title: this.header(), glyph: this.glyph, body: [], tone: this.tone }, this.theme, inner, this.hint),
+			body: running ? [cardRunningLine(this.tone, this.theme, inner)] : undefined,
+			bottom: running ? cardBottom(this.tone, this.theme, inner) : undefined,
 		}));
 	}
 
@@ -706,11 +715,12 @@ function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArg
 			// Same place and wording as the Gentle AI card: the expand key rides the top rule once the call finished.
 			const finished = renderContext.isPartial === false && (renderContext.executionStarted === true || renderContext.isError === true);
 			const hint = finished ? stripAnsi(keyHint("app.tools.expand", renderContext.expanded === true ? "to collapse" : "to expand")) : undefined;
-			return new ToolCardTop(() => formatToolCall(toolName, callArgs, theme), tone, theme, TOOL_GLYPH[toolName], hint);
+			return new ToolCardTop(() => formatToolCall(toolName, callArgs, theme), tone, theme, TOOL_GLYPH[toolName], hint, renderContext);
 		},
 		/** Builds the card component for this render pass; collapsed cards delegate to the wrapped-line cache keyed by the tool result object. */
 		renderResult(result, options, theme, context) {
 			const renderContext = context as ToolRenderContextLike | undefined;
+			markCardResult(renderContext?.state);
 			const cacheKey = typeof result === "object" && result !== null ? result : undefined;
 			const safeResult = sanitizedResult(result);
 			const text = safeText(extractTextContent(safeResult));

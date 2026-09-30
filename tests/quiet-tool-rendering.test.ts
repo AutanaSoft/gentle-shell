@@ -58,6 +58,7 @@ function routineRenderContext(overrides: Record<string, unknown> = {}) {
 // helpers, and the quiet card tests assert the raw frame via frameLines.
 // Legacy bash argument assertions drop its new identity prefix here; distinct
 // tool identity is asserted separately against the actual unmodified frame.
+// A pending call's `running…` row is frame chrome too, asserted separately.
 const TAG = "(?:</?[a-zA-Z]+>)*";
 const CARD_TOP = new RegExp(`^${TAG}╭─ ${TAG}[✿≡$⌕⌖☷✎+]${TAG} (.*?) ${TAG}─+${TAG}(?: .*? )?${TAG}╮${TAG}$`);
 const CARD_SIDE = new RegExp(`^${TAG}│${TAG} (.*) ${TAG}│${TAG}$`);
@@ -71,12 +72,14 @@ const QUIET_CARD_COMPONENTS = new Set(["ToolCardTop", "ToolCardBody"]);
 
 function renderLines(component: { render(width: number): string[] }, width = 120): string[] {
 	if (!QUIET_CARD_COMPONENTS.has(component.constructor.name)) return component.render(width).map((line) => line.trimEnd());
+	const call = component.constructor.name === "ToolCardTop";
 	return component.render(width).flatMap((line) => {
 		if (CARD_BOTTOM.test(line)) return [];
 		const top = CARD_TOP.exec(line);
 		if (top) return [top[1]!.replace(/^(?:<[^>]+>)*bash(?:<[^>]+>)* /, "").trimEnd()];
 		const side = CARD_SIDE.exec(line);
-		return [(side ? side[1]! : line).trimEnd()];
+		const text = (side ? side[1]! : line).trimEnd();
+		return call && side && text.replace(/<\/?[a-zA-Z]+>/g, "") === "running…" ? [] : [text];
 	});
 }
 
@@ -1448,6 +1451,53 @@ test("quiet tool calls draw a rounded petal card in the lifecycle tone", () => {
 	}
 });
 
+// Pi builds the call component, then the result component once a result
+// exists, and only then renders them; both share one row state.
+function piToolRow(tool: any, args: Record<string, unknown>, value: unknown, context: Record<string, unknown>, width: number, theme: object = passthroughTheme): string[] {
+	const call = tool.renderCall(args, theme, context);
+	const body = value ? tool.renderResult(value, { expanded: context.expanded === true, isPartial: context.isPartial === true }, theme, context) : undefined;
+	return [...call.render(width), ...(body?.render(width) ?? [])];
+}
+
+test("a running quiet card closes its own frame with one running row until a result exists", () => {
+	const tools = registeredQuietTools();
+	const read = tools.get("read");
+	const args = { path: "a.md" };
+	const pending = () => routineRenderContext({ args, executionStarted: true, isPartial: true, state: {} });
+	const running = piToolRow(read, args, undefined, pending(), 40);
+	assert.deepEqual(running, [
+		`╭─ ≡ read a.md ${"─".repeat(24)}╮`,
+		`│ running…${" ".repeat(28)} │`,
+		`╰${"─".repeat(38)}╯`,
+	]);
+	const painted = piToolRow(read, args, undefined, pending(), 40, statusTheme).join("\n");
+	assert.match(painted, /<muted>running…<\/muted>/);
+	assert.match(painted, /<warning>╰<\/warning>/);
+	for (const width of [0, 1, 2, 3, 4, 5, 6, 7, 8]) {
+		const rows = piToolRow(read, args, undefined, pending(), width);
+		assert.ok(rows.every((row) => visibleWidth(row) <= width), `width ${width}`);
+		// Narrow headings may continue on rows below the top rule; the frame still closes once.
+		assert.equal(rows.filter((row) => row.startsWith("╰")).length, width === 0 ? 0 : 1);
+		if (width > 0) assert.ok(rows.at(-1)!.startsWith("╰"), `width ${width}: ${rows.join("\n")}`);
+	}
+
+	// A partial result below the call closes the frame instead: one bottom rule, no running row.
+	const bash = tools.get("bash");
+	const bashArgs = { command: "printf output" };
+	const partial = piToolRow(bash, bashArgs, textResult("out"), routineRenderContext({ args: bashArgs, executionStarted: true, isPartial: true, state: {} }), 40);
+	assert.equal(partial.filter((row) => row.startsWith("╭")).length, 1);
+	assert.equal(partial.filter((row) => row.startsWith("╰")).length, 1);
+	assert.match(partial.at(-1)!, /^╰─+╯$/);
+	assert.doesNotMatch(partial.join("\n"), /running…/);
+
+	// A finished call keeps its open top rule; the result closes the card.
+	const finished = piToolRow(read, args, textResult("one"), routineRenderContext({ args, executionStarted: true, isPartial: false, state: {} }), 40);
+	assert.equal(finished.length, 3);
+	assert.match(finished[0]!, /^╭─ ≡ read a\.md .*╮$/);
+	assert.match(finished[1]!, /^│ one +│$/);
+	assert.match(finished[2]!, /^╰─+╯$/);
+});
+
 
 
 // Float style: the call and result components of one quiet card read as one
@@ -1500,13 +1550,17 @@ test("float quiet cards render the call and result as one panel with a single se
 	assert.equal(plain[1]!.indexOf("≡"), plain[3]!.indexOf("{"), "the glyph starts in the body text column");
 });
 
-test("float quiet cards add no separator without result rows", () => {
+test("float quiet cards close a running call as one panel and add no separator without result rows", () => {
 	const tools = registeredQuietTools();
 	const read = tools.get("read");
-	const running = withFloatCards(() => read.renderCall({ path: "a.md" }, floatToolTheme, routineRenderContext({ args: { path: "a.md" } })).render(40)).map(stripAnsi);
-	assert.equal(running.length, 2, "a running call is the blank row and its heading");
+	const running = withFloatCards(() => read.renderCall({ path: "a.md" }, floatToolTheme, routineRenderContext({ args: { path: "a.md" }, state: {} })).render(40)).map(stripAnsi);
+	assert.equal(running.length, 5, "blank row, heading, separator, running row, closing row");
 	assert.match(running[0]!, /^ ▎ +$/);
 	assert.match(running[1]!, /^ ▎ ≡ read a\.md +$/);
+	assert.match(running[2]!, /^ ▎ +$/);
+	assert.match(running[3]!, /^ ▎ running… +$/);
+	assert.match(running[4]!, /^ ▎ +$/);
+	assert.doesNotMatch(running.join("\n"), /[╭╮╰╯│─]/);
 	const empty = withFloatCards(() => read.renderResult(textResult(""), { expanded: false, isPartial: false }, floatToolTheme, routineRenderContext({ isPartial: false })).render(40)).map(stripAnsi);
 	assert.deepEqual(empty, [` ▎${" ".repeat(37)} `], "an empty result only closes the panel");
 });

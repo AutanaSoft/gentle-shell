@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { CARD_STYLE, CARD_TONE, cardStyle, cardTopRows, renderCard, setCardStyle, type Card, type CardStyle, type CardTone } from "../lib/shell-card.ts";
+import {
+	CARD_STYLE, CARD_TONE, cardAwaitingResult, cardRunningLine, cardStyle, cardTopRows, markCardResult, renderCard, setCardStyle,
+	type Card, type CardStyle, type CardTone,
+} from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
 // Cards are how Gentle notices look: the same rounded frame as the prompt,
@@ -343,4 +346,21 @@ test("legacy renderCard panels stay byte-identical in the float style", () => {
 			}
 		}
 	}
+});
+
+test("a call card awaits its result until pi finishes the row or a result renderer marks it", () => {
+	const state = {};
+	assert.equal(cardAwaitingResult({ isPartial: true, state }), true);
+	assert.equal(cardAwaitingResult({ state }), true, "an unknown lifecycle is still pending");
+	assert.equal(cardAwaitingResult({ isPartial: true }), true, "no shared state: only the final flag closes it");
+	assert.equal(cardAwaitingResult({ isPartial: false, state }), false, "a final result always exists");
+	markCardResult(state);
+	assert.equal(cardAwaitingResult({ isPartial: true, state }), false, "a partial result component closes the frame");
+	assert.deepEqual(Object.keys(state), [], "the mark never shows up as ordinary row state");
+	for (const value of [undefined, null, 1, "state"]) {
+		assert.doesNotThrow(() => markCardResult(value));
+		assert.equal(cardAwaitingResult({ isPartial: true, state: value }), true);
+	}
+	assert.equal(cardRunningLine(CARD_TONE.WARNING, plainTheme, 20), `│ running…${" ".repeat(8)} │`);
+	for (const width of [0, 1, 2, 3, 4, 5, 6, 7, 8]) assert.ok(visibleWidth(cardRunningLine(CARD_TONE.WARNING, plainTheme, width)) <= width);
 });

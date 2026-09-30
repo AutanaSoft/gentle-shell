@@ -8,7 +8,10 @@ import {
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { getCapabilities, imageFallback, type Component } from "@earendil-works/pi-tui";
-import { CARD_TONE, cardBodyRows, cardBottom, cardLine, cardTop, floatRows, type CardTheme, type CardTone } from "./shell-card.ts";
+import {
+	CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardLine, cardRunningLine, cardTop, floatRows, markCardResult,
+	type CardRowContext, type CardTheme, type CardTone,
+} from "./shell-card.ts";
 import { sanitizeTerminalText, stripAnsi } from "./terminal-theme.ts";
 
 const CALL_STATUS = {
@@ -82,23 +85,27 @@ class CodemodeCard implements Component {
 	private readonly hint?: string;
 	// Whether the call card above this result already drew body rows (the script).
 	private readonly afterBody: boolean;
+	// The call card's render context: until a result exists, the call closes the frame.
+	private readonly row?: CardRowContext;
 
-	constructor(theme: CardTheme, tone: CardTone, body: (width: number) => string[], top: boolean, hint?: string, afterBody = false) {
+	constructor(theme: CardTheme, tone: CardTone, body: (width: number) => string[], top: boolean, hint?: string, afterBody = false, row?: CardRowContext) {
 		this.theme = theme;
 		this.tone = tone;
 		this.body = body;
 		this.top = top;
 		this.hint = hint;
 		this.afterBody = afterBody;
+		this.row = row;
 	}
 
 	render(width: number): string[] {
 		const target = Math.max(0, Math.floor(width));
 		if (target === 0) return [];
+		const running = this.top && this.row !== undefined && cardAwaitingResult(this.row);
 		return floatRows(this.tone, this.theme, target, (inner) => ({
 			head: this.top ? [cardTop({ title: "Code", glyph: "λ", body: [], tone: this.tone }, this.theme, inner, this.hint)] : [],
-			body: this.body(inner),
-			bottom: this.top ? undefined : cardBottom(this.tone, this.theme, inner),
+			body: running ? [...this.body(inner), cardRunningLine(this.tone, this.theme, inner)] : this.body(inner),
+			bottom: this.top && !running ? undefined : cardBottom(this.tone, this.theme, inner),
 			afterHeading: !this.top && !this.afterBody,
 		}));
 	}
@@ -116,9 +123,10 @@ export function decorateCodemodeTool(tool: ToolDefinition): ToolDefinition {
 			const code = record(args).code;
 			const rows = context.expanded && typeof code === "string" ? [safe(code)] : [];
 			const hint = stripAnsi(keyHint("app.tools.expand", context.expanded ? "to collapse" : "to expand"));
-			return new CodemodeCard(theme, tone, (width) => cardBodyRows(rows, tone, theme, width, { expanded: true }), true, hint);
+			return new CodemodeCard(theme, tone, (width) => cardBodyRows(rows, tone, theme, width, { expanded: true }), true, hint, false, context);
 		},
 		renderResult(result, options, theme, context) {
+			markCardResult(context?.state);
 			const calls = observedCalls(result.details);
 			const isError = context.isError || record(result).isError === true;
 			const failures = calls.filter(failed).length;

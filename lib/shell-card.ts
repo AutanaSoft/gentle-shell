@@ -193,6 +193,37 @@ export function cardBodyRows(
 	return shown.map((line) => cardLine(line, tone, theme, width));
 }
 
+// Pi draws a tool row as the call component followed, once a result exists,
+// by the result component, which closes the frame. The call cannot see the
+// result, so result renderers mark the row state both share, and a call still
+// waiting for its first result closes its own frame.
+const RESULT_MARK = Symbol.for("gentle-pi.card-result");
+const RUNNING_TEXT = "running…";
+const RUNNING_ROLE = "muted";
+
+/** The fields of pi's tool render context that tell whether a result exists. */
+export interface CardRowContext {
+	isPartial?: boolean;
+	state?: unknown;
+}
+
+/** Result renderers mark the shared row state: from now on a result component closes the card. */
+export function markCardResult(state: unknown): void {
+	if (state !== null && typeof state === "object") (state as Record<symbol, unknown>)[RESULT_MARK] = true;
+}
+
+/** Whether a call card must close its own frame. Read it at render time: pi builds the result component after the call. */
+export function cardAwaitingResult(context: CardRowContext): boolean {
+	if (context.isPartial === false) return false;
+	const state = context.state;
+	return !(state !== null && typeof state === "object" && (state as Record<symbol, unknown>)[RESULT_MARK] === true);
+}
+
+/** The muted body row of a call card that is still waiting for its result. */
+export function cardRunningLine(tone: CardTone, theme: CardTheme, width: number): string {
+	return cardLine(theme.fg(RUNNING_ROLE, RUNNING_TEXT), tone, theme, width);
+}
+
 /** Quiet calls may continue long or multiline headings inside the same frame. */
 export function cardTopRows(card: Card, theme: CardTheme, width: number, hint?: string): string[] {
 	const target = Math.max(0, Math.floor(width));

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
 	createCodemodeExtension,
 	initTheme,
+	keyHint,
 	type AgentToolResult,
 	type ExtensionAPI,
 	type ExtensionFactory,
@@ -412,4 +413,76 @@ test("float Code cards separate the heading from the first body rows exactly onc
 
 	const failed = renderFloat(tool, result([], "Script failed"), context({ isError: true }));
 	for (const line of failed) assert.ok(line.startsWith(" \x1b[48;5;52m"), JSON.stringify(line));
+});
+
+// Pi builds the call component, then the result component once a result
+// exists, and only then renders them: the call learns about the result at
+// render time, through the row state both renderers share.
+function piRow(tool: ToolDefinition, value: AgentToolResult<unknown> | undefined, ctx: ToolRenderContext, width: number, paint: object = theme): string[] {
+	const call = tool.renderCall!(ctx.args, paint as never, ctx);
+	const body = value ? tool.renderResult!(value, { expanded: ctx.expanded, isPartial: ctx.isPartial }, paint as never, ctx) : undefined;
+	return [...call.render(width), ...(body?.render(width) ?? [])];
+}
+
+const pending = () => context({ isPartial: true, executionStarted: true, state: {} });
+
+test("a running Code card closes its own frame with one running row until a result exists", () => {
+	const tool = registeredCodemode();
+	const roles: string[] = [];
+	const painted = { bold: (text: string) => text, fg: (role: string, text: string) => { roles.push(`${role}:${text}`); return text; } };
+	const running = piRow(tool, undefined, pending(), 70, painted);
+	assert.equal(running.length, 3, running.join("\n"));
+	assert.match(running[0]!, /^╭─ λ Code .*╮$/);
+	assert.match(running[1]!, /^│ running… +│$/);
+	assert.match(running[2]!, /^╰─+╯$/);
+	for (const row of running) assert.equal(visibleWidth(row), 70);
+	assert.ok(roles.includes("muted:running…"), "the running row is muted");
+	assert.ok(roles.includes("warning:╰"), "the running frame keeps the pending tone");
+	for (const width of [0, 1, 2, 3, 4, 5, 6, 7, 8]) {
+		const rows = piRow(tool, undefined, pending(), width);
+		assert.ok(rows.every((row) => visibleWidth(row) <= width), `width ${width}`);
+		assert.equal(rows.length, width === 0 ? 0 : 3);
+	}
+
+	// A partial result below the call closes the frame instead: one bottom rule, no running row.
+	const partial = piRow(tool, result([{ name: "read", status: "running" }], "partial output"), pending(), 70);
+	assert.equal(partial.filter((row) => row.startsWith("╭")).length, 1);
+	assert.equal(partial.filter((row) => row.startsWith("╰")).length, 1);
+	assert.match(partial.at(-1)!, /^╰─+╯$/);
+	assert.doesNotMatch(partial.join("\n"), /running…/);
+});
+
+test("a finished Code card renders exactly as before the running frame existed", () => {
+	const tool = registeredCodemode();
+	const hint = stripAnsi(keyHint("app.tools.expand", "to expand"));
+	const value = result([{ name: "read", status: "ok", durationMs: 3 }], "Script completed\nWall time 0.1 seconds\nOutput:\nhello");
+	assert.deepEqual(piRow(tool, value, context({ state: {} }), 70).map(stripAnsi), [
+		`╭─ λ Code ${"─".repeat(57 - hint.length)} ${hint} ╮`,
+		`│ ok · read · 3ms${" ".repeat(51)} │`,
+		`│ hello${" ".repeat(61)} │`,
+		`╰${"─".repeat(68)}╯`,
+	]);
+});
+
+test("a running float Code card is one closed panel with a single separator", () => {
+	const tool = registeredCodemode();
+	setCardStyle(CARD_STYLE.FLOAT);
+	try {
+		const running = piRow(tool, undefined, pending(), 70, floatTheme);
+		const plain = running.map(stripAnsi);
+		for (const line of running) assert.equal(visibleWidth(line), 70);
+		assert.doesNotMatch(plain.join("\n"), /[╭╮╰╯│─]/);
+		assert.equal(plain.length, 5, plain.join("\n"));
+		assert.match(plain[0]!, /^ ▎ +$/);
+		assert.match(plain[1]!, /^ ▎ λ Code /);
+		assert.match(plain[2]!, /^ ▎ +$/);
+		assert.match(plain[3]!, /^ ▎ running… +$/);
+		assert.match(plain[4]!, /^ ▎ +$/);
+
+		const partial = piRow(tool, result([{ name: "read", status: "running" }], "partial output"), pending(), 70, floatTheme).map(stripAnsi);
+		assert.equal(partial.filter((line) => /^ ▎ +$/.test(line)).length, 3, "one blank above, one separator, one closing row");
+		assert.doesNotMatch(partial.join("\n"), /running…/);
+	} finally {
+		setCardStyle(CARD_STYLE.NEON);
+	}
 });
