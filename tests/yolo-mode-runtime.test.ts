@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { getThemeByName } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
+import gentleShell from "../extensions/gentle-shell.ts";
+import { stripAnsi } from "../lib/terminal-theme.ts";
 import { createEventBus, createExtensionRuntime, ExtensionRunner, SessionManager, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { loadExtensionFromFactory } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js";
-import { registerYoloSessionPolicy, YOLO_STATUS_KEY, YOLO_STATUS_TEXT } from "../lib/yolo-session-policy.ts";
+import { discoverYoloUiAdapter, registerYoloSessionPolicy, YOLO_STATUS_KEY, YOLO_STATUS_TEXT } from "../lib/yolo-session-policy.ts";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 
 test("complete Gentle AI extension registers and executes YOLO through the actual SDK loader", async () => {
@@ -77,4 +84,77 @@ test("SDK-loaded YOLO command resets across actual runner lifecycle dispatch and
 	await command("status"); assert.equal(statuses.get(YOLO_STATUS_KEY), undefined, "live SDK session ID replacement revokes without relying on an event");
 	runner.setUIContext(ui, "rpc");
 	await command("on"); assert.equal(statuses.get(YOLO_STATUS_KEY), undefined);
+});
+
+for (const shellFirst of [false, true]) test(`SDK loads both extensions on one bus and drives real customize view (shell first: ${shellFirst})`, async t => {
+	const home = mkdtempSync(join(tmpdir(), "yolo-sdk-menu-"));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	const cwd = process.cwd(), runtime = createExtensionRuntime(), bus = createEventBus();
+	const env = { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" };
+	const ownerFactory = createGentleAiExtension({ nativeReviewCli: null, candidateViews: null, processEnv: env,
+		resolveTelemetryTriggerBinary: () => { throw new Error("disabled in test"); },
+	});
+	const shellFactory = (pi: Parameters<typeof gentleShell>[0]) => gentleShell(pi, env, {
+		fetch: async () => { assert.fail("no network calls"); }, devBinary: () => undefined, activeProfile: () => undefined,
+	});
+	const extensions = [];
+	for (const factory of shellFirst ? [shellFactory, ownerFactory] : [ownerFactory, shellFactory]) {
+		extensions.push(await loadExtensionFromFactory(factory, cwd, bus, runtime));
+	}
+	const runner = new ExtensionRunner(extensions, runtime, cwd, SessionManager.inMemory(cwd), {} as never);
+	t.after(() => runner.invalidate());
+	const theme = getThemeByName("dark")!;
+	let view: Component | undefined;
+	let opened!: () => void;
+	const ready = new Promise<void>(resolve => { opened = resolve; });
+	const statuses = new Map<string, string | undefined>();
+	const notices: string[] = [];
+	let renders = 0;
+	runner.setUIContext({
+		theme, getAllThemes: () => [{ name: "dark" }], getTheme: () => theme,
+		notify: (text: string) => notices.push(text), setStatus: (key: string, text?: string) => statuses.set(key, text), setWidget() {},
+		custom(factory: (tui: unknown, theme: unknown, keys: unknown, done: () => void) => Component) {
+			return new Promise<void>(resolve => {
+				view = factory({ terminal: { rows: 30 }, requestRender: () => { renders++; } }, theme, {}, resolve);
+				opened();
+			});
+		},
+	} as unknown as ExtensionUIContext, "tui");
+	runner.bindCommandContext();
+	const ctx = runner.createCommandContext();
+	// The compatibility SDK omits mode; annotate the transport we explicitly
+	// bound above. All other getters retain real SDK invalidation semantics.
+	if (ctx.mode === undefined) Object.defineProperty(ctx, "mode", { value: "tui" });
+	const command = runner.getCommand("yolo")!, customize = runner.getCommand("gentle:customize")!;
+	assert.ok(command); assert.ok(customize);
+	const menu = customize.handler("", ctx);
+	await ready; assert.ok(view);
+	for (let i = 0; i < 3; i++) view.handleInput?.("j");
+	view.handleInput?.("\x1b[C"); view.handleInput?.("j"); view.handleInput?.("j");
+	const text = () => view!.render(140).map(stripAnsi).join("\n");
+	assert.match(text(), /YOLO: OFF · session only/);
+	view.handleInput?.("\r");
+	for (let i = 0; i < 100 && statuses.get(YOLO_STATUS_KEY) !== YOLO_STATUS_TEXT; i++) await new Promise(resolve => setTimeout(resolve, 10));
+	assert.equal(statuses.get(YOLO_STATUS_KEY), YOLO_STATUS_TEXT);
+	await new Promise(resolve => setTimeout(resolve, 30));
+	assert.match(text(), /YOLO: ON/);
+	await command.handler("off", ctx);
+	await new Promise(resolve => setTimeout(resolve, 30));
+	assert.match(text(), /YOLO: OFF/);
+	for (const width of [1, 20, 45, 60, 140]) assert.ok(view.render(width).every(line => visibleWidth(line) <= width));
+	const adapter = await discoverYoloUiAdapter({
+		events: { emit: (name: string, data: unknown) => bus.emit(name, data) },
+	} as Parameters<typeof discoverYoloUiAdapter>[0], ctx);
+	assert.ok(adapter);
+	await runner.emit({ type: "session_shutdown", reason: "reload" });
+	await menu;
+	assert.equal(await adapter.read(), "UNAVAILABLE");
+	await adapter.toggle();
+	assert.equal(statuses.get(YOLO_STATUS_KEY), undefined);
+	const count = renders;
+	view.handleInput?.(" "); view.invalidate(); assert.deepEqual(view.render(140), []);
+	assert.equal(renders, count);
+	assert.deepEqual(readdirSync(home), [], "no settings persisted by menu or activation");
+	assert.ok(notices.some(n => n === YOLO_STATUS_TEXT));
+	adapter.dispose();
 });

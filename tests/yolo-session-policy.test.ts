@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { YoloSessionPolicy, YOLO_DIRECTIVE, updateYoloPrompt } from "../lib/yolo-session-policy.ts";
+import { YoloSessionPolicy, YOLO_DIRECTIVE, updateYoloPrompt, registerYoloSessionPolicy, discoverYoloUiAdapter } from "../lib/yolo-session-policy.ts";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ReviewSessionIdentity } from "../lib/review-session-standing-permission.ts";
 
 function identity(): ReviewSessionIdentity {
@@ -35,6 +36,14 @@ test("off/reset/restart revoke and invalidate pending activation", () => {
 	policy.reset();
 	assert.equal(policy.active(live), false);
 	assert.equal(new YoloSessionPolicy().active(live), false);
+});
+
+test("legacy hosts without an event bus retain command registration but no menu adapter", async () => {
+	const commands: string[] = [];
+	const pi = { registerCommand: (name: string) => commands.push(name) } as unknown as ExtensionAPI;
+	assert.ok(registerYoloSessionPolicy(pi, {}));
+	assert.deepEqual(commands, ["yolo"]);
+	assert.equal(await discoverYoloUiAdapter(pi, {} as ExtensionContext), undefined);
 });
 
 test("active-only structured directive qualifies defaults and is removed from reused options", () => {

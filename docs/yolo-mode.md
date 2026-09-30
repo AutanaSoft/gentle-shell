@@ -11,6 +11,16 @@ Use `/yolo on` in the interactive primary Pi TUI to stop repeated permission que
 
 The Session command palette also includes YOLO. Activation fails closed without an identifiable Git clone, interactive TUI or live session identity. There is no YOLO environment variable, persisted configuration or model-callable activation tool.
 
+## Configuration menu path
+
+1. Open `/gentle:customize` → **Editor**.
+2. Select **YOLO: OFF · session only**, immediately after the Vim enable/disable rows.
+3. Press **Enter** or **Space** to toggle the same permission as `/yolo`. The row updates to **YOLO: ON · session only**; slash changes and revocation also update an open menu.
+
+Navigation, the read-only preview and Escape never grant permission. The preview reminds you that ordinary scoped commits/push/PR are covered, destructive confirmations remain, review consent is unchanged and reload resets the grant. **UNAVAILABLE** means the live primary owner or eligible session/clone cannot be used; selecting it cannot activate YOLO.
+
+Unlike Vim, this control does not write a global/repository preference, visual profile, prompt-history preference or guardrail setting. Closing the menu removes its observers and cancels unfinished menu activation; it does not revoke an already completed activation. Reload or session replacement invalidates old menu callbacks and resets the permission.
+
 ## What activation authorizes
 
 YOLO supplies standing human permission for ordinary already-scoped implementation, checks, commits, non-force pushes and PR creation. Its active-only system instruction qualifies the default commit/push/PR confirmation clauses; it also tells the primary agent to make ordinary reversible implementation choices without needless interviews.
