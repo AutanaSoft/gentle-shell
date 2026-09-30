@@ -23,6 +23,29 @@ export interface Card {
 
 export interface CardTheme {
 	fg(color: string, text: string): string;
+	/** Pi themes have it; the float style needs it to paint its panel. */
+	bg?(color: string, text: string): string;
+}
+
+// Conversation cards come in two styles, chosen in /gentle:customize. Pi loads
+// every extension with its own jiti loader (moduleCache:false), so each one
+// gets a copy of this module; the global symbol keeps one style per process.
+export const CARD_STYLE = {
+	NEON: "neon",
+	FLOAT: "float",
+} as const;
+
+export type CardStyle = (typeof CARD_STYLE)[keyof typeof CARD_STYLE];
+
+const CARD_STYLE_SLOT = Symbol.for("gentle-pi.card-style");
+const styleState = globalThis as typeof globalThis & { [CARD_STYLE_SLOT]?: unknown };
+
+export function cardStyle(): CardStyle {
+	return styleState[CARD_STYLE_SLOT] === CARD_STYLE.FLOAT ? CARD_STYLE.FLOAT : CARD_STYLE.NEON;
+}
+
+export function setCardStyle(style: CardStyle): void {
+	styleState[CARD_STYLE_SLOT] = style;
 }
 
 export interface CardRenderOptions {
@@ -56,8 +79,39 @@ const BODY_ROLE = "text";
 const SEPARATOR = "·";
 const FRAME_COLUMNS = 4;
 
+// The characters that draw a card around its content. The float style keeps
+// every row the same width: the left edge becomes an accent bar and the rules
+// and the right rail become spaces. Rows are built from these by position, so
+// content that happens to contain box-drawing characters is never rewritten.
+interface CardChrome {
+	topLeft: string;
+	topLead: string;
+	topRight: string;
+	rule: string;
+	side: string;
+	rail: string;
+	bottomLeft: string;
+	bottomRight: string;
+}
+
+const OUTLINE_CHROME: CardChrome = { topLeft: "╭", topLead: "─ ", topRight: "╮", rule: "─", side: "│", rail: "│", bottomLeft: "╰", bottomRight: "╯" };
+// `▎ ` is one cell narrower than `╭─ `: the spare cell moves to the right end
+// so the heading glyph starts in the same column as the body text.
+const FLOAT_CHROME: CardChrome = { topLeft: "▎", topLead: " ", topRight: "  ", rule: " ", side: "▎", rail: " ", bottomLeft: "▎", bottomRight: " " };
+let chrome = OUTLINE_CHROME;
+
+function withChrome<T>(next: CardChrome, run: () => T): T {
+	const previous = chrome;
+	chrome = next;
+	try {
+		return run();
+	} finally {
+		chrome = previous;
+	}
+}
+
 function rule(length: number): string {
-	return "─".repeat(Math.max(0, length));
+	return chrome.rule.repeat(Math.max(0, length));
 }
 
 function titleText(card: Card, theme: CardTheme): { styled: string; width: number } {
@@ -94,13 +148,13 @@ export function cardTop(card: Card, theme: CardTheme, width: number, hint?: stri
 	const styledTitleWidth = title.width <= titleWidth ? title.width : visibleWidth(styledTitle);
 	const fill = rule(targetWidth - styledTitleWidth - 5 - hintWidth);
 	const tail = shownHint ? ` ${theme.fg(HINT_ROLE, shownHint)} ` : "";
-	return theme.fg(FRAME_ROLE[card.tone], "╭") + frame(theme, card.tone, "─ ") + styledTitle + frame(theme, card.tone, ` ${fill}`) + tail + frame(theme, card.tone, "╮");
+	return theme.fg(FRAME_ROLE[card.tone], chrome.topLeft) + frame(theme, card.tone, chrome.topLead) + styledTitle + frame(theme, card.tone, ` ${fill}`) + tail + frame(theme, card.tone, chrome.topRight);
 }
 
 export function cardLine(text: string, tone: CardTone, theme: CardTheme, width: number): string {
 	const targetWidth = Math.max(0, Math.floor(width));
 	if (targetWidth === 0) return "";
-	const left = theme.fg(FRAME_ROLE[tone], "│");
+	const left = theme.fg(FRAME_ROLE[tone], chrome.side);
 	if (targetWidth === 1) return left;
 	if (targetWidth === 2) return left + frame(theme, tone, "│");
 	if (targetWidth === 3) return `${left} ${frame(theme, tone, "│")}`;
@@ -108,19 +162,19 @@ export function cardLine(text: string, tone: CardTone, theme: CardTheme, width: 
 	const innerWidth = targetWidth - FRAME_COLUMNS;
 	const clipped = innerWidth === 0 ? "" : truncateToWidth(text, innerWidth, "…");
 	const padding = " ".repeat(Math.max(0, innerWidth - visibleWidth(clipped)));
-	return `${left} ${clipped}${padding} ${frame(theme, tone, "│")}`;
+	return `${left} ${clipped}${padding} ${frame(theme, tone, chrome.rail)}`;
 }
 
 export function cardBottom(tone: CardTone, theme: CardTheme, width: number, content?: string): string {
 	const targetWidth = Math.max(0, Math.floor(width));
 	if (targetWidth === 0) return "";
-	const left = theme.fg(FRAME_ROLE[tone], "╰");
+	const left = theme.fg(FRAME_ROLE[tone], chrome.bottomLeft);
 	if (targetWidth === 1) return left;
-	if (content === undefined || visibleWidth(content) === 0) return left + frame(theme, tone, `${rule(targetWidth - 2)}╯`);
+	if (content === undefined || visibleWidth(content) === 0) return left + frame(theme, tone, `${rule(targetWidth - 2)}${chrome.bottomRight}`);
 	const contentWidth = visibleWidth(content) + 2;
 	// Responsive: the duration rides the closing rule only when it fits with a minimum fill.
-	if (targetWidth - 2 - contentWidth < 3) return left + frame(theme, tone, `${rule(targetWidth - 2)}╯`);
-	return left + frame(theme, tone, `${rule(targetWidth - 2 - contentWidth)} `) + theme.fg(HINT_ROLE, content) + frame(theme, tone, ` ╯`);
+	if (targetWidth - 2 - contentWidth < 3) return left + frame(theme, tone, `${rule(targetWidth - 2)}${chrome.bottomRight}`);
+	return left + frame(theme, tone, `${rule(targetWidth - 2 - contentWidth)} `) + theme.fg(HINT_ROLE, content) + frame(theme, tone, ` ${chrome.bottomRight}`);
 }
 
 export function cardInnerWidth(width: number): number {
@@ -158,14 +212,78 @@ export function cardTopRows(card: Card, theme: CardTheme, width: number, hint?: 
 	];
 }
 
+/** The rows one card component draws, by position. */
+export interface CardParts {
+	/** The top rule plus any heading continuation rows. */
+	head?: readonly string[];
+	body?: readonly string[];
+	/** The closing rule, when this component closes the card. */
+	bottom?: string;
+	/** A component above this one already drew the heading. */
+	afterHeading?: boolean;
+}
+
+const FLOAT_MARGIN = 1;
+const FLOAT_MIN_WIDTH = 10;
+const FLOAT_BG_ROLE: Record<CardTone, string> = {
+	[CARD_TONE.INFO]: "toolSuccessBg",
+	[CARD_TONE.SUCCESS]: "toolSuccessBg",
+	[CARD_TONE.WARNING]: "toolPendingBg",
+	[CARD_TONE.ERROR]: "toolErrorBg",
+};
+const BG_RESET = "\x1b[49m";
+// Full resets (pi-tui truncation inserts one) and background resets.
+const BG_CLEARING = /\x1b\[(?:0|49)?m/g;
+
+function panelOpener(theme: CardTheme, tone: CardTone): string {
+	if (typeof theme.bg !== "function") return "";
+	try {
+		const painted = theme.bg(FLOAT_BG_ROLE[tone], "");
+		return painted.endsWith(BG_RESET) ? painted.slice(0, -BG_RESET.length) : "";
+	} catch {
+		// A theme without the tool background keeps the outlined card.
+		return "";
+	}
+}
+
+/**
+ * Draws one conversation card component in the active style. The outlined
+ * style returns the parts unchanged; the float style renders them one margin
+ * narrower with the float chrome and paints a tone background behind every
+ * row. A blank row sits above the heading and between it and the body.
+ */
+export function floatRows(tone: CardTone, theme: CardTheme, width: number, render: (width: number) => CardParts): string[] {
+	const target = Math.max(0, Math.floor(width));
+	const open = cardStyle() === CARD_STYLE.FLOAT && target >= FLOAT_MIN_WIDTH ? panelOpener(theme, tone) : "";
+	if (!open) {
+		const { head = [], body = [], bottom } = render(width);
+		return [...head, ...body, ...(bottom === undefined ? [] : [bottom])];
+	}
+	const inner = target - FLOAT_MARGIN * 2;
+	const rows = withChrome(FLOAT_CHROME, () => {
+		const { head = [], body = [], bottom, afterHeading = false } = render(inner);
+		const blank = cardBottom(tone, theme, inner);
+		return [
+			...(head.length > 0 ? [blank, ...head] : []),
+			...(body.length > 0 && (head.length > 0 || afterHeading) ? [blank] : []),
+			...body,
+			...(bottom === undefined ? [] : [bottom]),
+		];
+	});
+	const margin = " ".repeat(FLOAT_MARGIN);
+	return rows.map((row) => `${margin}${open}${row.replace(BG_CLEARING, (reset) => reset + open)}${BG_RESET}${margin}`);
+}
+
 export function renderCard(card: Card, theme: CardTheme, width: number, options: CardRenderOptions): string[] {
 	// Only opt-in tool previews collapse to nothing at nonpositive widths; the
 	// legacy path keeps its empty-row shape for widgets that call it unguarded.
-	if (options.previewRows !== undefined) return width <= 0 ? [] : [
-		cardTop(card, theme, width, options.hint),
-		...cardBodyRows(card.body.map((line) => theme.fg(BODY_ROLE, line)), card.tone, theme, width, options),
-		cardBottom(card.tone, theme, width),
-	];
+	if (options.previewRows !== undefined) return width <= 0 ? [] : floatRows(card.tone, theme, width, (inner) => ({
+		head: [cardTop(card, theme, inner, options.hint)],
+		body: cardBodyRows(card.body.map((line) => theme.fg(BODY_ROLE, line)), card.tone, theme, inner, options),
+		bottom: cardBottom(card.tone, theme, inner),
+	}));
+	// Panels (Agents, Todos, Status) always keep the outlined frame.
+	if (chrome !== OUTLINE_CHROME) return withChrome(OUTLINE_CHROME, () => renderCard(card, theme, width, options));
 	const innerWidth = Math.max(1, width - FRAME_COLUMNS);
 	const top = cardTop(card, theme, width, options.hint);
 	const bottom = cardBottom(card.tone, theme, width);

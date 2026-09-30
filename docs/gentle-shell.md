@@ -154,6 +154,26 @@ Gentle notices are drawn as cards: the same rounded frame as the prompt. An info
 - An active dev-binary override shows above the editor at startup as a 🌹 gentle-ai card, in amber, naming the binary and its digest, and leaves with the first prompt; an invalid override shows in red with the reason.
 - Subagents draw their own card; see Gentle Agents below.
 
+### Card style
+
+Pick how conversation cards look in `/gentle:customize` → **Cards**. The choice applies immediately and is saved in `card-style.json` in the Gentle Pi config home; it is not part of visual profiles or visual reset.
+
+| Style | Look |
+|-------|------|
+| `neon` (default) | The outlined rounded card shown above. |
+| `float` | A borderless panel on the tone's tool background (success/info, pending, error), with a tone-colored `▎` accent bar, a one-column margin on each side, a blank row above the heading and at the bottom, and a blank row between the heading and the body. |
+
+```text
+ ▎
+ ▎ ⌖ find *.md in .                                  ctrl+o to expand
+ ▎
+ ▎ README.md
+ ▎
+```
+
+- `float` applies to tool, Code and 🌹 cards, Agent result and stale cards, the review preflight reminder, and the dev-binary notice. The Agents, Todos and Status panels keep the outlined frame in both styles.
+- A theme without a tool background, or a card narrower than 10 columns, falls back to `neon`. A malformed `card-style.json` reads as `neon` and the panel refuses to overwrite it.
+
 ### Compact Code card
 
 With quiet tools enabled, `codemode` uses the same rounded **Code** card. The collapsed view shows up to eight observed child calls in their original order, including repeats, with Pi's actual status and available nonnegative duration. Additional calls and failures are counted. Error payloads have a separate two-row preview even when their child falls outside the first eight; final output has a three-row physical budget, and a full-output locator remains visible when available.

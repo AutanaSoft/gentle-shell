@@ -17,7 +17,7 @@ import { GentleAiElapsedTimingLedger } from "../lib/gentle-ai-elapsed-store.ts";
 import { quietToolsEnabled } from "../lib/quiet-tools-config.ts";
 import { registerCompactCodemode } from "../lib/codemode-renderer.ts";
 import { getGentleAiRenderState, renderGentleAiLifecycleCall, renderGentleAiResult, type GentleAiRenderContext } from "../lib/gentle-ai-renderer.ts";
-import { CARD_TONE, cardBottom, cardInnerWidth, cardLine, cardTopRows, type CardTheme } from "../lib/shell-card.ts";
+import { CARD_TONE, cardBottom, cardInnerWidth, cardLine, cardTopRows, floatRows, type CardTheme } from "../lib/shell-card.ts";
 import { sanitizeTerminalText, stripAnsi } from "../lib/terminal-theme.ts";
 
 type QuietToolName = "read" | "bash" | "grep" | "find" | "ls" | "edit" | "write";
@@ -584,7 +584,9 @@ class ToolCardTop implements Component {
 	render(width: number): string[] {
 		const target = Math.max(0, Math.floor(width));
 		if (target === 0) return [];
-		return cardTopRows({ title: this.header(), glyph: this.glyph, body: [], tone: this.tone }, this.theme, target, this.hint);
+		return floatRows(this.tone, this.theme, target, (inner) => ({
+			head: cardTopRows({ title: this.header(), glyph: this.glyph, body: [], tone: this.tone }, this.theme, inner, this.hint),
+		}));
 	}
 
 	invalidate(): void {}
@@ -605,8 +607,11 @@ class ToolCardBody implements Component {
 	render(width: number): string[] {
 		const target = Math.max(0, Math.floor(width));
 		if (target === 0) return [];
-		const body = this.inner().render(cardInnerWidth(target)).map((line) => cardLine(line.trimEnd(), this.tone, this.theme, target));
-		return [...body, cardBottom(this.tone, this.theme, target)];
+		return floatRows(this.tone, this.theme, target, (inner) => ({
+			body: this.inner().render(cardInnerWidth(inner)).map((line) => cardLine(line.trimEnd(), this.tone, this.theme, inner)),
+			bottom: cardBottom(this.tone, this.theme, inner),
+			afterHeading: true,
+		}));
 	}
 
 	invalidate(): void {

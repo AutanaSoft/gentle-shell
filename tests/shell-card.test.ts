@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { CARD_TONE, cardTopRows, renderCard, type Card } from "../lib/shell-card.ts";
+import { CARD_STYLE, CARD_TONE, cardStyle, cardTopRows, renderCard, setCardStyle, type Card, type CardStyle, type CardTone } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
 // Cards are how Gentle notices look: the same rounded frame as the prompt,
@@ -195,5 +195,152 @@ test("renderCard never exceeds extremely narrow supplied widths", () => {
 	for (const width of [0, 1, 2, 3, 4, 5, 8, 16]) {
 		const lines = renderCard(card({ glyph: "\u{1F339}\uFE0E" }), ansiTheme, width, { expanded: true, hint: "ctrl+o to expand" });
 		for (const line of lines) assert.equal(visibleWidth(line), width, `"${stripAnsi(line)}" is not ${width} wide`);
+	}
+});
+
+// Float style: the same rows become a borderless panel. Content cells keep a
+// tone-matched background, the frame turns into a tone accent bar and spaces,
+// and a one-column margin stays outside the panel on both sides.
+const FG_CODE: Record<string, number> = { border: 240, accent: 211, success: 114, warning: 221, error: 203, dim: 245, muted: 244, text: 252 };
+const BG_CODE: Record<string, number> = { toolSuccessBg: 22, toolPendingBg: 58, toolErrorBg: 52 };
+const floatTheme = {
+	fg(color: string, text: string) {
+		return `\x1b[38;5;${FG_CODE[color] ?? 250}m${text}\x1b[39m`;
+	},
+	bg(color: string, text: string) {
+		return `\x1b[48;5;${BG_CODE[color] ?? 17}m${text}\x1b[49m`;
+	},
+};
+
+function withCardStyle<T>(style: CardStyle, run: () => T): T {
+	setCardStyle(style);
+	try {
+		return run();
+	} finally {
+		setCardStyle(CARD_STYLE.NEON);
+	}
+}
+
+/** Background code of every visible cell, following resets exactly as a terminal does. */
+function cellBackgrounds(line: string): (number | undefined)[] {
+	const cells: (number | undefined)[] = [];
+	let bg: number | undefined;
+	for (const token of line.match(/\x1b\[[\d;]*m|[^\x1b]/gu) ?? []) {
+		if (!token.startsWith("\x1b")) {
+			for (let cell = 0; cell < visibleWidth(token); cell++) cells.push(bg);
+			continue;
+		}
+		const codes = token.slice(2, -1).split(";").map((code) => (code === "" ? 0 : Number(code)));
+		for (let index = 0; index < codes.length; index++) {
+			if (codes[index] === 0 || codes[index] === 49) bg = undefined;
+			if (codes[index] === 48 && codes[index + 1] === 5) bg = codes[index + 2];
+		}
+	}
+	return cells;
+}
+
+const floatCard = (overrides: Partial<Card> = {}) => card({ title: "read", subtitle: undefined, glyph: "⌖", body: ["alpha", "beta"], tone: CARD_TONE.SUCCESS, ...overrides });
+
+test("card style defaults to the outlined neon style and lives in a process-wide slot", () => {
+	assert.equal(cardStyle(), CARD_STYLE.NEON);
+	const slot = Symbol.for("gentle-pi.card-style");
+	const state = globalThis as typeof globalThis & { [slot]?: string };
+	withCardStyle(CARD_STYLE.FLOAT, () => assert.equal(state[slot], CARD_STYLE.FLOAT));
+	state[slot] = "float";
+	assert.equal(cardStyle(), CARD_STYLE.FLOAT, "another loader's copy sees the same slot");
+	state[slot] = "bogus";
+	assert.equal(cardStyle(), CARD_STYLE.NEON, "unknown values read as the neon style");
+	setCardStyle(CARD_STYLE.NEON);
+});
+
+test("float cards are borderless panels with a margin, an accent bar and balanced blank rows", () => {
+	const width = 40;
+	const lines = withCardStyle(CARD_STYLE.FLOAT, () => renderCard(floatCard(), floatTheme, width, { expanded: false, previewRows: 3, hint: "ctrl+o" }));
+	const plain = lines.map(stripAnsi);
+	assert.deepEqual(plain, [
+		` ▎${" ".repeat(width - 3)} `,
+		` ▎ ⌖ read${" ".repeat(width - 19)}ctrl+o    `,
+		` ▎${" ".repeat(width - 3)} `,
+		` ▎ alpha${" ".repeat(width - 9)} `,
+		` ▎ beta${" ".repeat(width - 8)} `,
+		` ▎${" ".repeat(width - 3)} `,
+	]);
+	for (const line of lines) assert.equal(visibleWidth(line), width);
+	assert.doesNotMatch(plain.join("\n"), /[╭╮╰╯│─]/);
+	// The glyph starts in the same column as the body text.
+	assert.equal(plain[1]!.indexOf("⌖"), plain[3]!.indexOf("alpha"));
+	for (const line of lines) {
+		const cells = cellBackgrounds(line);
+		assert.equal(cells[0], undefined, "left margin stays transparent");
+		assert.equal(cells[width - 1], undefined, "right margin stays transparent");
+		assert.deepEqual(cells.slice(1, -1), Array(width - 2).fill(BG_CODE.toolSuccessBg));
+		assert.ok(line.startsWith(` \x1b[48;5;${BG_CODE.toolSuccessBg}m\x1b[38;5;${FG_CODE.success}m▎`), "the bar carries the tone colour");
+	}
+});
+
+test("float panels pick the background from the tone", () => {
+	const expected = { [CARD_TONE.INFO]: BG_CODE.toolSuccessBg, [CARD_TONE.SUCCESS]: BG_CODE.toolSuccessBg, [CARD_TONE.WARNING]: BG_CODE.toolPendingBg, [CARD_TONE.ERROR]: BG_CODE.toolErrorBg };
+	for (const [tone, code] of Object.entries(expected)) {
+		const lines = withCardStyle(CARD_STYLE.FLOAT, () => renderCard(floatCard({ tone: tone as CardTone }), floatTheme, 30, { expanded: true, previewRows: 3 }));
+		for (const line of lines) assert.deepEqual(cellBackgrounds(line).slice(1, -1), Array(28).fill(code), `${tone}: ${JSON.stringify(line)}`);
+		assert.ok(stripAnsi(lines[1]!).startsWith(" ▎ "));
+		assert.ok(lines[1]!.includes(`\x1b[38;5;${FG_CODE[tone === CARD_TONE.INFO ? "border" : tone]}m▎`));
+	}
+});
+
+test("float panels keep body text with box-drawing characters intact", () => {
+	const body = "│ keep ╭─╮ and ╰─╯ │";
+	const lines = withCardStyle(CARD_STYLE.FLOAT, () => renderCard(floatCard({ body: [body], title: "a ─ title │ ╮" }), floatTheme, 50, { expanded: true, previewRows: 3 })).map(stripAnsi);
+	assert.equal(lines[3], ` ▎ ${body}${" ".repeat(50 - 4 - visibleWidth(body))} `);
+	assert.ok(lines[1]!.startsWith(" ▎ ⌖ a ─ title │ ╮ "), JSON.stringify(lines[1]));
+});
+
+test("float panels re-arm their background after content and truncation resets", () => {
+	// A long heading is truncated, and pi-tui's truncation inserts its own reset.
+	const long = `red\x1b[0m blue\x1b[49m tail`;
+	const lines = withCardStyle(CARD_STYLE.FLOAT, () => renderCard(floatCard({ title: "x".repeat(80), body: [long] }), floatTheme, 30, { expanded: false, previewRows: 1 }));
+	assert.match(lines[1]!, /\x1b\[0m/, "the truncated heading carries a reset");
+	for (const line of lines) {
+		assert.equal(visibleWidth(line), 30);
+		assert.deepEqual(cellBackgrounds(line).slice(1, -1), Array(28).fill(BG_CODE.toolSuccessBg), JSON.stringify(line));
+	}
+});
+
+test("float cards without a body skip the separator and keep the blank rows around the heading", () => {
+	const lines = withCardStyle(CARD_STYLE.FLOAT, () => renderCard(floatCard({ body: [] }), floatTheme, 30, { expanded: true, previewRows: 3 })).map(stripAnsi);
+	assert.deepEqual(lines, [` ▎${" ".repeat(27)} `, ` ▎ ⌖ read${" ".repeat(20)} `, ` ▎${" ".repeat(27)} `]);
+});
+
+test("float falls back to the outlined card without a theme background or below ten columns", () => {
+	const plainOptions = { expanded: false, previewRows: 3, hint: "ctrl+o" };
+	for (const width of [0, 1, 5, 9, 40]) {
+		const outlined = renderCard(floatCard(), ansiTheme, width, plainOptions);
+		assert.deepEqual(withCardStyle(CARD_STYLE.FLOAT, () => renderCard(floatCard(), ansiTheme, width, plainOptions)), outlined, `no bg at ${width}`);
+	}
+	const throwing = { ...floatTheme, bg(color: string, text: string): string { throw new Error(`unknown background ${color}${text}`); } };
+	assert.deepEqual(withCardStyle(CARD_STYLE.FLOAT, () => renderCard(floatCard(), throwing, 40, plainOptions)), renderCard(floatCard(), throwing, 40, plainOptions), "a missing background token");
+	for (const width of [0, 1, 5, 9]) {
+		assert.deepEqual(withCardStyle(CARD_STYLE.FLOAT, () => renderCard(floatCard(), floatTheme, width, plainOptions)), renderCard(floatCard(), floatTheme, width, plainOptions), `narrow ${width}`);
+	}
+	assert.match(stripAnsi(withCardStyle(CARD_STYLE.FLOAT, () => renderCard(floatCard(), floatTheme, 10, plainOptions))[1]!), /^ ▎ ⌖ r {4}$/);
+});
+
+test("the neon style paints no background even when the theme can", () => {
+	for (const width of [8, 40]) {
+		for (const line of renderCard(floatCard(), floatTheme, width, { expanded: true, previewRows: 3 })) {
+			assert.ok(cellBackgrounds(line).every((cell) => cell === undefined), JSON.stringify(line));
+		}
+	}
+});
+
+test("legacy renderCard panels stay byte-identical in the float style", () => {
+	const paragraphs = card({ subtitle: "2 running", body: ["ab", "", "c d", "│ ╭─╮"] });
+	for (const width of [-3, 0, 1, 4, 9, 10, 40, 80]) {
+		for (const options of [{ expanded: true }, { expanded: false }, { expanded: true, hint: "ctrl+o" }]) {
+			for (const theme of [plainTheme, taggedTheme, floatTheme]) {
+				const outlined = renderCard(paragraphs, theme, width, options);
+				assert.deepEqual(withCardStyle(CARD_STYLE.FLOAT, () => renderCard(paragraphs, theme, width, options)), outlined, `width ${width}`);
+			}
+		}
 	}
 });

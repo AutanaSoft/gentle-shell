@@ -11,7 +11,8 @@ import { buildShellHeaderModel, renderShellBar, renderShellBottomOnlyBar, render
 import { CHANGE_STATUS, RootBranchLabels, renderChangesWidget, type ChangedFile, type ChangesModel, type GitRunner, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver, type WorktreeIdentity } from "../lib/session-worktree-registry.ts";
-import { CARD_TONE, renderCard, type Card, type CardTheme } from "../lib/shell-card.ts";
+import { CARD_STYLE, CARD_TONE, renderCard, setCardStyle, type Card, type CardTheme } from "../lib/shell-card.ts";
+import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
 import { CommandPalette, commandsKey, type CommandPaletteResult } from "../lib/command-palette.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
 import { VisualCustomizeView, type CustomizeCategory, type CustomizeRow, type ProfileActions } from "../lib/visual-customize-view.ts";
@@ -1657,6 +1658,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	const animationOptions = { gentlePiConfigHome: doubleEscCancelConfigHome };
 	let animationPolicy = resolveAnimationPolicy(animationOptions).policy;
 	let vimPolicy = resolveVimPolicy(animationOptions).policy;
+	// Conversation cards read the style from a process-wide slot; the saved
+	// preference fills it at startup and again on every session start.
+	const applyCardStyle = () => setCardStyle(resolveCardStyle(animationOptions).style);
+	applyCardStyle();
 	const reportVim = (ctx: ExtensionContext, result: ReturnType<typeof resolveVimPolicy>) => {
 		const source = result.source === "default" ? "built-in default" : `global file ${result.globalFile}`;
 		const effective = prompt?.effectiveVimPolicy;
@@ -1741,6 +1746,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		changes = undefined;
 		registry = new SessionWorktreeRegistry(pi, ctx.sessionManager, ctx.cwd, deps.resolveWorktree);
 		registry.start();
+		applyCardStyle();
 		if (!ctx.hasUI) return;
 		visualSettings = resolveVisualSettings(animationOptions).settings;
 		if (!overrides.activeProfile) {
@@ -1907,6 +1913,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			let banner = await readBannerConfig(bannerHome);
 			let activeTheme = ctx.ui.theme.name;
 			let customizeView: VisualCustomizeView | undefined;
+			let requestCustomizeRender: (() => void) | undefined;
 			let category: CustomizeCategory = "Animations";
 			const add = (label: CustomizeRow["label"], notice: string, action: () => void | false | Promise<void | false>, preview?: CustomizeRow["preview"]) => rows.push({ category, label, preview, action: async () => {
 				if (await action() === false) return;
@@ -1973,6 +1980,22 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			} catch {
 				rows.push({ category, label: "Themes unavailable; use Pi /settings", preview: () => ({ title: "Themes unavailable", sample: "Use Pi /settings to select a theme" }), action: () => ctx.ui.notify("Installed themes are unavailable in this session.", "warning") });
 			}
+			category = "Cards";
+			// Conversation cards only; the Agents, Todos and Status panels keep their frame.
+			const cardStylePreview = { [CARD_STYLE.NEON]: "╭─ ✿ read package.json ─╮  outlined card", [CARD_STYLE.FLOAT]: "▎ ✿ read package.json     borderless panel" };
+			for (const style of Object.values(CARD_STYLE)) add(
+				() => {
+					const current = resolveCardStyle(home);
+					return `Card style: ${style}${current.style === style && !current.malformed ? " (current)" : ""}`;
+				},
+				`Card style: ${style}. Conversation cards redraw now.`,
+				() => {
+					writeCardStyle(style, home);
+					setCardStyle(style);
+					requestCustomizeRender?.();
+				},
+				() => ({ title: `Cards · ${style}`, sample: `${cardStylePreview[style]}${resolveCardStyle(home).malformed ? " · malformed or unreadable file" : ""}` }),
+			);
 			const updateVisual = (change: (settings: ReturnType<typeof resolveVisualSettings>["settings"]) => ReturnType<typeof resolveVisualSettings>["settings"]) => {
 				const current = resolveVisualSettings(home);
 				if (current.malformed || current.readError) throw new Error(`Cannot update unreadable or malformed visual settings: ${current.globalFile}`);
@@ -2120,6 +2143,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				reset: () => { resetVisualProfiles(home); ctx.ui.notify("Visual profile catalog cleared; active settings unchanged.", "info"); },
 			};
 			await ctx.ui.custom<null>((tui, theme, _keys, done) => {
+				requestCustomizeRender = () => tui.requestRender();
 				customizeView = new VisualCustomizeView({ rows, profiles, theme, requestRender: () => tui.requestRender(), rowsAvailable: () => Math.max(0, Math.floor(tui.terminal.rows * 0.85) - 2), onError: (error) => ctx.ui.notify(`Visual customization: ${error.message}`, "error"), onClose: () => done(null) });
 				return customizeView;
 			}, { overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 60, maxHeight: "85%" } });

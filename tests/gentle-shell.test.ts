@@ -25,6 +25,8 @@ import { resolveHistoryCapturePolicy, writeHistoryCapturePolicy } from "../lib/h
 import { readBannerConfig } from "../extensions/startup-banner.ts";
 import { listVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
+import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
+import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
 
 // The Gentle Shell extension wires the pure bar renderer into pi's footer
 // slot. These tests drive it with a fake ExtensionAPI and context.
@@ -2759,7 +2761,7 @@ function scopedDoubleEscCancelConfigHome(t: { after(callback: () => void): void 
 function findCustomizeRow(ui: FakeUi, label: string, width = 90): boolean {
 	const view = ui.overlayView!;
 	view.handleInput("\x1b[D");
-	for (let category = 0; category < 9; category++) {
+	for (let category = 0; category < 10; category++) {
 		view.handleInput("\x1b[C");
 		for (let index = 0; index < 35; index++) {
 			if (view.render(width).some((line) => line.includes(`▸ ${label}`))) return true;
@@ -2821,6 +2823,71 @@ test("customize History rows persist prompt history capture and keep stored hist
 	await new Promise<void>(resolve => setImmediate(resolve));
 	assert.equal(resolveHistoryCapturePolicy({ gentlePiConfigHome: home }).policy, "off");
 	assert.match(ui.notices.at(-1)!, /stored history is kept/i);
+	ui.overlayView!.handleInput("\x1b"); await pending;
+});
+
+test("customize Cards rows persist the card style and switch live conversation cards", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	t.after(() => setCardStyle(CARD_STYLE.NEON));
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	assert.equal(cardStyle(), CARD_STYLE.NEON, "no preference file means neon");
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	assert.ok(findCustomizeRow(ui, "Card style: neon (current)"));
+	assert.match(ui.overlayView!.render(90).join("\n"), /Cards · 1\/2/);
+	assert.ok(findCustomizeRow(ui, "Card style: float"));
+	assert.equal(existsSync(join(home, "card-style.json")), false, "highlighting never applies");
+	const requestRender = fakeTui.requestRender;
+	let renders = 0;
+	fakeTui.requestRender = () => { renders++; };
+	try {
+		await customizeAction(ui, "Card style: float");
+	} finally {
+		fakeTui.requestRender = requestRender;
+	}
+	assert.equal(resolveCardStyle({ gentlePiConfigHome: home }).style, "float");
+	assert.equal(cardStyle(), CARD_STYLE.FLOAT, "the live slot follows the choice");
+	assert.ok(renders > 0, "conversation cards redraw");
+	assert.match(ui.notices.at(-1)!, /Card style: float/);
+	assert.ok(findCustomizeRow(ui, "Card style: float (current)"));
+	assert.ok(findCustomizeRow(ui, "Card style: neon"));
+	await customizeAction(ui, "Card style: neon");
+	assert.equal(resolveCardStyle({ gentlePiConfigHome: home }).style, "neon");
+	assert.equal(cardStyle(), CARD_STYLE.NEON);
+	ui.overlayView!.handleInput("\x1b"); await pending;
+});
+
+test("the saved card style applies at startup and on every session start", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	t.after(() => setCardStyle(CARD_STYLE.NEON));
+	writeCardStyle("float", { gentlePiConfigHome: home });
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	assert.equal(cardStyle(), CARD_STYLE.FLOAT);
+	writeCardStyle("neon", { gentlePiConfigHome: home });
+	const { ctx } = fakeContext({ hasUI: false });
+	for (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);
+	assert.equal(cardStyle(), CARD_STYLE.NEON);
+});
+
+test("customize Cards rows refuse to overwrite a malformed preference", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	t.after(() => setCardStyle(CARD_STYLE.NEON));
+	writeFileSync(join(home, "card-style.json"), "{");
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	assert.ok(findCustomizeRow(ui, "Card style: float"));
+	assert.match(ui.overlayView!.render(90).join("\n"), /malformed or unreadable file/i);
+	ui.overlayView!.handleInput("\r");
+	for (let attempt = 0; attempt < 100 && !ui.notices.some(n => /malformed or unreadable card style/i.test(n)); attempt++) await new Promise<void>((resolve) => setTimeout(resolve, 5));
+	assert.ok(ui.notices.some(n => /Cannot update malformed or unreadable card style preference/i.test(n)), ui.notices.join("\n"));
+	assert.equal(readFileSync(join(home, "card-style.json"), "utf8"), "{");
+	assert.equal(cardStyle(), CARD_STYLE.NEON);
 	ui.overlayView!.handleInput("\x1b"); await pending;
 });
 

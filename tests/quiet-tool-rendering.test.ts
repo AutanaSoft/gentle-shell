@@ -4,6 +4,8 @@ import test from "node:test";
 import { initTheme, keyHint } from "@earendil-works/pi-coding-agent";
 import { imageFallback, visibleWidth } from "@earendil-works/pi-tui";
 import { cardBody, cardHint, cardTitle, cardTone } from "./gentle-card-text.ts";
+import { CARD_STYLE, setCardStyle } from "../lib/shell-card.ts";
+import { stripAnsi } from "../lib/terminal-theme.ts";
 import piPretty from "../extensions/pi-pretty.ts";
 import quietTools, {
 	countNonEmptyLines,
@@ -1447,3 +1449,77 @@ test("quiet tool calls draw a rounded petal card in the lifecycle tone", () => {
 });
 
 
+
+// Float style: the call and result components of one quiet card read as one
+// borderless panel. The heading owns the blank row above it; the result owns
+// the separator below the heading and the blank closing row.
+const floatToolTheme = {
+	bold(value: string) {
+		return value;
+	},
+	fg(_color: string, value: string) {
+		return `\x1b[38;5;114m${value}\x1b[39m`;
+	},
+	bg(color: string, value: string) {
+		return `\x1b[48;5;${color === "toolErrorBg" ? 52 : color === "toolPendingBg" ? 58 : 22}m${value}\x1b[49m`;
+	},
+};
+
+function withFloatCards<T>(run: () => T): T {
+	setCardStyle(CARD_STYLE.FLOAT);
+	try {
+		return run();
+	} finally {
+		setCardStyle(CARD_STYLE.NEON);
+	}
+}
+
+test("float quiet cards render the call and result as one panel with a single separator", () => {
+	const tools = registeredQuietTools();
+	const read = tools.get("read");
+	const context = routineRenderContext({ args: { path: "package.json" }, isPartial: false, executionStarted: true });
+	const width = 60;
+	const rows = withFloatCards(() => [
+		...read.renderCall({ path: "package.json" }, floatToolTheme, context).render(width),
+		...read.renderResult(textResult("{\n  \"name\": \"gentle-pi\""), { expanded: false, isPartial: false }, floatToolTheme, context).render(width),
+	]);
+	const plain = rows.map(stripAnsi);
+	for (const line of rows) {
+		assert.equal(visibleWidth(line), width);
+		assert.ok(line.startsWith(" \x1b[48;5;22m"), JSON.stringify(line));
+		assert.ok(line.endsWith("\x1b[49m "), JSON.stringify(line));
+	}
+	assert.doesNotMatch(plain.join("\n"), /[╭╮╰╯│─]/);
+	assert.match(plain[0]!, /^ ▎ +$/);
+	assert.match(plain[1]!, /^ ▎ ≡ read package\.json +.*to expand {4}$/);
+	assert.match(plain[2]!, /^ ▎ +$/);
+	assert.match(plain[3]!, /^ ▎ \{ +$/);
+	assert.match(plain[4]!, /^ ▎ {3}"name": "gentle-pi" +$/);
+	assert.match(plain.at(-1)!, /^ ▎ +$/);
+	assert.equal(plain.length, 6);
+	assert.equal(plain[1]!.indexOf("≡"), plain[3]!.indexOf("{"), "the glyph starts in the body text column");
+});
+
+test("float quiet cards add no separator without result rows", () => {
+	const tools = registeredQuietTools();
+	const read = tools.get("read");
+	const running = withFloatCards(() => read.renderCall({ path: "a.md" }, floatToolTheme, routineRenderContext({ args: { path: "a.md" } })).render(40)).map(stripAnsi);
+	assert.equal(running.length, 2, "a running call is the blank row and its heading");
+	assert.match(running[0]!, /^ ▎ +$/);
+	assert.match(running[1]!, /^ ▎ ≡ read a\.md +$/);
+	const empty = withFloatCards(() => read.renderResult(textResult(""), { expanded: false, isPartial: false }, floatToolTheme, routineRenderContext({ isPartial: false })).render(40)).map(stripAnsi);
+	assert.deepEqual(empty, [` ▎${" ".repeat(37)} `], "an empty result only closes the panel");
+});
+
+test("quiet cards stay outlined in the neon style with a background-capable theme", () => {
+	const tools = registeredQuietTools();
+	const read = tools.get("read");
+	const context = routineRenderContext({ args: { path: "a.md" }, isPartial: false, executionStarted: true });
+	const rows = [
+		...read.renderCall({ path: "a.md" }, floatToolTheme, context).render(40),
+		...read.renderResult(textResult("one"), { expanded: false, isPartial: false }, floatToolTheme, context).render(40),
+	].map(stripAnsi);
+	assert.match(rows[0]!, /^╭─ ≡ read a\.md/);
+	assert.match(rows.at(-1)!, /^╰─+╯$/);
+	assert.doesNotMatch(rows.join("\n"), /▎/);
+});

@@ -8,7 +8,7 @@ import {
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { getCapabilities, imageFallback, type Component } from "@earendil-works/pi-tui";
-import { CARD_TONE, cardBodyRows, cardBottom, cardLine, cardTop, type CardTheme, type CardTone } from "./shell-card.ts";
+import { CARD_TONE, cardBodyRows, cardBottom, cardLine, cardTop, floatRows, type CardTheme, type CardTone } from "./shell-card.ts";
 import { sanitizeTerminalText, stripAnsi } from "./terminal-theme.ts";
 
 const CALL_STATUS = {
@@ -80,23 +80,27 @@ class CodemodeCard implements Component {
 	private readonly body: (width: number) => string[];
 	private readonly top: boolean;
 	private readonly hint?: string;
+	// Whether the call card above this result already drew body rows (the script).
+	private readonly afterBody: boolean;
 
-	constructor(theme: CardTheme, tone: CardTone, body: (width: number) => string[], top: boolean, hint?: string) {
+	constructor(theme: CardTheme, tone: CardTone, body: (width: number) => string[], top: boolean, hint?: string, afterBody = false) {
 		this.theme = theme;
 		this.tone = tone;
 		this.body = body;
 		this.top = top;
 		this.hint = hint;
+		this.afterBody = afterBody;
 	}
 
 	render(width: number): string[] {
 		const target = Math.max(0, Math.floor(width));
 		if (target === 0) return [];
-		return [
-			...(this.top ? [cardTop({ title: "Code", glyph: "λ", body: [], tone: this.tone }, this.theme, target, this.hint)] : []),
-			...this.body(target),
-			...(!this.top ? [cardBottom(this.tone, this.theme, target)] : []),
-		];
+		return floatRows(this.tone, this.theme, target, (inner) => ({
+			head: this.top ? [cardTop({ title: "Code", glyph: "λ", body: [], tone: this.tone }, this.theme, inner, this.hint)] : [],
+			body: this.body(inner),
+			bottom: this.top ? undefined : cardBottom(this.tone, this.theme, inner),
+			afterHeading: !this.top && !this.afterBody,
+		}));
 	}
 
 	invalidate(): void {}
@@ -129,6 +133,8 @@ export function decorateCodemodeTool(tool: ToolDefinition): ToolDefinition {
 					? rows.slice(marker + 1) : rows;
 			});
 			const path = record(result.details).fullOutputPath;
+			// Mirrors renderCall: an expanded call shows the script as its body.
+			const callHasBody = options.expanded && typeof record(context?.args).code === "string";
 			return new CodemodeCard(theme, tone, (width) => {
 				const rows = shown.flatMap((call) => [
 					childLine(call, theme),
@@ -148,7 +154,7 @@ export function decorateCodemodeTool(tool: ToolDefinition): ToolDefinition {
 				body.push(...cardBodyRows(output.filter((row) => options.expanded || row.trim().length > 0).map((row) => theme.fg(isError ? "error" : "toolOutput", row)), tone, theme, width, { expanded: options.expanded, previewRows: 3 }));
 				if (typeof path === "string") body.push(...cardBodyRows([theme.fg("muted", `Full output: ${safe(path)}`)], tone, theme, width, { expanded: options.expanded, previewRows: 1 }));
 				return body;
-			}, false);
+			}, false, undefined, callHasBody);
 		},
 	};
 }

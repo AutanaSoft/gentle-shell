@@ -1,7 +1,7 @@
 import { keyHint, type AgentToolResult } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { type GentleAiTimingLookup } from "./gentle-ai-elapsed-store.ts";
-import { CARD_TONE, cardBodyRows, cardBottom, cardInnerWidth, cardLine, cardTop, type Card, type CardTheme, type CardTone } from "./shell-card.ts";
+import { CARD_TONE, cardBodyRows, cardBottom, cardInnerWidth, cardLine, cardTop, floatRows, type Card, type CardTheme, type CardTone } from "./shell-card.ts";
 import { formatElapsed } from "./agents-widget.ts";
 import { sanitizeTerminalText, stripAnsi } from "./terminal-theme.ts";
 
@@ -116,10 +116,11 @@ export class GentleAiCallCard {
 
 	render(width: number): string[] {
 		if (width <= 0) return [];
-		const lines = [cardTop(this.card, this.theme, width, this.hint)];
-		if (this.detail) lines.push(cardLine(this.theme.fg(DETAIL_ROLE, this.detail), this.card.tone, this.theme, width));
-		if (this.open) lines.push(cardBottom(this.card.tone, this.theme, width, this.elapsed || undefined));
-		return lines;
+		// The command detail belongs to the heading; the result below owns the body.
+		return floatRows(this.card.tone, this.theme, width, (inner) => ({
+			head: [cardTop(this.card, this.theme, inner, this.hint), ...(this.detail ? [cardLine(this.theme.fg(DETAIL_ROLE, this.detail), this.card.tone, this.theme, inner)] : [])],
+			bottom: this.open ? cardBottom(this.card.tone, this.theme, inner, this.elapsed || undefined) : undefined,
+		}));
 	}
 
 	invalidate(): void {}
@@ -212,20 +213,25 @@ export class GentleAiResultCard {
 	render(width: number): string[] {
 		if (width <= 0) return [];
 		const role = this.tone === CARD_TONE.ERROR ? "error" : "toolOutput";
+		// A partial result sits under a running call card, which still closes the
+		// frame; there, the call's closing row already separates the body.
+		return floatRows(this.tone, this.theme, width, (inner) => ({
+			body: this.body(inner, role),
+			bottom: this.partial ? undefined : cardBottom(this.tone, this.theme, inner, this.elapsed || undefined),
+			afterHeading: !this.partial,
+		}));
+	}
+
+	private body(width: number, role: string): string[] {
 		if (this.envelope !== undefined && !this.expanded) {
 			const summary = truncateToWidth(summarizeJsonEnvelope(this.envelope), cardInnerWidth(width), "…");
-			const lines = [cardLine(this.theme.fg(role, summary), this.tone, this.theme, width)];
-			if (!this.partial) lines.push(cardBottom(this.tone, this.theme, width, this.elapsed || undefined));
-			return lines;
+			return [cardLine(this.theme.fg(role, summary), this.tone, this.theme, width)];
 		}
 		const rows = this.text.length > 0 ? this.text.split("\n") : [];
 		const useful = this.expanded ? rows : rows.filter((row) => stripAnsi(row).trim().length > 0);
-		const lines = cardBodyRows(useful.map((row) => this.theme.fg(role, row)), this.tone, this.theme, width, {
+		return cardBodyRows(useful.map((row) => this.theme.fg(role, row)), this.tone, this.theme, width, {
 			expanded: this.expanded, previewRows: 3,
 		});
-		// A partial result sits under a running call card, which still closes the frame.
-		if (!this.partial) lines.push(cardBottom(this.tone, this.theme, width, this.elapsed || undefined));
-		return lines;
 	}
 
 	invalidate(): void {}

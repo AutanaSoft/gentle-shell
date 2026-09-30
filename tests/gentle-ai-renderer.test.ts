@@ -5,6 +5,7 @@ import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Box, visibleWidth } from "@earendil-works/pi-tui";
 import { renderGentleAiLifecycleCall, renderGentleAiResult, GentleAiCallCard } from "../lib/gentle-ai-renderer.ts";
+import { CARD_STYLE, setCardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
 initTheme("dark");
@@ -511,4 +512,68 @@ test("rose call cards stay exactly as wide as the terminal with the 2-cell emoji
 			for (const line of lines) assert.equal(visibleWidth(line), width, `${operationPath} at ${width}: ${JSON.stringify(line)}`);
 		}
 	}
+});
+
+// Float style: the rose call card and its result read as one borderless panel.
+const floatTheme = {
+	fg: (_color: string, text: string) => `\x1b[38;5;114m${text}\x1b[39m`,
+	bg: (color: string, text: string) => `\x1b[48;5;${color === "toolErrorBg" ? 52 : color === "toolPendingBg" ? 58 : 22}m${text}\x1b[49m`,
+};
+
+function withFloatCards<T>(run: () => T): T {
+	setCardStyle(CARD_STYLE.FLOAT);
+	try {
+		return run();
+	} finally {
+		setCardStyle(CARD_STYLE.NEON);
+	}
+}
+
+const BLANK = /^ ▎ +$/;
+
+test("float rose cards join the call and the JSON summary into one panel", () => {
+	const rows = withFloatCards(() => {
+		const call = new GentleAiCallCard();
+		call.update("completed", "review inspect", floatTheme, "$ gentle-ai review inspect", "ctrl+o to expand");
+		const envelope = JSON.stringify({ schema: "x/v1", status: "ready", risk: "medium" });
+		const result = renderGentleAiResult({ content: [{ type: "text", text: envelope }] } as never, { expanded: false }, floatTheme);
+		return [...call.render(70), ...result.render(70)];
+	});
+	const plain = rows.map(stripAnsi);
+	for (const line of rows) {
+		assert.equal(visibleWidth(line), 70);
+		assert.ok(line.startsWith(" \x1b[48;5;22m") && line.endsWith("\x1b[49m "), JSON.stringify(line));
+	}
+	assert.doesNotMatch(plain.join("\n"), /[╭╮╰╯│─]/);
+	assert.match(plain[0]!, BLANK);
+	assert.match(plain[1]!, /^ ▎ 🌹 rdd inspect +ctrl\+o to expand {4}$/);
+	assert.match(plain[2]!, /^ ▎ \$ gentle-ai review inspect +$/, "the command stays with the heading");
+	assert.match(plain[3]!, BLANK);
+	assert.match(plain[4]!, /^ ▎ ready · medium +$/);
+	assert.match(plain[5]!, BLANK);
+	assert.equal(plain.length, 6);
+	assert.equal(plain[1]!.indexOf("🌹"), plain[4]!.indexOf("ready"));
+});
+
+test("float rose cards keep the elapsed time on the blank closing row and add no separator under a running call", () => {
+	const rows = withFloatCards(() => {
+		const call = new GentleAiCallCard();
+		call.update("running", "review status", floatTheme, undefined, undefined, "3s");
+		const partial = renderGentleAiResult({ content: [{ type: "text", text: "working" }] } as never, { isPartial: true }, floatTheme);
+		return [...call.render(40), ...partial.render(40)];
+	});
+	const plain = rows.map(stripAnsi);
+	assert.match(plain[0]!, BLANK);
+	assert.match(plain[1]!, /^ ▎ 🌹 rdd running · status +$/);
+	assert.match(plain[2]!, /^ ▎ +3s {3}$/);
+	assert.match(plain[3]!, /^ ▎ working +$/);
+	assert.equal(plain.length, 4);
+	for (const line of rows) assert.ok(line.startsWith(" \x1b[48;5;58m"), JSON.stringify(line));
+});
+
+test("float rose error results paint the error background on every row", () => {
+	const rows = withFloatCards(() => renderGentleAiResult({ content: [{ type: "text", text: "boom\nsecond" }] } as never, { isError: true }, floatTheme).render(40));
+	const plain = rows.map(stripAnsi);
+	assert.deepEqual(plain.map((line) => BLANK.test(line)), [true, false, false, true]);
+	for (const line of rows) assert.ok(line.startsWith(" \x1b[48;5;52m"), JSON.stringify(line));
 });

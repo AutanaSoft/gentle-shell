@@ -11,6 +11,7 @@ import {
 import { getCapabilities, imageFallback, setCapabilities, visibleWidth } from "@earendil-works/pi-tui";
 import quietTools from "../extensions/quiet-tools.ts";
 import { decorateCodemodeTool, registerCompactCodemode } from "../lib/codemode-renderer.ts";
+import { CARD_STYLE, setCardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
 type ToolRenderContext = Parameters<NonNullable<ToolDefinition["renderCall"]>>[2];
@@ -365,4 +366,50 @@ test("terminal controls cannot spoof child, code or output rows at narrow and wi
 			}
 		}
 	}
+});
+
+// Float style: one borderless panel across the call and result components,
+// with exactly one separator between the heading and whatever body comes first.
+const floatTheme = {
+	bold: (text: string) => text,
+	fg: (_color: string, text: string) => `\x1b[38;5;203m${text}\x1b[39m`,
+	bg: (color: string, text: string) => `\x1b[48;5;${color === "toolErrorBg" ? 52 : 22}m${text}\x1b[49m`,
+};
+
+function renderFloat(tool: ToolDefinition, value: AgentToolResult<unknown>, ctx: ToolRenderContext, width = 70) {
+	setCardStyle(CARD_STYLE.FLOAT);
+	try {
+		const call = tool.renderCall!(ctx.args, floatTheme as never, ctx).render(width);
+		const body = tool.renderResult!(value, { expanded: ctx.expanded, isPartial: ctx.isPartial }, floatTheme as never, ctx).render(width);
+		return [...call, ...body];
+	} finally {
+		setCardStyle(CARD_STYLE.NEON);
+	}
+}
+
+test("float Code cards separate the heading from the first body rows exactly once", () => {
+	const tool = registeredCodemode();
+	const value = result([{ name: "read", status: "ok" }], "Script completed\nWall time 0.1 seconds\nOutput:\nhello");
+	const collapsed = renderFloat(tool, value, context());
+	const plain = collapsed.map(stripAnsi);
+	for (const line of collapsed) {
+		assert.equal(visibleWidth(line), 70);
+		assert.ok(line.startsWith(" \x1b[48;5;22m") && line.endsWith("\x1b[49m "), JSON.stringify(line));
+	}
+	assert.doesNotMatch(plain.join("\n"), /[╭╮╰╯│─]/);
+	assert.match(plain[0]!, /^ ▎ +$/);
+	assert.match(plain[1]!, /^ ▎ λ Code /);
+	assert.match(plain[2]!, /^ ▎ +$/);
+	assert.match(plain[3]!, /^ ▎ ok · read/);
+	assert.match(plain.at(-1)!, /^ ▎ +$/);
+	assert.equal(plain.filter((line) => /^ ▎ +$/.test(line)).length, 3);
+
+	// Expanded, the script is the first body: the separator moves above it.
+	const expanded = renderFloat(tool, value, context({ expanded: true })).map(stripAnsi);
+	assert.match(expanded[2]!, /^ ▎ +$/);
+	assert.match(expanded[3]!, /^ ▎ await tools\.read/);
+	assert.equal(expanded.filter((line) => /^ ▎ +$/.test(line)).length, 3, "no second separator above the result");
+
+	const failed = renderFloat(tool, result([], "Script failed"), context({ isError: true }));
+	for (const line of failed) assert.ok(line.startsWith(" \x1b[48;5;52m"), JSON.stringify(line));
 });
