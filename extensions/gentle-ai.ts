@@ -214,6 +214,9 @@ import {
 	type RddLine,
 	type VerificationTier,
 	type ReviewAssessmentV1,
+	type ReviewAssessmentNextTransition,
+	type ReviewAssessmentReason,
+	type ReviewDueReason,
 	type NativeReviewOutcome,
 } from "../lib/review-risk-assessment.ts";
 import {
@@ -836,10 +839,17 @@ async function readRddModeStatusOnce(
 interface ReviewAssessmentPlanDetails {
 	schema: "gentle-pi.review-assessment-plan/v1";
 	risk: VerificationTier;
-	reasons: readonly { code: string; path: string; detail: string }[];
+	reasons: readonly ReviewAssessmentReason[];
 	changedPaths: number;
 	changedLines: number;
-	candidate: { kind: string; baseRef: string | undefined } | null;
+	// gentle-pi#1175: `consumed`, `reviewDue`, `reviewDueReason`, and
+	// `nextTransition` are projected only when native reported them; an older
+	// binary omits them and they are never fabricated here.
+	candidate: { kind: string; baseRef: string | undefined; consumed?: boolean } | null;
+	reviewDue?: boolean;
+	reviewDueReason?: ReviewDueReason;
+	// Opaque native continuation, carried verbatim.
+	nextTransition?: ReviewAssessmentNextTransition;
 	rddLine: RddLine;
 	nativeReviewOutcome: NativeReviewOutcome;
 	// gentle-pi#668: where nativeReviewOutcome came from -- explicit (caller
@@ -907,10 +917,21 @@ async function resolveReviewAssessmentPlan(
 	return {
 		schema: "gentle-pi.review-assessment-plan/v1",
 		risk,
-		reasons: assessment?.reasons ?? (unassessableDetail === undefined ? [] : [{ code: unassessableCode, path: "", detail: unassessableDetail }]),
+		// No path is known for an unassessable candidate: omit it rather than
+		// emitting an empty string the native reason shape forbids.
+		reasons: assessment?.reasons ?? (unassessableDetail === undefined ? [] : [{ code: unassessableCode, detail: unassessableDetail }]),
 		changedPaths: assessment?.changedPaths ?? 0,
 		changedLines: assessment?.changedLines ?? 0,
-		candidate: assessment === undefined ? null : { kind: assessment.candidate.kind, baseRef: assessment.candidate.baseRef },
+		candidate: assessment === undefined
+			? null
+			: {
+				kind: assessment.candidate.kind,
+				baseRef: assessment.candidate.baseRef,
+				...(assessment.candidate.consumed === undefined ? {} : { consumed: assessment.candidate.consumed }),
+			},
+		...(assessment?.reviewDue === undefined ? {} : { reviewDue: assessment.reviewDue }),
+		...(assessment?.reviewDueReason === undefined ? {} : { reviewDueReason: assessment.reviewDueReason }),
+		...(assessment?.nextTransition === undefined ? {} : { nextTransition: assessment.nextTransition }),
 		rddLine,
 		nativeReviewOutcome,
 		outcome_source: outcomeSource,

@@ -80,11 +80,142 @@ test("decodeReviewAssessmentV1 rejects a malformed shape", () => {
 	assert.throws(() => decodeReviewAssessmentV1(null), TypeError);
 	assert.throws(() => decodeReviewAssessmentV1("gentle-ai.review-assessment/v1"), TypeError);
 	assert.throws(() => decodeReviewAssessmentV1(validEnvelope({ reasons: "none" })), TypeError);
-	assert.throws(() => decodeReviewAssessmentV1(validEnvelope({ reasons: [{ code: "x" }] })), TypeError);
 	assert.throws(() => decodeReviewAssessmentV1(validEnvelope({ changed_paths: -1 })), TypeError);
 	assert.throws(() => decodeReviewAssessmentV1(validEnvelope({ changed_lines: 1.5 })), TypeError);
 	assert.throws(() => decodeReviewAssessmentV1(validEnvelope({ candidate: { kind: "unknown-kind" } })), TypeError);
 	assert.throws(() => decodeReviewAssessmentV1(validEnvelope({ candidate: { kind: "current-changes", base_ref: "" } })), TypeError);
+});
+
+// ---------------------------------------------------------------------------
+// gentle-pi#1175: the native v2 `assess.schema.json` requires only `code` on a
+// reason, and adds `candidate.consumed`, `review_due`, `review_due_reason`,
+// and `next_transition`. Older binaries (for example the pinned gentle-ai
+// v3.7.0) predate those fields; they must decode without invented values.
+// ---------------------------------------------------------------------------
+
+function nextTransition(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+	return {
+		operation: "review.status",
+		command: "gentle-ai",
+		arguments: [
+			{ name: "review", value: "" },
+			{ name: "--cwd", value: "/repo" },
+			{ name: "--next-transition", value: "start", token: "opaque-token" },
+		],
+		...overrides,
+	};
+}
+
+function newEnvelope(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+	return validEnvelope({
+		risk: "high",
+		candidate: { kind: "current-changes", consumed: false },
+		review_due: true,
+		review_due_reason: "high_risk",
+		next_transition: nextTransition(),
+		...overrides,
+	});
+}
+
+test("decodeReviewAssessmentV1 accepts a reason carrying only code and never synthesizes path or detail", () => {
+	const decoded = decodeReviewAssessmentV1(validEnvelope({ reasons: [{ code: "x" }, { code: "y", path: "a.ts" }, { code: "z", detail: "why" }] }));
+	assert.deepEqual(decoded.reasons, [{ code: "x" }, { code: "y", path: "a.ts" }, { code: "z", detail: "why" }]);
+	assert.equal(Object.hasOwn(decoded.reasons[0], "path"), false);
+	assert.equal(Object.hasOwn(decoded.reasons[0], "detail"), false);
+});
+
+test("decodeReviewAssessmentV1 rejects a reason with a missing code or an empty/non-string path or detail", () => {
+	for (const reason of [
+		{},
+		{ code: "" },
+		{ code: 1 },
+		{ path: "a.ts", detail: "why" },
+		{ code: "x", path: "" },
+		{ code: "x", detail: "" },
+		{ code: "x", path: 1 },
+		{ code: "x", detail: null },
+		"x",
+	]) {
+		assert.throws(() => decodeReviewAssessmentV1(validEnvelope({ reasons: [reason] })), TypeError, `reason ${JSON.stringify(reason)} must be rejected`);
+	}
+});
+
+test("decodeReviewAssessmentV1 accepts an older envelope without consumed/review_due/review_due_reason and invents none of them", () => {
+	const decoded = decodeReviewAssessmentV1(validEnvelope());
+	for (const key of ["reviewDue", "reviewDueReason", "nextTransition"]) {
+		assert.equal(Object.hasOwn(decoded, key), false, `${key} must stay absent`);
+	}
+	assert.equal(Object.hasOwn(decoded.candidate, "consumed"), false, "consumed must stay absent, never defaulted");
+});
+
+test("decodeReviewAssessmentV1 decodes consumed, review_due, review_due_reason, and next_transition verbatim", () => {
+	const transition = nextTransition();
+	const decoded = decodeReviewAssessmentV1(newEnvelope({ next_transition: transition }));
+	assert.deepEqual(decoded.candidate, { kind: "current-changes", baseRef: undefined, consumed: false });
+	assert.equal(decoded.reviewDue, true);
+	assert.equal(decoded.reviewDueReason, "high_risk");
+	assert.deepEqual(decoded.nextTransition, nextTransition());
+	assert.equal(JSON.stringify(decoded.nextTransition), JSON.stringify(nextTransition()), "next_transition must keep its native key and argument order");
+
+	const consumed = decodeReviewAssessmentV1(newEnvelope({ candidate: { kind: "base-diff", base_ref: "origin/main", consumed: true }, review_due: false, review_due_reason: "already_reviewed", next_transition: undefined }));
+	assert.deepEqual(consumed.candidate, { kind: "base-diff", baseRef: "origin/main", consumed: true });
+	assert.equal(consumed.reviewDue, false);
+	assert.equal(consumed.reviewDueReason, "already_reviewed");
+	assert.equal(Object.hasOwn(consumed, "nextTransition"), false);
+
+	for (const reason of ["high_risk", "slice_budget_reached", "passive", "under_budget", "already_reviewed"]) {
+		assert.equal(decodeReviewAssessmentV1(newEnvelope({ review_due_reason: reason, next_transition: undefined })).reviewDueReason, reason);
+	}
+
+	const noToken = decodeReviewAssessmentV1(newEnvelope({ next_transition: nextTransition({ arguments: [] }) }));
+	assert.deepEqual(noToken.nextTransition, nextTransition({ arguments: [] }));
+});
+
+test("decodeReviewAssessmentV1 rejects malformed consumed, review_due, and review_due_reason values", () => {
+	for (const consumed of ["true", 0, null]) {
+		assert.throws(() => decodeReviewAssessmentV1(newEnvelope({ candidate: { kind: "current-changes", consumed } })), TypeError, `consumed ${JSON.stringify(consumed)} must be rejected`);
+	}
+	for (const reviewDueReason of ["low_risk", "", 1, null]) {
+		assert.throws(() => decodeReviewAssessmentV1(newEnvelope({ review_due_reason: reviewDueReason })), TypeError, `review_due_reason ${JSON.stringify(reviewDueReason)} must be rejected`);
+	}
+	for (const reviewDue of ["true", 1, null]) {
+		assert.throws(() => decodeReviewAssessmentV1(newEnvelope({ review_due: reviewDue })), TypeError, `review_due ${JSON.stringify(reviewDue)} must be rejected`);
+	}
+});
+
+test("decodeReviewAssessmentV1 rejects only one of the review_due/review_due_reason pair", () => {
+	assert.throws(() => decodeReviewAssessmentV1(validEnvelope({ review_due: false })), TypeError);
+	assert.throws(() => decodeReviewAssessmentV1(validEnvelope({ review_due_reason: "passive" })), TypeError);
+});
+
+test("decodeReviewAssessmentV1 rejects a malformed next_transition or one not backed by review_due true", () => {
+	const malformed: Record<string, unknown>[] = [
+		nextTransition({ operation: "review.start" }),
+		nextTransition({ extra: true }),
+		nextTransition({ command: undefined }),
+		nextTransition({ command: "" }),
+		nextTransition({ arguments: undefined }),
+		nextTransition({ arguments: "--cwd" }),
+		nextTransition({ arguments: [{ name: "--cwd", value: "/repo", token: "" }] }),
+		nextTransition({ arguments: [{ name: "", value: "/repo" }] }),
+		nextTransition({ arguments: [{ name: "--cwd" }] }),
+		nextTransition({ arguments: [{ name: "--cwd", value: 1 }] }),
+		nextTransition({ arguments: [{ name: "--cwd", value: "/repo", extra: "x" }] }),
+		nextTransition({ arguments: [null] }),
+	];
+	for (const transition of malformed) {
+		assert.throws(() => decodeReviewAssessmentV1(newEnvelope({ next_transition: transition })), TypeError, `next_transition ${JSON.stringify(transition)} must be rejected`);
+	}
+	assert.throws(() => decodeReviewAssessmentV1(newEnvelope({ next_transition: null })), TypeError);
+	assert.throws(() => decodeReviewAssessmentV1(newEnvelope({ review_due: false, review_due_reason: "passive" })), TypeError, "next_transition requires review_due true");
+	assert.throws(() => decodeReviewAssessmentV1(validEnvelope({ next_transition: nextTransition() })), TypeError, "next_transition requires review_due true");
+});
+
+test("decodeReviewAssessmentV1 ignores unknown top-level fields and never projects them", () => {
+	const decoded = decodeReviewAssessmentV1(newEnvelope({ future_field: { anything: true } }));
+	assert.equal(Object.hasOwn(decoded, "future_field"), false);
+	assert.equal(Object.hasOwn(decoded, "futureField"), false);
+	assert.equal(decoded.reviewDue, true);
 });
 
 // ---------------------------------------------------------------------------
@@ -713,6 +844,55 @@ test("native assess: a non-zero exit (an older binary reporting an unknown comma
 		() => nativeClient(textOnStdout.adapter).assess!({ cwd: process.cwd() }),
 		(error: unknown) => error instanceof NativeReviewCliError && [NATIVE_REVIEW_ERROR_CODE.MALFORMED_JSON, NATIVE_REVIEW_ERROR_CODE.NON_ZERO].includes(error.code),
 	);
+});
+
+// gentle-pi#1175: the full native path (real decoder through the native CLI
+// wrapper) must keep a code-only reason assessable and project the new
+// native facts without fabricating them for older envelopes.
+
+test("gentle_review assess: a native envelope whose reasons lack path/detail is assessed, not unassessable", async () => {
+	const queue = queuedAdapter([{ stdout: JSON.stringify(validEnvelope({ reasons: [{ code: "touches-auth-path" }] })) }]);
+	const client = nativeClient(queue.adapter);
+	const result = await reviewControllerTool({ assess: client.assess.bind(client) }).execute("code-only", { operation: "assess" }, undefined, undefined, ctx);
+	const details = result.details as { risk: string; reasons: Record<string, unknown>[] };
+	assert.equal(details.risk, "medium");
+	assert.deepEqual(details.reasons, [{ code: "touches-auth-path" }]);
+});
+
+test("gentle_review assess: consumed, reviewDue, reviewDueReason, and nextTransition are projected verbatim from native", async () => {
+	const queue = queuedAdapter([{ stdout: JSON.stringify(newEnvelope({ candidate: { kind: "current-changes", consumed: false } })) }]);
+	const client = nativeClient(queue.adapter);
+	const result = await reviewControllerTool({ assess: client.assess.bind(client) }).execute("new-envelope", { operation: "assess" }, undefined, undefined, ctx);
+	const details = result.details as Record<string, unknown> & { candidate: Record<string, unknown> };
+	assert.equal(details.risk, "high");
+	assert.equal(details.candidate.consumed, false);
+	assert.equal(details.reviewDue, true);
+	assert.equal(details.reviewDueReason, "high_risk");
+	assert.deepEqual(details.nextTransition, nextTransition());
+	const text = JSON.parse(result.content[0].text) as Record<string, unknown>;
+	assert.deepEqual(text.nextTransition, nextTransition());
+});
+
+test("gentle_review assess: an older native envelope projects no consumed/reviewDue/reviewDueReason/nextTransition", async () => {
+	const queue = queuedAdapter([{ stdout: JSON.stringify(validEnvelope()) }]);
+	const client = nativeClient(queue.adapter);
+	const result = await reviewControllerTool({ assess: client.assess.bind(client) }).execute("old-envelope", { operation: "assess" }, undefined, undefined, ctx);
+	const details = result.details as Record<string, unknown> & { candidate: Record<string, unknown> };
+	assert.equal(details.risk, "medium");
+	for (const key of ["reviewDue", "reviewDueReason", "nextTransition"]) {
+		assert.equal(Object.hasOwn(details, key), false, `${key} must not be fabricated`);
+	}
+	assert.equal(Object.hasOwn(details.candidate, "consumed"), false, "consumed must not be fabricated");
+});
+
+test("gentle_review assess: an unassessable projection omits reason.path instead of emitting an empty string", async () => {
+	const result = await reviewControllerTool({}).execute("no-assess", { operation: "assess" }, undefined, undefined, ctx);
+	const details = result.details as { risk: string; reasons: Record<string, unknown>[] };
+	assert.equal(details.risk, VERIFICATION_TIER.UNASSESSABLE);
+	assert.equal(details.reasons.length, 1);
+	assert.equal(Object.hasOwn(details.reasons[0], "path"), false);
+	assert.equal(typeof details.reasons[0].detail, "string");
+	assert.ok((details.reasons[0].detail as string).length > 0);
 });
 
 test("native assess: a wrong schema or unrecognized risk value fails closed as schema-incompatible", async () => {
