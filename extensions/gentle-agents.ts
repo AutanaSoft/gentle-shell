@@ -118,6 +118,7 @@ const defaultDeps = (env: NodeJS.ProcessEnv): AgentsDeps => ({
 		return () => clearTimeout(timer);
 	},
 	pi: piCommand(),
+	resolvePi: () => piCommand(),
 	home: os.homedir(),
 	resolveWorktree: resolveSessionWorktree,
 	env,
@@ -293,6 +294,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	}
 	if (!agentsEnabled(env)) return;
 	const deps: AgentsDeps = { ...defaultDeps(env), ...overrides };
+	// An explicitly injected pi command wins over the default per-spawn resolver.
+	if (overrides?.pi && !overrides.resolvePi) delete deps.resolvePi;
 	const selectedHome = overrides.agentHome ?? (overrides.home === undefined ? resolveGentlePiAgentHome(deps.env) : join(deps.home, ".pi", "agent"));
 	// Expand environment tildes like Pi, but leave explicit path APIs literal.
 	const environmentHome = overrides.agentHome === undefined && overrides.home === undefined;
