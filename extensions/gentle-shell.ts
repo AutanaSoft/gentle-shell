@@ -1358,14 +1358,14 @@ function spaced(component: { render(width: number): string[]; invalidate(): void
 }
 
 // Same rose identity as the Gentle AI tool cards (lib/gentle-ai-renderer.ts).
-const GENTLE_AI_GLYPH = "\u{1F339}\uFE0E";
+const GENTLE_AI_GLYPH = "\u{1F339}";
 
 export function devBinaryCard(notice: DevBinaryNotice): Card {
 	if (notice.state === "invalid") {
-		return { title: "Gentle AI", subtitle: "dev binary override invalid", body: [notice.reason], tone: CARD_TONE.ERROR, glyph: GENTLE_AI_GLYPH };
+		return { title: "gentle-ai", subtitle: "dev binary override invalid", body: [notice.reason], tone: CARD_TONE.ERROR, glyph: GENTLE_AI_GLYPH };
 	}
 	return {
-		title: "Gentle AI",
+		title: "gentle-ai",
 		subtitle: "dev binary override · field-test only",
 		body: [`${notice.path} · sha256:${notice.sha256.slice(0, SHA_PREFIX_LENGTH)}`],
 		tone: CARD_TONE.WARNING,

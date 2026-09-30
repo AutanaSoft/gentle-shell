@@ -4792,7 +4792,7 @@ test("gentleShell keeps a dev-binary override visible above the editor for the w
 	const factory = ui.widgets.get("gentle-shell-dev-binary") as (tui: unknown, theme: unknown) => { render(width: number): string[] };
 	assert.ok(factory, "dev binary widget missing");
 	const lines = factory(fakeTui, plainTheme).render(100).map(stripAnsi);
-	assert.match(lines[0], /^╭─ \u{1F339}\uFE0E Gentle AI · dev binary override · field-test only ─+╮$/u, "the override notice carries the Gentle AI rose");
+	assert.match(lines[0], /^╭─ \u{1F339} gentle-ai · dev binary override · field-test only ─+╮$/u, "the override notice carries the Gentle AI rose");
 	assert.match(lines[1], /^│ \/Users\/me\/go\/bin\/gentle-ai · sha256:6e53bfc6305a3949 +│$/);
 	assert.match(lines[2], /^╰─+╯$/);
 	assert.equal(lines[3], "", "a blank line keeps the card off the prompt frame");
@@ -4812,7 +4812,7 @@ test("gentleShell keeps a dev-binary override visible above the editor for the w
 
 	const invalid = devBinaryCard({ state: "invalid", reason: "binary missing" });
 	assert.equal(invalid.tone, "error");
-	assert.equal(invalid.glyph, "\u{1F339}\uFE0E", "the invalid override notice keeps the rose too");
+	assert.equal(invalid.glyph, "\u{1F339}", "the invalid override notice keeps the rose too");
 	assert.deepEqual(factory(fakeTui, plainTheme).render(0), [""], "zero width keeps only the spacer");
 });
 

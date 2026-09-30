@@ -185,7 +185,7 @@ function assertGenericBash(tool: any, command: string): void {
 	const call = renderToString(tool.renderCall({ command }, passthroughTheme, { args: { command } }));
 	const output = renderToolResult(tool, textResult("original command output"), { expanded: true, isPartial: false }, { args: { command } });
 	assert.equal(call.trimEnd(), `$ ${command}`, command);
-	assert.doesNotMatch(call, /🌹︎ Gentle AI/);
+	assert.doesNotMatch(call, /🌹/);
 	assert.match(output, /original command output/);
 }
 
@@ -490,7 +490,7 @@ test("retired SDD commands use generic bash rendering while review remains priva
 	}
 	const review = "gentle-ai review status --next-transition";
 	assert.equal(gentleAiRoutineCommand({ command: review }), "review");
-	assert.equal(cardTitle(renderToString(bash.renderCall({ command: review }, passthroughTheme, { args: { command: review } }))), "🌹︎ Gentle AI · running · review status");
+	assert.equal(cardTitle(renderToString(bash.renderCall({ command: review }, passthroughTheme, { args: { command: review } }))), "🌹 rdd running · status");
 });
 
 test("quiet tool rendering identifies only routine Gentle AI review commands", () => {
@@ -539,7 +539,7 @@ test("quiet tool rendering previews direct Gentle AI results and preserves expan
 	const { pi, tools } = createPi();
 	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
 	const command = "gentle-ai review status --next-transition";
-	const textRose = "\u{1F339}\uFE0E";
+	const rose = "\u{1F339}";
 	const tool = tools.get("bash");
 	const failureText = "review status failed: authority unavailable\x1b[31m\nlineage=secret";
 	const expandHint = keyHint("app.tools.expand", "to expand");
@@ -552,11 +552,12 @@ test("quiet tool rendering previews direct Gentle AI results and preserves expan
 	const empty = renderToString(tool.renderResult(textResult(""), { expanded: false, isPartial: false }, passthroughTheme, { args: { command } }));
 	const nonText = renderToString(tool.renderResult({ content: [{ type: "image", data: "opaque", mimeType: "image/png" }] }, { expanded: false, isPartial: false }, passthroughTheme, { args: { command } }));
 
-	assert.equal([...textRose].length, 2);
-	assert.equal(cardTitle(call), `🌹︎ Gentle AI · running · review status`);
-	assert.match(cardBody(collapsed), /next_transition.*stop/);
-	assert.equal(cardBody(expanded).split("\n")[0], '{"next_transition":"stop"}');
-	assert.match(expanded, /"next_transition":"stop"/);
+	assert.equal([...rose].length, 1, "the rose is a plain emoji, no presentation selector");
+	assert.equal(visibleWidth(rose), 2);
+	assert.equal(cardTitle(call), `🌹 rdd running · status`);
+	assert.equal(cardBody(collapsed), "stop", "a JSON envelope collapses to its readable summary");
+	assert.doesNotMatch(collapsed, /\{"|next_transition/);
+	assert.equal(cardBody(expanded), '{\n  "next_transition": "stop"\n}', "expanded JSON is pretty-printed");
 	assert.doesNotMatch(expanded, /to expand/);
 	assert.match(cardBody(failure), /review status failed.*authority unavailable/);
 	assert.match(failure, /lineage=secret/);
@@ -607,16 +608,16 @@ test("quiet tool rendering transitions one Gentle AI header through lifecycle st
 	assert.strictEqual(initial, running);
 	assert.strictEqual(running, completed);
 	assert.strictEqual(completed, failed);
-	assert.equal(cardTitle(initialText), "🌹︎ Gentle AI · running · review status"); assert.equal(cardTone(initialText), "warning");
-	assert.equal(cardTitle(runningText), "🌹︎ Gentle AI · running · review status"); assert.equal(cardTone(runningText), "warning");
-	assert.equal(cardTitle(completedText), "🌹︎ Gentle AI · review status"); assert.equal(cardTone(completedText), "success");
-	assert.equal(cardTitle(failedText), "🌹︎ Gentle AI · failed · review status"); assert.equal(cardTone(failedText), "error");
+	assert.equal(cardTitle(initialText), "🌹 rdd running · status"); assert.equal(cardTone(initialText), "warning");
+	assert.equal(cardTitle(runningText), "🌹 rdd running · status"); assert.equal(cardTone(runningText), "warning");
+	assert.equal(cardTitle(completedText), "🌹 rdd status"); assert.equal(cardTone(completedText), "success");
+	assert.equal(cardTitle(failedText), "🌹 rdd failed · status"); assert.equal(cardTone(failedText), "error");
 	assert.doesNotMatch(failedText, /private-change/);
 });
 
 test("quiet Bash keeps direct Gentle AI calls seamless while streaming", () => {
 	const tool = registeredQuietTools().get("bash");
-	const rose = /🌹︎ Gentle AI/;
+	const rose = /🌹/;
 	const render = (command: string, state: Record<string, unknown>, overrides: Record<string, unknown> = {}) => {
 		const component = tool.renderCall({ command }, passthroughTheme, routineRenderContext({ args: { command }, state, argsComplete: false, ...overrides }));
 		return [component, renderToString(component)] as const;
@@ -624,14 +625,14 @@ test("quiet Bash keeps direct Gentle AI calls seamless while streaming", () => {
 	const command = "gentle-ai review status --token 'lineage-secret";
 	const state = {};
 	const [preparing, collapsed] = render(command, state);
-	assert.equal(cardTitle(collapsed), "🌹︎ Gentle AI · preparing · review status");
+	assert.equal(cardTitle(collapsed), "🌹 rdd preparing · status");
 	assert.doesNotMatch(collapsed, /token|lineage-secret/);
 	const expanded = render(command, state, { expanded: true, lastComponent: preparing })[1];
-	assert.equal(cardTitle(expanded), "🌹︎ Gentle AI · preparing · review status"); assert.equal(cardBody(expanded), "$ gentle-ai review status --token 'lineage-secret");
+	assert.equal(cardTitle(expanded), "🌹 rdd preparing · status"); assert.equal(cardBody(expanded), "$ gentle-ai review status --token 'lineage-secret");
 
 	const direct = "gentle-ai review status";
 	const [running, runningText] = render(direct, state, { argsComplete: true, executionStarted: true, lastComponent: preparing });
-	assert.strictEqual(running, preparing); assert.equal(cardTitle(runningText), "🌹︎ Gentle AI · running · review status");
+	assert.strictEqual(running, preparing); assert.equal(cardTitle(runningText), "🌹 rdd running · status");
 	const genericState = {};
 	const [generic, genericText] = render("gentle-ai review status | cat", genericState);
 	assert.doesNotMatch(genericText, rose); assert.match(genericText, /\| cat/);
@@ -655,7 +656,6 @@ test("quiet tool rendering displays only finite safe Gentle AI operation paths",
 	const { pi, tools } = createPi();
 	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
 	const tool = tools.get("bash");
-	const rose = "🌹︎";
 	const cases = [
 		["gentle-ai review capabilities --cwd /repo/private", "review capabilities"],
 		["gentle-ai review start --target sha256:secret --path src/private.ts", "review start"],
@@ -710,7 +710,7 @@ test("quiet tool rendering displays only finite safe Gentle AI operation paths",
 				routineRenderContext({ args: { command } }),
 			),
 		);
-		assert.equal(cardTitle(rendered), `🌹︎ Gentle AI · running · ${path}`, command);
+		assert.equal(cardTitle(rendered), path === "review" ? "🌹 rdd running" : `🌹 rdd running · ${path.slice("review ".length)}`, command);
 		assert.doesNotMatch(rendered, /change-123|private|secret|lineage|sha256|result\.json|incident\.json/);
 	}
 });
@@ -719,20 +719,19 @@ test("quiet tool rendering covers version and future standalone Gentle AI comman
 	const { pi, tools } = createPi();
 	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
 	const tool = tools.get("bash");
-	const rose = "🌹︎";
 	const cases = [
-		["gentle-ai version", "version"],
-		["gentle-ai future-command --authorization-root /repo/private", "command"],
-		["gentle-ai review future-operation --path /repo/private", "review"],
-		["/package/.gentle-ai/v2.2.0/gentle-ai version", "version"],
-		["C:\\package\\.gentle-ai\\v2.2.0\\gentle-ai.exe future-command --root C:\\private", "command"],
+		["gentle-ai version", "gentle-ai running · version"],
+		["gentle-ai future-command --authorization-root /repo/private", "gentle-ai running · command"],
+		["gentle-ai review future-operation --path /repo/private", "rdd running"],
+		["/package/.gentle-ai/v2.2.0/gentle-ai version", "gentle-ai running · version"],
+		["C:\\package\\.gentle-ai\\v2.2.0\\gentle-ai.exe future-command --root C:\\private", "gentle-ai running · command"],
 	] as const;
 
 	for (const [command, path] of cases) {
 		const rendered = renderToString(
 			tool.renderCall({ command }, passthroughTheme, routineRenderContext({ args: { command } })),
 		);
-		assert.equal(cardTitle(rendered), `🌹︎ Gentle AI · running · ${path}`, command);
+		assert.equal(cardTitle(rendered), `🌹 ${path}`, command);
 		assert.doesNotMatch(rendered, /authorization-root|private|C:\\\\private/);
 	}
 });
@@ -760,13 +759,13 @@ test("quiet tool rendering recognizes exact quoted, escaped, Windows, and comman
 
 	for (const command of routineCommands) {
 		const call = renderToString(tool.renderCall({ command }, passthroughTheme, { args: { command } }));
-		assert.equal(cardTitle(call), "🌹︎ Gentle AI · running · version", command);
+		assert.equal(cardTitle(call), "🌹 gentle-ai running · version", command);
 	}
 
 	for (const command of ["'gentle-ai-copy' version", '"gentle-ai-copy.exe" version', "'gentle-ai' version && echo done"] as const) {
 		const call = renderToString(tool.renderCall({ command }, passthroughTheme, { args: { command } }));
 		assert.equal(call.trimEnd(), `$ ${command}`);
-		assert.doesNotMatch(call, /🌹︎ Gentle AI/);
+		assert.doesNotMatch(call, /🌹/);
 	}
 });
 
@@ -779,22 +778,22 @@ test("quiet tool rendering recognizes only the exact resolved dev binary", () =>
 	});
 	const tool = tools.get("bash");
 	const cases = [
-		[`${devPath} review validate --gate pre-commit --cwd /repo/private`, "review validate pre commit"],
-		[`'${devPath}' review status --lineage secret`, "review status"],
-		[`"${devPath}" version`, "version"],
-		[`env FOO='a b' ${devPath} review capabilities`, "review capabilities"],
+		[`${devPath} review validate --gate pre-commit --cwd /repo/private`, "rdd running · validate pre commit"],
+		[`'${devPath}' review status --lineage secret`, "rdd running · status"],
+		[`"${devPath}" version`, "gentle-ai running · version"],
+		[`env FOO='a b' ${devPath} review capabilities`, "rdd running · capabilities"],
 	] as const;
 	for (const [command, operationPath] of cases) {
 		const call = renderToString(tool.renderCall({ command }, statusTheme, routineRenderContext({ args: { command } })));
-		assert.equal(cardTitle(call), `🌹︎ Gentle AI · running · ${operationPath}`, command); assert.equal(cardTone(call), "warning", command);
+		assert.equal(cardTitle(call), `🌹 ${operationPath}`, command); assert.equal(cardTone(call), "warning", command);
 		assert.doesNotMatch(call, /gentle-ai-main|private|secret|hidden/);
 	}
 	const command = `${devPath} review status --prompt hidden-prompt --lineage lineage-secret --body private-body`;
 	const lifecycleContext = routineRenderContext({ args: { command }, state: {} });
-	assert.match(renderToString(tool.renderCall({ command }, passthroughTheme, lifecycleContext)), /Gentle AI · running · review status/);
+	assert.match(renderToString(tool.renderCall({ command }, passthroughTheme, lifecycleContext)), /rdd running · status/);
 	devPath = "/new/dev/gentle-ai-main";
 	const refreshedCommand = `${devPath} review status --token token-secret`;
-	assert.match(renderToString(tool.renderCall({ command: refreshedCommand }, passthroughTheme, routineRenderContext({ args: { command: refreshedCommand } }))), /Gentle AI · running · review status/);
+	assert.match(renderToString(tool.renderCall({ command: refreshedCommand }, passthroughTheme, routineRenderContext({ args: { command: refreshedCommand } }))), /rdd running · status/);
 	assertGenericBash(tool, cases[2][0]);
 	const text = "error: private failure\nlineage=secret body=hidden\x1b[31m";
 	const collapsed = renderToolResult(tool, textResult(text), { expanded: false, isPartial: false, isError: true }, lifecycleContext);
@@ -866,12 +865,12 @@ test("quiet tool rendering previews routine partial content while the header own
 		),
 	);
 
-	assert.match(cardBody(partial), /status.*running/);
+	assert.equal(cardBody(partial), "running");
 	assert.equal(cardBody(partial).split(expandHint).length - 1, 0);
-	assert.match(partialExpanded, /"status":"running"/);
+	assert.match(partialExpanded, /"status": "running"/);
 	assert.doesNotMatch(partialExpanded, /to expand/);
 	assert.match(cardBody(partialFailure), /authority unavailable/);
-	assert.match(cardBody(completed), /status.*running/);
+	assert.equal(cardBody(completed), "running");
 
 	const partialExpandedFailure = renderToString(
 		tool.renderResult(
@@ -900,7 +899,7 @@ test("quiet tool rendering hides invocation arguments but previews result conten
 		),
 	);
 
-	assert.equal(cardTitle(call), "🌹︎ Gentle AI · running · review finalize");
+	assert.equal(cardTitle(call), "🌹 rdd running · finalize");
 	assert.match(cardBody(collapsed), /audit:/);
 	for (const forbidden of ["hidden-prompt", "lineage-secret", "private-body", "/private/root", "audit:"]) {
 		assert.doesNotMatch(call, new RegExp(forbidden));
@@ -931,7 +930,7 @@ test("quiet tool rendering keeps shell compositions, expansions, and lookalikes 
 			tool.renderResult(textResult("original command output"), { expanded: true, isPartial: false }, passthroughTheme, { args: { command } }),
 		);
 		assert.equal(call.trimEnd(), `$ ${command}`);
-		assert.doesNotMatch(call, /🌹︎ Gentle AI/);
+		assert.doesNotMatch(call, /🌹/);
 		assert.match(output, /original command output/);
 	}
 });
@@ -956,7 +955,7 @@ test("quiet Bash previews semantic lines for generic JSON output", () => {
 	const collapsed = renderToolResult(tool, textResult(object), { expanded: false, isPartial: false }, { args: { command } });
 	const expanded = renderToolResult(tool, textResult(object), { expanded: true, isPartial: false }, { args: { command } });
 	assert.equal(call.trimEnd(), `$ ${command}`);
-	assert.doesNotMatch(call, /🌹︎ Gentle AI/);
+	assert.doesNotMatch(call, /🌹/);
 	assert.doesNotMatch(collapsed, /^\n\s*[}\]]/);
 	const expandHint = keyHint("app.tools.expand", "to expand");
 	assert.equal(collapsed.split(expandHint).length - 1, 0);
@@ -1050,7 +1049,7 @@ test("quiet tool rendering classifies quoted and escaped literal shell metachara
 	]) {
 		const call = renderToString(tool.renderCall({ command }, passthroughTheme, { args: { command } }));
 		const collapsed = renderToolResult(tool, textResult("private output"), { expanded: false, isPartial: false }, { args: { command } });
-		assert.match(call, /🌹︎ Gentle AI · running · review status/, command);
+		assert.match(call, /🌹 rdd running · status/, command);
 		assert.match(collapsed, /private output/, command);
 	}
 });
@@ -1083,7 +1082,7 @@ test("quiet tool rendering recognizes a quoted exact dev override path containin
 	const command = `"${devPath}" review status "literal \\$|#;"`;
 	const call = renderToString(tool.renderCall({ command }, passthroughTheme, { args: { command } }));
 	const collapsed = renderToolResult(tool, textResult("private result"), { expanded: false, isPartial: false }, { args: { command } });
-	assert.equal(cardTitle(call), "🌹︎ Gentle AI · running · review status");
+	assert.equal(cardTitle(call), "🌹 rdd running · status");
 	assert.doesNotMatch(call, /\/opt\/Gentle AI\/gentle-ai|literal/);
 	assert.match(collapsed, /private result/);
 });
@@ -1241,7 +1240,7 @@ test("quiet tool rendering fails closed on unquoted shell expansions", () => {
 		const call = renderToString(bash.renderCall({ command }, passthroughTheme, { args: { command } }));
 		const collapsed = renderToolResult(bash, textResult("dummy-secret"), { expanded: false, isPartial: false }, { args: { command } });
 		assert.equal(gentleAiRoutineCommand({ command }), "review", command);
-		assert.match(call, /🌹︎ Gentle AI · running · review status/, command);
+		assert.match(call, /🌹 rdd running · status/, command);
 		assert.match(collapsed, /dummy-secret/, command);
 	}
 });
@@ -1257,7 +1256,7 @@ test("quiet tool rendering redacts only exact package-local executable paths wit
 		const call = renderToString(bash.renderCall({ command }, passthroughTheme, { args: { command } }));
 		const collapsed = renderToolResult(bash, textResult("dummy-secret"), { expanded: false, isPartial: false }, { args: { command } });
 		assert.equal(gentleAiRoutineCommand({ command }), "review", command);
-		assert.match(call, /🌹︎ Gentle AI · running · review status/, command);
+		assert.match(call, /🌹 rdd running · status/, command);
 		assert.doesNotMatch(call, /Gentle Package|secret/, command);
 		assert.match(collapsed, /dummy-secret/, command);
 	}
@@ -1286,7 +1285,7 @@ test("quiet tool rendering respects command and env wrapper order", () => {
 		const call = renderToString(bash.renderCall({ command }, passthroughTheme, { args: { command } }));
 		const collapsed = renderToolResult(bash, textResult("dummy-secret"), { expanded: false, isPartial: false }, { args: { command } });
 		assert.equal(gentleAiRoutineCommand({ command }), "review", command);
-		assert.match(call, /🌹︎ Gentle AI · running · review status/, command);
+		assert.match(call, /🌹 rdd running · status/, command);
 		assert.match(collapsed, /dummy-secret/, command);
 	}
 
@@ -1307,20 +1306,20 @@ test("quiet tool rendering lets a final result promote a replayed call card to i
 	const replayed = routineRenderContext({ args: { command }, state, argsComplete: false, executionStarted: false, isPartial: false, invalidate: () => { invalidations += 1; } });
 
 	const call = tool.renderCall({ command }, statusTheme, replayed);
-	assert.equal(cardTitle(renderToString(call)), "🌹︎ Gentle AI · preparing · review status");
+	assert.equal(cardTitle(renderToString(call)), "🌹 rdd preparing · status");
 	renderToString(tool.renderResult(textResult("done"), { expanded: false, isPartial: false }, statusTheme, replayed));
 	assert.equal(invalidations, 0, "never reentrant");
 	await flush();
 	assert.equal(invalidations, 1);
 	const promoted = tool.renderCall({ command }, statusTheme, { ...replayed, lastComponent: call });
 	assert.strictEqual(promoted, call);
-	assert.equal(cardTitle(renderToString(promoted)), "🌹︎ Gentle AI · review status");
+	assert.equal(cardTitle(renderToString(promoted)), "🌹 rdd status");
 	assert.equal(cardTone(renderToString(promoted)), "success");
 
 	renderToString(tool.renderResult(textResult("boom"), { expanded: false, isPartial: false }, statusTheme, { ...replayed, isError: true }));
 	await flush();
 	assert.equal(invalidations, 2);
-	assert.equal(cardTitle(renderToString(tool.renderCall({ command }, statusTheme, { ...replayed, lastComponent: call }))), "🌹︎ Gentle AI · failed · review status");
+	assert.equal(cardTitle(renderToString(tool.renderCall({ command }, statusTheme, { ...replayed, lastComponent: call }))), "🌹 rdd failed · status");
 	renderToString(tool.renderResult(textResult("boom"), { expanded: false, isPartial: false }, statusTheme, { ...replayed, isError: true }));
 	await flush();
 	assert.equal(invalidations, 2, "an unchanged outcome must not request another render");
@@ -1335,11 +1334,11 @@ test("quiet tool rendering puts the expand key in the finished call card's top r
 	assert.equal(cardHint(running), undefined, "a running call has nothing to expand yet");
 	const completed = renderToString(tool.renderCall({ command }, passthroughTheme, routineRenderContext({ args: { command }, executionStarted: true, isPartial: false, expanded: false })));
 	assert.match(cardHint(completed) ?? "", /to expand$/);
-	assert.equal(cardTitle(completed), "🌹︎ Gentle AI · review status");
+	assert.equal(cardTitle(completed), "🌹 rdd status");
 	const expanded = renderToString(tool.renderCall({ command }, passthroughTheme, routineRenderContext({ args: { command }, executionStarted: true, isPartial: false, expanded: true })));
 	assert.match(cardHint(expanded) ?? "", /to collapse$/);
 	const collapsedResult = renderToolResult(tool, textResult("{\"next_transition\":\"stop\"}"), { expanded: false, isPartial: false }, { args: { command } });
-	assert.equal(cardBody(collapsedResult), '{"next_transition":"stop"}');
+	assert.equal(cardBody(collapsedResult), "stop");
 	assert.equal(cardBody(renderToolResult(tool, textResult("a\nb\nc"), { expanded: false, isPartial: false }, { args: { command } })), "a\nb\nc");
 	assert.match(collapsedResult.split("\n").pop() ?? "", /╰─+╯$/);
 });

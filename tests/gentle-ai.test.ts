@@ -211,10 +211,10 @@ test("missing package-local binaries give a direct recovery without attributing 
 test("registered Gentle Review tools render reusable rose lifecycle call rows", () => {
 	const tools = registeredGentleTools();
 	const cases = [
-		["gentle_review", { operation: "status" }, "review status"],
-		["gentle_review", { operation: "future-operation", secret: "/private" }, "review"],
-		["gentle_review_scope", {}, "review scope"],
-		["gentle_review_capture_group", {}, "review capture group"],
+		["gentle_review", { operation: "status" }, "status"],
+		["gentle_review", { operation: "future-operation", secret: "/private" }, ""],
+		["gentle_review_scope", {}, "scope"],
+		["gentle_review_capture_group", {}, "capture group"],
 		[
 			"gentle_review_capture",
 			{
@@ -224,7 +224,7 @@ test("registered Gentle Review tools render reusable rose lifecycle call rows", 
 				secret: "secret-value",
 				arbitrary: "arbitrary-value",
 			},
-			"review capture",
+			"capture",
 		],
 	] as const;
 
@@ -237,8 +237,9 @@ test("registered Gentle Review tools render reusable rose lifecycle call rows", 
 		[...tools.keys()].filter((name) => name.startsWith("gentle_review")).sort(),
 	);
 
-	for (const [name, args, operationPath] of cases) {
+	for (const [name, args, operation] of cases) {
 		const tool = tools.get(name);
+		const title = (status: string) => ["🌹 rdd", [status, operation].filter(Boolean).join(" · ")].filter(Boolean).join(" ");
 		assert.ok(tool, `missing ${name}`);
 		const initial = tool.renderCall(args, lifecycleTheme, lifecycleContext());
 		const initialText = renderComponent(initial);
@@ -264,14 +265,14 @@ test("registered Gentle Review tools render reusable rose lifecycle call rows", 
 		assert.strictEqual(initial, running);
 		assert.strictEqual(running, completed);
 		assert.strictEqual(completed, failed);
-		assert.equal(cardTitle(initialText), `🌹︎ Gentle AI · running · ${operationPath}`); assert.equal(cardTone(initialText), "warning");
-		assert.equal(cardTitle(runningText), `🌹︎ Gentle AI · running · ${operationPath}`); assert.equal(cardTone(runningText), "warning");
-		assert.equal(cardTitle(completedText), `🌹︎ Gentle AI · ${operationPath}`); assert.equal(cardTone(completedText), "success");
+		assert.equal(cardTitle(initialText), title("running")); assert.equal(cardTone(initialText), "warning");
+		assert.equal(cardTitle(runningText), title("running")); assert.equal(cardTone(runningText), "warning");
+		assert.equal(cardTitle(completedText), title("")); assert.equal(cardTone(completedText), "success");
 		assert.doesNotMatch(cardTitle(completedText), /completed/);
 		assert.match(completedText, /to expand/);
 		assert.equal((initialText.match(/╰/g) ?? []).length, 1, "running call owns the closing frame");
 		assert.equal((completedText.match(/╰/g) ?? []).length, 0, "final result owns the closing frame");
-		assert.equal(cardTitle(failedText), `🌹︎ Gentle AI · failed · ${operationPath}`); assert.equal(cardTone(failedText), "error");
+		assert.equal(cardTitle(failedText), title("failed")); assert.equal(cardTone(failedText), "error");
 		assert.doesNotMatch(renderComponent(failed), /future-operation|secret|private/);
 		for (const forbiddenValue of ["lineage-id", "binding-id", "sha256:hash-value", "secret-value", "arbitrary-value"]) {
 			assert.doesNotMatch(failedText, new RegExp(forbiddenValue));
@@ -1844,15 +1845,15 @@ test("registered Gentle Review capture tools name the lens they run", () => {
 	const tools = registeredGentleTools();
 	const binding = (lens: string) => JSON.stringify({ name: "reviewer_result", captureOperation: "review.capture-result", arguments: [], artifactSubject: { lens } });
 	const single = tools.get("gentle_review_capture")!.renderCall({ lineageId: "l", collectBinding: binding("review-risk") }, lifecycleTheme, lifecycleContext({ executionStarted: true }));
-	assert.equal(cardTitle(renderComponent(single)), "🌹︎ Gentle AI · running · review capture · risk");
+	assert.equal(cardTitle(renderComponent(single)), "🌹 rdd running · capture · risk");
 	const bare = tools.get("gentle_review_capture")!.renderCall({ lineageId: "l", collectBinding: "{not json" }, lifecycleTheme, lifecycleContext({ executionStarted: true }));
-	assert.equal(cardTitle(renderComponent(bare)), "🌹︎ Gentle AI · running · review capture");
+	assert.equal(cardTitle(renderComponent(bare)), "🌹 rdd running · capture");
 	const group = tools.get("gentle_review_capture_group")!.renderCall(
 		{ lineageId: "l", collectBindings: [binding("review-risk"), binding("review-resilience"), binding("review-readability"), binding("review-reliability")] },
 		lifecycleTheme,
 		lifecycleContext({ executionStarted: true }),
 	);
-	assert.equal(cardTitle(renderComponent(group)), "🌹︎ Gentle AI · running · review capture group · risk · resilience · readability · reliability");
+	assert.equal(cardTitle(renderComponent(group)), "🌹 rdd running · capture group · risk · resilience · readability · reliability");
 });
 
 test("bash tool_call confirms a late guarded npm publish and denies on non-approval", async () => {

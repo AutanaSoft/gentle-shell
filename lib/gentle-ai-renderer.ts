@@ -1,6 +1,7 @@
 import { keyHint, type AgentToolResult } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import { type GentleAiTimingLookup } from "./gentle-ai-elapsed-store.ts";
-import { CARD_TONE, cardBodyRows, cardBottom, cardLine, cardTop, type Card, type CardTheme, type CardTone } from "./shell-card.ts";
+import { CARD_TONE, cardBodyRows, cardBottom, cardInnerWidth, cardLine, cardTop, type Card, type CardTheme, type CardTone } from "./shell-card.ts";
 import { formatElapsed } from "./agents-widget.ts";
 import { sanitizeTerminalText, stripAnsi } from "./terminal-theme.ts";
 
@@ -61,11 +62,27 @@ const STATUS_TONE: Record<LifecycleStatus, CardTone> = {
 	[LIFECYCLE_STATUS.FAILED]: CARD_TONE.ERROR,
 };
 
-const CARD_TITLE = "Gentle AI";
-// The binary keeps its rose; Gentle Shell notices keep the flower.
-const CARD_GLYPH = "\u{1F339}\uFE0E";
+// The title reads like the quiet read card: a short name, then the operation
+// as its argument. Review operations are `rdd <op>`; any other binary call
+// is `gentle-ai <op>`.
+const REVIEW_PREFIX = "review";
+const REVIEW_TITLE = "rdd";
+const BINARY_TITLE = "gentle-ai";
+const SEPARATOR = " · ";
+// The binary keeps its rose as a colored emoji (2 cells, no text-presentation
+// selector); Gentle Shell notices keep the flower.
+const CARD_GLYPH = "\u{1F339}";
 const DETAIL_ROLE = "dim";
 const passthroughTheme: CardTheme = { fg: (_color, text) => text };
+
+// The running/failed state stays visible until the call completes.
+function callTitle(status: LifecycleStatus, operationPath: string): string {
+	const review = operationPath === REVIEW_PREFIX || operationPath.startsWith(`${REVIEW_PREFIX} `);
+	const name = review ? REVIEW_TITLE : BINARY_TITLE;
+	const operation = review ? operationPath.slice(REVIEW_PREFIX.length).trim() : operationPath;
+	const argument = [status === LIFECYCLE_STATUS.COMPLETED ? "" : status, operation].filter((part) => part.length > 0).join(SEPARATOR);
+	return argument.length > 0 ? `${name} ${argument}` : name;
+}
 
 export function getGentleAiRenderState(state: unknown): GentleAiRenderState | undefined {
 	if (!state || typeof state !== "object" || Array.isArray(state)) return undefined;
@@ -81,7 +98,7 @@ export function getGentleAiRenderState(state: unknown): GentleAiRenderState | un
 // also closes the frame, because no result row exists yet; once a final
 // result is in, the result card closes it instead.
 export class GentleAiCallCard {
-	private card: Card = { title: CARD_TITLE, body: [], tone: CARD_TONE.WARNING };
+	private card: Card = { title: REVIEW_TITLE, body: [], tone: CARD_TONE.WARNING, glyph: CARD_GLYPH };
 	private theme: GentleAiRenderTheme = passthroughTheme;
 	private detail: string | undefined;
 	private hint: string | undefined;
@@ -89,7 +106,7 @@ export class GentleAiCallCard {
 	private open = true;
 
 	update(status: LifecycleStatus, operationPath: string, theme: GentleAiRenderTheme, detail?: string, hint?: string, elapsed?: string): void {
-		this.card = { title: CARD_TITLE, subtitle: status === LIFECYCLE_STATUS.COMPLETED ? operationPath : `${status} · ${operationPath}`, body: [], tone: STATUS_TONE[status], glyph: CARD_GLYPH };
+		this.card = { title: callTitle(status, operationPath), body: [], tone: STATUS_TONE[status], glyph: CARD_GLYPH };
 		this.theme = theme;
 		this.detail = detail;
 		this.hint = hint;
@@ -108,12 +125,74 @@ export class GentleAiCallCard {
 	invalidate(): void {}
 }
 
+// JSON envelopes collapse to one human line built from these fields, in this
+// order, looked up at the top level and then inside `result`. Each group
+// contributes its first present value. Schemas, hashes, bindings and command
+// strings are never listed, so they never reach the summary.
+const SUMMARY_FIELD_GROUPS: readonly (readonly string[])[] = [
+	["status", "state"],
+	["outcome"],
+	["risk", "risk_tier", "riskLevel"],
+	["action", "provider_action"],
+	["next_transition.reason_code", "nextTransition.reasonCode", "next_transition", "nextTransition", "reason_code", "reasonCode", "diagnostics.error_code"],
+	["diagnostics.message", "diagnostics.stderr", "error.message", "error", "reasons.0.detail", "reason", "message"],
+];
+const HASH_PATTERN = /^(?:sha256:)?[0-9a-f]{32,}$/i;
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseJsonObject(text: string): Record<string, unknown> | undefined {
+	const trimmed = text.trim();
+	if (!trimmed.startsWith("{")) return undefined;
+	try {
+		const value: unknown = JSON.parse(trimmed);
+		return isJsonObject(value) ? value : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function fieldAt(source: Record<string, unknown>, path: string): unknown {
+	let value: unknown = source;
+	for (const key of path.split(".")) {
+		if (Array.isArray(value)) value = value[Number(key)];
+		else if (isJsonObject(value)) value = value[key];
+		else return undefined;
+	}
+	return value;
+}
+
+// One readable clause: first line, first sentence part, no nested "Error: "
+// prefixes, and no control characters decoded from JSON escapes.
+function summaryValue(value: unknown): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const clause = sanitizeTerminalText(value).split("\n")[0]!.split("; ")[0]!
+		.replace(/(^|: )\w*Error: /g, "$1").replace(/\s+/g, " ").trim();
+	return clause.length > 0 && !HASH_PATTERN.test(clause) ? clause : undefined;
+}
+
+export function summarizeJsonEnvelope(envelope: Record<string, unknown>): string {
+	const scopes = isJsonObject(envelope.result) ? [envelope, envelope.result] : [envelope];
+	const parts: string[] = [];
+	for (const group of SUMMARY_FIELD_GROUPS) {
+		const found = scopes.flatMap((scope) => group.map((path) => summaryValue(fieldAt(scope, path)))).find((part) => part !== undefined);
+		if (found !== undefined && !parts.includes(found)) parts.push(found);
+	}
+	if (parts.length > 0) return parts.join(SEPARATOR);
+	const count = Object.keys(envelope).length;
+	return `${count} ${count === 1 ? "field" : "fields"}`;
+}
+
 // The result rows: complete output when expanded, a useful bounded preview
 // when collapsed (the call card carries the expand key), and
 // always the bottom rule that closes the frame. The rail follows the outcome:
-// amber while partial, green when done, red on error.
+// amber while partial, green when done, red on error. A JSON envelope
+// collapses to one summary row and expands pretty-printed.
 export class GentleAiResultCard {
 	private readonly text: string;
+	private readonly envelope: Record<string, unknown> | undefined;
 	private readonly expanded: boolean;
 	private readonly tone: CardTone;
 	private readonly theme: GentleAiRenderTheme;
@@ -121,7 +200,8 @@ export class GentleAiResultCard {
 	private readonly elapsed: string;
 
 	constructor(text: string, expanded: boolean, tone: CardTone, theme: GentleAiRenderTheme, partial = false, elapsed = "") {
-		this.text = text;
+		this.envelope = parseJsonObject(text);
+		this.text = this.envelope !== undefined && expanded ? JSON.stringify(this.envelope, null, 2) : text;
 		this.expanded = expanded;
 		this.tone = tone;
 		this.theme = theme;
@@ -131,9 +211,15 @@ export class GentleAiResultCard {
 
 	render(width: number): string[] {
 		if (width <= 0) return [];
+		const role = this.tone === CARD_TONE.ERROR ? "error" : "toolOutput";
+		if (this.envelope !== undefined && !this.expanded) {
+			const summary = truncateToWidth(summarizeJsonEnvelope(this.envelope), cardInnerWidth(width), "…");
+			const lines = [cardLine(this.theme.fg(role, summary), this.tone, this.theme, width)];
+			if (!this.partial) lines.push(cardBottom(this.tone, this.theme, width, this.elapsed || undefined));
+			return lines;
+		}
 		const rows = this.text.length > 0 ? this.text.split("\n") : [];
 		const useful = this.expanded ? rows : rows.filter((row) => stripAnsi(row).trim().length > 0);
-		const role = this.tone === CARD_TONE.ERROR ? "error" : "toolOutput";
 		const lines = cardBodyRows(useful.map((row) => this.theme.fg(role, row)), this.tone, this.theme, width, {
 			expanded: this.expanded, previewRows: 3,
 		});
