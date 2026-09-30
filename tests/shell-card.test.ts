@@ -247,14 +247,20 @@ const floatCard = (overrides: Partial<Card> = {}) => card({ title: "read", subti
 test("card style defaults to the float style and lives in a process-wide slot", () => {
 	const slot = Symbol.for("gentle-pi.card-style");
 	const state = globalThis as typeof globalThis & { [slot]?: string };
-	assert.equal(state[slot], undefined, "no earlier test in this file touched the slot");
-	assert.equal(cardStyle(), CARD_STYLE.FLOAT);
-	withCardStyle(CARD_STYLE.FLOAT, () => assert.equal(state[slot], CARD_STYLE.FLOAT));
-	state[slot] = "neon";
-	assert.equal(cardStyle(), CARD_STYLE.NEON, "another loader's copy sees the same slot");
-	state[slot] = "bogus";
-	assert.equal(cardStyle(), CARD_STYLE.FLOAT, "unknown values read as the float style");
-	setCardStyle(CARD_STYLE.NEON);
+	// Own the slot for this test only, whatever earlier tests left behind.
+	const found = state[slot];
+	try {
+		delete state[slot];
+		assert.equal(cardStyle(), CARD_STYLE.FLOAT, "an unset slot reads as the float style");
+		withCardStyle(CARD_STYLE.FLOAT, () => assert.equal(state[slot], CARD_STYLE.FLOAT));
+		state[slot] = "neon";
+		assert.equal(cardStyle(), CARD_STYLE.NEON, "another loader's copy sees the same slot");
+		state[slot] = "bogus";
+		assert.equal(cardStyle(), CARD_STYLE.FLOAT, "unknown values read as the float style");
+	} finally {
+		if (found === undefined) delete state[slot];
+		else state[slot] = found;
+	}
 });
 
 test("float cards are borderless panels with a margin, an accent bar and balanced blank rows", () => {
