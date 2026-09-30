@@ -3,6 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import {
 	chmodSync,
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
@@ -2190,6 +2191,100 @@ test("the exclusion is ensured after automatic setup rewrites settings.json", (t
 	const result = run(env, ["--mode", "rpc"]);
 	assert.equal(result.status, 0, result.stderr);
 	assert.deepEqual(JSON.parse(settingsText(f.gentleShellHome)).extensions, [CODEMODE_EXCLUSION]);
+});
+
+// --- atomic writes keep symlinked config files intact ------------------------
+//
+// Dotfile managers (Nix home-manager, stow, ...) ship settings.json and
+// config.json as symlinks. Every atomic launcher write must rename onto the
+// link's real target, so the link survives and the target gets the new
+// bytes with its own permission bits.
+
+// File symlinks need extra privileges on Windows; skip where unavailable.
+const fileSymlinkSkip = (() => {
+	const dir = mkdtempSync(join(tmpdir(), "gentle-shell-symlink-probe-"));
+	try {
+		writeFileSync(join(dir, "target"), "");
+		symlinkSync(join(dir, "target"), join(dir, "link"), "file");
+		return false;
+	} catch {
+		return "file symlinks are unavailable here";
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+})();
+
+function symlinkedFile(linkPath: string, targetPath: string, text: string, mode: number) {
+	mkdirSync(dirname(linkPath), { recursive: true });
+	mkdirSync(dirname(targetPath), { recursive: true });
+	writeFileSync(targetPath, text);
+	chmodSync(targetPath, mode);
+	symlinkSync(targetPath, linkPath, "file");
+}
+
+function assertStillLinkedTo(linkPath: string, targetPath: string, mode: number) {
+	assert.ok(lstatSync(linkPath).isSymbolicLink(), `${linkPath} is still a symlink`);
+	assert.equal(realpathSync(linkPath), realpathSync(targetPath));
+	if (process.platform !== "win32") assert.equal(statSync(targetPath).mode & 0o777, mode);
+	for (const dir of [dirname(linkPath), dirname(targetPath)]) {
+		assert.deepEqual(readdirSync(dir).filter((name) => name.endsWith(".tmp")), [], `no temp file left in ${dir}`);
+	}
+}
+
+test("the builtin codemode exclusion writes through a symlinked settings.json", { skip: fileSymlinkSkip }, (t) => {
+	const f = fixture(t);
+	const linkPath = join(f.gentleShellHome, "settings.json");
+	const targetPath = join(f.root, "dotfiles", "settings.json");
+	symlinkedFile(linkPath, targetPath, JSON.stringify({ tuiMode: "fullscreen", theme: "rose" }), 0o640);
+
+	const result = run(f.env, ["--mode", "rpc"]);
+	assert.equal(result.status, 0, result.stderr);
+	assertStillLinkedTo(linkPath, targetPath, 0o640);
+	assert.deepEqual(JSON.parse(readFileSync(targetPath, "utf8")), { tuiMode: "fullscreen", theme: "rose", extensions: [CODEMODE_EXCLUSION] });
+});
+
+test("the automatic setup theme restore writes through a symlinked settings.json", { skip: fileSymlinkSkip }, (t) => {
+	const f = fixture(t);
+	const target = join(f.root, "linked-themed-home");
+	const linkPath = join(target, "settings.json");
+	const targetPath = join(f.root, "dotfiles", "themed-settings.json");
+	symlinkedFile(linkPath, targetPath, JSON.stringify({ tuiMode: "fullscreen", theme: "dracula" }), 0o600);
+	writeFileSync(join(target, ".gentle-shell-home"), JSON.stringify({ createdBy: "gentle-shell", version: ownGentlePiVersion() }));
+
+	const gentleAiScript = join(f.root, "fake-gentle-ai-sets-theme.mjs");
+	writeGentleAiScriptSettingTheme(gentleAiScript, "kanagawa");
+	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" });
+
+	const result = run(env, ["--home", target, "--mode", "rpc"]);
+	assert.equal(result.status, 0, result.stderr);
+	assertStillLinkedTo(linkPath, targetPath, 0o600);
+	assert.equal(JSON.parse(readFileSync(targetPath, "utf8")).theme, "dracula");
+});
+
+test("'home' persistence writes through a symlinked config.json", { skip: fileSymlinkSkip }, (t) => {
+	const f = fixture(t);
+	const linkPath = join(f.root, "config", "config.json");
+	const targetPath = join(f.root, "dotfiles", "config.json");
+	symlinkedFile(linkPath, targetPath, "{}\n", 0o600);
+
+	const result = run({ ...f.env, GENTLE_SHELL_CONFIG: linkPath }, ["home", "link"]);
+	assert.equal(result.status, 0, result.stderr);
+	assertStillLinkedTo(linkPath, targetPath, 0o600);
+	assert.deepEqual(JSON.parse(readFileSync(targetPath, "utf8")), { home: "link" });
+});
+
+test("a dangling config.json symlink is replaced in place, never followed to create its target", { skip: fileSymlinkSkip }, (t) => {
+	const f = fixture(t);
+	const linkPath = join(f.root, "config", "config.json");
+	const missingTarget = join(f.root, "missing", "config.json");
+	mkdirSync(dirname(linkPath), { recursive: true });
+	symlinkSync(missingTarget, linkPath, "file");
+
+	const result = run({ ...f.env, GENTLE_SHELL_CONFIG: linkPath }, ["home", "link"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(lstatSync(linkPath).isSymbolicLink(), false);
+	assert.deepEqual(JSON.parse(readFileSync(linkPath, "utf8")), { home: "link" });
+	assert.equal(existsSync(dirname(missingTarget)), false);
 });
 
 // --- --package-root silently ignored in a declared non-link home ----------

@@ -6,6 +6,7 @@
 // process, filesystem, and child process.
 import {
 	accessSync,
+	chmodSync,
 	closeSync,
 	constants as fsConstants,
 	existsSync,
@@ -313,9 +314,46 @@ function readRawConfig(configPath) {
 function writeRawConfig(configPath, config) {
 	const configDir = dirname(configPath);
 	if (!existsSync(configDir)) mkdirSync(configDir, { recursive: true, mode: 0o700 });
-	const tempPath = join(configDir, `.${basenameOf(configPath)}.gentle-shell-${process.pid}.tmp`);
-	writeFileSync(tempPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-	renameSync(tempPath, configPath);
+	writeFileAtomically(configPath, `${JSON.stringify(config, null, 2)}\n`);
+}
+
+// The one atomic write every launcher-owned config/settings update goes
+// through: a temp file next to the real target, then a rename onto it, so a
+// crash or kill never leaves a partial file. When `path` is a symlink (Nix
+// home-manager, stow, and similar dotfile managers ship settings.json and
+// config.json that way), the write lands on the link's real target and the
+// link itself stays in place; renaming onto `path` would replace the link
+// with a regular file. A missing path or a dangling link has no real target
+// to preserve, so it is written at `path` itself, exactly as before this
+// helper existed, instead of creating a file wherever a dangling link points.
+// The permission bits are `mode` when given, otherwise the real target's own
+// (applied with chmod, so the umask cannot narrow them); a new file keeps
+// the default creation mode. The temp file is removed when the write or
+// rename throws, and the error propagates to the caller's own handling.
+function writeFileAtomically(path, data, { mode } = {}) {
+	let target = path;
+	try {
+		target = realpathSync(path);
+	} catch (error) {
+		if (error.code !== "ENOENT") throw error;
+	}
+	let targetMode = mode;
+	if (targetMode === undefined) {
+		try {
+			targetMode = statSync(target).mode & 0o777;
+		} catch (error) {
+			if (error.code !== "ENOENT") throw error;
+		}
+	}
+	const tempPath = join(dirname(target), `.${basenameOf(target)}.gentle-shell-${process.pid}.tmp`);
+	try {
+		writeFileSync(tempPath, data);
+		if (targetMode !== undefined) chmodSync(tempPath, targetMode);
+		renameSync(tempPath, target);
+	} catch (error) {
+		rmSync(tempPath, { force: true });
+		throw error;
+	}
 }
 
 function loadConfig() {
@@ -571,9 +609,7 @@ function restoreFile(snapshot) {
 	}
 	if (currentBytes !== undefined && currentBytes.equals(snapshot.bytes)) return false;
 	mkdirSync(dirname(path), { recursive: true });
-	const tempPath = join(dirname(path), `.${basenameOf(path)}.gentle-shell-restore-${process.pid}.tmp`);
-	writeFileSync(tempPath, snapshot.bytes, { mode: snapshot.mode });
-	renameSync(tempPath, path);
+	writeFileAtomically(path, snapshot.bytes, { mode: snapshot.mode });
 	return true;
 }
 
@@ -633,10 +669,7 @@ function restoreManagedAssetDigestField(path, originalText) {
 	if (currentText === undefined) return false;
 	const restoredText = restoreJsonField(originalText, currentText, MANAGED_ASSET_DIGEST_FIELD);
 	if (restoredText === undefined) return false;
-	const mode = statSync(path).mode & 0o777;
-	const tempPath = join(dirname(path), `.${basenameOf(path)}.gentle-shell-restore-${process.pid}.tmp`);
-	writeFileSync(tempPath, restoredText, { mode });
-	renameSync(tempPath, path);
+	writeFileAtomically(path, restoredText);
 	return true;
 }
 
@@ -677,10 +710,7 @@ function enforceDefaultThemeField(settingsPath, originalSettingsText) {
 		? restoreJsonField(originalSettingsText, currentText, "theme")
 		: forceJsonFieldIfAbsentInOriginal(originalSettingsText, currentText, "theme", DEFAULT_THEME_NAME);
 	if (newText === undefined) return false;
-	const mode = statSync(settingsPath).mode & 0o777;
-	const tempPath = join(dirname(settingsPath), `.${basenameOf(settingsPath)}.gentle-shell-restore-${process.pid}.tmp`);
-	writeFileSync(tempPath, newText, { mode });
-	renameSync(tempPath, settingsPath);
+	writeFileAtomically(settingsPath, newText);
 	return originalHadTheme ? "restored" : "forced";
 }
 
@@ -743,10 +773,7 @@ function ensureBuiltinCodemodeExcluded(settingsPath) {
 	if (currentText === undefined) return false;
 	const newText = withBuiltinExtensionExcluded(currentText, BUILTIN_CODEMODE_EXTENSION);
 	if (newText === undefined) return false;
-	const mode = statSync(settingsPath).mode & 0o777;
-	const tempPath = join(dirname(settingsPath), `.${basenameOf(settingsPath)}.gentle-shell-update-${process.pid}.tmp`);
-	writeFileSync(tempPath, newText, { mode });
-	renameSync(tempPath, settingsPath);
+	writeFileAtomically(settingsPath, newText);
 	return true;
 }
 
