@@ -35,19 +35,19 @@ Repeated commit/push/PR confirmations interrupt ordinary work. Existing shell sa
   - Checks: observed RED/GREEN; command/policy/lifecycle/prompt/visibility tests; applicable focused/full/package checks; parent structural spot check; safe runtime smoke when available.
   - Commit: abe7d3e3a2f071b3d231b35823cd17fd9227345d; 625 authored lines including45 tracking lines (580 behavior/tests/docs).
 
-- [ ] T3 — Add the same session YOLO control to the configuration/look-and-feel menu beside Vim.
-  - Status: in_progress.
+- [x] T3 — Add the same session YOLO control to the configuration/look-and-feel menu beside Vim.
+  - Status: done.
   - Route: delegated direct; new menu mapping and multi-file writer triggers.
   - Outcome: /gentle:customize → Editor has a visible YOLO ON/OFF · session only row immediately after Vim controls, synchronized with slash command and using the same primary/session/clone eligibility and revocation path.
   - Constraints: no persistent global/repository YOLO preference, independent grant, model-visible activation or weakened destructive/provider protections.
   - Risk: medium from native ASSESS over T3 diff; large writer self-verification stands, no independent verifier required by returned plan.
   - Checks: observed RED/GREEN, menu render/toggle/synchronization and unchanged guard/runtime tests, proportionate full/package checks and native review.
-  - Commit: pending.
+  - Commit: 62a332baf9c62f8f791339f4dcc79ad635fcc928; 624 authored lines including 22 tracking lines.
 
 ## Delivery and review workload
 - Strategy: single-pr; user explicitly authorized size:exception (overrides the earlier chain selection).
 - Forecast updated: T1 519 authored diff lines (including tracking); T2 557 behavior/tests/docs lines plus tracking updates. T3 menu integration additionally forecast approximately 250 lines. Explicit single-PR size:exception applies to all units; generated runtime unchanged.
-- Running count: 1144 authored changed lines in T1+T2 work-unit commits (1030 excluding114 ODD bookkeeping); generated files unchanged.
+- Running count: 1768 authored changed lines across T1 4e8398999 (519), T2 abe7d3e3a (625) and T3 62a332baf (624), including ODD tracking; generated runtime unchanged. Single PR with size:exception.
 - One future PR contains both T1 safeguards and T2 YOLO mode, with size:exception. Local work-unit commits remain separate. No remote action is authorized by this choice.
 - Native review is enabled by global policy; each candidate is its own work-unit slice, not the accumulated branch. T1 lineage: review-27caafa134c98a95 (high; four provider-selected lenses).
 - No meaningful test-first exception is currently known; deterministic unit/runtime tests are applicable.
@@ -104,5 +104,10 @@ Repeated commit/push/PR confirmations interrupt ordinary work. Existing shell sa
 - Final focused471/471 and complete suite4341passed/0failed/44unchanged platform-native skips; provider contract/runtime harnessPASS. Runtime modules/typecheck ratchet187 diagnostics/resources/whitespacePASS; no source baseline or generated-byte changes.
 - SDK tests load both extensions in both orders on real event bus and drive real Theme/component rendering with stubbed terminal transport. Full interactive TUI and installed-consumer E2E remain explicitly unperformed; fixture reads an existing private busy latch and may need maintenance if component internals change.
 
+- T3 native reliability review approved; exact acknowledgement burned review-dd98d133087d4073 for target sha256:d1a717a9c7e4660ef674d498257b089a327cbab3ce35560a56a8b2f145f4752a (revision sha256:544f52d2ed7b87f5b4ca8e1703b1360b7d0ad3379e1632d2ca267ed658e2caf2). Advisory, non-blocking: R3-001 (extensions/gentle-shell.ts refresh path) and R3-002 (runtime test timing).
+- Parent spot check after commit: YOLO/guard focused tests 92/92 and offline archive inclusion check passed.
+- Not performed: installed-consumer packed E2E (requires dependency/native installation) and manual interactive terminal smoke.
+- Open advisory follow-ups: R3-newline-waiver, R3-ambient-guard-tests, R3-001, R3-002, R2-token-provenance, R2-wrapper-arity.
+
 ## Next step
-Recheck final offline archive and focused SDK/menu proof, review T3 immutable candidate, acknowledge exact approval and commit locally. Then record final task evidence and report remaining optional verification limitations. No remote publication.
+All tasks done locally on feat/yolo-mode. Push and single PR (size:exception) remain the user's decision; nothing published.
