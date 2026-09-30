@@ -389,6 +389,14 @@ async function run() {
 	for (const toolName of ["read", "bash", "grep", "find", "ls", "edit", "write"]) {
 		assert.ok(tools.has(toolName), `missing quiet built-in tool renderer ${toolName}`);
 	}
+	const codemode = tools.get("codemode");
+	assert.ok(codemode, "quiet-tools must decorate the upstream codemode registration");
+	assert.equal(codemode.defaultActive, false, "rendering must not activate codemode");
+	assert.equal(codemode.renderShell, "self");
+	assert.equal(typeof codemode.renderCall, "function");
+	assert.equal(typeof codemode.renderResult, "function");
+	assert.equal(typeof codemode.prepareLoadout, "function", "upstream loadout policy must survive decoration");
+	assert.deepEqual(pi.getActiveTools(), ["read", "bash", "edit", "write"], "card registration must not change tool activation");
 	assert.ok(tools.has("gentle_review"), "missing registered bounded review controller tool");
 	assert.ok(tools.has("gentle_review_scope"), "missing registered bounded review scope tool");
 	assert.deepEqual(

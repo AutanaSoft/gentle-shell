@@ -151,6 +151,15 @@ Gentle notices are drawn as cards: the same rounded frame as the prompt. An info
 - An active dev-binary override shows above the editor at startup, in amber, naming the binary and its digest, and leaves with the first prompt; an invalid override shows in red with the reason.
 - Subagents draw their own card; see Gentle Agents below.
 
+### Compact Code card
+
+With quiet tools enabled, `codemode` renders as one rounded **Code** card. The collapsed view shows up to eight observed child calls in their original order, including repeats, with Pi's actual `running`, `ok`, `error`, or `cancelled` status and available nonnegative duration. Additional calls are counted; errors and cancellations outside the preview remain visible in that count.
+
+- Collapsed rows do not echo JavaScript, child arguments, output, paths, or error payloads. Expand with the key shown in the top rule to inspect the actual script, all observed children, error text, and complete available text output.
+- Overall `running`/`finished`/`failed` labels follow the host render context. `finished` does not promise that every child succeeded or that effects were rolled back. No inferred children, progress percentage, or aggregate duration is added. Pi's final wall-time text remains available in expanded output.
+- Missing metadata is reported honestly. Terminal controls are stripped from displayed text; this is terminal-spoofing protection, **not secret redaction**. Expanded content can contain sensitive data.
+- Only presentation changes: upstream execution, schema, loadout, exposure and inactive-by-default behavior stay intact. `GENTLE_PI_QUIET_TOOLS=0` leaves the upstream presentation alone and does not change tool activation.
+
 ### Native interactive tools
 
 Gentle Shell ships its own interactive tools instead of depending on third-party extensions; the built-ins replace `npm:pi-subagents-j0k3r` and `npm:@juicesharp/rpiv-todo` (see Gentle Agents and Gentle Todo below for the removal steps).
