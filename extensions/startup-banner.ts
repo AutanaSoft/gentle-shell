@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { VERSION } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, VERSION } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import * as os from "node:os";
 import { execFile } from "node:child_process";
@@ -684,8 +684,10 @@ export default function (pi: ExtensionAPI) {
     setTimeout(() => {
       (async () => {
         try {
+          // Same global mcp.json Pi itself loads: <agentDir>/mcp.json, which
+          // follows PI_CODING_AGENT_DIR (for example the Gentle Shell home).
           const raw = await readFile(
-            join(os.homedir(), ".pi", "agent", "mcp.json"),
+            join(getAgentDir(), "mcp.json"),
             "utf8",
           );
           const cfg = JSON.parse(raw);

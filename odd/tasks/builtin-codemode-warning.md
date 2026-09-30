@@ -27,7 +27,7 @@ Option A: the launcher idempotently ensures `-builtin:codemode` in the `extensio
 ## Tasks
 
 - [x] T1 — Launcher ensures `-builtin:codemode` in isolated home settings `extensions` on launch (not `--link`, not `--dry-run`), idempotent, with tests. Route: delegated (writer trigger: launcher + tests, 2+ non-trivial files). Risk: high (edits user-visible settings file, installer/launcher).
-- [ ] T2 — Startup banner reads `mcp.json` from the active Pi agent dir (`PI_AGENT_DIR`) instead of `~/.pi/agent`. Route: delegated with T1 writer (same session, separate commit). Risk: medium.
+- [x] T2 — Startup banner reads `mcp.json` from the active Pi agent dir (`getAgentDir()`) instead of `~/.pi/agent`. Route: delegated with T1 writer (same session, separate commit). Risk: medium.
 
 ## Acceptance criteria
 
@@ -49,3 +49,17 @@ Forecast: ~150 authored changed lines. Strategy: `ask-on-risk` (under budget, si
   - RED: 4 positive bin tests failed with `extensions` `undefined` (5 guard tests already passed pre-change). GREEN: 9/9 new tests pass. Triangulation: mutating the ownership gate made the foreign/default-home test fail; reverted.
   - `node --experimental-strip-types --test tests/gentle-shell-bin.test.ts`: 123/123 pass.
   - `node scripts/check-types.mjs`: 187 recorded diagnostics, no regressions.
+  - Commit: `1403d0397` fix(shell): exclude builtin codemode in the isolated home settings.
+- 2026-10-01 T2 (delegated writer, risk medium): the planned `PI_AGENT_DIR` reuse was a wrong premise — `extensions/startup-banner.ts` defines it as the constant `~/.pi/agent`, so it would not follow Gentle Shell. The MCP read now uses Pi's own `getAgentDir()` (honors `PI_CODING_AGENT_DIR`), matching Pi's loader `join(agentDir, "mcp.json")` and `extensions/resume-hint.ts`.
+  - RED: new `tests/startup-banner.test.ts` case rendered `MCP: 5 server(s)` (the non-active mcp.json). GREEN: renders `MCP: 2 server(s)` from `<PI_CODING_AGENT_DIR>/mcp.json`; file 10/10 pass.
+  - Follow-up (not authorized, not changed): the banner's `PI_AGENT_DIR` constant still drives `settings.json` (plugins/extensions counts), `agents/` and `npm/node_modules`, so those counts also read `~/.pi/agent` under Gentle Shell.
+- 2026-10-01 verification after T1+T2:
+  - `node --experimental-strip-types --test tests/gentle-shell-bin.test.ts`: 123/123 pass.
+  - `node --experimental-strip-types --test tests/gentle-shell-launcher.test.ts`: 206/206 pass.
+  - `node --experimental-strip-types --test tests/startup-banner.test.ts`: 10/10 pass.
+  - `node scripts/check-types.mjs`: exit 0, no regressions.
+  - `npm test`: FAIL in the delegated-worker environment, 4424 pass / 5 fail / 34 skipped; all 5 in `tests/gentle-ai.test.ts` (Herdr/permission lifecycle), caused by the inherited `GENTLE_PI_AGENTS_CHILD` env var (that file passes 90/90 with it unset). `env -u GENTLE_PI_AGENTS_CHILD npm test`: all stages PASS, 4429 pass / 0 fail / 34 skipped.
+
+## Next step
+
+Parent review of both commits; push/PR remain user decisions.

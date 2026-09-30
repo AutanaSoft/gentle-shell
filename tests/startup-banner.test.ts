@@ -278,6 +278,54 @@ for (const showRose of [false, true]) for (const showTextLogo of [false, true]) 
 	});
 }
 
+test("startup banner counts MCP servers from the active Pi agent dir", async (t) => {
+	const agentDir = join(tmpdir(), "gp-banner-agent-dir");
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	t.after(() => {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+	});
+	t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+	// Only the active agent dir's mcp.json declares two servers; any other
+	// mcp.json (for example ~/.pi/agent/mcp.json) declares five.
+	t.mock.method(fs, "readFile", async (path: string) => {
+		if (String(path) === join(agentDir, "mcp.json")) return JSON.stringify({ mcpServers: { one: {}, two: {} } });
+		if (String(path).endsWith("mcp.json")) return JSON.stringify({ mcpServers: { a: {}, b: {}, c: {}, d: {}, e: {} } });
+		return JSON.stringify({ showRose: false, showTextLogo: false, color: "pink" });
+	});
+	t.mock.method(fs, "readdir", async () => [] as any);
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const argv = process.argv;
+	process.argv = ["node"];
+	t.after(() => { process.argv = argv; });
+	for (const [key, value] of [["rows", 40], ["columns", 160]] as const) {
+		const descriptor = Object.getOwnPropertyDescriptor(process.stdout, key);
+		Object.defineProperty(process.stdout, key, { configurable: true, writable: true, value });
+		t.after(() => descriptor ? Object.defineProperty(process.stdout, key, descriptor) : Reflect.deleteProperty(process.stdout, key));
+	}
+	let start: Function;
+	let shutdown: Function;
+	let header: { render(width: number): string[]; dispose(): void };
+	const { default: coldStartup } = await import(new URL("../extensions/startup-banner.ts?mcp-agent-dir", import.meta.url).href) as typeof import("../extensions/startup-banner.ts");
+	coldStartup({ on: (name: string, fn: Function) => {
+		if (name === "session_start") start = fn;
+		if (name === "session_shutdown") shutdown = fn;
+	}, registerCommand() {}, getCommands: () => [], getAllTools: () => [] } as unknown as ExtensionAPI);
+	await start!({}, { hasUI: true, cwd: "/fixture", ui: { setHeader: (factory: Function) => {
+		header = factory({ requestRender() {} }, { fg: (_role: string, text: string) => text });
+	} } });
+	t.mock.timers.tick(200);
+	for (let i = 0; i < 5; i++) await Promise.resolve();
+	try {
+		assert.match(stripAnsi(header!.render(160).join("\n")), /MCP:\s+2 server\(s\)/);
+	} finally {
+		header!.dispose();
+		shutdown!();
+	}
+});
+
 test("launcher-injected extension directories do not suppress the startup banner", () => {
 	// Gentle Shell launches `pi -e <package-root-dir>`; a directory path is not a subcommand.
 	assert.equal(isPiCliSubcommandInvocation(["node", "pi", "-e", "/opt/gentle-pi"]), false);
