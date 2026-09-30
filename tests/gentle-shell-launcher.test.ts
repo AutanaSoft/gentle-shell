@@ -620,20 +620,32 @@ test("checkPeerVersionPin passes for a matching pin", () => {
 	assert.deepEqual(result, { ok: true, pinned: ">=0.85.1" });
 });
 
+test("Pi baseline and host peers follow the 0.99.1 package contract", () => {
+	const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+	assert.equal(MIN_PI_VERSION, "0.99.1");
+	assert.equal(pkg.engines.node, ">=22.19.0");
+	for (const name of ["@earendil-works/pi-ai", "@earendil-works/pi-tui"]) {
+		assert.equal(pkg.peerDependencies[name], "*");
+		assert.equal(pkg.peerDependenciesMeta[name].optional, true);
+		assert.equal(pkg.dependencies[name], undefined);
+		assert.equal(pkg.devDependencies[name], "0.99.1");
+	}
+});
+
 test("checkPiVersion accepts a version equal to the minimum", () => {
-	assert.deepEqual(checkPiVersion("0.85.1"), { ok: true, version: "0.85.1" });
+	assert.deepEqual(checkPiVersion("0.99.1"), { ok: true, version: "0.99.1" });
 });
 
 test("checkPiVersion accepts a version above the minimum", () => {
-	assert.deepEqual(checkPiVersion("0.86.0"), { ok: true, version: "0.86.0" });
+	assert.deepEqual(checkPiVersion("0.100.0"), { ok: true, version: "0.100.0" });
 });
 
 test("checkPiVersion accepts a v-prefixed version", () => {
-	assert.deepEqual(checkPiVersion("v0.85.1"), { ok: true, version: "0.85.1" });
+	assert.deepEqual(checkPiVersion("v0.99.1"), { ok: true, version: "0.99.1" });
 });
 
 test("checkPiVersion accepts a prerelease suffix at the minimum", () => {
-	assert.deepEqual(checkPiVersion("pi version 0.85.1-rc.2"), { ok: true, version: "0.85.1" });
+	assert.deepEqual(checkPiVersion("pi version 0.99.1-rc.2"), { ok: true, version: "0.99.1" });
 });
 
 test("checkPiVersion rejects a version below the minimum and names both versions", () => {
@@ -642,7 +654,7 @@ test("checkPiVersion rejects a version below the minimum and names both versions
 	if (result.ok) throw new Error("expected a failing result");
 	assert.equal(result.version, "0.85.0");
 	assert.match(result.message, /0\.85\.0/);
-	assert.match(result.message, /0\.85\.1/);
+	assert.match(result.message, /0\.99\.1/);
 });
 
 test("checkPiVersion rejects a prerelease below the minimum", () => {
@@ -656,7 +668,7 @@ test("checkPiVersion reports unparsable output with the raw text and the minimum
 	if (result.ok) throw new Error("expected a failing result");
 	assert.equal(result.version, undefined);
 	assert.match(result.message, /not a version/);
-	assert.match(result.message, /0\.85\.1/);
+	assert.match(result.message, /0\.99\.1/);
 });
 
 test("checkPiVersion accepts a custom minimum", () => {
@@ -1103,6 +1115,22 @@ test("otherPackageInjections defaults to including every declared package when i
 
 // --- buildPiInvocation -------------------------------------------------------
 
+test("package injection relies on Pi's -e resource discovery in isolated and takeover modes", () => {
+	for (const takeOver of [false, true]) {
+		const built = buildPiInvocation({
+			runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
+			home: { mode: "isolated", dir: "/gentle-shell/agent", source: "default" },
+			packageRoot: "/pkg",
+			declaration: undefined,
+			takeOver,
+			otherPackagePaths: [],
+			passthrough: [],
+			baseEnv: {},
+		});
+		assert.deepEqual(built.args, takeOver ? ["--no-extensions", "-e", "/pkg"] : ["-e", "/pkg"]);
+	}
+});
+
 const linkHome: ResolvedHome = { mode: "link", dir: "/pi/agent", source: "flag" };
 const isolatedHomeResolved: ResolvedHome = { mode: "isolated", dir: "/gentle-shell/agent", source: "default" };
 
@@ -1149,12 +1177,6 @@ test("buildPiInvocation adds the gentle-pi injection flags when there is no decl
 	assert.deepEqual(built.args, [
 		"-e",
 		"/pkg",
-		"--theme",
-		join("/pkg", "themes"),
-		"--skill",
-		join("/pkg", "skills"),
-		"--prompt-template",
-		join("/pkg", "prompts"),
 		"--mode",
 		"rpc",
 	]);
@@ -1244,12 +1266,6 @@ test("buildPiInvocation takes over a conflicting path declaration: --no-extensio
 		join("/agent", "npm", "node_modules", "some-other"),
 		"-e",
 		"/pkg",
-		"--theme",
-		join("/pkg", "themes"),
-		"--skill",
-		join("/pkg", "skills"),
-		"--prompt-template",
-		join("/pkg", "prompts"),
 		"--mode",
 		"rpc",
 	]);
@@ -1270,12 +1286,6 @@ test("buildPiInvocation takes over with --package-root even for a matching npm d
 		"--no-extensions",
 		"-e",
 		"/forced/root",
-		"--theme",
-		join("/forced/root", "themes"),
-		"--skill",
-		join("/forced/root", "skills"),
-		"--prompt-template",
-		join("/forced/root", "prompts"),
 	]);
 });
 
@@ -1296,12 +1306,6 @@ test("buildPiInvocation takes over with --package-root even when there is no dec
 		join("/agent", "npm", "node_modules", "some-other"),
 		"-e",
 		"/forced/root",
-		"--theme",
-		join("/forced/root", "themes"),
-		"--skill",
-		join("/forced/root", "skills"),
-		"--prompt-template",
-		join("/forced/root", "prompts"),
 	]);
 });
 
@@ -1327,12 +1331,6 @@ test("buildPiInvocation injects loose extension entries during a takeover, after
 		join("/project", ".pi", "extensions", "b.js"),
 		"-e",
 		"/pkg",
-		"--theme",
-		join("/pkg", "themes"),
-		"--skill",
-		join("/pkg", "skills"),
-		"--prompt-template",
-		join("/pkg", "prompts"),
 		"--mode",
 		"rpc",
 	]);
@@ -1349,7 +1347,7 @@ test("buildPiInvocation omits loose extension entry flags when the list is empty
 		passthrough: [],
 		baseEnv: {},
 	});
-	assert.deepEqual(withoutField.args, ["--no-extensions", "-e", "/pkg", "--theme", join("/pkg", "themes"), "--skill", join("/pkg", "skills"), "--prompt-template", join("/pkg", "prompts")]);
+	assert.deepEqual(withoutField.args, ["--no-extensions", "-e", "/pkg"]);
 
 	const withEmptyField = buildPiInvocation({
 		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
@@ -1392,12 +1390,6 @@ test("buildPiInvocation dedupes loose extension entries against other-package pa
 		"/agent/extensions/a.ts",
 		"-e",
 		"/pkg",
-		"--theme",
-		join("/pkg", "themes"),
-		"--skill",
-		join("/pkg", "skills"),
-		"--prompt-template",
-		join("/pkg", "prompts"),
 	]);
 });
 
@@ -1424,12 +1416,6 @@ test("buildPiInvocation dedupes the launcher's own package root against an other
 		join("/agent", "npm", "node_modules", "some-other"),
 		"-e",
 		"/pkg",
-		"--theme",
-		join("/pkg", "themes"),
-		"--skill",
-		join("/pkg", "skills"),
-		"--prompt-template",
-		join("/pkg", "prompts"),
 	]);
 });
 
