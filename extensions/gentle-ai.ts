@@ -1,4 +1,6 @@
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
+import { recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
+import { blockChildDestructiveCommand } from "./child-safety.ts";
 import { allowedEditSurfaces as hasTaskScopedAllowedEditSurfaces, bindSessionRepositoryPreparation, captureBoundSessionRepositoryAuthority, prepareBoundSessionRepository, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sourcePathWithinProject } from "../lib/bounded-writer-admission.ts";
 import { consumeReviewMutation, pendingReviewMutation, pendingReviewMutationProfiles, recordReviewMutation, type ReceiptSession } from "../lib/review-reminder-receipt.ts";
 import { createReviewSidebarPublisher } from "../lib/review-sidebar-state.ts";
@@ -232,6 +234,7 @@ import {
 	type ReviewStatusV3,
 } from "../lib/review-integration-v2.ts";
 import { reconcileUnknownReviewLastEventCapture } from "../lib/review-last-event-controller.ts";
+import { registerYoloSessionPolicy, updateYoloPrompt } from "../lib/yolo-session-policy.ts";
 import { acquireChildStandingReviewPermissionClient, type ChildStandingReviewPermissionClient } from "../lib/review-session-standing-permission-ipc.ts";
 import { isPiConsentV3, presentReviewConsentUi } from "../lib/review-consent-ui.ts";
 import {
@@ -1278,8 +1281,8 @@ const DENIED_BASH_PATTERNS: RegExp[] = [
 	/\bgit\s+reset\s+--hard\b/,
 	/\bgit\s+clean\b(?=[^\n]*(?:-[^\n]*f|--force))(?=[^\n]*(?:-[^\n]*d|--directories))/,
 	// Force-push deny: tolerates git global flags (e.g. -C /repo) before the subcommand
-	new RegExp(String.raw`\bgit${GIT_GLOBAL_FLAGS_SRC}push\b(?=[^\n]*\s--force(?:-with-lease)?\b)`),
-	new RegExp(String.raw`\bgit${GIT_GLOBAL_FLAGS_SRC}push\b(?=[^\n]*\s-[^\s-]*f)`),
+	new RegExp(String.raw`\bgit${GIT_GLOBAL_FLAGS_SRC}push\b(?=[^\r\n;&|]*\s--force(?:-with-lease)?\b)`),
+	new RegExp(String.raw`\bgit${GIT_GLOBAL_FLAGS_SRC}push\b(?=[^\r\n;&|]*\s-[^\s-]*f)`),
 	/\bchmod\s+-R\s+777\b/,
 	/\bchown\s+-R\b/,
 ];
@@ -1305,6 +1308,7 @@ interface GuardMatch {
 
 interface GuardEvaluation {
 	action: GuardClassification;
+	dataLoss?: boolean;
 	key?: GuardedCommandKey;
 	triggerIndex: number;
 	matches: GuardMatch[];
@@ -1400,6 +1404,9 @@ function evaluateGuardedCommand(
 	config: RuntimeGuardrailsConfig,
 ): GuardEvaluation {
 	const matches = collectGuardedMatches(command, config);
+	const destructive = recognizeDestructiveCommands(command);
+	const hardDeny = destructive.find((match) => match.hardDeny);
+	if (hardDeny) return { action: "block", triggerIndex: hardDeny.triggerIndex, matches };
 
 	// Hard denies override every configured action across the complete command.
 	for (const pattern of DENIED_BASH_PATTERNS) {
@@ -1416,7 +1423,13 @@ function evaluateGuardedCommand(
 		};
 	}
 
-	// Configured block, then confirmation, then allow win across all matches.
+	// Explicit configured blocks outrank recognized data-loss confirmation.
+	const configuredBlock = matches.find((match) => match.action === "block");
+	if (configuredBlock) return { ...configuredBlock, matches };
+	const dataLoss = destructive.find((match) => match.kind !== "git");
+	if (dataLoss) return { action: "confirm", dataLoss: true, triggerIndex: dataLoss.triggerIndex, matches };
+
+	// Confirmation, then allow win across remaining matches.
 	const selected = matches.find((match) => match.action === "block")
 		?? matches.find((match) => match.action === "confirm")
 		?? matches.find((match) => match.action === "allow");
@@ -1743,15 +1756,47 @@ function createHerdrConfirmationLifecycle(events: ExtensionAPI["events"]): Herdr
 	};
 }
 
+/** Conservative waiver surface: one plain push in the current repository, no shell/wrapper or destination-changing options. */
+function isOrdinaryYoloPush(command: string, evaluation: GuardEvaluation): boolean {
+	if (evaluation.action !== "confirm" || evaluation.dataLoss || evaluation.matches.length !== 1 || evaluation.key !== "gitPush") return false;
+	return /^git\s+push(?:\s+(?:-u|--set-upstream|[A-Za-z0-9_][A-Za-z0-9_./-]*))*\s*$/.test(command);
+}
+
+/** Preserve explicitly configured confirmations even when legacy env/autonomy resolution ignores them. */
+function yoloPushConfiguredRestriction(cwd: string, options: LoadGuardrailsOptions = {}): GuardAction | undefined {
+	let restriction: GuardAction | undefined;
+	for (const path of [join(options.gentlePiConfigHome ?? gentleAiConfigHome(), "runtime-guardrails.json"), join(cwd, ".pi", "gentle-ai", "runtime-guardrails.json")]) {
+		try {
+			if (!existsSync(path)) continue;
+			const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+			if (!isRecord(parsed) || (parsed.guardedCommands !== undefined && !isRecord(parsed.guardedCommands))) {
+				restriction ??= "confirm";
+				continue;
+			}
+			const action = isRecord(parsed.guardedCommands) ? parsed.guardedCommands.gitPush : undefined;
+			if (action === "block") return "block";
+			if (action !== undefined && action !== "allow") restriction = "confirm";
+		} catch { restriction ??= "confirm"; }
+	}
+	return restriction;
+}
+
 async function confirmCommand(
 	command: string,
 	ctx: ExtensionContext,
 	events: ExtensionAPI["events"],
 	herdrLifecycle: HerdrConfirmationLifecycle,
+	yoloActive = false,
 ): Promise<ToolCallEventResult | undefined> {
 	const guardrailsConfig = loadRuntimeGuardrailsConfig(ctx.cwd);
 	const evaluation = evaluateGuardedCommand(command, guardrailsConfig);
-	const { action: classification } = evaluation;
+	// Configuration provenance is distinct from legacy autonomy resolution, which
+	// can ignore confirmations when an environment override is present. Activation
+	// cannot waive a restriction from either user or project configuration layer.
+	const configuredRestriction = yoloActive && evaluation.matches.some((match) => match.key === "gitPush")
+		? yoloPushConfiguredRestriction(ctx.cwd) : undefined;
+	const classification = evaluation.action === "block" || configuredRestriction === "block"
+		? "block" : configuredRestriction ?? evaluation.action;
 
 	if (classification === "block") {
 		return {
@@ -1766,6 +1811,9 @@ async function confirmCommand(
 	// classification is "allow" or "confirm" from this point on
 	if (classification === "allow") return undefined;
 
+	// Full T1 evaluation has already run. YOLO never changes persistent autonomy.
+	if (yoloActive && configuredRestriction === undefined && isOrdinaryYoloPush(command, evaluation)) return undefined;
+
 	// classification === "confirm"
 	if (!ctx.hasUI) {
 		return {
@@ -1774,7 +1822,9 @@ async function confirmCommand(
 				"Gentle AI safety policy requires interactive confirmation before this command.",
 		};
 	}
-	const title = guardedCommandTitle(evaluation.key, evaluation.matches);
+	const title = evaluation.dataLoss
+		? "Allow recognized data-loss command?"
+		: guardedCommandTitle(evaluation.key, evaluation.matches);
 	const preview = guardedCommandPreview(command, evaluation.triggerIndex);
 	const requestId = randomUUID();
 	const emitPermissionRequest = (
@@ -1794,7 +1844,7 @@ async function confirmCommand(
 	emitPermissionRequest("waiting");
 	herdrLifecycle.begin();
 	try {
-		approved = await ctx.ui.confirm(title, preview);
+		approved = (await ctx.ui.confirm(title, preview)) === true;
 	} catch (error) {
 		confirmationFailed = true;
 		confirmationError = error;
@@ -8777,6 +8827,8 @@ export const __testing = {
 	guardedCommandPreview,
 	guardedCommandTitle,
 	loadRuntimeGuardrailsConfig,
+	isOrdinaryYoloPush,
+	yoloPushConfiguredRestriction,
 	buildGentlePrompt,
 	nativeStatusUnsupported,
 	nativeStartRejection,
@@ -8870,6 +8922,7 @@ function createGentleAiExtensionForTesting(
 	const candidateViews = dependencies.candidateViews === undefined ? new CandidateViewRegistry() : dependencies.candidateViews;
 	const herdrLifecycle = createHerdrConfirmationLifecycle(pi.events);
 	const permissionEnvironment = dependencies.processEnv ?? process.env;
+	const yolo = registerYoloSessionPolicy(pi, permissionEnvironment);
 
 	const setReviewSessionPermissionStatus = (context: ExtensionContext, active: boolean): void => {
 		try {
@@ -8906,6 +8959,7 @@ function createGentleAiExtensionForTesting(
 	let reminderManager: ExtensionContext["sessionManager"] | undefined;
 	let unbindPreparation: (() => void) | undefined;
 	pi.on("session_shutdown", (event, context) => {
+		yolo.reset(context);
 		reviewSidebar.reset();
 		reminderSessionActive = false;
 		reminderEpoch += 1;
@@ -9281,6 +9335,7 @@ function createGentleAiExtensionForTesting(
 	}));
 
 	pi.on("session_start", async (event, ctx) => {
+		yolo.reset(ctx);
 		reviewSidebar.reset(ctx);
 		elapsedTiming = new GentleAiElapsedTimingLedger(ctx.sessionManager, pi);
 		reminderSessionActive = true;
@@ -9412,6 +9467,7 @@ function createGentleAiExtensionForTesting(
 		// and forwards only systemPromptOptions, so the harness is delivered
 		// through the mutable appendSystemPrompt section instead of a replacement.
 		appendSystemPromptOnce(event.systemPromptOptions, `${gentlePrompt}${reviewContractPrompt}`);
+		updateYoloPrompt(event.systemPromptOptions, isPrimarySession && await yolo.active(ctx));
 		return undefined;
 	});
 
@@ -9470,6 +9526,8 @@ function createGentleAiExtensionForTesting(
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
+		const primaryToolCall = (processAgentEndSubagentDepth.get(pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey)) ?? 0) === 0;
+		const yoloActive = primaryToolCall && await yolo.active(ctx);
 		const sensitivePathDenied = evaluateSensitivePathTool(
 			event.toolName,
 			event.input,
@@ -9494,7 +9552,11 @@ function createGentleAiExtensionForTesting(
 		if (!isRecord(event.input) || typeof event.input.command !== "string") {
 			return undefined;
 		}
-		return await confirmCommand(event.input.command, ctx, pi.events, herdrLifecycle);
+		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1") {
+			const childDenied = blockChildDestructiveCommand(event.input.command);
+			if (childDenied) return childDenied;
+		}
+		return await confirmCommand(event.input.command, ctx, pi.events, herdrLifecycle, yoloActive);
 	});
 
 	for (const owner of ["delegation", "review"] as const) {

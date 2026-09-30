@@ -41,7 +41,12 @@ interface PrivateEditor {
 }
 
 const SUPPORTED_VERSIONS = new Set(["0.99.1"]);
-const importedTuiMetadata: unknown = createRequire(import.meta.url)("@earendil-works/pi-tui/package.json");
+// Pi aliases only ES imports of host packages. This raw require walks
+// node_modules from the extension, which a git install lacks (#1586), so an
+// unresolved host leaves the version unknown and the identity gate closed.
+const importedTuiMetadata: unknown = (() => {
+  try { return createRequire(import.meta.url)("@earendil-works/pi-tui/package.json"); } catch { return undefined; }
+})();
 const IMPORTED_TUI_VERSION = typeof importedTuiMetadata === "object" && importedTuiMetadata !== null &&
   "version" in importedTuiMetadata ? importedTuiMetadata.version : undefined;
 
