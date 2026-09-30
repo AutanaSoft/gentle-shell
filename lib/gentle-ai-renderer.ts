@@ -1,7 +1,6 @@
 import { keyHint, type AgentToolResult } from "@earendil-works/pi-coding-agent";
-import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { type GentleAiTimingLookup } from "./gentle-ai-elapsed-store.ts";
-import { CARD_TONE, cardBottom, cardInnerWidth, cardLine, cardTop, type Card, type CardTheme, type CardTone } from "./shell-card.ts";
+import { CARD_TONE, cardBodyRows, cardBottom, cardLine, cardTop, type Card, type CardTheme, type CardTone } from "./shell-card.ts";
 import { formatElapsed } from "./agents-widget.ts";
 import { sanitizeTerminalText, stripAnsi } from "./terminal-theme.ts";
 
@@ -66,7 +65,6 @@ const CARD_TITLE = "Gentle AI";
 // The binary keeps its rose; Gentle Shell notices keep the flower.
 const CARD_GLYPH = "\u{1F339}\uFE0E";
 const DETAIL_ROLE = "dim";
-const HIDDEN_ROLE = "dim";
 const passthroughTheme: CardTheme = { fg: (_color, text) => text };
 
 export function getGentleAiRenderState(state: unknown): GentleAiRenderState | undefined {
@@ -91,7 +89,7 @@ export class GentleAiCallCard {
 	private open = true;
 
 	update(status: LifecycleStatus, operationPath: string, theme: GentleAiRenderTheme, detail?: string, hint?: string, elapsed?: string): void {
-		this.card = { title: CARD_TITLE, subtitle: `${status} · ${operationPath}`, body: [], tone: STATUS_TONE[status], glyph: CARD_GLYPH };
+		this.card = { title: CARD_TITLE, subtitle: status === LIFECYCLE_STATUS.COMPLETED ? operationPath : `${status} · ${operationPath}`, body: [], tone: STATUS_TONE[status], glyph: CARD_GLYPH };
 		this.theme = theme;
 		this.detail = detail;
 		this.hint = hint;
@@ -100,6 +98,7 @@ export class GentleAiCallCard {
 	}
 
 	render(width: number): string[] {
+		if (width <= 0) return [];
 		const lines = [cardTop(this.card, this.theme, width, this.hint)];
 		if (this.detail) lines.push(cardLine(this.theme.fg(DETAIL_ROLE, this.detail), this.card.tone, this.theme, width));
 		if (this.open) lines.push(cardBottom(this.card.tone, this.theme, width, this.elapsed || undefined));
@@ -109,8 +108,8 @@ export class GentleAiCallCard {
 	invalidate(): void {}
 }
 
-// The result rows: the body when expanded, a count-only line when collapsed
-// (the call card carries the expand key and the text stays hidden), and
+// The result rows: complete output when expanded, a useful bounded preview
+// when collapsed (the call card carries the expand key), and
 // always the bottom rule that closes the frame. The rail follows the outcome:
 // amber while partial, green when done, red on error.
 export class GentleAiResultCard {
@@ -131,18 +130,13 @@ export class GentleAiResultCard {
 	}
 
 	render(width: number): string[] {
-		const lines: string[] = [];
-		if (this.text.length > 0) {
-			if (this.expanded) {
-				const innerWidth = cardInnerWidth(width);
-				for (const raw of this.text.split("\n")) {
-					for (const line of raw === "" ? [""] : wrapTextWithAnsi(raw, innerWidth)) lines.push(cardLine(line, this.tone, this.theme, width));
-				}
-			} else {
-				const count = this.text.split("\n").length;
-				lines.push(cardLine(this.theme.fg(HIDDEN_ROLE, `${count} ${count === 1 ? "line" : "lines"}`), this.tone, this.theme, width));
-			}
-		}
+		if (width <= 0) return [];
+		const rows = this.text.length > 0 ? this.text.split("\n") : [];
+		const useful = this.expanded ? rows : rows.filter((row) => stripAnsi(row).trim().length > 0);
+		const role = this.tone === CARD_TONE.ERROR ? "error" : "toolOutput";
+		const lines = cardBodyRows(useful.map((row) => this.theme.fg(role, row)), this.tone, this.theme, width, {
+			expanded: this.expanded, previewRows: 3,
+		});
 		// A partial result sits under a running call card, which still closes the frame.
 		if (!this.partial) lines.push(cardBottom(this.tone, this.theme, width, this.elapsed || undefined));
 		return lines;
@@ -165,15 +159,16 @@ export function renderGentleAiResult(
 ): GentleAiResultCard {
 	const textItems = result.content.flatMap((content) => (content.type === "text" ? [sanitizeTerminalText(content.text)] : []));
 	const text = textItems.some((item) => item.length > 0) ? textItems.join("\n") : "";
-	const tone = options.isError ? CARD_TONE.ERROR : options.isPartial ? CARD_TONE.WARNING : CARD_TONE.SUCCESS;
+	const isError = context?.isError ?? options.isError ?? false;
+	const tone = isError ? CARD_TONE.ERROR : options.isPartial ? CARD_TONE.WARNING : CARD_TONE.SUCCESS;
 	const state = getGentleAiRenderState(context?.state);
 	// The frozen duration rides the closing rule, right-aligned.
 	let elapsed: string | undefined;
 	if (state?.startedAt !== undefined && state.endedAt !== undefined) elapsed = formatElapsed(state.endedAt - state.startedAt);
 	if (state && options.isPartial !== true) {
-		const changed = state.finished !== true || state.failed !== (options.isError === true);
+		const changed = state.finished !== true || state.failed !== isError;
 		state.finished = true;
-		state.failed = options.isError === true;
+		state.failed = isError;
 		// pi's invalidate re-runs the tool display synchronously; called from
 		// inside this render it would nest a second call+result pair into the
 		// same container. Deferring it keeps one frame per execution.

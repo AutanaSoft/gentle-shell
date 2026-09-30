@@ -146,18 +146,19 @@ Gentle notices are drawn as cards: the same rounded frame as the prompt. An info
 ╰──────────────────────────────────────────────────────────────────────╯
 ```
 
-- Every call into the gentle-ai binary and every `gentle_review` tool renders as a card under the rose, `🌹︎ Gentle AI`: the rail is amber while it runs, green when it finished, red when it failed; the expand key sits in the top rule once the tool finished, and the collapsed result shows only its line count. Reviewer captures name their lens (`review capture · risk`; the group lists all four).
+- Quiet tools use thin rounded cards with their actual name in the top rule (`read`, `bash`, `grep`, `find`, `ls`, `edit`, `write`); bash keeps its command visible. Collapsed results show up to three physical preview rows, including search/list entries or changed diff lines alongside useful totals. Expand with the configured key shown in the top rule for complete available output and image handling.
+- Every call into the gentle-ai binary and every `gentle_review` tool keeps the rose, `🌹︎ Gentle AI`, and its operation identity. The rail uses the existing theme roles: warning while running/partial, success on completion, error on failure. Collapsed results show up to three useful physical rows, not just a line count; the expand key sits in the top rule once finished, and elapsed timing stays on the closing rule. Reviewer captures name their lens (`review capture · risk`; the group lists all four).
 - The review preflight reminder renders as a card in the transcript with the expand key in its top rule.
 - An active dev-binary override shows above the editor at startup, in amber, naming the binary and its digest, and leaves with the first prompt; an invalid override shows in red with the reason.
 - Subagents draw their own card; see Gentle Agents below.
 
 ### Compact Code card
 
-With quiet tools enabled, `codemode` renders as one rounded **Code** card. The collapsed view shows up to eight observed child calls in their original order, including repeats, with Pi's actual `running`, `ok`, `error`, or `cancelled` status and available nonnegative duration. Additional calls are counted; errors and cancellations outside the preview remain visible in that count.
+With quiet tools enabled, `codemode` uses the same rounded **Code** card. The collapsed view shows up to eight observed child calls in their original order, including repeats, with Pi's actual status and available nonnegative duration. Additional calls and failures are counted. Error payloads have a separate two-row preview even when their child falls outside the first eight; final output has a three-row physical budget, and a full-output locator remains visible when available.
 
-- Collapsed rows do not echo JavaScript, child arguments, output, paths, or error payloads. Expand with the key shown in the top rule to inspect the actual script, all observed children, error text, and complete available text output.
-- Overall `running`/`finished`/`failed` labels follow the host render context. `finished` does not promise that every child succeeded or that effects were rolled back. No inferred children, progress percentage, or aggregate duration is added. Pi's final wall-time text remains available in expanded output.
-- Missing metadata is reported honestly. Terminal controls are stripped from displayed text; this is terminal-spoofing protection, **not secret redaction**. Expanded content can contain sensitive data.
+- JavaScript and child arguments stay out of the collapsed preview. Expand with the configured key shown in the top rule for the actual script, all observed children, complete available error/output text, image fallback and full-output locator.
+- Host failure/partial flags and observed child failures retain their existing semantic colors; no generic `finished` heading, inferred children, progress percentage, or aggregate duration is added. Pi's final status/wall-time header stays in expanded output rather than displacing useful collapsed content. Child success does not promise rollback or overall success.
+- Missing metadata is reported honestly. Terminal controls are stripped from displayed text; this is terminal-spoofing protection, **not secret redaction**. Both collapsed previews and expanded content can contain sensitive data.
 - Only presentation changes: upstream execution, schema, loadout, exposure and inactive-by-default behavior stay intact. `GENTLE_PI_QUIET_TOOLS=0` leaves the upstream presentation alone and does not change tool activation.
 
 ### Native interactive tools

@@ -266,7 +266,11 @@ test("registered Gentle Review tools render reusable rose lifecycle call rows", 
 		assert.strictEqual(completed, failed);
 		assert.equal(cardTitle(initialText), `🌹︎ Gentle AI · running · ${operationPath}`); assert.equal(cardTone(initialText), "warning");
 		assert.equal(cardTitle(runningText), `🌹︎ Gentle AI · running · ${operationPath}`); assert.equal(cardTone(runningText), "warning");
-		assert.equal(cardTitle(completedText), `🌹︎ Gentle AI · completed · ${operationPath}`); assert.equal(cardTone(completedText), "success");
+		assert.equal(cardTitle(completedText), `🌹︎ Gentle AI · ${operationPath}`); assert.equal(cardTone(completedText), "success");
+		assert.doesNotMatch(cardTitle(completedText), /completed/);
+		assert.match(completedText, /to expand/);
+		assert.equal((initialText.match(/╰/g) ?? []).length, 1, "running call owns the closing frame");
+		assert.equal((completedText.match(/╰/g) ?? []).length, 0, "final result owns the closing frame");
 		assert.equal(cardTitle(failedText), `🌹︎ Gentle AI · failed · ${operationPath}`); assert.equal(cardTone(failedText), "error");
 		assert.doesNotMatch(renderComponent(failed), /future-operation|secret|private/);
 		for (const forbiddenValue of ["lineage-id", "binding-id", "sha256:hash-value", "secret-value", "arbitrary-value"]) {
@@ -275,7 +279,7 @@ test("registered Gentle Review tools render reusable rose lifecycle call rows", 
 	}
 });
 
-test("registered Gentle Review tools preserve result envelopes and redact collapsed result rendering", async () => {
+test("registered Gentle Review tools preserve result envelopes and preview useful collapsed results", async () => {
 	const tools = registeredGentleTools();
 	const scope = tools.get("gentle_review_scope");
 	const manifest = { version: 1, scopeByMode: { "100644": ["src/file.ts"] }, gitlinks: {} };
@@ -300,7 +304,7 @@ test("registered Gentle Review tools preserve result envelopes and redact collap
 	});
 	assert.deepEqual(result.details, visibleEnvelope);
 
-	const resultText = "safe result\x1b[31m\nlineage=secret body=private";
+	const resultText = "safe result\x1b[31m\nlineage=secret body=private\nthird useful detail\nfourth expanded detail";
 	for (const name of ["gentle_review", "gentle_review_scope", "gentle_review_capture"]) {
 		const tool = tools.get(name);
 		assert.equal(typeof tool?.renderResult, "function", `${name} must define result rendering`);
@@ -311,14 +315,17 @@ test("registered Gentle Review tools preserve result envelopes and redact collap
 		]) {
 			const collapsed = renderComponent(tool.renderResult({ content: [{ type: "text", text: resultText }] }, options, lifecycleTheme, {}));
 			const collapsedBody = cardBody(collapsed);
-			assert.equal((collapsedBody.match(/\d+ lines?\b/g) ?? []).length, 1, `${name} collapsed output must contain one expand hint`);
-			assert.match(collapsedBody, /^<dim>\d+ lines?\b<\/dim>/, `${name} collapsed output must start with the hint`);
-			assert.doesNotMatch(collapsed, /safe result|lineage=secret|private/);
+			assert.match(collapsedBody, /safe result[\s\S]*lineage=secret body=private[\s\S]*third useful detail/, `${name} previews actual result content, not redaction`);
+			assert.doesNotMatch(collapsedBody, /\d+ lines?\b|fourth expanded detail|to expand|\x1b\[/);
+			assert.equal(collapsedBody.split("\n").length, 3, `${name} has three useful collapsed rows`);
+			assert.match(collapsed, new RegExp(`<${options.isError ? "error" : options.isPartial ? "warning" : "success"}>│`), "host outcome preserves the semantic frame tone");
+			assert.equal((collapsed.match(/╰/g) ?? []).length, options.isPartial ? 0 : 1, "only final results close the frame");
 		}
 		const expanded = renderComponent(tool.renderResult({ content: [{ type: "text", text: resultText }] }, { expanded: true, isPartial: false, isError: true }, lifecycleTheme, {}));
-		assert.equal(cardBody(expanded).split("\n")[0], "safe result");
+		assert.equal(cardBody(expanded).split("\n")[0], "<error>safe result</error>");
 		assert.match(expanded, /safe result/);
-		assert.match(expanded, /lineage=secret body=private/);
+		assert.match(expanded, /lineage=secret body=private[\s\S]*third useful detail[\s\S]*fourth expanded detail/);
+		assert.equal((expanded.match(/╰/g) ?? []).length, 1, "expanded final result closes exactly one frame");
 		assert.doesNotMatch(expanded, /to expand/);
 		assert.doesNotMatch(cardBody(expanded), /\x1b\[/);
 		const nonText = renderComponent(tool.renderResult({ content: [{ type: "image", data: "opaque", mimeType: "image/png" }] }, { expanded: true, isPartial: false }, lifecycleTheme, {}));

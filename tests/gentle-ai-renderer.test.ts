@@ -40,7 +40,7 @@ test("completed review cards fit Pi's default Box at terminal width 57", () => {
 		const lines = box.render(57).map(stripAnsi);
 		for (const line of lines) assert.equal(visibleWidth(line), 57, `${operationPath}: ${JSON.stringify(line)}`);
 		if (operationPath === "review inspect") {
-			assert.equal(lines[1], " ╭─ 🌹︎ Gentle AI · completed · review inspect ─────────╮ ");
+			assert.equal(lines[1], " ╭─ 🌹︎ Gentle AI · review inspect ─── ctrl+o to expand ╮ ");
 		}
 	}
 });
@@ -83,11 +83,12 @@ test("review call and result cards have no passive background fill", () => {
 
 test("a partial result draws no bottom rule and a final one draws exactly one", () => {
 	const partial = renderGentleAiResult({ content: [{ type: "text", text: "half" }] }, { expanded: false, isPartial: true }, plainTheme).render(60).map(stripAnsi);
-	assert.deepEqual(partial.map((line) => line.slice(0, 1)), ["│"], "only the count row, no closing rule");
+	assert.deepEqual(partial.map((line) => line.slice(0, 1)), ["│"], "only the preview row, no closing rule");
 	const final = renderGentleAiResult({ content: [{ type: "text", text: "one\ntwo" }] }, { expanded: false }, plainTheme).render(60).map(stripAnsi);
-	assert.equal(final.length, 2);
-	assert.match(final[0], /^│ 2 lines +│$/);
-	assert.match(final[1], /^╰─+╯$/);
+	assert.equal(final.length, 3);
+	assert.match(final[0], /^│ one +│$/);
+	assert.match(final[1], /^│ two +│$/);
+	assert.match(final[2], /^╰─+╯$/);
 	const empty = renderGentleAiResult({ content: [] }, { expanded: false }, plainTheme).render(60).map(stripAnsi);
 	assert.deepEqual(empty.map((line) => line.slice(0, 1)), ["╰"]);
 });
@@ -126,7 +127,7 @@ test("a call card stamps its duration from first sight to terminal freeze", () =
 	assert.equal(stateStartedAt(rowState), 1_000);
 	const done = renderGentleAiLifecycleCall("review capture · risk", plainTheme, { state: rowState, executionStarted: true, isPartial: false } as never, undefined, 31_000);
 	const doneLine = done.render(120).map(stripAnsi)[0];
-	assert.match(doneLine, /^╭─ 🌹︎ Gentle AI · completed · review capture · risk ─+\s+to expand ╮$/);
+	assert.match(doneLine, /^╭─ 🌹︎ Gentle AI · review capture · risk ─+\s+to expand ╮$/);
 	const doneResult = renderGentleAiResult({ content: [{ type: "text", text: "x" }] } as never, { expanded: false }, plainTheme, { state: rowState } as never).render(90).map(stripAnsi);
 	assert.match(doneResult[doneResult.length - 1], /─* 30s ╯$/, "the frozen duration closes the frame, right-aligned");
 	assert.equal(stateEndedAt(rowState), 31_000);
@@ -139,20 +140,21 @@ test("a replayed call shows its persisted duration; one without a start stays ho
 	const persistedRow: Record<string, unknown> = { gentleAiRender: { startedAt: 1_000, endedAt: 31_000, finished: true } };
 	const persisted = renderGentleAiLifecycleCall("review status", plainTheme, { state: persistedRow, executionStarted: false } as never, undefined, 90_000);
 	const persistedLines = persisted.render(90).map(stripAnsi);
-	assert.match(persistedLines[0], /^╭─ 🌹︎ Gentle AI · completed · review status ─+\s+to expand ╮$/);
+	assert.match(persistedLines[0], /^╭─ 🌹︎ Gentle AI · review status ─+\s+to expand ╮$/);
 	const persistedResult = renderGentleAiResult({ content: [{ type: "text", text: "x" }] } as never, { expanded: false }, plainTheme, { state: persistedRow } as never).render(90).map(stripAnsi);
 	assert.match(persistedResult[persistedResult.length - 1], /─* 30s ╯$/, "a replay with persisted stamps shows its frozen duration on the closing rule");
 	const promotedRow: Record<string, unknown> = { gentleAiRender: { finished: true } };
 	const promoted = renderGentleAiLifecycleCall("review status", plainTheme, { state: promotedRow, executionStarted: false } as never, undefined, 90_000);
 	const promotedLine = promoted.render(90).map(stripAnsi)[0];
-	assert.match(promotedLine, /^╭─ 🌹︎ Gentle AI · completed · review status ─*\s*to expand ╮$/, "a result-promoted replay shows only the expand key");
+	assert.match(promotedLine, /^╭─ 🌹︎ Gentle AI · review status ─*\s*to expand ╮$/, "a result-promoted replay shows only the expand key");
 	assert.doesNotMatch(promotedLine, /\d+s/);
 });
 
 test("a card with no render state stays honest about unknown duration", () => {
 	const card = renderGentleAiLifecycleCall("review capture", plainTheme, { executionStarted: true, isPartial: false } as never, undefined, 5_000);
 	const line = card.render(80).map(stripAnsi)[0];
-	assert.match(line, /· completed · review capture /);
+	assert.match(line, /· review capture /);
+	assert.doesNotMatch(line, /completed/);
 	assert.doesNotMatch(line, /\d+s/);
 });
 
@@ -169,7 +171,7 @@ test("a historical replay never invents a duration: fresh state, preparing rende
 	await new Promise((resolve) => queueMicrotask(() => resolve(undefined)));
 	const replayed = renderGentleAiLifecycleCall("review status", plainTheme, { state: rowState, executionStarted: false, argsComplete: false } as never, undefined, 90_040);
 	const replayedLine = replayed.render(90).map(stripAnsi)[0];
-	assert.match(replayedLine, /· completed · review status /);
+	assert.match(replayedLine, /· review status /);
 	assert.doesNotMatch(replayedLine, /\d+s/, "a replayed row with no persisted timestamps omits the unknown duration");
 	assert.equal(stateStartedAt(rowState), undefined);
 	assert.equal(stateEndedAt(rowState), undefined);
@@ -195,7 +197,7 @@ test("a replayed row restores its true frozen duration from durable session timi
 	await new Promise((resolve) => queueMicrotask(() => resolve(undefined)));
 	const replayed = renderGentleAiLifecycleCall("review status", plainTheme, { ...context } as never, undefined, 90_040);
 	const replayedLines = replayed.render(90).map(stripAnsi);
-	assert.match(replayedLines[0], /· completed · review status /);
+	assert.match(replayedLines[0], /· review status /);
 	assert.doesNotMatch(replayedLines[0], /90s|89s/, "the terminal re-render never grows the duration to the replay clock");
 	assert.equal(stateStartedAt(rowState), 1_000, "the durable start survives the replay");
 	assert.equal(stateEndedAt(rowState), 31_000, "the replayed row must not invent a new end");
@@ -218,7 +220,7 @@ test("a replayed row with a start-only durable record never invents an end", asy
 	renderGentleAiResult({ content: [{ type: "text", text: "x" }] } as never, { expanded: false }, plainTheme, { state: rowState, invalidate: context.invalidate } as never);
 	await new Promise((resolve) => queueMicrotask(() => resolve(undefined)));
 	const replayed = renderGentleAiLifecycleCall("review status", plainTheme, { ...context } as never, undefined, 90_040);
-	assert.match(replayed.render(90).map(stripAnsi)[0], /· completed · review status /);
+	assert.match(replayed.render(90).map(stripAnsi)[0], /· review status /);
 	assert.equal(stateEndedAt(rowState), undefined, "a live-only end freeze must not fire on a replayed row");
 	const final = renderGentleAiResult({ content: [{ type: "text", text: "x" }] } as never, { expanded: false }, plainTheme, { state: rowState } as never);
 	assert.doesNotMatch(final.render(90).map(stripAnsi).join("\n"), /\d+s/);
@@ -240,6 +242,55 @@ test("running renders keep a single pending duration timer and the terminal rend
 	assert.equal(statePendingTimer(rowState), undefined, "a terminal render clears the pending timer");
 	t.mock.timers.tick(60_000);
 	assert.equal(invalidations, 1, "no timer outlives the terminal render");
+});
+
+test("native review registration passes host failure context into the rose result", () => {
+	const tools: ToolDefinition[] = [];
+	createGentleAiExtension({ nativeReviewCli: null } as never)({
+		on() {}, registerCommand() {}, registerTool(tool: ToolDefinition) { tools.push(tool); },
+	} as unknown as ExtensionAPI);
+	const tool = tools.find((tool) => tool.name === "gentle_review");
+	assert.ok(tool?.renderResult);
+	const roles: string[] = [];
+	const theme = { fg: (role: string, text: string) => { roles.push(role); return text; } };
+	const result = { content: [{ type: "text" as const, text: "candidate unavailable" }], details: undefined };
+	const component = tool.renderResult(result, { expanded: false, isPartial: false }, theme as never, { isError: true, state: {} } as never);
+	assert.match(component.render(80).join("\n"), /candidate unavailable/);
+	assert.ok(roles.includes("error"));
+	assert.ok(!roles.includes("success"));
+});
+
+test("native context failures keep red useful previews and promote replay state", async () => {
+	const state = {};
+	const roles: string[] = [];
+	const theme = { fg: (role: string, text: string) => { roles.push(role); return text; } };
+	const text = "authority unavailable\nretry with the bound candidate\nthird detail\nfourth detail";
+	const ctx = { state, isError: true, executionStarted: false };
+	const result = { content: [{ type: "text" as const, text }], details: undefined };
+	const collapsed = renderGentleAiResult(result, { expanded: false }, theme, ctx);
+	assert.match(collapsed.render(80).join("\n"), /authority unavailable/);
+	assert.ok(roles.includes("error"));
+	assert.ok(!roles.includes("success"));
+	await Promise.resolve();
+	const call = renderGentleAiLifecycleCall("review status", theme, { state });
+	assert.match(call.render(100)[0], /🌹︎ Gentle AI/);
+	assert.match(call.render(100)[0], /failed/);
+	for (const width of [0, 1, 2, 3, 4, 5, 6, 7, 8, 24, 100]) {
+		const rows = collapsed.render(width);
+		assert.ok(rows.length <= 4);
+		assert.ok(rows.every((row) => visibleWidth(row) <= width));
+		assert.equal(rows.filter((row) => row.startsWith("╰")).length, width === 0 ? 0 : 1);
+	}
+	assert.match(renderGentleAiResult(result, { expanded: true }, theme, ctx).render(80).join("\n"), /fourth detail/);
+	roles.length = 0;
+	const partial = renderGentleAiResult(result, { expanded: false, isPartial: true }, theme, { state: {} });
+	assert.match(partial.render(80).join("\n"), /authority unavailable/);
+	assert.ok(roles.includes("warning"));
+	assert.ok(!roles.includes("success"));
+	roles.length = 0;
+	const success = renderGentleAiResult(result, { expanded: false }, theme, { state: {} });
+	assert.match(success.render(80).join("\n"), /authority unavailable/);
+	assert.ok(roles.includes("success"), "status comes from the host, not text classification");
 });
 
 // R4-replay-running-start-fabrication regressions. Real replays carry NO

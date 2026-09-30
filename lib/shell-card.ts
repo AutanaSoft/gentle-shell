@@ -27,6 +27,8 @@ export interface CardTheme {
 
 export interface CardRenderOptions {
 	expanded: boolean;
+	/** Optional physical-row budget for useful tool previews; notices default to one. */
+	previewRows?: number;
 	/** Right-aligned hint in the top rule, e.g. the expand key. May carry ANSI. */
 	hint?: string;
 }
@@ -125,7 +127,45 @@ export function cardInnerWidth(width: number): number {
 	return Math.max(1, width - FRAME_COLUMNS);
 }
 
+/** Shared body for whole cards and separate call/result components. Budgets apply after wrapping. */
+export function cardBodyRows(
+	rows: readonly string[], tone: CardTone, theme: CardTheme, width: number,
+	options: CardRenderOptions,
+): string[] {
+	if (width <= 0) return [];
+	const wrapped = rows.flatMap((row) => row.split("\n").flatMap((line) => line === "" ? [""] : wrapTextWithAnsi(line, cardInnerWidth(width))));
+	const limit = Math.max(0, Math.floor(options.previewRows ?? 3));
+	const shown = options.expanded ? wrapped : wrapped.slice(0, limit);
+	return shown.map((line) => cardLine(line, tone, theme, width));
+}
+
+/** Quiet calls may continue long or multiline headings inside the same frame. */
+export function cardTopRows(card: Card, theme: CardTheme, width: number, hint?: string): string[] {
+	const target = Math.max(0, Math.floor(width));
+	if (target === 0) return [];
+	if (target < 8) return [cardTop(card, theme, target, hint)];
+	const [first = "", ...rest] = card.title.split("\n");
+	// Reserve the hint before wrapping, plus one rule column and enough heading
+	// space to retain identity. This policy belongs only to continuing tool tops.
+	const available = target - 6 - visibleWidth(`${card.glyph ?? CARD_GLYPH} `) - (card.subtitle ? visibleWidth(card.subtitle) + 3 : 0);
+	const hintWidth = hint ? visibleWidth(hint) + 2 : 0;
+	const shownHint = hint && available - hintWidth >= 12 ? hint : undefined;
+	const room = Math.max(1, available - (shownHint ? hintWidth : 0));
+	const [head = "", ...overflow] = wrapTextWithAnsi(first, room);
+	return [
+		cardTop({ ...card, title: head }, theme, target, shownHint),
+		...cardBodyRows([...overflow, ...rest], card.tone, theme, target, { expanded: true }),
+	];
+}
+
 export function renderCard(card: Card, theme: CardTheme, width: number, options: CardRenderOptions): string[] {
+	// Only opt-in tool previews collapse to nothing at nonpositive widths; the
+	// legacy path keeps its empty-row shape for widgets that call it unguarded.
+	if (options.previewRows !== undefined) return width <= 0 ? [] : [
+		cardTop(card, theme, width, options.hint),
+		...cardBodyRows(card.body.map((line) => theme.fg(BODY_ROLE, line)), card.tone, theme, width, options),
+		cardBottom(card.tone, theme, width),
+	];
 	const innerWidth = Math.max(1, width - FRAME_COLUMNS);
 	const top = cardTop(card, theme, width, options.hint);
 	const bottom = cardBottom(card.tone, theme, width);

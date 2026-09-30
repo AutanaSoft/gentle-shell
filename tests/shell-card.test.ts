@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { CARD_TONE, renderCard, type Card } from "../lib/shell-card.ts";
+import { CARD_TONE, cardTopRows, renderCard, type Card } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
 // Cards are how Gentle notices look: the same rounded frame as the prompt,
@@ -133,6 +133,62 @@ test("renderCard truncates ANSI-styled title content at display width", () => {
 	assert.match(stripAnsi(lines[0]), /^╭─ 🌹︎ Gentle AI review.*╮$/);
 	assert.ok(!stripAnsi(lines[0]).includes("ctrl+o"));
 	for (const line of lines) assert.equal(visibleWidth(line), 30, `"${stripAnsi(line)}" is not 30 wide`);
+});
+
+test("tool heading continuation reserves configured hint columns before ANSI and Unicode wrapping", () => {
+	const title = "bash $ printf 界e\u0301 alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa";
+	const hint = "\x1b[36mconfigured key to expand\x1b[0m";
+	const value = card({ title: `\x1b[1m${title}\x1b[0m`, subtitle: undefined, glyph: "🌹︎", body: [] });
+	for (const width of [60, 80, 120]) {
+		const lines = cardTopRows(value, ansiTheme, width, hint);
+		assert.match(stripAnsi(lines[0]), /configured key to expand ╮$/);
+		assert.match(stripAnsi(lines[0]), /^╭─ 🌹︎ bash \$ printf/);
+		assert.ok(lines.length > 1, "long heading continues inside the same frame");
+		assert.ok(lines.every((line) => visibleWidth(line) === width));
+		const content = lines.map(stripAnsi).map((line, index) => index === 0
+			? line.replace(/^╭─ 🌹︎ /, "").replace(/ ─+ configured key to expand ╮$/, "")
+			: line.replace(/^│ /, "").replace(/ +│$/, "")).join(" ").replace(/\s+/g, " ").trim();
+		assert.equal(content, title, "hint reservation must not lose any command text");
+	}
+	for (const width of [0, 1, 2, 3, 4, 5, 6, 7, 8]) {
+		const lines = cardTopRows(value, ansiTheme, width, hint);
+		assert.ok(lines.every((line) => visibleWidth(line) <= width));
+		assert.ok(!lines.some((line) => stripAnsi(line).includes("configured key")));
+	}
+});
+
+test("tool previews share the frame with a configurable physical-row budget", () => {
+	const value = card({ body: ["first useful row", "界🌹e\u0301".repeat(80), "last"], tone: CARD_TONE.ERROR });
+	for (const width of [0, 1, 2, 3, 4, 5, 6, 7, 8, 24, 100]) {
+		const lines = renderCard(value, ansiTheme, width, { expanded: false, previewRows: 3 });
+		assert.ok(lines.length <= 5);
+		assert.ok(lines.every((line) => visibleWidth(line) <= width));
+		if (width === 0) assert.deepEqual(lines, []);
+		if (width === 100) assert.match(stripAnsi(lines[1]), /first useful row/);
+	}
+	assert.equal(renderCard(card({ body: ["one", "two", "three", "four"] }), plainTheme, 60, { expanded: false, previewRows: 3 }).length, 5);
+	const multiline = renderCard(card({ body: ["one\ntwo\nthree\nfour"] }), plainTheme, 60, { expanded: false, previewRows: 3 });
+	assert.equal(multiline.length, 5);
+	assert.ok(multiline.every((line) => !line.includes("\n")), "each returned row is physically one terminal row");
+	assert.doesNotMatch(multiline.join("\n"), /four/);
+});
+
+test("legacy renderCard keeps its empty-row shape at nonpositive widths while opt-in previews stay empty", () => {
+	// Agents, Todos and Status call renderCard without their own width guard, so
+	// their row count at width zero must remain the pre-preview shape: every
+	// row is present and empty. Only the opt-in previewRows path returns nothing.
+	const paragraphs = card({ subtitle: "2 running", body: ["ab", "", "c d"] });
+	const empty = card({ glyph: "✎", subtitle: undefined, body: [], tone: CARD_TONE.WARNING });
+	for (const width of [0, -1, -7]) {
+		for (const theme of [plainTheme, taggedTheme, ansiTheme]) {
+			assert.deepEqual(renderCard(paragraphs, theme, width, { expanded: true }), ["", "", "", "", "", "", ""], `expanded at ${width}`);
+			assert.deepEqual(renderCard(paragraphs, theme, width, { expanded: true, hint: "ctrl+o expand" }), ["", "", "", "", "", "", ""], `hinted at ${width}`);
+			assert.deepEqual(renderCard(paragraphs, theme, width, { expanded: false }), ["", "", ""], `collapsed at ${width}`);
+			assert.deepEqual(renderCard(empty, theme, width, { expanded: true }), ["", ""], `empty body at ${width}`);
+			assert.deepEqual(renderCard(paragraphs, theme, width, { expanded: false, previewRows: 3 }), [], `preview at ${width}`);
+			assert.deepEqual(renderCard(paragraphs, theme, width, { expanded: true, previewRows: 3 }), [], `expanded preview at ${width}`);
+		}
+	}
 });
 
 test("renderCard never exceeds extremely narrow supplied widths", () => {

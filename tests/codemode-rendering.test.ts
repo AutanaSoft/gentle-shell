@@ -176,7 +176,20 @@ test("actual upstream execution publishes observed calls and keeps failed-script
 	assert.match(expanded, /Wall time [\d.]+ seconds/);
 });
 
-test("collapsed card shows flat observed order, repeats and durations without arguments or output", () => {
+test("Code retains its distinct lambda icon in the top rule at every host outcome", () => {
+	const tool = registeredCodemode();
+	for (const overrides of [{}, { isPartial: true }, { isError: true }, { expanded: true }]) {
+		const ctx = context(overrides);
+		const rows = tool.renderCall!(ctx.args, theme as never, ctx).render(100).map(stripAnsi);
+		assert.match(rows[0], /^╭─ λ Code /);
+		assert.match(rows[0], /to (?:expand|collapse) ╮$/);
+		for (const width of [0, 1, 2, 3, 4, 5, 6, 7, 8]) {
+			assert.ok(tool.renderCall!(ctx.args, theme as never, ctx).render(width).every((row) => visibleWidth(row) <= width));
+		}
+	}
+});
+
+test("collapsed card shows flat observed order, repeats, durations and useful output without arguments", () => {
 	const calls = [
 		{ name: "read", status: "ok", durationMs: 0, args: "private child argument" },
 		{ name: "bash", status: "running", durationMs: 1234 },
@@ -185,18 +198,21 @@ test("collapsed card shows flat observed order, repeats and durations without ar
 	const text = render(registeredCodemode(), result(calls, "private output"));
 	assert.match(text, /Code/);
 	assert.match(text, /ok · read · 0ms[\s\S]*running · bash · 1.2s[\s\S]*cancelled · read · 5ms/);
-	assert.doesNotMatch(text, /private|await|path|Wall time|queued|done/);
+	assert.match(text, /private output/);
+	assert.match(text, /\/private\/error payload/);
+	assert.doesNotMatch(text, /private child argument|await|queued|done|finished/);
 	assert.equal(text.split("╭").length - 1, 1);
 	assert.equal(text.split("╰").length - 1, 1);
 });
 
 test("partial metadata never claims overall success and final flags expose script failure", () => {
 	const tool = registeredCodemode();
-	const partial = render(tool, result([{ name: "read", status: "ok", durationMs: 1 }]), context({ isPartial: true }));
-	assert.match(partial, /Code · running/);
+	const partial = render(tool, result([{ name: "read", status: "ok", durationMs: 1 }], "partial output"), context({ isPartial: true }));
+	assert.match(partial, /Code/);
 	assert.doesNotMatch(partial, /finished|completed|success/);
 	const failed = render(tool, result([{ name: "read", status: "ok" }]), context({ isError: true }));
-	assert.match(failed, /Code · failed/);
+	assert.match(failed, /Code/);
+	assert.doesNotMatch(failed, /Code · failed/);
 	assert.match(failed, /Script failed/);
 	const completedWithChildFailure = render(tool, result([{ name: "read", status: "error", error: "caught" }]));
 	assert.match(completedWithChildFailure, /error · read/);
@@ -240,8 +256,8 @@ test("bounded collapsed children preserve order and disclose failures outside th
 	const text = render(tool, result(calls), context(), 120);
 	assert.match(text, /child-0[\s\S]*child-7/);
 	assert.match(text, /1 errors\/cancellations reported · 12 more calls/);
-	assert.doesNotMatch(text, /child-19|late error/);
-	assert.ok(text.split("\n").length <= 12);
+	assert.match(text, /child-19[\s\S]*late error/);
+	assert.ok(text.split("\n").length <= 17);
 	const expanded = render(tool, result(calls), context({ expanded: true }));
 	assert.match(expanded, /child-19/);
 	assert.match(expanded, /late error/);
@@ -255,7 +271,9 @@ test("expanded output retains image fallback and full-output locator without mut
 	};
 	const before = structuredClone(value);
 	const collapsed = render(tool, value);
-	assert.doesNotMatch(collapsed, /full-output|image\/png|first|last/);
+	assert.match(collapsed, /first[\s\S]*last/);
+	assert.match(collapsed, /image\/png/);
+	assert.match(collapsed, /full-output/);
 	const expanded = render(tool, value, context({ expanded: true, showImages: false }));
 	assert.match(expanded, /first[\s\S]*last/);
 	assert.match(expanded, /image\/png/);
@@ -280,7 +298,9 @@ test("expanded images use text fallback only when host image painting is unavail
 					assert.match(expanded, /text preserved/);
 					assert.equal(expanded.includes(imageFallback("image/png")), !images || !showImages,
 						"fallback must remain visible without host image painting, and must not duplicate a supported image");
-					assert.doesNotMatch(render(tool, value, context({ showImages })), /image\/png|text preserved/);
+					const collapsed = render(tool, value, context({ showImages }));
+					assert.match(collapsed, /text preserved/);
+					assert.equal(collapsed.includes(imageFallback("image/png")), !images || !showImages);
 					assert.deepEqual(value, originalResult, "host must retain the original image content");
 				} finally {
 					setCapabilities(originalCapabilities);
@@ -288,6 +308,45 @@ test("expanded images use text fallback only when host image painting is unavail
 				}
 			});
 		}
+	}
+});
+
+test("collapsed Code skips upstream bookkeeping to preview the actual final output", () => {
+	const text = render(registeredCodemode(), result([], "Script completed\nWall time 0.1 seconds\nOutput:\nactual answer\nsecond detail\nthird detail\nhidden detail"));
+	assert.match(text, /actual answer[\s\S]*second detail[\s\S]*third detail/);
+	assert.doesNotMatch(text, /Script completed|Wall time|Output:|hidden detail/);
+});
+
+test("Code components repaint semantic colors after theme invalidation without background fill", () => {
+	const tool = registeredCodemode();
+	let paint = "\x1b[31m";
+	const themed = { fg: (_role: string, text: string) => `${paint}${text}\x1b[0m`, bg: (_role: string, text: string) => `\x1b[44m${text}\x1b[49m` };
+	const ctx = context({ isError: true });
+	const components = [tool.renderCall!(ctx.args, themed as never, ctx), tool.renderResult!(result([{ name: "read", status: "error", error: "denied" }], "failure detail"), { expanded: false, isPartial: false }, themed as never, ctx)];
+	const first = components.flatMap((component) => component.render(100)).join("\n");
+	assert.match(first, /\x1b\[31m/);
+	paint = "\x1b[35m";
+	for (const component of components) component.invalidate();
+	const changed = components.flatMap((component) => component.render(100)).join("\n");
+	assert.doesNotMatch(changed, /\x1b\[31m|\x1b\[44m/);
+	assert.match(changed, /\x1b\[35m/);
+	assert.equal(stripAnsi(first), stripAnsi(changed));
+});
+
+test("collapsed Code output has a fixed physical row budget and semantic tones", () => {
+	const tool = registeredCodemode();
+	for (const [isError, isPartial, expected] of [[false, false, "border"], [true, false, "error"], [false, true, "warning"]] as const) {
+		const roles: string[] = [];
+		const painted = { fg: (role: string, text: string) => { roles.push(role); return text; } };
+		const ctx = context({ isError, isPartial });
+		const value = result([], "useful 界🌹 e\u0301 " + "x".repeat(800) + "\nlast");
+		for (const width of [0, 1, 2, 3, 4, 5, 6, 7, 8, 24, 120]) {
+			const rows = tool.renderResult!(value, { expanded: false, isPartial }, painted as never, ctx).render(width);
+			assert.ok(rows.length <= 6);
+			assert.ok(rows.every((row) => visibleWidth(row) <= width));
+			assert.equal(rows.filter((row) => row.startsWith("╰")).length, width ? 1 : 0);
+		}
+		assert.ok(roles.includes(expected));
 	}
 });
 
