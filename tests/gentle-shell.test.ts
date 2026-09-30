@@ -4761,7 +4761,15 @@ test("gentleShell draws the review preflight message as a Gentle card", () => {
 	assert.match(expanded[1], /^│ Receipt-driven development is enabled\. +│$/);
 	assert.ok(expanded.some((line) => line.includes("gentle_review")));
 	const collapsed = renderer({ ...message, content: [{ type: "text", text: message.content }] }, { expanded: false }, plainTheme).render(80).map(stripAnsi);
-	assert.equal(collapsed.length, 3);
+	assert.equal(collapsed.length, 4, "collapsed previews both sentences without the blank separator");
+	assert.match(collapsed[1], /^│ Receipt-driven development is enabled\. +│$/);
+	assert.match(collapsed[2], /^│ Call the gentle_review tool\. +│$/);
+	assert.match(collapsed[3], /^╰─+╯$/);
+	const long = { ...message, content: "First sentence.\n\nSecond.\nThird.\nFourth." };
+	const bounded = renderer(long, { expanded: false }, plainTheme).render(80).map(stripAnsi);
+	assert.deepEqual(bounded.slice(1, -1).map((row) => row.replace(/^│ | *│$/g, "")), ["First sentence.", "Second.", "Third."]);
+	assert.ok(renderer(long, { expanded: true }, plainTheme).render(80).some((line) => line.includes("Fourth.")), "expanded keeps the full notice");
+	assert.deepEqual(renderer(long, { expanded: false }, plainTheme).render(0), []);
 });
 
 test("the review preflight card paints the rose INFO frame (border) and title (accent)", () => {

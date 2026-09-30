@@ -1333,6 +1333,7 @@ function messageText(content: string | Array<{ type: string; text?: string }>): 
 
 interface CardComponentOptions {
 	expanded: boolean;
+	previewRows?: number;
 	hint?: string;
 }
 
@@ -1597,9 +1598,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		renderHost?.requestRender();
 	});
 	pi.registerMessageRenderer(REVIEW_PREFLIGHT_TYPE, (message, options, theme) => {
-		const body = messageText(message.content as string | Array<{ type: string; text?: string }>).split("\n");
+		const lines = messageText(message.content as string | Array<{ type: string; text?: string }>).split("\n");
+		const body = options.expanded ? lines : lines.filter((line) => line.trim() !== "");
 		const hint = keyHint("app.tools.expand", options.expanded ? "collapse" : "expand");
-		return cardComponent({ title: "Gentle AI", subtitle: "review preflight", body, tone: CARD_TONE.INFO }, theme, { expanded: options.expanded, hint });
+		return cardComponent({ title: "Gentle AI", subtitle: "review preflight", body, tone: CARD_TONE.INFO }, theme, { expanded: options.expanded, previewRows: 3, hint });
 	});
 	const openUsage = (ctx: ExtensionContext) =>
 		ctx.ui.custom<null>(
