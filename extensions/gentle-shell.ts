@@ -1357,15 +1357,19 @@ function spaced(component: { render(width: number): string[]; invalidate(): void
 	};
 }
 
+// Same rose identity as the Gentle AI tool cards (lib/gentle-ai-renderer.ts).
+const GENTLE_AI_GLYPH = "\u{1F339}\uFE0E";
+
 export function devBinaryCard(notice: DevBinaryNotice): Card {
 	if (notice.state === "invalid") {
-		return { title: "Gentle AI", subtitle: "dev binary override invalid", body: [notice.reason], tone: CARD_TONE.ERROR };
+		return { title: "Gentle AI", subtitle: "dev binary override invalid", body: [notice.reason], tone: CARD_TONE.ERROR, glyph: GENTLE_AI_GLYPH };
 	}
 	return {
 		title: "Gentle AI",
 		subtitle: "dev binary override · field-test only",
 		body: [`${notice.path} · sha256:${notice.sha256.slice(0, SHA_PREFIX_LENGTH)}`],
 		tone: CARD_TONE.WARNING,
+		glyph: GENTLE_AI_GLYPH,
 	};
 }
 
@@ -1827,7 +1831,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		ctx.ui.setWidget(
 			DEV_BINARY_WIDGET_KEY,
 			notice
-				? (_tui, theme) => spaced(cardComponent(devBinaryCard(notice), theme, { expanded: true }))
+				? (_tui, theme) => spaced(cardComponent(devBinaryCard(notice), theme, { expanded: true, previewRows: 3 }))
 				: undefined,
 		);
 		if (changes !== tracker) return;

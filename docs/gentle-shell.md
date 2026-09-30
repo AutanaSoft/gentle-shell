@@ -151,7 +151,7 @@ Gentle notices are drawn as cards: the same rounded frame as the prompt. An info
 - Quiet tools use thin rounded cards with their actual name in the top rule (`read`, `bash`, `grep`, `find`, `ls`, `edit`, `write`); bash keeps its command visible. Collapsed results show up to three physical preview rows, including search/list entries or changed diff lines alongside useful totals. Expand with the configured key shown in the top rule for complete available output and image handling.
 - Every call into the gentle-ai binary and every `gentle_review` tool keeps the rose, `🌹︎ Gentle AI`, and its operation identity. The rail uses the existing theme roles: warning while running/partial, success on completion, error on failure. Collapsed results show up to three useful physical rows, not just a line count; the expand key sits in the top rule once finished, and elapsed timing stays on the closing rule. Reviewer captures name their lens (`review capture · risk`; the group lists all four).
 - The review preflight reminder renders as a card in the transcript with the expand key in its top rule. Collapsed, it previews up to three non-blank physical rows of the reminder; expanded, it shows the full text.
-- An active dev-binary override shows above the editor at startup, in amber, naming the binary and its digest, and leaves with the first prompt; an invalid override shows in red with the reason.
+- An active dev-binary override shows above the editor at startup as a 🌹 Gentle AI card, in amber, naming the binary and its digest, and leaves with the first prompt; an invalid override shows in red with the reason.
 - Subagents draw their own card; see Gentle Agents below.
 
 ### Compact Code card
