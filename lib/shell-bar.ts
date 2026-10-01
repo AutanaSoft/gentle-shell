@@ -2,7 +2,7 @@ import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works
 import { GAUGE_CELLS, gaugeTone, paintGauge, renderGauge, type GaugeTone } from "./shell-gauge.ts";
 import { renderUsageBar, selectUsageLimit, type ProviderUsage, type UsageWindow } from "./shell-usage.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
-import { CARD_TONE, panelInnerWidth, renderCard } from "./shell-card.ts";
+import { CARD_TONE, floatRows, panelInnerWidth, renderCard } from "./shell-card.ts";
 import { REVIEW_SCOPE_UNAVAILABLE, REVIEW_SIDEBAR_LABELS, type ReviewSidebarSnapshot } from "./review-sidebar-state.ts";
 import type { VisualSettings } from "./visual-customization-policy.ts";
 
@@ -291,7 +291,46 @@ function usageSegmentText(windows: UsageWindow[], theme: ShellBarTheme, stage: U
 	return hint ? `${head} ${theme.fg(ROLE.LABEL, "·")} ${theme.fg(USAGE_HINT_ROLE, hint)}` : head;
 }
 
+// The float header hangs as an open-top tab: `│ <content> │` with the INFO
+// panel background between the side rules, closed below by the header rule.
+// floatRows paints the background inside one-column transparent margins; the
+// side rules take those margin cells. Undefined when the float style does not
+// apply — neon, a width under the float minimum, or a theme without a
+// background — so callers keep neon.
+function floatHeaderRow(theme: ShellBarTheme, width: number, content: (width: number) => string): string | undefined {
+	let floated = false;
+	const [row] = floatRows(CARD_TONE.INFO, theme, width, (inner) => {
+		floated = inner !== width;
+		return floated ? { body: [` ${fitHeaderContent(content(inner - 2), inner - 2)} `] } : {};
+	});
+	if (!floated || row === undefined) return undefined;
+	const side = theme.fg(HEADER_RULE_ROLE, HEADER_SIDE_CHAR);
+	return `${side}${row.slice(1, -1)}${side}`;
+}
+
+function fitHeaderContent(text: string, width: number): string {
+	const clipped = visibleWidth(text) <= width ? text : truncateToWidth(text, width, "…");
+	return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
+}
+
 export function renderShellHeaderBar(model: ShellHeaderModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: Presentation): ShellHeaderResult {
+	const targetWidth = Math.max(0, Math.floor(width));
+	let content: ShellHeaderResult | undefined;
+	let contentWidth = targetWidth;
+	const row = floatHeaderRow(theme, targetWidth, (inner) => {
+		contentWidth = inner;
+		content = headerContent(model, theme, inner, usageHint, presentation);
+		return content.text;
+	});
+	if (row === undefined || !content) return headerContent(model, theme, width, usageHint, presentation);
+	const { usageSpan } = content;
+	// The side rules and their padding split evenly around the content, so
+	// its left share (`│ `) is where the content's columns start.
+	const offset = (targetWidth - contentWidth) / 2;
+	return usageSpan ? { text: row, usageSpan: { start: usageSpan.start + offset, end: usageSpan.end + offset } } : { text: row };
+}
+
+function headerContent(model: ShellHeaderModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: Presentation): ShellHeaderResult {
 	const targetWidth = Math.max(0, Math.floor(width));
 	const ctxCost = joinSegments([contextSegment(model.contextPercent, theme), costSegment(model.costTotal, model.subscription, theme)], theme);
 	const windows = model.usage ? (selectUsageLimit(model.usage, model.modelId)?.windows ?? []) : [];
@@ -332,7 +371,7 @@ export function renderShellHeaderBar(model: ShellHeaderModel, theme: ShellBarThe
 // on small screens, and keeps extension statuses on a second line instead of
 // dropping them the way the header deliberately does.
 export function renderShellBottomOnlyBar(model: ShellBarModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: Presentation): string[] {
-	const header = renderShellHeaderBar(buildShellHeaderModel(model), theme, width, usageHint, presentation).text;
+	const header = headerContent(buildShellHeaderModel(model), theme, width, usageHint, presentation).text;
 	const statuses = model.statuses.map(sanitizeStatus).filter((status) => status.length > 0).map((status) => theme.fg(ROLE.STATUS, status));
 	return statuses.length ? [header, truncateToWidth(joinSegments(statuses, theme), Math.max(0, Math.floor(width)), "…")] : [header];
 }
@@ -345,9 +384,14 @@ export function renderShellBottomOnlyBar(model: ShellBarModel, theme: ShellBarTh
 // with it.
 const HEADER_RULE_CHAR = "─";
 const HEADER_RULE_ROLE = "border";
+const HEADER_SIDE_CHAR = "│";
 
+// In the float style the rule closes the hanging header tab: `╰──╯` under its
+// side rules, on a transparent background, so the header keeps its two rows.
 export function renderShellHeaderRule(theme: ShellBarTheme, width: number): string {
-	return theme.fg(HEADER_RULE_ROLE, HEADER_RULE_CHAR.repeat(Math.max(0, Math.floor(width))));
+	const targetWidth = Math.max(0, Math.floor(width));
+	if (floatHeaderRow(theme, targetWidth, () => "") !== undefined) return theme.fg(HEADER_RULE_ROLE, `╰${HEADER_RULE_CHAR.repeat(targetWidth - 2)}╯`);
+	return theme.fg(HEADER_RULE_ROLE, HEADER_RULE_CHAR.repeat(targetWidth));
 }
 
 export function renderShellBar(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation?: Presentation): string[] {

@@ -9,6 +9,7 @@ import {
 	gaugeTone,
 	renderGauge,
 	renderShellBar,
+	renderShellBottomOnlyBar,
 	renderShellHeaderBar,
 	renderShellHeaderRule,
 	renderShellSidebarBar,
@@ -532,4 +533,84 @@ test("the sidebar Status card in the float style is a float panel one row taller
 	assert.equal(stripAnsi(float[1]!), ` ▎ ✿ Status${" ".repeat(49)}`);
 	assertFloatRows(float, 60);
 	assert.deepEqual(float.slice(2, -1).map(bodyText), neon.slice(1, -1).map(bodyText));
+});
+
+// T4: in the float style the top bar hangs as an open-top tab: one row with
+// `│` side rules at both edges and the background between them, and the rule
+// under it closes the tab as `╰──╯`, so the header keeps its two-row height.
+
+// The left side rule and its padding space sit before the header content.
+const FLOAT_HEADER_OFFSET = 2;
+// Both side rules plus their padding spaces, like a neon card body row.
+const FLOAT_HEADER_CHROME = 4;
+
+test("renderShellHeaderBar in the float style is one row between side rules with the background inside them", (t) => {
+	const theme = withBackground(plainTheme);
+	const header = buildShellHeaderModel(model({ usage: USAGE_TWO_WINDOWS }));
+	// Without a background the header keeps the neon cascade, even in the float style.
+	const neonInner = renderShellHeaderBar(header, plainTheme, 140 - FLOAT_HEADER_CHROME, "alt+u");
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	const float = renderShellHeaderBar(header, theme, 140, "alt+u");
+	assert.equal(float.text.split("\n").length, 1, "the header stays one row tall");
+	assert.equal(visibleWidth(float.text), 140);
+	assert.ok(float.text.startsWith(`│${BG_OPEN}`) && float.text.endsWith(`${BG_CLOSE}│`), `painted between the side rules: ${JSON.stringify(float.text)}`);
+	assert.equal(stripAnsi(float.text), `│ ${neonInner.text} │`);
+});
+
+test("renderShellHeaderBar paints the float side rules in the frame colour", (t) => {
+	const header = buildShellHeaderModel(model({ usage: USAGE_TWO_WINDOWS }));
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	const { text } = renderShellHeaderBar(header, withBackground(taggedTheme), 140, "alt+u");
+	assert.ok(text.startsWith(`<border>│</border>${BG_OPEN} `), `left side rule: ${JSON.stringify(text.slice(0, 40))}`);
+	assert.ok(text.endsWith(` ${BG_CLOSE}<border>│</border>`), `right side rule: ${JSON.stringify(text.slice(-40))}`);
+});
+
+test("renderShellHeaderBar shifts the float usage span past the side rule and its padding", (t) => {
+	const theme = withBackground(plainTheme);
+	const header = buildShellHeaderModel(model({ usage: USAGE_TWO_WINDOWS }));
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	for (const width of [140, 100, 90]) {
+		const { text, usageSpan } = renderShellHeaderBar(header, theme, width, "alt+u");
+		const neonInner = renderShellHeaderBar(header, plainTheme, width - FLOAT_HEADER_CHROME, "alt+u");
+		assert.deepEqual(usageSpan, neonInner.usageSpan && { start: neonInner.usageSpan.start + FLOAT_HEADER_OFFSET, end: neonInner.usageSpan.end + FLOAT_HEADER_OFFSET });
+		if (!usageSpan) continue;
+		const plain = stripAnsi(text);
+		assert.match(plain.slice(usageSpan.start, usageSpan.end), /^usage/);
+		assert.equal(usageSpan.end, visibleWidth(plain) - FLOAT_HEADER_OFFSET, "the usage segment ends before the right padding and side rule");
+	}
+});
+
+test("renderShellHeaderRule in the float style closes the tab with a transparent bottom rule", (t) => {
+	const theme = withBackground(taggedTheme);
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	assert.equal(renderShellHeaderRule(theme, 40), `<border>╰${"─".repeat(38)}╯</border>`);
+	assert.equal(renderShellHeaderRule(theme, 0), renderShellHeaderRule(taggedTheme, 0), "a zero width keeps the neon rule");
+});
+
+test("the float header keeps the neon output below the float minimum width or without a background", (t) => {
+	const header = buildShellHeaderModel(model({ usage: USAGE_TWO_WINDOWS }));
+	const neonNarrow = renderShellHeaderBar(header, withBackground(plainTheme), 9, "alt+u");
+	const neonWide = renderShellHeaderBar(header, plainTheme, 140, "alt+u");
+	const neonRule = renderShellHeaderRule(taggedTheme, 9);
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	assert.deepEqual(renderShellHeaderBar(header, withBackground(plainTheme), 9, "alt+u"), neonNarrow, "width < 10 falls back to neon");
+	assert.deepEqual(renderShellHeaderBar(header, plainTheme, 140, "alt+u"), neonWide, "a theme without bg falls back to neon");
+	assert.equal(renderShellHeaderRule(withBackground(taggedTheme), 9), neonRule);
+	assert.equal(renderShellHeaderRule(taggedTheme, 40), "<border>" + "─".repeat(40) + "</border>");
+});
+
+test("neon header bar and rule are byte-identical with a background-capable theme", () => {
+	const header = buildShellHeaderModel(model({ usage: USAGE_TWO_WINDOWS }));
+	for (const width of [140, 100, 60, 12]) {
+		assert.deepEqual(renderShellHeaderBar(header, withBackground(taggedTheme), width, "alt+u"), renderShellHeaderBar(header, taggedTheme, width, "alt+u"));
+		assert.equal(renderShellHeaderRule(withBackground(taggedTheme), width), "<border>" + "─".repeat(width) + "</border>");
+	}
+});
+
+test("the narrow-layout bottom-only bar stays unchanged in the float style", (t) => {
+	const theme = withBackground(taggedTheme);
+	const data = model({ usage: USAGE_TWO_WINDOWS, statuses: ["mcp ok"] });
+	const neon = renderShellBottomOnlyBar(data, theme, 100, "alt+u");
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	assert.deepEqual(renderShellBottomOnlyBar(data, theme, 100, "alt+u"), neon);
 });
