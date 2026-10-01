@@ -9,7 +9,7 @@ import { pendingReviewMutation, pendingReviewMutationProfiles, REVIEW_REMINDER_R
 import { SESSION_WORKTREE_ENTRY, SESSION_WORKTREE_CHANGED, resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
 import { SessionChanges, type SessionChangeEvidence } from "../lib/session-changes.ts";
-import test, { after, afterEach, mock } from "node:test";
+import test, { after, afterEach, before, mock } from "node:test";
 import type { TestContext } from "node:test";
 import { generateUnifiedPatch, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
@@ -27,6 +27,12 @@ import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
 import { AgentRunner } from "../lib/agents-runner.ts";
 import { bindSessionRepositoryPreparation } from "../lib/bounded-writer-admission.ts";
 import { CHILD_METRICS_EVENT } from "../lib/runtime-metrics-children.ts";
+import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
+// The card style defaults to float; these assertions pin the outlined (neon)
+// panels unless a test switches the style itself.
+const initialCardStyle = cardStyle();
+before(() => setCardStyle(CARD_STYLE.NEON));
+after(() => setCardStyle(initialCardStyle));
 
 // Gentle Agents extension: the subagent_* tools drive isolated pi children,
 // the card above the editor follows the store, and dialogs reach the host UI.

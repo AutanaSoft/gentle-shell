@@ -6,6 +6,7 @@ import { installSidebar, invalidateSidebar, narrowStatusOwner } from "../lib/she
 import { sidebarHeader, sidebarPart, sidebarState } from "../lib/shell-sidebar.ts";
 import { renderShellSidebarBar } from "../lib/shell-bar.ts";
 import { renderTodoCard, type TodoState } from "../lib/shell-todo.ts";
+import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 
 const NODE = Symbol.for("@earendil-works/pi-tui/layout-node");
 const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
@@ -38,22 +39,29 @@ function railWithHeader(f: ReturnType<typeof fixture>): ScrollView {
 	return hstackOf(f).entries[1].component as ScrollView;
 }
 
-test("grouped Status preserves structured fields and opaque integration text", () => {
-	const lines = renderShellSidebarBar({
-		cwd: "/project", branch: "main", dirty: 2, sessionName: "session",
-		modelId: "model", effort: "high", contextPercent: 45, contextWindow: 1000,
-		costTotal: 1, subscription: false, statuses: ["opaque integration"],
-	}, theme, 46);
-	const text = lines.join("\n");
-	let previous = -1;
-	for (const heading of ["Status", "Project", "Changes", "Integrations"]) {
-		const index = text.indexOf(heading);
-		assert.ok(index > previous, heading);
-		previous = index;
+test("grouped Status preserves structured fields and opaque integration text", (t) => {
+	const found = cardStyle();
+	t.after(() => setCardStyle(found));
+	// Both styles keep the group order; float panels need a theme background.
+	const painted = { ...theme, bg: (_color: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m` };
+	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
+		setCardStyle(style);
+		const lines = renderShellSidebarBar({
+			cwd: "/project", branch: "main", dirty: 2, sessionName: "session",
+			modelId: "model", effort: "high", contextPercent: 45, contextWindow: 1000,
+			costTotal: 1, subscription: false, statuses: ["opaque integration"],
+		}, painted, 46);
+		const text = lines.join("\n");
+		let previous = -1;
+		for (const heading of ["Status", "Project", "Changes", "Integrations"]) {
+			const index = text.indexOf(heading);
+			assert.ok(index > previous, `${style}: ${heading}`);
+			previous = index;
+		}
+		assert.match(text, /opaque integration/);
+		assert.match(text, /Branch.*main/);
+		assert.doesNotMatch(text, /Usage/);
 	}
-	assert.match(text, /opaque integration/);
-	assert.match(text, /Branch.*main/);
-	assert.doesNotMatch(text, /Usage/);
 });
 
 test("scrollable TODO keeps every task while bottom and collapsed cards stay bounded", () => {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after, before, type TestContext } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { DEFAULT_VISUAL_SETTINGS } from "../lib/visual-customization-policy.ts";
 import {
@@ -17,6 +17,8 @@ import {
 	type ShellBarTheme,
 } from "../lib/shell-bar.ts";
 import { REVIEW_SCOPE_UNAVAILABLE } from "../lib/review-sidebar-state.ts";
+import { stripAnsi } from "../lib/terminal-theme.ts";
+import { CARD_STYLE, cardStyle, setCardStyle, type CardStyle } from "../lib/shell-card.ts";
 
 // The Gentle Shell bar replaces pi's three-line footer with one line of
 // segments. Rendering is pure so it can be verified without a TUI.
@@ -38,6 +40,42 @@ const plainTheme: ShellBarTheme = {
 		return value;
 	},
 };
+
+// The card style defaults to float; these assertions pin the outlined (neon)
+// panels unless a test switches the style itself.
+const initialCardStyle = cardStyle();
+before(() => setCardStyle(CARD_STYLE.NEON));
+after(() => setCardStyle(initialCardStyle));
+
+function useCardStyle(t: TestContext, style: CardStyle): void {
+	const found = cardStyle();
+	t.after(() => setCardStyle(found));
+	setCardStyle(style);
+}
+
+const BG_OPEN = "\x1b[48;5;22m";
+const BG_CLOSE = "\x1b[49m";
+
+/** The same theme with a background, so the float style applies (without one panels keep the frame). */
+function withBackground<T extends object>(theme: T): T & { bg(color: string, text: string): string } {
+	return { ...theme, bg: (_color: string, text: string) => `${BG_OPEN}${text}${BG_CLOSE}` };
+}
+
+/** Float panel rows: a painted panel inside transparent one-column margins, between padding rows that keep the accent bar. */
+function assertFloatRows(lines: readonly string[], width: number): void {
+	for (const line of lines) {
+		assert.equal(visibleWidth(line), width, `"${stripAnsi(line)}" is not ${width} wide`);
+		assert.ok(line.startsWith(` ${BG_OPEN}`) && line.endsWith(`${BG_CLOSE} `), `painted inside the margins: ${JSON.stringify(line)}`);
+	}
+	const padding = ` ▎${" ".repeat(width - 3)} `;
+	assert.equal(stripAnsi(lines[0]!), padding, "a padding row with the accent bar sits above the header");
+	assert.equal(stripAnsi(lines.at(-1)!), padding, "a padding row with the accent bar replaces the bottom rule");
+}
+
+/** The text of a body row, without the neon side rails or the float accent bar. */
+function bodyText(row: string): string {
+	return stripAnsi(row).replace(/^ ?[│▎] /u, "").replace(/ ?│? ?$/u, "").trimEnd();
+}
 
 function model(overrides: Partial<ShellBarModel> = {}): ShellBarModel {
 	return {
@@ -483,4 +521,15 @@ test("renderShellHeaderRule paints one full-width line in the editor frame color
 	assert.equal(renderShellHeaderRule(plainTheme, 12), "─".repeat(12), "the rule spans the full width");
 	assert.equal(renderShellHeaderRule(plainTheme, 0), "");
 	assert.equal(renderShellHeaderRule(plainTheme, -3), "", "negative widths clamp to an empty rule");
+});
+
+test("the sidebar Status card in the float style is a float panel one row taller than neon", (t) => {
+	const theme = withBackground(plainTheme);
+	const neon = renderShellSidebarBar(model({ review: { state: "reviewing", scope: "first.ts +2 files" } }), theme, 60);
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	const float = renderShellSidebarBar(model({ review: { state: "reviewing", scope: "first.ts +2 files" } }), theme, 60);
+	assert.equal(float.length, neon.length + 1);
+	assert.equal(stripAnsi(float[1]!), ` ▎ ✿ Status${" ".repeat(49)}`);
+	assertFloatRows(float, 60);
+	assert.deepEqual(float.slice(2, -1).map(bodyText), neon.slice(1, -1).map(bodyText));
 });

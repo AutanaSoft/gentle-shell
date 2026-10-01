@@ -1,7 +1,7 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { isFinished, TASK_STATUS, type TaskRecord, type TaskStatus } from "./agents-protocol.ts";
 import { formatCost, formatTokens } from "./shell-bar.ts";
-import { CARD_TONE, cardInnerWidth, renderCard, type CardTheme, type CardTone } from "./shell-card.ts";
+import { CARD_TONE, panelHeaderRow, panelInnerWidth, renderCard, type CardTheme, type CardTone } from "./shell-card.ts";
 
 // Gentle Agents widget: the card above the editor. Reads task records only
 // (status, prompt, counters, timestamps), so drawing it costs nothing per
@@ -298,8 +298,11 @@ function batchElapsed(tasks: readonly TaskRecord[], now: number): string | undef
 export function renderAgentsCard(tasks: readonly TaskRecord[], theme: CardTheme, width: number, now: number, options: AgentsWidgetOptions): string[] {
 	const shown = widgetTasks(tasks, now);
 	if (shown.length === 0) return [];
-	const cols = columns(shown, cardInnerWidth(width), now);
-	const { listed, hidden } = options.collapsed ? { listed: [shown[0]], hidden: 0 } : visibleRows(shown, options.maxRows);
+	const cols = columns(shown, panelInnerWidth(theme, width, tone(shown)), now);
+	// The float panel spends one more row on padding above its header, so it
+	// gives that row back from the task budget to stay as tall as the frame.
+	const maxRows = options.maxRows === undefined ? undefined : options.maxRows - panelHeaderRow(theme, width, tone(shown));
+	const { listed, hidden } = options.collapsed ? { listed: [shown[0]], hidden: 0 } : visibleRows(shown, maxRows);
 	const hint = options.collapsed && options.collapseKey ? `${options.collapseKey} expand` : shown.length > 1 ? batchElapsed(shown, now) : undefined;
 	const body = listed.flatMap((task) => row(task, theme, cols, now, options.maxRows === undefined));
 	if (hidden > 0) body.push(overflowRow(hidden, theme, options.viewKey));
@@ -307,6 +310,6 @@ export function renderAgentsCard(tasks: readonly TaskRecord[], theme: CardTheme,
 		{ title: "Agents", subtitle: counts(shown), body, tone: tone(shown), glyph: AGENTS_GLYPH },
 		theme,
 		width,
-		{ expanded: true, hint },
+		{ expanded: true, hint, panel: true },
 	);
 }

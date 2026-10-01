@@ -2,7 +2,7 @@ import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works
 import { GAUGE_CELLS, gaugeTone, paintGauge, renderGauge, type GaugeTone } from "./shell-gauge.ts";
 import { renderUsageBar, selectUsageLimit, type ProviderUsage, type UsageWindow } from "./shell-usage.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
-import { CARD_TONE, cardInnerWidth, renderCard } from "./shell-card.ts";
+import { CARD_TONE, panelInnerWidth, renderCard } from "./shell-card.ts";
 import { REVIEW_SCOPE_UNAVAILABLE, REVIEW_SIDEBAR_LABELS, type ReviewSidebarSnapshot } from "./review-sidebar-state.ts";
 import type { VisualSettings } from "./visual-customization-policy.ts";
 
@@ -195,7 +195,7 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 	const branch = model.branch ? `${label("Branch")} ${value(model.branch)}` : "";
 	// Pre-wrap values before indenting so Unicode/ANSI continuation lines keep
 	// the same inset without consuming the card's right border.
-	const innerWidth = cardInnerWidth(width);
+	const innerWidth = panelInnerWidth(theme, width);
 	const inset = Math.min(1, innerWidth - 1);
 	// Model, effort, context, cost, and the per-model usage table now live in
 	// the always-visible header row (and /gentle:usage for the full table);
@@ -240,7 +240,7 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 		...(presentation?.density === "minimal" ? [] : [label(group.title)]),
 		...group.lines.flatMap((line) => wrapTextWithAnsi(line, innerWidth - inset).map((part) => " ".repeat(inset) + part)),
 	]);
-	return renderCard({ title: "Status", body, tone: CARD_TONE.INFO }, theme, width, { expanded: true });
+	return renderCard({ title: "Status", body, tone: CARD_TONE.INFO }, theme, width, { expanded: true, panel: true });
 }
 
 const HEADER_BRAND = "✿ Gentle Shell";
