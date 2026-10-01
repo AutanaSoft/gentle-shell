@@ -171,7 +171,7 @@ This installs the current npm release; select an explicit version if you need a 
 
 ### Source checkout
 
-This checkout declares `gentle-pi` `3.7.0` with a package-local Gentle AI `v4.0.0` pin. Checkout metadata alone is not proof of npm publication; verify the registry version and its release workflow.
+This checkout declares `gentle-pi` `4.0.0` with a package-local Gentle AI `v4.0.0` pin. Checkout metadata alone is not proof of npm publication; verify the registry version and its release workflow.
 
 ### Pi compatibility
 
