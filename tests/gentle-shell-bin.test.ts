@@ -37,7 +37,10 @@ test("real adjacent Pi resolves through its public entry without PATH or a runti
 		encoding: "utf8",
 	});
 	assert.equal(result.status, 0, result.stderr);
-	assert.match(result.stdout, /pi 0\.99\.1/);
+	// The adjacent peer is the release the open development range resolved,
+	// not the manifest specifier.
+	const installed: string = JSON.parse(readFileSync(join(packageRoot, "node_modules", "@earendil-works", "pi-coding-agent", "package.json"), "utf8")).version;
+	assert.match(result.stdout, new RegExp(`pi ${installed.replace(/\./g, "\\.")}\\b`));
 	assert.equal(existsSync(join(f.home, ".gentle-shell", "agent")), false);
 });
 
