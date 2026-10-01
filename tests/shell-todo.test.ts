@@ -331,7 +331,7 @@ test("renderTodoCard uses custom shortcuts, omits disabled shortcuts, and remain
 	}
 });
 
-test("renderTodoCard in the float style keeps its clickable control on the header row, one row below the top padding", (t) => {
+test("renderTodoCard in the float style keeps its clickable control on the header row, one row below the top padding, above a separator row", (t) => {
 	const theme = withBackground(plainTheme);
 	for (const options of [
 		{ collapsed: false, staleTurns: 0, collapseKey: "ctrl+shift+t" },
@@ -343,12 +343,13 @@ test("renderTodoCard in the float style keeps its clickable control on the heade
 		useCardStyle(t, CARD_STYLE.FLOAT);
 		const float = renderTodoCard(seeded(), theme, 60, options);
 		setCardStyle(CARD_STYLE.NEON);
-		assert.equal(float.length, neon.length + 1, "the top padding row adds one row");
+		assert.equal(float.length, neon.length + 2, "the top padding and separator rows add two rows");
 		const action = options.collapsed ? "▸ Expand" : "▾ Collapse";
-		const hint = options.collapseKey ? `ctrl\\+shift\\+t ${options.collapsed ? "expand" : "collapse"} {3}` : "";
+		const hint = options.collapseKey ? `ctrl\\+shift\\+t {3}` : "";
 		assert.match(stripAnsi(float[1]!), new RegExp(`^ ▎ ❀ Todos ${action}  1 of 3 +${hint}$`), "row 1 is the clickable header");
+		assert.match(stripAnsi(float[2]!), /^ ▎ +$/, "a blank separator row follows the header");
 		assertFloatRows(float, 60);
-		assert.deepEqual(float.slice(2, -1).map(bodyText), neon.slice(1, -1).map(bodyText));
+		assert.deepEqual(float.slice(3, -1).map(bodyText), neon.slice(1, -1).map(bodyText));
 	}
 	useCardStyle(t, CARD_STYLE.FLOAT);
 	const tagged = withBackground({ ...plainTheme, fg: (color: string, text: string) => `<${color}>${text}</${color}>` });
@@ -356,10 +357,25 @@ test("renderTodoCard in the float style keeps its clickable control on the heade
 	assert.match(stripAnsi(header!), /^ <border>▎<\/border> <accent>❀ Todos <[a-zA-Z]+>▾ Collapse<\/[a-zA-Z]+><\/accent>  <muted>1 of 3<\/muted> +$/, "the hovered control keeps its own role and case");
 });
 
+test("float Todos keeps the configured shortcut visible at rail width without repeating the action", (t) => {
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	const theme = withBackground(plainTheme);
+	for (const collapsed of [false, true]) {
+		for (const collapseKey of ["ctrl+shift+t", "alt+t", undefined]) {
+			const rows = renderTodoCard(seeded(), theme, 48, { collapsed, staleTurns: 0, collapseKey });
+			const header = stripAnsi(rows[1]!);
+			assert.match(header, collapsed ? /▸ Expand/ : /▾ Collapse/);
+			if (collapseKey) assert.ok(header.includes(collapseKey));
+			else assert.doesNotMatch(header, /ctrl\+shift\+t|alt\+t/);
+			assert.equal(visibleWidth(rows[1]!), 48);
+		}
+	}
+});
+
 test("a done todo wraps to the float body so the strikethrough never re-wraps", (t) => {
 	useCardStyle(t, CARD_STYLE.FLOAT);
 	const state = applyTodo(emptyTodo(), { action: "write", tasks: [{ title: "word ".repeat(20).trim(), status: "done" }] }, 1).state;
 	const lines = renderTodoCard(state, withBackground(plainTheme), 40, { collapsed: false, staleTurns: 0 });
 	assertFloatRows(lines, 40);
-	for (const row of lines.slice(2, -1)) assert.match(stripAnsi(row), /^ ▎ [✓ ] ~[^~]+~ +$/u, "each physical row closes its own strikethrough");
+	for (const row of lines.slice(3, -1)) assert.match(stripAnsi(row), /^ ▎ [✓ ] ~[^~]+~ +$/u, "each physical row closes its own strikethrough");
 });

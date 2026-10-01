@@ -11,7 +11,8 @@ import { CODEX_USAGE_URL, NAN_QUOTA_URL, USAGE_SOURCE_EVENT, USAGE_SOURCE_SCHEMA
 import { createVimEditorAdapter } from "../lib/vim-editor-adapter.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
 import { CHANGE_STATUS } from "../lib/shell-changes.ts";
-import { sidebarState, type SidebarRail } from "../lib/shell-sidebar.ts";
+import { sidebarPart, sidebarState, type SidebarRail } from "../lib/shell-sidebar.ts";
+import { renderTodoCard } from "../lib/shell-todo.ts";
 import type { ShellBarTheme } from "../lib/shell-bar.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
@@ -690,6 +691,44 @@ function installedPrompt(
 	const factory = ui.editorFactory as (tui: unknown, theme: unknown, keybindings: unknown) => GentlePromptEditor;
 	return factory(fakeTui, editorTheme, keybindings);
 }
+
+interface MutablePromptThemeHost {
+	theme: ExtensionContext["ui"]["theme"];
+}
+
+test("T2 float prompt installed editor reads live toolSuccessBg and preserves Esc/queued hints", () => {
+	const previous = cardStyle();
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_DOUBLE_ESC_CANCEL: "on" });
+	const { ctx, ui } = fakeContext({ pending: true });
+	const editor = installedPrompt(ctx, ui, handlers, { matches: (data: string, action: string) => action === "app.interrupt" && data === "\x1b" });
+	// The fake context owns this mutable slot; the production UI exposes it readonly.
+	const themeHost = ctx.ui as unknown as MutablePromptThemeHost;
+	const originalTheme = themeHost.theme;
+	try {
+		setCardStyle(CARD_STYLE.FLOAT);
+		themeHost.theme = { ...plainTheme, bg: (role: string, text: string) => {
+			assert.equal(role, "toolSuccessBg");
+			return `\x1b[44m${text}\x1b[49m`;
+		} } as unknown as typeof ctx.ui.theme;
+		editor.focused = true;
+		assert.match(editor.render(80)[0], /\x1b\[44m/);
+		assert.match(stripAnsi(editor.render(80)[1]), /type, or \/ for commands/);
+		themeHost.theme = { ...plainTheme, bg: (_role: string, text: string) => `\x1b[45m${text}\x1b[49m` } as unknown as typeof ctx.ui.theme;
+		assert.match(editor.render(80)[0], /\x1b\[45m/);
+		editor.setText("draft");
+		editor.handleInput("\x1b");
+		assert.match(stripAnsi(editor.render(80)[0]), /esc again to clear/);
+		for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+		assert.match(stripAnsi(editor.render(80)[0]), /queued/);
+		editor.handleInput("\x1b");
+		assert.match(stripAnsi(editor.render(80)[0]), /esc again to cancel/);
+		assert.match(editor.render(80)[0], /\x1b\[45m/);
+		assert.match(editor.render(80)[2], /\x1b\[45m/);
+		themeHost.theme = plainTheme as unknown as typeof ctx.ui.theme;
+		assert.match(stripAnsi(editor.render(80)[0]), /^╭/);
+	} finally { themeHost.theme = originalTheme; editor.dispose(); setCardStyle(previous); }
+});
 
 test("gentleShell frames the editor with the petal prompt and a hint while empty", () => {
 	const { pi, handlers } = fakePi();
@@ -2861,6 +2900,114 @@ test("customize Cards rows persist the card style and switch live conversation c
 	ui.overlayView!.handleInput("\x1b"); await pending;
 });
 
+test("T3 live style Cards action refreshes cached TODO, header, footer and prompt in both directions", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const previous = cardStyle();
+	t.after(() => setCardStyle(previous));
+	writeCardStyle(CARD_STYLE.NEON, { gentlePiConfigHome: home });
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home }, { activeProfile: () => "team" });
+	const { ctx, ui, overlayReady } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	const painted = { ...plainTheme, strikethrough: (text: string) => text, bg: (_role: string, text: string) => `\x1b[44m${text}\x1b[49m` };
+	(ctx.ui as unknown as MutablePromptThemeHost).theme = painted as unknown as typeof ctx.ui.theme;
+	const node = Symbol.for("@earendil-works/pi-tui/layout-node");
+	const root = { render: () => ["transcript"], invalidate() {}, [node]: () => ({ type: "vstack", entries: [] }) };
+	let hostRenders = 0;
+	let ready = false;
+	const tui = { mode: "fullscreen", terminal: { rows: 40, columns: 160 }, layoutRoot: root, requestRender() { hostRenders++; if (ready) paint(); } };
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { render(width: number): string[]; dispose(): void };
+	const footer = factory(tui, painted, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+	const editorFactory = ui.editorFactory as (tui: unknown, theme: unknown, keys: unknown) => GentlePromptEditor;
+	const editor = editorFactory(tui, editorTheme, fakeKeybindings);
+	t.after(() => { ready = false; ui.closeOverlay?.(); editor.dispose(); footer.dispose(); });
+	let statusRenders = 0;
+	const status = sidebarState(tui as unknown as TUI).parts.get("footer")!;
+	const renderStatus = status.render.bind(status);
+	status.render = (width) => { statusRenders++; return renderStatus(width); };
+	let todoRenders = 0;
+	sidebarPart(tui as unknown as TUI, "todo", { render: () => [], invalidate() {} }, {
+		render(width) {
+			todoRenders++;
+			return renderTodoCard({ tasks: [{ id: 1, title: "Cached task", status: "pending" }], nextId: 2, updatedTurn: 0 }, painted, width, { scrollable: true, collapsed: false, staleTurns: 0 });
+		}, invalidate() {},
+	});
+	let frame = { header: "", rail: "", prompt: "" };
+	function paint() {
+		const layout = root[node]() as unknown as { entries: { component: { render(width: number): string[]; [node](): { entries: { component: { render(width: number): string[] } }[] } } }[] };
+		frame = {
+			header: layout.entries[0].component.render(160).join("\n"),
+			rail: layout.entries[1].component[node]().entries[1].component.render(50).join("\n"),
+			prompt: editor.render(100).join("\n"),
+		};
+	}
+	ready = true;
+	paint();
+	assert.equal(todoRenders, 1);
+	assert.match(frame.rail, /Cached task/);
+	const neon = { ...frame };
+	paint();
+	assert.equal(todoRenders, 1, "unchanged frame uses cached TODO");
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	let overlayRenders = 0;
+	t.mock.method(fakeTui, "requestRender", () => { overlayRenders++; });
+	for (const style of [CARD_STYLE.FLOAT, CARD_STYLE.NEON]) {
+		const before = { ...frame };
+		const beforeHost = hostRenders;
+		const beforeTodo = todoRenders;
+		const beforeStatus = statusRenders;
+		const beforeOverlay = overlayRenders;
+		await customizeAction(ui, `Card style: ${style}`);
+		assert.equal(resolveCardStyle({ gentlePiConfigHome: home }).style, style);
+		assert.equal(cardStyle(), style);
+		assert.ok(hostRenders > beforeHost, "action requests the main render without another state change");
+		assert.ok(overlayRenders > beforeOverlay, "customize redraws too");
+		assert.equal(todoRenders, beforeTodo + 1, "revision invalidation refreshes digest-less TODO");
+		assert.equal(statusRenders, beforeStatus + 1, "live style digest refreshes cached Status");
+		for (const key of ["header", "rail", "prompt"] as const) assert.notEqual(frame[key], before[key], `${key} changes immediately`);
+		assert.match(ui.notices.at(-1)!, /Conversation cards and shell chrome redraw now/);
+		assert.match(ui.overlayView!.render(90).join("\n"), /prompt|shell chrome/i);
+		const rendered = { ...frame };
+		paint();
+		assert.equal(todoRenders, beforeTodo + 1, "next unchanged render reuses TODO");
+		assert.equal(statusRenders, beforeStatus + 1, "next unchanged render reuses Status");
+		assert.deepEqual(frame, rendered);
+	}
+	assert.deepEqual(frame, neon, "returning to neon restores approved bytes");
+	ui.overlayView!.handleInput("\x1b"); await pending;
+});
+
+test("T3 live style failed persistence leaves live style and sidebar revision unchanged", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const previous = cardStyle();
+	t.after(() => setCardStyle(previous));
+	writeCardStyle(CARD_STYLE.NEON, { gentlePiConfigHome: home });
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home }, { activeProfile: () => "team" });
+	const { ctx, ui, overlayReady } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	let renders = 0;
+	const tui = { terminal: { rows: 40, columns: 160 }, requestRender() { renders++; } };
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void };
+	const footer = factory(tui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+	t.after(() => footer.dispose());
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	writeFileSync(join(home, "card-style.json"), "{");
+	const cache = Symbol.for("gentle-pi.experimental-sidebar.cache");
+	const revision = () => (tui.terminal as unknown as Record<symbol, { revision: number }>)[cache]?.revision;
+	const beforeRevision = revision();
+	const beforeRenders = renders;
+	await customizeAction(ui, "Card style: float");
+	assert.match(ui.notices.at(-1)!, /Cannot update malformed or unreadable card style preference/);
+	assert.equal(readFileSync(join(home, "card-style.json"), "utf8"), "{");
+	assert.equal(cardStyle(), CARD_STYLE.NEON);
+	assert.equal(revision(), beforeRevision, "failed save cannot invalidate the sidebar");
+	assert.equal(renders, beforeRenders, "failed save cannot request a main redraw");
+	ui.overlayView!.handleInput("\x1b"); await pending;
+});
+
 test("the saved card style applies at startup and on every session start", async (t) => {
 	const home = scopedDoubleEscCancelConfigHome(t);
 	const found = cardStyle();
@@ -3112,6 +3259,131 @@ test("narrow fullscreen with a below-input header shows only the bottom bar, car
 		ui.overlayView!.handleInput("\x1b");
 		await pending;
 	} finally { footer.dispose(); }
+});
+
+test("T4d unified float footer uses one live owner and restores legacy Changes on transitions", async (t) => {
+	const previous = cardStyle();
+	t.after(() => setCardStyle(previous));
+	const home = scopedDoubleEscCancelConfigHome(t);
+	writeCardStyle("float", { gentlePiConfigHome: home });
+	writeVisualSettings({ ...resolveVisualSettings({ gentlePiConfigHome: home }).settings, headerPlacement: "below-input" }, { gentlePiConfigHome: home });
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	const tui = { mode: "fullscreen", terminal: { rows: 40, columns: 139 }, requestRender() {} };
+	const bg = "\x1b[48;5;22m";
+	let hasBackground = true;
+	const theme = { ...plainTheme, bg: (_role: string, text: string) => hasBackground ? `${bg}${text}\x1b[49m` : text, getBgAnsi: () => hasBackground ? bg : "" };
+	const statuses = new Map([["mcp", "MCP ready"]]);
+	const footer = (ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => SidebarRail & { dispose(): void })(tui, theme, {
+		getGitBranch: () => "main", getExtensionStatuses: () => statuses, getAvailableProviderCount: () => 1, onBranchChange: () => () => {},
+	});
+	const widget = (key: string) => (ui.widgets.get(key) as (tui: unknown, theme: ShellBarTheme) => SidebarRail)(tui, theme);
+	const header = widget("gentle-shell-below-input-header");
+	const state = sidebarState(tui as unknown as TUI);
+	const click = (x: number, y: number, width: number): TuiMouseEvent => ({ type: "click", button: "left", x, y, screenX: x, screenY: y, width, height: 6, shift: false, alt: false, ctrl: false } as TuiMouseEvent);
+	try {
+		const withoutChanges = footer.render(139);
+		assert.equal(withoutChanges.length, 5);
+		assert.deepEqual(header.render(139), []);
+		const initialUsageX = stripAnsi(withoutChanges[2]!).indexOf("usage");
+		assert.equal(footer.handleMouse?.(click(initialUsageX, 3, 139)), undefined);
+		assert.equal(footer.handleMouse?.(click(initialUsageX, 2, 139))?.handled, true);
+		ui.closeOverlay?.();
+		sessionChange(ctx, "t4d-a", "/repo", "lib/live.ts", "", "one\ntwo\n");
+		await fire(handlers, "agent_end", ctx);
+		const changes = widget("gentle-shell-changes");
+		for (const width of [139, 140, 240]) {
+			tui.terminal.columns = width;
+			const rows = footer.render(width);
+			assert.equal(rows.length, 6);
+			assert.match(stripAnsi(rows[2]!), /1 file · \+2 −0/);
+			assert.match(stripAnsi(rows[3]!), /Gentle Shell/);
+			assert.match(stripAnsi(rows[4]!), /^  MCP ready/);
+			assert.ok(rows.slice(1).every((row) => row.startsWith(bg)));
+			assert.deepEqual(changes.render(width), []);
+			assert.deepEqual(header.render(width), []);
+			const usageX = stripAnsi(rows[3]!).indexOf("usage");
+			assert.ok(usageX > 0);
+			assert.equal(footer.handleMouse?.(click(usageX, 2, width)), undefined);
+			assert.equal(footer.handleMouse?.(click(usageX, 3, width))?.handled, true);
+			ui.closeOverlay?.();
+		}
+		const railHeader = state.parts.get("header")!;
+		const digest = railHeader.digest!();
+		statuses.set("mcp", "MCP updated");
+		assert.notEqual(railHeader.digest!(), digest, "live status changes update the grouped digest");
+		const statusDigest = railHeader.digest!();
+		sessionChange(ctx, "t4d-b", "/repo", "lib/live.ts", "one\ntwo\n", "one\ntwo\nthree\n");
+		await fire(handlers, "agent_end", ctx);
+		assert.notEqual(railHeader.digest!(), statusDigest, "captured changes update the grouped digest");
+		assert.match(stripAnsi(footer.render(240).join("\n")), /\+3 −0/);
+		assert.match(stripAnsi(footer.render(240).join("\n")), /MCP updated/);
+		state.active = true;
+		state.ownsHost = () => true;
+		assert.deepEqual(footer.render(240), [""], "suppressed float footer leaves an unpainted exterior dock row");
+		assert.deepEqual(footer.render(9), [], "narrow fallback does not add spacing");
+		hasBackground = false;
+		assert.deepEqual(footer.render(240), [], "missing background retains the legacy dock");
+		hasBackground = true;
+		setCardStyle(CARD_STYLE.NEON);
+		assert.deepEqual(footer.render(240), [], "neon retains the legacy dock");
+		setCardStyle(CARD_STYLE.FLOAT);
+		const grouped = header.render(240);
+		assert.equal(grouped.length, 5, "rail owns statuses; widget owns Changes/header only");
+		assert.doesNotMatch(stripAnsi(grouped.join("\n")), /MCP updated/);
+		assert.deepEqual(widget("gentle-shell-changes").render(240), []);
+		const usageX = stripAnsi(grouped[3]!).indexOf("usage");
+		assert.equal(header.handleMouse?.(click(usageX, 2, 240)), undefined);
+		assert.equal(header.handleMouse?.(click(usageX, 3, 240))?.handled, true);
+		ui.closeOverlay?.();
+		state.active = false;
+		for (const width of [9, 10]) {
+			tui.terminal.columns = width;
+			assert.equal(widget("gentle-shell-changes").render(width).length, width === 9 ? 1 : 0);
+		}
+		tui.terminal.columns = 240;
+		hasBackground = false;
+		assert.equal(widget("gentle-shell-changes").render(240).length, 1, "missing background restores Changes without new evidence");
+		assert.equal(header.render(240).length, 2);
+		assert.equal(footer.render(240).length, 1);
+		hasBackground = true;
+		assert.deepEqual(widget("gentle-shell-changes").render(240), []);
+		setCardStyle(CARD_STYLE.NEON);
+		assert.equal(widget("gentle-shell-changes").render(240).length, 1);
+		assert.equal(header.render(240).length, 2);
+		setCardStyle(CARD_STYLE.FLOAT);
+		tui.mode = "regular";
+		assert.equal(widget("gentle-shell-changes").render(240).length, 1);
+		assert.equal(footer.render(240).length, 1);
+		assert.deepEqual(header.render(240), []);
+		tui.mode = "fullscreen";
+		const previousView = ui.overlayView;
+		const pending = commands.get("gentle:customize")!.handler("", ctx);
+		await overlayReady;
+		for (let attempt = 0; attempt < 100 && ui.overlayView === previousView; attempt++) await new Promise<void>((resolve) => setTimeout(resolve, 5));
+		await customizeAction(ui, "Status placement: hidden");
+		assert.deepEqual(footer.render(240), [""], "hidden float status retains exterior dock spacing");
+		assert.equal(header.render(240).length, 5);
+		assert.doesNotMatch(stripAnsi(header.render(240).join("\n")), /MCP updated/);
+		await customizeAction(ui, "Section changes: shown");
+		assert.equal(header.render(240).length, 4);
+		assert.equal(ui.widgets.has("gentle-shell-changes"), false);
+		await customizeAction(ui, "Section changes: hidden");
+		await customizeAction(ui, "Header placement: top");
+		assert.deepEqual(header.render(240), []);
+		assert.equal(widget("gentle-shell-changes").render(240).length, 1, "top placement restores standalone Changes");
+		const above = railHeader.render(240);
+		assert.equal(above.length, 4);
+		assert.match(stripAnsi(above[1]!), /Gentle Shell/);
+		assert.equal(stripAnsi(above[3]!), "▔".repeat(240));
+		ui.overlayView!.handleInput("\x1b");
+		await pending;
+	} finally {
+		footer.dispose();
+		await fire(handlers, "session_shutdown", ctx);
+	}
 });
 
 test("customize previews installed source palette without selecting until Enter", async (t) => {

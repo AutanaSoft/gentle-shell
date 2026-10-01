@@ -10,10 +10,13 @@ import {
 	renderGauge,
 	renderShellBar,
 	renderShellBottomOnlyBar,
+	renderShellBelowInputFloat,
 	renderShellHeaderBar,
+	renderShellHeaderChrome,
 	renderShellHeaderRule,
 	renderShellSidebarBar,
 	shellEnabled,
+	shellHeaderUsageHit,
 	type ShellBarModel,
 	type ShellBarTheme,
 } from "../lib/shell-bar.ts";
@@ -524,27 +527,27 @@ test("renderShellHeaderRule paints one full-width line in the editor frame color
 	assert.equal(renderShellHeaderRule(plainTheme, -3), "", "negative widths clamp to an empty rule");
 });
 
-test("the sidebar Status card in the float style is a float panel one row taller than neon", (t) => {
+test("the sidebar Status card in the float style is a float panel two rows taller than neon, with a separator row after the header", (t) => {
 	const theme = withBackground(plainTheme);
 	const neon = renderShellSidebarBar(model({ review: { state: "reviewing", scope: "first.ts +2 files" } }), theme, 60);
 	useCardStyle(t, CARD_STYLE.FLOAT);
 	const float = renderShellSidebarBar(model({ review: { state: "reviewing", scope: "first.ts +2 files" } }), theme, 60);
-	assert.equal(float.length, neon.length + 1);
+	assert.equal(float.length, neon.length + 2);
 	assert.equal(stripAnsi(float[1]!), ` ▎ ✿ Status${" ".repeat(49)}`);
+	assert.equal(stripAnsi(float[2]!), ` ▎${" ".repeat(57)} `, "a blank separator row follows the header");
 	assertFloatRows(float, 60);
-	assert.deepEqual(float.slice(2, -1).map(bodyText), neon.slice(1, -1).map(bodyText));
+	assert.deepEqual(float.slice(3, -1).map(bodyText), neon.slice(1, -1).map(bodyText));
 });
 
-// T4: in the float style the top bar hangs as an open-top tab: one row with
-// `│` side rules at both edges and the background between them, and the rule
-// under it closes the tab as `╰──╯`, so the header keeps its two-row height.
+// The float top bar has full-width painted padding above and below its
+// content, followed by a transparent bottom edge. Neon keeps two rows.
 
-// The left side rule and its padding space sit before the header content.
+// The left inset before the header content.
 const FLOAT_HEADER_OFFSET = 2;
-// Both side rules plus their padding spaces, like a neon card body row.
+// Both insets around the content.
 const FLOAT_HEADER_CHROME = 4;
 
-test("renderShellHeaderBar in the float style is one row between side rules with the background inside them", (t) => {
+test("renderShellHeaderBar in the float style is one full-width background row", (t) => {
 	const theme = withBackground(plainTheme);
 	const header = buildShellHeaderModel(model({ usage: USAGE_TWO_WINDOWS }));
 	// Without a background the header keeps the neon cascade, even in the float style.
@@ -553,19 +556,19 @@ test("renderShellHeaderBar in the float style is one row between side rules with
 	const float = renderShellHeaderBar(header, theme, 140, "alt+u");
 	assert.equal(float.text.split("\n").length, 1, "the header stays one row tall");
 	assert.equal(visibleWidth(float.text), 140);
-	assert.ok(float.text.startsWith(`│${BG_OPEN}`) && float.text.endsWith(`${BG_CLOSE}│`), `painted between the side rules: ${JSON.stringify(float.text)}`);
-	assert.equal(stripAnsi(float.text), `│ ${neonInner.text} │`);
+	// The background reaches both edges: no side rules and no unpainted cell.
+	assert.ok(float.text.startsWith(`${BG_OPEN}  `) && float.text.endsWith(`${BG_OPEN} ${BG_CLOSE}`), `painted edge to edge: ${JSON.stringify(float.text)}`);
+	assert.equal(stripAnsi(float.text), `  ${neonInner.text}  `);
 });
 
-test("renderShellHeaderBar paints the float side rules in the frame colour", (t) => {
+test("renderShellHeaderBar draws no float side rules", (t) => {
 	const header = buildShellHeaderModel(model({ usage: USAGE_TWO_WINDOWS }));
 	useCardStyle(t, CARD_STYLE.FLOAT);
 	const { text } = renderShellHeaderBar(header, withBackground(taggedTheme), 140, "alt+u");
-	assert.ok(text.startsWith(`<border>│</border>${BG_OPEN} `), `left side rule: ${JSON.stringify(text.slice(0, 40))}`);
-	assert.ok(text.endsWith(` ${BG_CLOSE}<border>│</border>`), `right side rule: ${JSON.stringify(text.slice(-40))}`);
+	assert.ok(!text.includes("│"), `no side rules: ${JSON.stringify(text.slice(0, 40))}`);
 });
 
-test("renderShellHeaderBar shifts the float usage span past the side rule and its padding", (t) => {
+test("renderShellHeaderBar shifts the float usage span past its two-column inset", (t) => {
 	const theme = withBackground(plainTheme);
 	const header = buildShellHeaderModel(model({ usage: USAGE_TWO_WINDOWS }));
 	useCardStyle(t, CARD_STYLE.FLOAT);
@@ -576,14 +579,15 @@ test("renderShellHeaderBar shifts the float usage span past the side rule and it
 		if (!usageSpan) continue;
 		const plain = stripAnsi(text);
 		assert.match(plain.slice(usageSpan.start, usageSpan.end), /^usage/);
-		assert.equal(usageSpan.end, visibleWidth(plain) - FLOAT_HEADER_OFFSET, "the usage segment ends before the right padding and side rule");
+		assert.equal(usageSpan.end, visibleWidth(plain) - FLOAT_HEADER_OFFSET, "the usage segment ends before the right inset");
 	}
 });
 
-test("renderShellHeaderRule in the float style closes the tab with a transparent bottom rule", (t) => {
+test("renderShellHeaderRule in the float style closes the tab with a top-hugging edge line", (t) => {
 	const theme = withBackground(taggedTheme);
 	useCardStyle(t, CARD_STYLE.FLOAT);
-	assert.equal(renderShellHeaderRule(theme, 40), `<border>╰${"─".repeat(38)}╯</border>`);
+	// `▔` sits at the top of its cell, touching the tab background with no gap and no painted overshoot below it.
+	assert.equal(renderShellHeaderRule(theme, 40), `<border>${"▔".repeat(40)}</border>`);
 	assert.equal(renderShellHeaderRule(theme, 0), renderShellHeaderRule(taggedTheme, 0), "a zero width keeps the neon rule");
 });
 
@@ -605,6 +609,204 @@ test("neon header bar and rule are byte-identical with a background-capable them
 		assert.deepEqual(renderShellHeaderBar(header, withBackground(taggedTheme), width, "alt+u"), renderShellHeaderBar(header, taggedTheme, width, "alt+u"));
 		assert.equal(renderShellHeaderRule(withBackground(taggedTheme), width), "<border>" + "─".repeat(width) + "</border>");
 	}
+});
+
+test("float header chrome shares padded geometry with usage hit-testing", (t) => {
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	const header = buildShellHeaderModel(model({ usage: USAGE_TWO_WINDOWS }));
+	const theme = withBackground(plainTheme);
+	for (const width of [10, 40, 90, 100, 140, 140.9]) {
+		const chrome = renderShellHeaderChrome(header, theme, width, "alt+u");
+		const target = Math.floor(width);
+		assert.equal(chrome.headerRow, 1);
+		assert.equal(chrome.rows.length, 4, "padding, content, padding, transparent edge");
+		assert.equal(chrome.rows[0], `${BG_OPEN}${" ".repeat(target)}${BG_CLOSE}`);
+		assert.equal(chrome.rows[2], chrome.rows[0]);
+		assert.equal(chrome.rows[1], renderShellHeaderBar(header, theme, width, "alt+u").text);
+		assert.equal(chrome.rows[3], "▔".repeat(target));
+		for (const row of chrome.rows) {
+			assert.equal(visibleWidth(row), target);
+			assert.doesNotMatch(stripAnsi(row), /[│▎╭╮╰╯└┘]/u, "no side rules");
+		}
+		const span = chrome.usageSpan;
+		if (!span) {
+			assert.equal(shellHeaderUsageHit(chrome, 0, 1), false, "hidden usage never clicks");
+			continue;
+		}
+		assert.match(stripAnsi(chrome.rows[chrome.headerRow]!).slice(span.start, span.end), /^usage/);
+		for (const y of [-1, 0, 2, 3, 4]) assert.equal(shellHeaderUsageHit(chrome, span.start, y), false, `decorative row ${y}`);
+		assert.equal(shellHeaderUsageHit(chrome, span.start - 1, 1), false);
+		assert.equal(shellHeaderUsageHit(chrome, span.start, 1), true);
+		assert.equal(shellHeaderUsageHit(chrome, span.end - 1, 1), true);
+		assert.equal(shellHeaderUsageHit(chrome, span.end, 1), false, "exclusive end");
+	}
+});
+
+test("float header paints every available cell even after ANSI resets", (t) => {
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	const theme = withBackground({
+		fg: (_color: string, text: string) => `\x1b[31m${text}\x1b[0m`,
+		bold: (text: string) => `\x1b[1m${text}\x1b[m`,
+	});
+	const header = buildShellHeaderModel(model({ cwd: "directory " + "x".repeat(180) }));
+	for (const width of [10, 40, 90, 140]) {
+		const { rows } = renderShellHeaderChrome(header, theme, width, "alt+u");
+		for (const [index, row] of rows.entries()) {
+			let painted = false;
+			let columns = 0;
+			for (const token of row.split(/(\x1b\[[\d;]*m)/u)) {
+				if (token.startsWith("\x1b")) {
+					if (token === BG_OPEN) painted = true;
+					if (/^\x1b\[(?:0|49)?m$/u.test(token)) painted = false;
+				} else if (token) {
+					assert.equal(painted, index !== 3, `row ${index} at width ${width}: ${JSON.stringify(token)}`);
+					columns += visibleWidth(token);
+				}
+			}
+			assert.equal(columns, width, "background reaches both terminal edges");
+		}
+	}
+});
+
+test("float header usage clicks move to row one and reject row zero", (t) => {
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	const chrome = renderShellHeaderChrome(buildShellHeaderModel(model()), withBackground(plainTheme), 140, "alt+u");
+	assert.ok(chrome.usageSpan);
+	assert.equal(shellHeaderUsageHit(chrome, chrome.usageSpan.start, 1), true, "content row is clickable");
+	assert.equal(shellHeaderUsageHit(chrome, chrome.usageSpan.start, 0), false, "top padding is decorative");
+});
+
+test("header chrome preserves neon bytes and row-zero interactions for every fallback", (t) => {
+	const header = buildShellHeaderModel(model());
+	const theme = withBackground(plainTheme);
+	for (const width of [-3, 0, 9, 10, 90, 140]) {
+		setCardStyle(CARD_STYLE.NEON);
+		const neon = renderShellHeaderChrome(header, theme, width, "alt+u");
+		assert.deepEqual(neon.rows, [renderShellHeaderBar(header, plainTheme, width, "alt+u").text, renderShellHeaderRule(plainTheme, width)]);
+		assert.equal(neon.headerRow, 0);
+		if (neon.usageSpan) {
+			assert.equal(shellHeaderUsageHit(neon, neon.usageSpan.start, 0), true);
+			assert.equal(shellHeaderUsageHit(neon, neon.usageSpan.start, 1), false);
+		}
+		useCardStyle(t, CARD_STYLE.FLOAT);
+		for (const fallback of [
+			plainTheme,
+			{ ...plainTheme, bg: (_color: string, text: string) => text },
+			{ ...plainTheme, bg: () => { throw new Error("missing theme token"); } },
+		]) assert.deepEqual(renderShellHeaderChrome(header, fallback, width, "alt+u"), neon, "missing background falls back");
+		if (width < 10) assert.deepEqual(renderShellHeaderChrome(header, theme, width, "alt+u"), neon, "narrow fallback");
+	}
+});
+
+test("below-input float chrome mirrors only the edge and moves usage clicks to row two", (t) => {
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	const header = buildShellHeaderModel(model({ usage: USAGE_TWO_WINDOWS }));
+	const theme = withBackground(plainTheme);
+	const presentation = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "below-input" as const };
+	for (const width of [10, 40, 90, 100, 140, 140.9]) {
+		const above = renderShellHeaderChrome(header, theme, width, "alt+u");
+		const below = renderShellHeaderChrome(header, theme, width, "alt+u", presentation);
+		assert.deepEqual(below.rows, ["▁".repeat(Math.floor(width)), ...above.rows.slice(0, 3)]);
+		assert.equal(below.headerRow, 2);
+		assert.deepEqual(below.usageSpan, above.usageSpan);
+		if (!below.usageSpan) {
+			assert.equal(shellHeaderUsageHit(below, 0, 2), false);
+			continue;
+		}
+		const { start, end } = below.usageSpan;
+		for (const y of [-1, 0, 1, 3, 4]) assert.equal(shellHeaderUsageHit(below, start, y), false);
+		assert.equal(shellHeaderUsageHit(below, start, 2), true);
+		assert.equal(shellHeaderUsageHit(below, end - 1, 2), true);
+		assert.equal(shellHeaderUsageHit(below, start - 1, 2), false);
+		assert.equal(shellHeaderUsageHit(below, end, 2), false);
+	}
+});
+
+test("below-input placement preserves neon and float fallback bytes", (t) => {
+	const header = buildShellHeaderModel(model());
+	const presentation = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "below-input" as const };
+	useCardStyle(t, CARD_STYLE.NEON);
+	for (const width of [0, 9, 10, 100, 140]) {
+		const theme = withBackground(plainTheme);
+		const neon = renderShellHeaderChrome(header, theme, width, "alt+u");
+		const data = model({ statuses: ["mcp ok"] });
+		const bottom = renderShellBottomOnlyBar(data, theme, width, "alt+u");
+		assert.deepEqual(renderShellHeaderChrome(header, theme, width, "alt+u", presentation), neon);
+		assert.deepEqual(renderShellBottomOnlyBar(data, theme, width, "alt+u", presentation), bottom);
+		setCardStyle(CARD_STYLE.FLOAT);
+		assert.deepEqual(renderShellHeaderChrome(header, plainTheme, width, "alt+u", presentation), neon);
+		assert.deepEqual(renderShellBottomOnlyBar(data, plainTheme, width, "alt+u", presentation), bottom);
+		if (width < 10) {
+			assert.deepEqual(renderShellHeaderChrome(header, theme, width, "alt+u", presentation), neon);
+			assert.deepEqual(renderShellBottomOnlyBar(data, theme, width, "alt+u", presentation), bottom);
+		}
+		setCardStyle(CARD_STYLE.NEON);
+	}
+});
+
+test("below-input bottom-only float bar retains mirrored padding and extension statuses", (t) => {
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	const theme = withBackground(plainTheme);
+	const presentation = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "below-input" as const };
+	for (const width of [10, 60, 80, 100]) {
+		for (const statuses of [[], ["mcp ok", "notice\nready"]]) {
+			const data = model({ usage: USAGE_TWO_WINDOWS, statuses });
+			const rows = renderShellBottomOnlyBar(data, theme, width, "alt+u", presentation);
+			const chrome = renderShellHeaderChrome(buildShellHeaderModel(data), theme, width, "alt+u", presentation);
+			assert.deepEqual(rows.slice(0, 3), chrome.rows.slice(0, 3));
+			assert.equal(rows.length, statuses.length ? 5 : 4);
+			assert.equal(rows.at(-1), chrome.rows.at(-1), "padding closes the entire group");
+			if (statuses.length) {
+				assert.match(stripAnsi(rows[3]!), width === 10 ? /^  mcp o…/ : /^  mcp ok/);
+				assert.ok(rows[3]!.startsWith(BG_OPEN), "statuses share the full-width background");
+			}
+			assert.ok(rows.every((row) => visibleWidth(row) <= width));
+		}
+	}
+});
+
+test("unified below-input float includes optional Changes and sanitized statuses inside one painted group", (t) => {
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	const theme = withBackground({ ...plainTheme, fg: (_role: string, text: string) => `\x1b[31m${text}\x1b[0m` });
+	const presentation = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "below-input" as const };
+	const changes = { files: [{ path: "lib/live.ts", added: 3, deleted: 1, status: "modified" as const }], added: 3, deleted: 1 };
+	for (const width of [10, 40, 139, 140, 240]) {
+		for (const captured of [undefined, { files: [], added: 0, deleted: 0 }, changes]) {
+			for (const statuses of [[], ["\x1b[31mMCP\x1b[0m\nready\t now", "notice"]]) {
+				const chrome = renderShellBelowInputFloat(model({ statuses }), theme, width, "alt+u", presentation, captured)!;
+				const hasChanges = Boolean(captured?.files.length);
+				assert.equal(chrome.headerRow, hasChanges ? 3 : 2);
+				assert.equal(chrome.rows.length, 4 + Number(hasChanges) + Number(statuses.length > 0));
+				assert.equal(stripAnsi(chrome.rows[0]!), "▁".repeat(width));
+				for (const row of chrome.rows.slice(1)) {
+					let painted = false;
+					for (const token of row.split(/(\x1b\[[\d;]*m)/u)) {
+						if (token === BG_OPEN) painted = true;
+						else if (/^\x1b\[(?:0|49)?m$/u.test(token)) painted = false;
+						else if (token && !token.startsWith("\x1b")) assert.equal(painted, true, JSON.stringify(token));
+					}
+					assert.equal(visibleWidth(row), width);
+				}
+				if (width === 240 && hasChanges) assert.match(stripAnsi(chrome.rows[2]!), /^  .*lib\/live.ts/);
+				if (width >= 40 && statuses.length) assert.match(stripAnsi(chrome.rows.at(-2)!), /^  MCP ready now ⟡ notice/);
+				if (chrome.usageSpan) {
+					assert.equal(shellHeaderUsageHit(chrome, chrome.usageSpan.start, chrome.headerRow), true);
+					for (let y = 0; y < chrome.rows.length; y++) if (y !== chrome.headerRow) assert.equal(shellHeaderUsageHit(chrome, chrome.usageSpan.start, y), false);
+				}
+			}
+		}
+	}
+	const hidden = renderShellBelowInputFloat(model({ statuses: ["secret status"] }), theme, 140, "alt+u", { ...presentation, statusPlacement: "hidden", visibility: { ...presentation.visibility, changes: false } }, changes)!;
+	assert.equal(hidden.rows.length, 4);
+	assert.equal(hidden.headerRow, 2);
+	assert.doesNotMatch(stripAnsi(hidden.rows.join("\n")), /secret status|live.ts/);
+	for (const width of [9, 10]) {
+		assert.equal(renderShellBelowInputFloat(model(), plainTheme, width, "alt+u", presentation, changes), undefined);
+		if (width === 9) assert.equal(renderShellBelowInputFloat(model(), theme, width, "alt+u", presentation, changes), undefined);
+	}
+	assert.equal(renderShellBelowInputFloat(model(), theme, 140, "alt+u", DEFAULT_VISUAL_SETTINGS, changes), undefined);
+	setCardStyle(CARD_STYLE.NEON);
+	assert.equal(renderShellBelowInputFloat(model(), theme, 140, "alt+u", presentation, changes), undefined);
 });
 
 test("the narrow-layout bottom-only bar stays unchanged in the float style", (t) => {

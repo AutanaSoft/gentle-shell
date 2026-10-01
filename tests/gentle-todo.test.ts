@@ -182,17 +182,19 @@ test("in the float style the Todos header sits on row 1 below the top padding, a
 	const component = widgets.get("gentle-todo")!(fakeTui, theme);
 	const rows = component.render(70).map(stripAnsi);
 	assert.match(rows[0]!, /^ ▎ +$/, "a padding row sits above the header");
-	assert.match(rows[1]!, /^ ▎ ❀ Todos ▾ Collapse  0 of 2 +ctrl\+shift\+t collapse {3}$/);
-	assert.match(rows[2]!, /^ ▎ ◐ A/);
+	assert.match(rows[1]!, /^ ▎ ❀ Todos ▾ Collapse  0 of 2 +ctrl\+shift\+t {3}$/);
+	assert.match(rows[2]!, /^ ▎ +$/, "a blank separator row follows the header");
+	assert.match(rows[3]!, /^ ▎ ◐ A/);
 	assert.doesNotMatch(rows.join("\n"), /[╭╮╰╯│]/u);
 	assert.equal(rows.at(-1), "", "the spacer row still keeps the card off the prompt");
 	const pointer = (type: "move" | "click", y: number) => ({
 		type, button: type === "move" ? "none" as const : "left" as const, x: 1, y, screenX: 1, screenY: y, width: 70, height: rows.length, shift: false, alt: false, ctrl: false,
 	});
 	assert.deepEqual(component.handleMouse?.(pointer("move", 1)), { handled: true, render: true }, "the header row is hoverable");
-	assert.deepEqual(component.handleMouse?.(pointer("move", 2)), { handled: true, render: true }, "a body row clears the hover");
+	assert.deepEqual(component.handleMouse?.(pointer("move", 3)), { handled: true, render: true }, "a body row clears the hover");
 	assert.equal(component.handleMouse?.(pointer("click", 0)), undefined, "the padding row is not the control");
-	assert.equal(component.handleMouse?.(pointer("click", 2)), undefined, "a body row is not the control");
+	assert.equal(component.handleMouse?.(pointer("click", 2)), undefined, "the separator row is not the control");
+	assert.equal(component.handleMouse?.(pointer("click", 3)), undefined, "a body row is not the control");
 	assert.equal(component.handleMouse?.(pointer("click", 1))?.handled, true);
 	assert.match(stripAnsi(component.render(70)[1]!), /^ ▎ ❀ Todos ▸ Expand  0 of 2 /);
 });

@@ -57,7 +57,8 @@ export interface CardRenderOptions {
 	/**
 	 * Fixed chrome panels (Agents, Todos, Status rail) opt in here. The float
 	 * style then paints them like float cards, centered between two padding
-	 * rows: one row taller than neon, with the header on `panelHeaderRow`.
+	 * rows with a blank row between header and body: `panelExtraRows` taller
+	 * than neon when a body exists, with the header on `panelHeaderRow`.
 	 * Neon keeps the outlined frame. Conversation cards never set it.
 	 */
 	panel?: boolean;
@@ -318,6 +319,7 @@ function floatOpener(theme: CardTheme, tone: CardTone, width: number): string {
 
 // Paints every row behind its tone background, re-armed after any reset the
 // content carries, inside a transparent one-column margin on both sides.
+// Padding rows keep their tone-coloured accent just like content rows.
 function paintFloat(rows: readonly string[], open: string): string[] {
 	const margin = " ".repeat(FLOAT_MARGIN);
 	return rows.map((row) => `${margin}${open}${row.replace(BG_CLEARING, (reset) => reset + open)}${BG_RESET}${margin}`);
@@ -339,6 +341,15 @@ export function panelInnerWidth(theme: CardTheme, width: number, tone: CardTone 
  */
 export function panelHeaderRow(theme: CardTheme, width: number, tone: CardTone = CARD_TONE.INFO): number {
 	return floatOpener(theme, tone, width) ? 1 : 0;
+}
+
+/**
+ * Rows a float panel with a body adds over the outlined frame: the top
+ * padding row and the separator below the header, or 0 for the outlined
+ * frame. Callers with a row budget spend them from the body.
+ */
+export function panelExtraRows(theme: CardTheme, width: number, tone: CardTone = CARD_TONE.INFO): number {
+	return floatOpener(theme, tone, width) ? 2 : 0;
 }
 
 export function renderCard(card: Card, theme: CardTheme, width: number, options: CardRenderOptions): string[] {
@@ -370,17 +381,14 @@ function cardText(card: Card, theme: CardTheme, innerWidth: number, expanded: bo
 	return lines.map((line) => (line === "" ? "" : theme.fg(BODY_ROLE, line)));
 }
 
-// Float panels: the float card chrome without the blank row between heading
-// and body. Padding rows that keep the accent bar sit above the heading and in
-// the bottom rule's place, centering the content: one row taller than neon,
-// with the heading on row 1 (see panelHeaderRow).
+// Float panels: the float card chrome. Padding rows that keep the accent bar
+// sit above the heading, between heading and body (only when a body exists)
+// and in the bottom rule's place, centering the content: panelExtraRows taller
+// than neon, with the heading on row 1 (see panelHeaderRow).
 function floatPanel(card: Card, theme: CardTheme, width: number, options: CardRenderOptions): string[] {
-	return [
-		cardBottom(card.tone, theme, width),
-		panelHeader(card, theme, width, options.hint),
-		...cardText(card, theme, cardInnerWidth(width), options.expanded).map((line) => cardLine(line, card.tone, theme, width)),
-		cardBottom(card.tone, theme, width),
-	];
+	const blank = cardBottom(card.tone, theme, width);
+	const body = cardText(card, theme, cardInnerWidth(width), options.expanded).map((line) => cardLine(line, card.tone, theme, width));
+	return [blank, panelHeader(card, theme, width, options.hint), ...(body.length > 0 ? [blank, ...body] : []), blank];
 }
 
 function fitRow(text: string, width: number): string {

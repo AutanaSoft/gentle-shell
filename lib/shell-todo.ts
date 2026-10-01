@@ -1,5 +1,5 @@
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { CARD_TONE, panelInnerWidth, renderCard, type CardTheme, type CardTone } from "./shell-card.ts";
+import { CARD_TONE, panelHeaderRow, panelInnerWidth, renderCard, type CardTheme, type CardTone } from "./shell-card.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { paintHoverable } from "./shell-hover.ts";
 
@@ -293,8 +293,10 @@ export function renderTodoCard(state: TodoState, theme: TodoTheme, width: number
 	const actionLabel = action[0]!.toUpperCase() + action.slice(1);
 	const icon = options.collapsed ? "▸" : "▾";
 	const control = `${icon} ${width >= 28 ? actionLabel : ""}`.trimEnd();
-	const hint = options.collapseKey ? `${options.collapseKey} ${action}` : undefined;
 	const tone = todoCardTone(options.staleTurns);
+	const hint = options.collapseKey
+		? panelHeaderRow(theme, width, tone) ? options.collapseKey : `${options.collapseKey} ${action}`
+		: undefined;
 	// Content columns of the card body in the active style (float is narrower).
 	const inner = panelInnerWidth(theme, width, tone);
 	const rows = options.collapsed ? [collapsedRow(state, theme, inner)] : options.scrollable ? state.tasks.map((task) => taskRow(task, theme, inner)) : bodyRows(state, theme, inner);
