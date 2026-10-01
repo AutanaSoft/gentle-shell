@@ -133,16 +133,18 @@ test("public docs and metadata advertise ODD and review without retired phase wo
 test("technical reference declares the tested Pi minimum required for agent_settled", () => {
 	const manifest = readPackageJson();
 	assert.equal(manifest.peerDependencies?.["@earendil-works/pi-coding-agent"], ">=0.99.1");
-	assert.equal(manifest.devDependencies?.["@earendil-works/pi-coding-agent"], ">=0.99.2");
+	assert.equal(manifest.devDependencies?.["@earendil-works/pi-coding-agent"], ">=1.0.0");
 	assert.equal(manifest.peerDependenciesMeta?.["@earendil-works/pi-coding-agent"]?.optional, true);
 	assert.equal(manifest.engines?.node, ">=22.19.0");
 	for (const path of ["docs/readme-reference.md", "docs/gentle-shell.md"]) {
 		const source = readFileSync(join(PACKAGE_ROOT, path), "utf8");
 		assert.match(source, /Pi 0\.99\.1 or newer/, path);
-		assert.match(source, /open `>=0\.99\.2` development range/, path);
+		assert.match(source, /open `>=1\.0\.0` development range/, path);
 		assert.doesNotMatch(source, /development tests pin Pi/, path);
 		// Docs name exactly the audited Vim editor releases, never a future one.
-		assert.match(source, new RegExp(`audited Pi ${AUDITED_PI_EDITOR_VERSIONS.map(v => `\`${v.replace(/\./g, "\\.")}\``).join(" and ")}`), path);
+		const auditedReleases = new Intl.ListFormat("en", { style: "long", type: "conjunction" })
+			.format(AUDITED_PI_EDITOR_VERSIONS.map(v => `\`${v.replace(/\./g, "\\.")}\``));
+		assert.match(source, new RegExp(`audited Pi ${auditedReleases}`), path);
 	}
 	const reference = readFileSync(join(PACKAGE_ROOT, "docs", "readme-reference.md"), "utf8");
 	assert.match(reference, /agent_settled/);
@@ -159,7 +161,7 @@ test("packed runtime uses optional Pi host peers with one open development range
 	// one exact release shared by every Pi host package.
 	const installed = new Set<string>();
 	for (const name of ["@earendil-works/pi-coding-agent", "@earendil-works/pi-ai", "@earendil-works/pi-tui"]) {
-		assert.equal(manifest.devDependencies?.[name], ">=0.99.2", name);
+		assert.equal(manifest.devDependencies?.[name], ">=1.0.0", name);
 		const metadata = JSON.parse(readFileSync(join(PACKAGE_ROOT, "node_modules", name, "package.json"), "utf8")) as { name: string; version: string };
 		assert.equal(metadata.name, name);
 		installed.add(metadata.version);
