@@ -620,7 +620,7 @@ test("checkPeerVersionPin passes for a matching pin", () => {
 	assert.deepEqual(result, { ok: true, pinned: ">=0.85.1" });
 });
 
-test("Pi baseline and host peers follow the 0.99.1 package contract", () => {
+test("Pi 0.99.1 baseline and host peers follow the open development range policy", () => {
 	const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 	assert.equal(MIN_PI_VERSION, "0.99.1");
 	assert.equal(pkg.engines.node, ">=22.19.0");
@@ -628,7 +628,12 @@ test("Pi baseline and host peers follow the 0.99.1 package contract", () => {
 		assert.equal(pkg.peerDependencies[name], "*");
 		assert.equal(pkg.peerDependenciesMeta[name].optional, true);
 		assert.equal(pkg.dependencies[name], undefined);
-		assert.equal(pkg.devDependencies[name], "0.99.1");
+	}
+	// Development ranges are policy specifiers; their floor never drops below
+	// the runtime minimum the launcher enforces.
+	for (const name of ["@earendil-works/pi-coding-agent", "@earendil-works/pi-ai", "@earendil-works/pi-tui"]) {
+		assert.equal(pkg.devDependencies[name], ">=0.99.2", name);
+		assert.equal(checkPiVersion(pkg.devDependencies[name].slice(2)).ok, true, name);
 	}
 });
 
