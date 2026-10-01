@@ -253,6 +253,30 @@ Three things keep the list current, which a static tool description cannot:
 
 A finished list stays on screen for the turn it finished in and clears at the next. `ctrl+shift+t` collapses the card to the task in progress (`GENTLE_PI_TODO_KEY` rebinds it, `off` disables it); `GENTLE_PI_TODO=0` disables the tool and the card.
 
+### Gentle Stats
+
+`/gentle:stats` opens a full-terminal panel over your local usage history, read from the session files Pi already writes. It combines the active home's `sessions` directory with your regular Pi home's (`~/.pi/agent/sessions`, or the custom `PI_CODING_AGENT_DIR` that `gentle-shell` recorded as `GENTLE_SHELL_USER_PI_HOME` before isolating). The same directory reached twice counts once, and a session present in both homes counts once (the copy with more usage records, then the most recent one). Nothing new is stored. Subscription limits stay in `/gentle:usage`.
+
+```text
+╭─ ✿ Stats ─────────────────────────────────────── [×] ─╮
+│ [Overview]  Models   Session                 │
+│     May Jun       Jul     Aug       Sep      │
+│ Mon · · · · · · · · · · · · · · · · · · · █  │
+│     · · · · · · · · · · · · · · · ▓ · · · ░  │
+│     Less · ░ ▒ ▓ █ More                      │
+│ Favorite model  claude-opus-5-5              │
+│ Total tokens    2.8k                         │
+│ ✿ That's ~0.5% of the tokens in Don Quixote. │
+```
+
+- **Overview**: a weekday-by-week heatmap (up to 52 weeks for all time), favorite model, total tokens, sessions, longest session, active days, longest and current streak, most active day, the input/output/cache breakdown, and cost.
+- **Models**: tokens, cost, messages, and share per model, with a share bar.
+- **Session**: the live session's model, cost, wall time since its first entry, tokens, and the lines added and removed that Gentle Changes captured.
+- `Tab`/`shift+Tab`, `←`/`→`, or `1`/`2`/`3` switch tabs; `r` cycles all time, last 7 days, and last 30 days; `s` toggles all projects and the current project (sessions started in this cwd); `q` or `esc` closes. Header tabs, `[× Close]`, and the footer hints are clickable.
+- The heatmap shades come from the active theme's `accent` and `borderMuted` roles, so every Gentle theme recolors it.
+- Only top-level session files are read: subagent runs are not included, and the panel says so. The first opening scans every file; later openings reread only files that changed.
+- There is no default shortcut. Set `GENTLE_PI_STATS_VIEW_KEY` (for example `alt+t`) to bind one; `off` or empty leaves it unbound.
+
 ### Bridge providers
 
 The Gentle AI harness (ODD workflow, identity, review contract) and the open-tasks block are appended to `before_agent_start`'s `systemPromptOptions.appendSystemPrompt` instead of being returned as a replacement `systemPrompt` (gentle-shell#1485). Provider bridges such as `pi-claude-bridge` forward only those structured sections after their own preset and drop a returned `systemPrompt`, so this route reaches every provider, bridged or not.
