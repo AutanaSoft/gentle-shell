@@ -1,7 +1,8 @@
-# Installation preflight (wizard groundwork)
+# Installation wizard groundwork
 
-The read-only preflight module inventories prerequisites and returns an ordered
-plan. **There is no working browser wizard or clean-machine bootstrap yet.**
+The preflight planner and POSIX prerequisite bootstrap are implemented.
+**There is no working browser wizard or complete installation path yet.**
+The bootstrap stops explicitly when the future wizard entry is absent.
 For ordinary installation and terminal use, follow the [README](../README.md).
 
 ## What is available
@@ -91,14 +92,146 @@ companion installer belongs in this plan.
 `npmCommand` supports pnpm, but independent upstream `npm exec` control remains
 unverified. **This preflight does not establish an npm-free installation chain.**
 
-Downloads, bootstrap scripts, runner, local server, consent UI and native
-acceptance evidence are future work in the
+Windows bootstrap, standard installation driver, local server, consent UI,
+distribution packaging and native acceptance evidence remain future work in the
 [feature plan](../odd/tasks/browser-install-wizard.md). Deterministic injected
-inventory tests cover the planning matrix; they do not prove installation on
-Windows, macOS or Linux.
+tests do not prove clean-machine installation on Windows, macOS or Linux.
 
 Focused verification:
 
 ```sh
-node --experimental-strip-types --test tests/installer-preflight.test.ts
+node --experimental-strip-types --test tests/installer-preflight.test.ts tests/installer-posix-bootstrap.test.ts
+sh -n scripts/bootstrap.sh
 ```
+
+## POSIX bootstrap: bundle-local tooling only
+
+Run `sh scripts/bootstrap.sh` from a trusted extracted installation bundle or
+checkout. There is **no published bundle URL or remote-pipe installer contract**.
+The bundle must include `package.json`, both bootstrap modules and the future
+`bin/gentle-shell-install.mjs` (T5). Today that entry is absent: the script reports
+it before downloads or home writes. T7 owns packaging and distribution proof.
+
+With that entry available, the fixed sequence is:
+
+1. Probe existing Node against the bundle's repository requirement. Unknown,
+   prerelease or incompatible versions block; they are never replaced.
+2. If missing, select a fixed native Node archive, download with TLS and bounded
+   size/time, verify its hardcoded SHA256 using stock shell utilities, extract
+   only its regular `bin/node`, and check the exact executable version before
+   publishing it. Neither npm nor Corepack is acquired or invoked.
+3. Reuse pnpm only after stable version, package engine and read-only global
+   `add`/`bin` help-capability evidence. Engines support only simple `>=x.y` or
+   `>=x.y.z` lower bounds; comparison fills an omitted patch with zero. Actual
+   Node versions must remain exact stable versions; other ranges block rather
+   than guess.
+   Missing pnpm is acquired from a fixed registry tarball, SHA512-SRI verified,
+   checked for unsafe paths/links, extracted and probed before publication.
+4. Start the fixed bundle entry with the refreshed child environment. A mandatory
+   acquisition/probe/child failure is an error, never installation success.
+
+### Ownership and failure boundaries
+
+Acquisition uses a mode-0700, uniquely created
+`$HOME/.gentle-shell-bootstrap-tools.<random>` directory, with an explicit
+`.bootstrap-owned` marker. This is **prerequisite tooling, not a product home**.
+HOME must be absolute, owned by the current user, not group/world writable and
+free of symlink ancestors. Staging and destinations reject conflicts and
+symlinks. Unrelated similarly named directories are not scanned, reused or
+removed. Failed attempts clean only their own private directories; successful
+acquisition removes its temporary archives/staging and retains verified tools
+so child processes can continue using them.
+A new attempt reuses tools only if already visible and proven on its PATH; it
+does not discover or garbage-collect previous private attempts.
+
+No profile, global PATH, existing executable installation, product agent home,
+Engram state or companion installation is changed. Added paths affect only the
+bootstrap and its child. T4 must implement standard global installation and the
+persistent **ordinary terminal** handoff; these private wrappers are not that
+handoff. Existing unverifiable pnpm wrappers/binaries block instead of being
+silently replaced. No sudo or security exclusions are requested.
+
+Stock utilities are prerequisites, not silently installed: POSIX sh, awk,
+dirname, uname, mkdir, mktemp, chmod, mv, rm, sleep, wc, id and ls; missing Node
+also needs curl, tar and sha256sum or shasum. Linux acquisition additionally
+requires getconf evidence of glibc >=2.28. Missing pnpm requires tar. Missing
+utilities are reported. Shell executable-version probes have a 10-second
+watchdog, hash/archive probes 30 seconds; curl has a 10-second connection and
+120-second total limit with a 100-MiB artifact cap. A subprocess-only `ulimit -f`
+adds a hard disk ceiling (at most 200 MiB depending on shell block units) for
+older curl implementations; failure to establish it blocks acquisition.
+The JavaScript transport rejects
+redirects, caps pnpm at 32 MiB and aborts after 60 seconds; process checks have
+15-second/1-MiB bounds. At a prerequisite-process deadline, the shell watchdog
+and Node process adapter send SIGKILL to their directly spawned child, rather
+than catchable SIGTERM. A killed probe is a failure even if it printed valid
+output before hanging. Shell watchdog cancellation also kills and waits for its
+owned sleeper. The interactive wizard child intentionally has no total runtime
+timeout. Raw downloader/process error text is not logged.
+
+### Artifact trust and shared helper API
+
+| Artifact | Acquisition pin and provenance |
+| --- | --- |
+| Node native darwin/linux x64/arm64 | 24.21.0; parent-verified SHA256 entries from [official SHASUMS256](https://nodejs.org/dist/latest-v24.x/SHASUMS256.txt), applied to fixed [v24.21.0 archive URLs](https://nodejs.org/dist/v24.21.0/). |
+| pnpm JavaScript CLI | 11.1.1; parent-verified raw engine `>=22.13` (comparison minimum `22.13.0`), tarball and SHA512 SRI from [registry version metadata](https://registry.npmjs.org/pnpm/11.1.1); [fixed tarball](https://registry.npmjs.org/pnpm/-/pnpm-11.1.1.tgz). |
+
+The exact integrity values live in `installer-downloads.mjs`; the shell copies
+only Node's acquisition pin/hashes because first acquisition cannot depend on
+Node. Tests cross-check shell selection against the shared descriptors. Changing
+these pins requires renewed primary-source integrity evidence and updating both
+Node representations together. There is no live latest resolution. The pnpm pin retains the exact raw upstream
+engine string for metadata identity checks; only version comparisons normalize
+its supported partial minimum. Product versions/minima remain repository-derived;
+the pnpm pin is not a compatibility
+minimum. Registry-hosted artifacts do not imply using the npm executable.
+
+`scripts/installer-downloads.mjs` exports `artifactFor(name, platform, arch)`
+(frozen allowlisted descriptors), `verifiedDownload(name, adapters, platform,
+arch)` (verified bytes), `compatibleEngine(range, version)`,
+`ensurePnpm({ tools, env, nodeVersion, adapters })` and
+`launchWizard({ bundle, env })`. Only known artifact names are accepted, not
+caller URLs/checksums/commands. Trusted local test adapters inject byte download,
+digest and process checks; they are not exposed through any browser interface.
+The caller owns a private `tools` directory. `ensurePnpm` returns `{ env,
+acquired }`, leaving the supplied environment unchanged. Future T3 can reuse
+descriptors/integrity verification; Windows descriptors, process semantics and
+wrapper publication are intentionally not implemented by this POSIX unit.
+
+### Evidence, not platform certification
+
+Native shell execution was exercised on this Linux host with disposable Unicode
+and whitespace paths, fake OS/download/hash/archive utilities and injected
+JavaScript acquisition/process adapters. No real network or host prerequisite
+installation was performed. Darwin selections are simulated, **not native
+macOS execution**. Native macOS, Linux clean-machine/loader and minimum macOS
+version acceptance remain T7 work. Linux acquisition is native glibc-only:
+musl/Alpine and emulation/Rosetta compatibility are not claimed. Node's
+[upstream build/platform requirements](https://github.com/nodejs/node/blob/v24.21.0/BUILDING.md)
+remain the platform reference; successful descriptor planning alone proves no
+OS/kernel/libc support.
+
+### Subprocess deadline evidence
+
+The regression fixtures exercise production process paths without shortened
+production timeouts or a mocked process adapter:
+
+| Path | Observed Linux fixture behavior |
+| --- | --- |
+| Shell acquired-Node version probe | A single Node process prints the expected version, ignores TERM and waits without busy-looping. The real 10-second watchdog kills/reaps it, rejects acquisition and removes owned tooling while preserving an unrelated HOME file. |
+| Node helper tar probe | Fake verified bytes feed `ensurePnpm`, but its default process adapter runs a real single-process TERM-ignoring tar stand-in. The real 15-second deadline kills/reaps it, rejects acquisition and removes owned staging while preserving an unrelated file. Ordinary nonzero tar exit also rejects and cleans staging. |
+
+Before correction, both paths exceeded their deadlines and needed the test
+harness's independent outer SIGKILL guard (13 seconds for shell, 18 for Node).
+The guard kills only each freshly created detached fixture group and also
+cleans residual fixture processes on exit. Production does **not** kill groups,
+match process names or use an external timeout utility. After correction, both
+probe PIDs are reaped before their parents return; neither outer guard fires.
+Ordinary success remains covered by the existing reuse/acquisition tests.
+
+These are **direct-child, non-forking probe** guarantees, not process-tree
+cancellation evidence. Unknown programs that fork descendants retaining stdio
+may keep pipes open; this unit does not claim bounded return or descendant
+cleanup for those programs. The fixtures prove neither native macOS behavior
+nor live artifact acquisition. Independent verification and native review remain
+separate parent-owned gates.
