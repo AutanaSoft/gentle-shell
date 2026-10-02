@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { collectInventory, planPreflight, requirements } from "../scripts/installer-preflight.mjs";
+import { collectInventory, planPreflight, pnpmGlobalBin, requirements } from "../scripts/installer-preflight.mjs";
 
 const absent = { available: false };
 const tool = (version: string) => ({ available: true, version, usable: true });
@@ -90,6 +90,21 @@ test("global-bin must be writable and reachable; known PATH repair is explicit",
 	for (const globalBin of [{ ...inventory.globalBin, writable: false }, { available: true }]) {
 		assert.deepEqual(planPreflight({ ...inventory, globalBin }).actions, []);
 		assert.equal(planPreflight({ ...inventory, globalBin }).tools.globalBin.status, "unknown");
+	}
+});
+
+test("pnpm global bin is $PNPM_HOME/bin and onPath checks that directory, not $PNPM_HOME", () => {
+	const home = "/home/u/.local/share/pnpm";
+	assert.deepEqual(pnpmGlobalBin({ platform: "linux", env: { HOME: "/home/u", PATH: `${home}:/usr/bin` } }),
+		{ pnpmHome: home, path: `${home}/bin`, onPath: false });
+	assert.equal(pnpmGlobalBin({ platform: "linux", env: { HOME: "/home/u", PATH: `/usr/bin:${home}/bin/` } })?.onPath, true);
+	assert.equal(pnpmGlobalBin({ platform: "linux", env: { HOME: "/home/u", XDG_DATA_HOME: "/data", PATH: "" } })?.path, "/data/pnpm/bin");
+	assert.equal(pnpmGlobalBin({ platform: "darwin", env: { HOME: "/Users/u", PNPM_HOME: "/opt/pnpm", PATH: "/opt/pnpm/bin" } })?.onPath, true);
+	assert.equal(pnpmGlobalBin({ platform: "darwin", env: { HOME: "/Users/u" } })?.path, "/Users/u/Library/pnpm/bin");
+	assert.deepEqual(pnpmGlobalBin({ platform: "win32", env: { LOCALAPPDATA: "C:\\Users\\u\\AppData\\Local", Path: "c:\\users\\U\\appdata\\local\\PNPM\\Bin\\;C:\\Windows" } }),
+		{ pnpmHome: "C:\\Users\\u\\AppData\\Local\\pnpm", path: "C:\\Users\\u\\AppData\\Local\\pnpm\\bin", onPath: true });
+	for (const env of [{ PNPM_HOME: "relative/pnpm", HOME: "/home/u" }, { PATH: "/usr/bin" }, { HOME: "relative" }]) {
+		assert.equal(pnpmGlobalBin({ platform: "linux", env }), null);
 	}
 });
 

@@ -1,20 +1,22 @@
 # Installation wizard groundwork
 
-The preflight planner, POSIX bootstrap and Windows prerequisite foundation are
-implemented. Windows native validation remains unavailable locally.
+The preflight planner, POSIX bootstrap, Windows prerequisite foundation and the
+standard installation runner module are implemented. Windows native validation
+remains unavailable locally.
 **There is no working browser wizard or complete installation path yet.**
 The bootstrap stops explicitly when the future wizard entry is absent.
 For ordinary installation and terminal use, follow the [README](../README.md).
 
 ## What is available
 
-`scripts/installer-preflight.mjs` exports three small integration surfaces:
+`scripts/installer-preflight.mjs` exports four small integration surfaces:
 
 | API | Contract |
 | --- | --- |
 | `requirements` | Repository-derived Node/Pi minima, pnpm acquisition pin, package version, native installer pin and Windows Go minimum. |
 | `collectInventory({ platform, arch, probes })` | Calls injected named read-only probes serially. Missing/failed probes become unknown; error text is not retained. |
 | `planPreflight(inventory)` | Pure classification and ordered action intents; no commands, downloads, installation or setup execution. |
+| `pnpmGlobalBin({ platform, env })` | Pure pnpm 11 global-bin resolution: `{ pnpmHome, path, onPath }` or `null` when unknowable. |
 
 Current requirements come from `package.json` and
 [`gentle-ai-installer.mjs`](../scripts/gentle-ai-installer.mjs): Node ≥22.19.0,
@@ -57,7 +59,14 @@ purity of caller-provided functions; adapter implementations require review.
 - Global-bin observations use `{ available: true, path, writable: true, onPath }`.
   A known missing PATH entry yields an explicit setup intent. Unknown or
   non-writable directories block; no directory is created or permission probed
-  by writing. No platform-specific bin path is invented.
+  by writing. pnpm 11 places global executables in **`$PNPM_HOME/bin`**, not
+  `$PNPM_HOME`, and `pnpm root -g`/`bin -g` fail when that directory is not on
+  PATH. Probes must report `pnpmGlobalBin().path`, whose `onPath` compares PATH
+  entries with that bin directory. PNPM_HOME is the user's existing absolute
+  value; otherwise pnpm's documented default (`$XDG_DATA_HOME/pnpm` or
+  `~/.local/share/pnpm` on Linux, `~/Library/pnpm` on macOS,
+  `%LOCALAPPDATA%\pnpm` on Windows). A relative PNPM_HOME or missing home is
+  unknown, not guessed.
 - `setup` is a boolean evidence of normal Shell setup readiness. Unknown setup
   on an existing stack blocks; a missing Shell/native binary needs normal setup.
 
@@ -93,17 +102,149 @@ companion installer belongs in this plan.
 `npmCommand` supports pnpm, but independent upstream `npm exec` control remains
 unverified. **This preflight does not establish an npm-free installation chain.**
 
-Standard installation driver, local server, consent UI, distribution packaging
-and native acceptance evidence remain future work in the
+Local server, consent UI, distribution packaging and native acceptance evidence
+remain future work in the
 [feature plan](../odd/tasks/browser-install-wizard.md). Deterministic injected
 tests do not prove clean-machine installation on Windows, macOS or Linux.
 
 Focused verification:
 
 ```sh
-node --experimental-strip-types --test tests/installer-preflight.test.ts tests/installer-posix-bootstrap.test.ts tests/installer-windows-bootstrap.test.ts
+node --experimental-strip-types --test tests/installer-runner.test.ts tests/installer-preflight.test.ts tests/installer-posix-bootstrap.test.ts tests/installer-windows-bootstrap.test.ts
 sh -n scripts/bootstrap.sh
 ```
+
+## Standard installation runner
+
+`scripts/installer-runner.mjs` exports `runStandardInstall({ plan, consent },
+adapters)`, the fixed installation step the future wizard host (T5) calls after
+bootstrap and a fresh preflight. It is a pure module: every process, filesystem,
+environment, integrity and log effect goes through adapters supplied by trusted
+local code, never through the browser.
+
+### Request contract
+
+The request is exactly `{ plan, consent }`. `plan` must be an unmodified
+`planPreflight` result: every action must equal a descriptor preflight can emit
+(same id, kind, target and repository-derived version, no extra keys). Extra
+request keys, commands, URLs, roots, environment or altered versions are
+rejected as `invalid-request` before any process runs. `consent` must be the
+boolean `true`; anything else returns `consent-required` with no commands. The
+consent covers the whole displayed plan, including the PATH profile change
+below, so the wizard must show that change before asking.
+
+### Adapters
+
+| Adapter | Contract |
+| --- | --- |
+| `platform` | `linux`, `darwin` or `win32`. |
+| `nodePath` | Absolute Node executable of the trusted host, used for npm proof and `gentle-shell setup`. |
+| `env` | The user's environment. Never mutated; child environments are copies. |
+| `home` | Optional; defaults to `HOME` (`USERPROFILE` on Windows). |
+| `run(command, argv, { env, deadlineMs })` | Argv arrays with `shell:false` semantics and a hard deadline; returns `{ code, signal, timedOut, stdout }` with bounded output. |
+| `fs` | Read-only `isFile`, `realpath`, `readText`. The runner has no delete or write operation. |
+| `verifyGentleAi({ packageRoot, platform, env, home })` | Returns `{ ok: true }` only for package-native integrity. `packageNativeGentleAi` is the default implementation over `runtime/gentle-ai-binary.mjs`. |
+| `log({ step, status, reason? })` | Receives step identifiers and statuses only, never raw command output or error text. |
+
+### Fixed sequence
+
+No-process gates, all returning `blocked`:
+
+1. Valid request and explicit consent.
+2. Preflight blockers are absent. Only the clean-stack plan is supported: it
+   must contain `install-pi`, `install-shell`, `setup-shell` and
+   `verify-readiness`, plus optional `setup-global-bin`. Prerequisite acquisition
+   intents (Node, pnpm, Go), `provision-native`, partial existing stacks and
+   fully reused stacks are `unsupported-plan`.
+3. On Windows, Go must be `reusable` in the plan because gentle-pi's postinstall
+   may build Gentle AI from source; T4 never acquires Go (`go-required`).
+4. `pnpmGlobalBin` resolves PNPM_HOME (`pnpm-home-unknown` otherwise) and
+   `nodePath` is absolute.
+5. pnpm comes from the bootstrap handoff `GENTLE_INSTALL_PNPM_NODE` +
+   `GENTLE_INSTALL_PNPM_ENTRY` (both absolute), or on POSIX from a `pnpm`
+   executable on PATH. Windows requires the handoff because a `.cmd` shim cannot
+   run with `shell:false` (`pnpm-unavailable`).
+
+Every child process receives the user's environment plus `PNPM_HOME` and
+`$PNPM_HOME/bin` first on PATH.
+
+Pre-install checks, returning `blocked` on a false result or adapter error:
+
+1. `check-npm`: Gentle AI's normal Pi install always runs an Engram init step
+   that can use `npm exec` and stops on failure. The runner resolves `npm` the
+   way Go's `exec.LookPath` (used by Gentle AI) does: absolute child PATH
+   directories in order and, on Windows, every child PATHEXT extension in
+   PATHEXT order (case-insensitive keys; default `.COM;.EXE;.BAT;.CMD`). That
+   first candidate must be the npm package's own `bin/npm-cli.js` (symlink
+   target on POSIX; on Windows the candidate must be `npm.cmd`, with
+   `node_modules/npm` beside it), its `package.json` must name `npm` with a
+   stable version, and `node npm-cli.js --version` must print that version. On
+   Windows an `npm.com`, `npm.exe` or `npm.bat` that resolves first, in the
+   same or an earlier directory, blocks as `npm-shadowed`; any other mismatch
+   blocks as `npm-unavailable`. No npm wrapper is created.
+2. `check-global-bin`: `pnpm bin -g` must succeed and equal `$PNPM_HOME/bin`
+   (`global-bin-mismatch`; case-insensitive on Windows).
+3. `check-existing-stack`: `pnpm list -g --depth 0 --json` runs before any
+   mutation. If `@earendil-works/pi-coding-agent` or `gentle-pi` appears in the
+   dependencies, devDependencies or optionalDependencies of any listed project,
+   the runner blocks as `existing-stack` and never overwrites it, whatever the
+   caller's plan says. A failed, timed-out or unparseable listing, or an
+   unexpected JSON shape, blocks as `global-list-unavailable`.
+
+Mutating and verification steps, returning `failed` with `failedStep` and the
+`completed` step list:
+
+1. `install-global`: exactly one
+   `pnpm add -g @earendil-works/pi-coding-agent@1.0.0 gentle-pi@<package version> --allow-build=gentle-pi`.
+   Pi is gentle-pi's optional peer, so both resolve in one command. pnpm 11
+   silently skips global postinstall scripts by default; the package-scoped
+   approval runs only gentle-pi's postinstall, which provisions Gentle AI. No
+   blanket build approval is ever passed.
+2. `verify-global-list`: `pnpm list -g --depth 0 --json` must report exactly the
+   two pinned versions, and gentle-pi's absolute `path` must resolve inside
+   PNPM_HOME.
+3. `verify-shell-bin`: `$PNPM_HOME/bin/gentle-shell` (`gentle-shell.cmd` on
+   Windows) exists.
+4. `verify-gentle-ai`: package-native integrity of the installed package. A
+   declared development override (`GENTLE_PI_GENTLE_AI_DEV_BINARY` or its
+   registration file) is never package-native proof and fails.
+5. `shell-setup`: the installed public CLI, `node <gentle-pi>/bin/gentle-shell.mjs
+   setup`, with the child environment. Nonzero, signal or deadline fails. The
+   runner neither duplicates setup logic nor writes the automatic provisioning
+   marker.
+6. `persist-path`, only when `$PNPM_HOME/bin` was not on the user's own PATH:
+   `pnpm setup`, then the outcome is `terminal-action-required` with
+   `action: "open-new-terminal"`. A child environment never proves that a fresh
+   terminal resolves `gentle-shell`.
+
+`ready` requires every step above to complete and the global bin to already be
+on the user's PATH. Skipped, unverified or failed mandatory steps never yield
+`ready`, and no existing installation, home or data is deleted on any outcome.
+Deadlines are 30 seconds for probes and `pnpm setup` and 20 minutes each for
+the install and setup steps.
+
+### Remaining T7 real-machine checks
+
+The runner is verified only with deterministic fake adapters. Observed pnpm
+11.1.1 facts come from one Linux laboratory run. Before claiming support, T7
+must establish on real Windows, macOS and Linux machines:
+
+- `pnpm list -g --json` reports a dependency `path` that resolves inside
+  PNPM_HOME for the installed layout, and prints a parseable JSON array (for
+  example `[]`) when no global package exists yet; empty output would block
+  a clean installation as `global-list-unavailable`;
+- Windows npm resolution matches Gentle AI's actual lookup, including its
+  current-directory handling;
+- the scoped `--allow-build=gentle-pi` postinstall provisions package-native
+  Gentle AI, including Windows source builds with the user's Go;
+- `gentle-shell setup` completes the Engram init step with genuine npm, and
+  whether Gentle AI selects `pnpm dlx` or `npm exec`;
+- `pnpm setup` makes `gentle-shell` resolvable in a fresh terminal of each
+  supported shell (the Linux lab showed it does not make `pnpm` itself
+  resolvable);
+- the chosen deadlines suffice on slow networks, and pnpm's registry and
+  update-notice traffic is acceptable;
+- interrupted installs are recoverable by rerunning the wizard without data loss.
 
 ## POSIX bootstrap: bundle-local tooling only
 
@@ -278,12 +419,10 @@ integrity into another runtime. Pin changes still require fresh primary evidence
   Windows and fixed stock PowerShell ACL commands, never POSIX mode/UID evidence.
 
 Go preparation is deliberately **not implemented or invoked** in this unit.
-T4 must first prove whether its actual standard operation needs a compiler:
-package-native Gentle AI manifest/hash reuse can avoid Go, but the current
-installer resolves Go before source-bundle reuse. Do not reinstall just to test
-reuse, treat an explicit override as native-package evidence, or assume a source
-bundle bypasses Go. If required, T4 must use the existing companion installer,
-a lazy verified prerequisite with Go ≥1.25.10, and `GOTOOLCHAIN=local`.
+The standard installation runner blocks on Windows unless preflight reports a
+reusable Go ≥1.25.10, because gentle-pi's postinstall may build Gentle AI from
+source; it never acquires Go or treats an explicit override as native-package
+evidence.
 
 ### Policy, bounds and evidence limits
 

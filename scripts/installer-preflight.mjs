@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { posix, win32 } from "node:path";
 import {
 	INSTALLER_VERSION,
 	GENTLE_AI_WINDOWS_MINIMUM_GO_VERSION,
@@ -19,13 +20,44 @@ export const requirements = Object.freeze({
 	go: GENTLE_AI_WINDOWS_MINIMUM_GO_VERSION,
 });
 
+/** pnpm 11 global bin directory: `$PNPM_HOME/bin`, not `$PNPM_HOME` itself.
+ * PNPM_HOME is the user's existing absolute value, otherwise pnpm's documented
+ * platform default. onPath compares PATH entries with that bin directory, so a
+ * globalBin probe must report this path. Returns null when it is unknowable.
+ */
+export function pnpmGlobalBin({ platform, env }) {
+	const path = platform === "win32" ? win32 : posix;
+	const absolute = (value) => typeof value === "string" && value.length > 0 && path.isAbsolute(value);
+	let pnpmHome = env.PNPM_HOME;
+	if (pnpmHome !== undefined) {
+		if (!absolute(pnpmHome)) return null;
+	} else if (platform === "win32") {
+		if (!absolute(env.LOCALAPPDATA)) return null;
+		pnpmHome = path.join(env.LOCALAPPDATA, "pnpm");
+	} else {
+		if (!absolute(env.HOME)) return null;
+		if (platform === "darwin") pnpmHome = path.join(env.HOME, "Library", "pnpm");
+		else pnpmHome = path.join(absolute(env.XDG_DATA_HOME) ? env.XDG_DATA_HOME : path.join(env.HOME, ".local", "share"), "pnpm");
+	}
+	pnpmHome = path.normalize(pnpmHome).replace(/(.)[\\/]+$/, "$1");
+	const bin = path.join(pnpmHome, "bin");
+	const comparable = (value) => {
+		const normal = path.normalize(value).replace(/(.)[\\/]+$/, "$1");
+		return platform === "win32" ? normal.toLowerCase() : normal;
+	};
+	const pathKey = platform === "win32" ? Object.keys(env).find((key) => key.toUpperCase() === "PATH") : "PATH";
+	const entries = String((pathKey && env[pathKey]) ?? "").split(path.delimiter).filter(absolute);
+	return { pnpmHome, path: bin, onPath: entries.some((entry) => comparable(entry) === comparable(bin)) };
+}
+
 const probeNames = ["node", "pnpm", "pi", "shell", "gentleAi", "go", "globalBin", "setup"];
 
 /** Collect with caller-owned read-only probes; no default process/home adapters.
  * A tool probe returns { available, version, usable }; missing is available:false.
  * pnpm also needs compatible:true (runtime/capability evidence), shell global:true,
  * and Gentle AI compatible:true (normal binary resolver/integrity evidence).
- * globalBin returns { available, path, writable, onPath }; setup returns boolean.
+ * globalBin returns { available, path, writable, onPath } for pnpmGlobalBin's
+ * `$PNPM_HOME/bin` directory; setup returns boolean.
  * Version values are exact stable versions, not raw arbitrary command output.
  */
 export async function collectInventory({ platform, arch, probes = {} }) {
