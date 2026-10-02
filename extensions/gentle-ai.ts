@@ -4149,6 +4149,36 @@ async function runProfilesPanelAction(
 			const normalized = normalizeModelConfig(file.profiles[result.name]) ?? {};
 			const orchestratorEntry = readProfileOrchestrator(normalized);
 			const hasAgentRoutes = Object.keys(normalized).some((name) => !isProfileOrchestratorKey(name));
+			// Every global apply confirms before anything is written: applying replaces
+			// the whole routing map in models.json and clears materialized routes the
+			// profile omits, so the dialog must name the concrete diff. The current
+			// routing is read from the same authority every other consumer uses; an
+			// unreadable config is tolerated as empty, exactly like readModelConfigAsync.
+			const savedRouting = await readModelRoutingAuthorityAsync(
+				modelConfigPath(ctx.cwd),
+				legacyProjectModelConfigPath(ctx.cwd),
+			);
+			const currentRouting = savedRouting.status === "valid" ? savedRouting.config : {};
+			const agentNames = [
+				...new Set([
+					...Object.keys(currentRouting).filter((name) => !isProfileOrchestratorKey(name)),
+					...Object.keys(normalized).filter((name) => !isProfileOrchestratorKey(name)),
+				]),
+			].sort();
+			const replacedRoutes: string[] = [];
+			const clearedRoutes: string[] = [];
+			const addedRoutes: string[] = [];
+			for (const name of agentNames) {
+				const from = currentRouting[name];
+				const to = normalized[name];
+				if (to === undefined) {
+					clearedRoutes.push(`${name}: ${formatOrchestratorSelection(from)} → inherit (cleared)`);
+				} else if (from === undefined) {
+					addedRoutes.push(`${name}: ${formatOrchestratorSelection(to)} (added)`);
+				} else if (from.model !== to.model || from.thinking !== to.thinking) {
+					replacedRoutes.push(`${name}: ${formatOrchestratorSelection(from)} → ${formatOrchestratorSelection(to)}`);
+				}
+			}
 			if (!hasAgentRoutes) {
 				// A genuinely empty profile and an orchestrator-only profile both wipe
 				// every materialized agent route, but they read very differently to the
@@ -4164,6 +4194,18 @@ async function runProfilesPanelAction(
 						`Profile "${result.name}" has no routing entries. Applying it will replace global routing in ${sanitizeTerminalText(modelConfigPath(ctx.cwd))} with an empty configuration and return every agent to inherit its default model. Continue?`,
 					];
 				const approved = await ctx.ui.confirm(confirmTitle, confirmMessage);
+				if (!approved) return file;
+			} else {
+				// A populated profile keeps the same abort semantics as the empty and
+				// orchestrator-only dialogs: declining leaves every surface untouched.
+				const changes = [...replacedRoutes, ...clearedRoutes, ...addedRoutes];
+				const changeSummary = changes.length > 0
+					? changes.join("; ")
+					: "its agent routes already match the current global routing";
+				const approved = await ctx.ui.confirm(
+					`Apply profile "${result.name}"?`,
+					`Profile "${result.name}" has agent routing entries. Applying it will replace global routing in ${sanitizeTerminalText(modelConfigPath(ctx.cwd))} with this profile's routes: ${changeSummary}. Continue?`,
+				);
 				if (!approved) return file;
 			}
 			// Applying spans three files — the store, models.json, and Pi's global
