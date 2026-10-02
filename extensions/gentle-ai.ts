@@ -2122,7 +2122,21 @@ function readGlobalEffectiveModelConfig(cwd: string): AgentModelConfig {
 async function readEffectiveModelConfigAsync(cwd: string): Promise<AgentModelConfig> {
 	const pinned = pinnedEffectiveModelConfig(cwd);
 	if (pinned) return pinned;
-	const effective = cloneModelConfig(await readModelConfigAsync(cwd));
+	return readGlobalEffectiveModelConfigFromAsync(cwd, await readModelConfigAsync(cwd));
+}
+
+/**
+ * The saved global routing merged with the materialized stores of every
+ * discoverable agent it is silent about — the same effective view
+ * `readEffectiveModelConfigAsync` builds, but starting from an already-read
+ * saved routing so callers that must distinguish an unreadable authority can
+ * keep that distinction while still seeing materialized routes.
+ */
+async function readGlobalEffectiveModelConfigFromAsync(
+	cwd: string,
+	base: AgentModelConfig,
+): Promise<AgentModelConfig> {
+	const effective = cloneModelConfig(base);
 	const profilesByPath = new Map<string, Record<string, unknown>>();
 	for (const agent of await listDiscoverableAgentsAsync(cwd)) {
 		if (isProviderReviewRole(agent.name) || agent.name in effective) continue;
@@ -4158,7 +4172,14 @@ async function runProfilesPanelAction(
 				modelConfigPath(ctx.cwd),
 				legacyProjectModelConfigPath(ctx.cwd),
 			);
-			const currentRouting = savedRouting.status === "valid" ? savedRouting.config : {};
+			// The apply pads omitted discoverable agents with clear entries, so the
+			// diff must run against the effective current routing: the saved global
+			// routing plus the materialized routes (frontmatter, subagents.json) of
+			// agents the saved routing is silent about. models.json alone would hide
+			// materialized-only routes the approval actually clears.
+			const currentRouting = savedRouting.status === "valid"
+				? await readGlobalEffectiveModelConfigFromAsync(ctx.cwd, savedRouting.config)
+				: {};
 			const agentNames = [
 				...new Set([
 					...Object.keys(currentRouting).filter((name) => !isProfileOrchestratorKey(name)),
@@ -4202,16 +4223,24 @@ async function runProfilesPanelAction(
 				// against an empty map, so the dialog must disclose the unreadable
 				// routing and the replace/clear-to-inherit effect instead of presenting
 				// existing routes as merely "(added)" (the #1349 wipe-bug class).
+				// When the profile carries an orchestrator entry, approval also writes
+				// settings.json and tries to move the live session, so both variants
+				// must disclose those effects in the same words the orchestrator-only
+				// dialog uses. An unconditional "will switch" is never claimed: the
+				// registry/auth can refuse the live move.
+				const orchestratorEffects = orchestratorEntry !== undefined
+					? ", set the configured orchestrator entry in settings.json, and attempt to switch this session to that orchestrator model"
+					: "";
 				let confirmMessage: string;
 				if (savedRouting.status !== "valid") {
 					const modelsPath = sanitizeTerminalText(modelConfigPath(ctx.cwd));
-					confirmMessage = `Profile "${result.name}" has agent routing entries, but the current global routing in ${modelsPath} could not be read, so existing routes are not listed. Applying it will replace global routing in ${modelsPath} with this profile's routes, so every existing agent route may be replaced or cleared back to inherit. Continue?`;
+					confirmMessage = `Profile "${result.name}" has agent routing entries, but the current global routing in ${modelsPath} could not be read, so existing routes are not listed. Applying it will replace global routing in ${modelsPath} with this profile's routes, so every existing agent route may be replaced or cleared back to inherit${orchestratorEffects}. Continue?`;
 				} else {
 					const changes = [...replacedRoutes, ...clearedRoutes, ...addedRoutes];
 					const changeSummary = changes.length > 0
 						? changes.join("; ")
 						: "its agent routes already match the current global routing";
-					confirmMessage = `Profile "${result.name}" has agent routing entries. Applying it will replace global routing in ${sanitizeTerminalText(modelConfigPath(ctx.cwd))} with this profile's routes: ${changeSummary}. Continue?`;
+					confirmMessage = `Profile "${result.name}" has agent routing entries. Applying it will replace global routing in ${sanitizeTerminalText(modelConfigPath(ctx.cwd))} with this profile's routes: ${changeSummary}${orchestratorEffects}. Continue?`;
 				}
 				const approved = await ctx.ui.confirm(`Apply profile "${result.name}"?`, confirmMessage);
 				if (!approved) return file;

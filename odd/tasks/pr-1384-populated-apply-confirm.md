@@ -44,6 +44,30 @@ naming what changes before anything is written.
   unchanged), `git diff --check` clean.
 - [ ] T4 — Work-unit commit (local only) and delivery report.
 
+## CodeRabbit closure round (2026-10-02, both Major threads)
+
+- Finding 1 (materialized-only routes): the populated dialog now diffs against
+  the effective current routing — saved global routing merged with materialized
+  routes via the new `readGlobalEffectiveModelConfigFromAsync` helper (reuses
+  `listDiscoverableAgentsAsync` / `readMaterializedRoutingEntryAsync`, same as
+  `readEffectiveModelConfigAsync`, which now delegates to it). `models.json`
+  alone hid routes the approval actually clears. Unreadable-authority
+  disclosure branch unchanged and still authoritative.
+- Finding 2 (orchestrator effects): when a populated profile has an
+  `orchestrator` entry, both the readable and unreadable populated messages
+  append "set the configured orchestrator entry in settings.json, and attempt
+  to switch this session to that orchestrator model" (same wording as the
+  orchestrator-only dialog; never an unconditional switch promise). No
+  orchestrator entry → messages unchanged.
+- T7 — RED observed: 4 new tests fail — dialog claimed "its agent routes
+  already match the current global routing" while approval would clear
+  helper's materialized route (2 tests); readable and unreadable populated
+  messages lacked the settings.json / live-switch disclosure (2 tests).
+- T8 — GREEN: focused profile tests 43 pass, full `tests/gentle-ai.test.ts`
+  102 pass, typecheck 187 diagnostics (baseline unchanged), `git diff --check`
+  clean. Confirm-path regression added (materialized-only route cleared on
+  approval); existing message assertions untouched.
+
 ## QA R4 closure (2026-09-30)
 
 - Finding: with an invalid routing authority the apply guard fell back to
