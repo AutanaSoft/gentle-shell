@@ -125,3 +125,36 @@ test("collector invokes only injected named probes, catches failures without log
 	assert.equal(JSON.stringify(inventory).includes("private diagnostic"), false);
 	assert.ok(planPreflight(inventory).blockers.length > 0);
 });
+
+test("runtime persistence intents persist only what is missing", async () => {
+	const { persistencePins } = await import("../scripts/installer-preflight.mjs");
+	const full = ["persist-node", "persist-package-managers", "configure-npm-prefix"];
+	const persistence = [...full, "persist-npm", "persist-pnpm"];
+	const stack = (node: object, pnpmPersistent?: boolean) => ({ ...clean(), node,
+		pnpm: { ...tool("11.1.1"), compatible: true, ...(pnpmPersistent === undefined ? {} : { persistent: pnpmPersistent }) },
+		globalBin: { available: true, path: "/disposable/bin", writable: true, onPath: true } });
+	const rest = ["install-pi", "install-shell", "setup-shell", "verify-readiness"];
+	// Bootstrap-only Node: the full group, whatever npm and pnpm report.
+	for (const npm of [true, false]) {
+		for (const pnpm of [true, false, undefined]) {
+			assert.deepEqual(ids(stack({ ...tool("24.18.0"), persistent: false, npm }, pnpm)), [...full, ...rest]);
+		}
+	}
+	assert.deepEqual(planPreflight(stack({ ...tool("24.18.0"), persistent: false, npm: true })).actions[0],
+		{ id: "persist-node", kind: "persist-runtime", target: "node", version: persistencePins.node });
+	// Persistent Node: never runtime persistence; one add for the missing npm and/or pnpm.
+	const node = (npm: boolean | null) => ({ ...tool("24.18.0"), persistent: true, npm });
+	assert.deepEqual(planPreflight(stack(node(false), true)).actions[0],
+		{ id: "persist-npm", kind: "install-global", target: "npm", version: persistencePins.npm });
+	assert.deepEqual(planPreflight(stack(node(true), false)).actions[0],
+		{ id: "persist-pnpm", kind: "install-global", target: "pnpm", version: persistencePins.pnpm });
+	assert.deepEqual(ids(stack(node(false), false)), ["persist-package-managers", ...rest]);
+	for (const [npm, pnpm] of [[true, true], [true, undefined], [null, true]] as const) {
+		assert.deepEqual(ids(stack(node(npm), pnpm)), rest);
+	}
+	assert.equal(ids(stack(tool("24.18.0"))).some((id) => persistence.includes(id)), false);
+	assert.deepEqual(ids(stack({ ...tool("20.0.0"), persistent: false, npm: false })), []);
+	const unreachable = { ...stack({ ...tool("24.18.0"), persistent: false, npm: false }),
+		globalBin: { available: true, path: "/disposable/bin", writable: true, onPath: false } };
+	assert.deepEqual(ids(unreachable).slice(0, 4), ["setup-global-bin", ...full]);
+});

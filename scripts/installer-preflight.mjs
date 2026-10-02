@@ -20,6 +20,13 @@ export const requirements = Object.freeze({
 	go: GENTLE_AI_WINDOWS_MINIMUM_GO_VERSION,
 });
 
+/** Runtime persisted under PNPM_HOME. Bootstrap-only Node: `pnpm runtime set
+ * node <node> -g`, then `pnpm add -g npm@<npm> pnpm@<pnpm>`. Persistent Node:
+ * one `pnpm add -g` of only the missing npm and/or bootstrap-only pnpm.
+ * npm 11.19.0 is the npm bundled with Node 24.21.0.
+ */
+export const persistencePins = Object.freeze({ node: "24.21.0", npm: "11.19.0", pnpm: requirements.pnpm });
+
 /** pnpm 11 global bin directory: `$PNPM_HOME/bin`, not `$PNPM_HOME` itself.
  * PNPM_HOME is the user's existing absolute value, otherwise pnpm's documented
  * platform default. onPath compares PATH entries with that bin directory, so a
@@ -56,8 +63,10 @@ const probeNames = ["node", "pnpm", "pi", "shell", "gentleAi", "go", "globalBin"
  * A tool probe returns { available, version, usable }; missing is available:false.
  * pnpm also needs compatible:true (runtime/capability evidence), shell global:true,
  * and Gentle AI compatible:true (normal binary resolver/integrity evidence).
- * globalBin returns { available, path, writable, onPath } for pnpmGlobalBin's
- * `$PNPM_HOME/bin` directory; setup returns boolean.
+ * Node may add persistent (resolvable from the user's PATH without bootstrap
+ * tool directories) and npm (a genuine npm resolves there) booleans; pnpm may
+ * add persistent (resolvable from the user's PATH). globalBin returns { available, path, writable, onPath } for
+ * pnpmGlobalBin's `$PNPM_HOME/bin` directory; setup returns boolean.
  * Version values are exact stable versions, not raw arbitrary command output.
  */
 export async function collectInventory({ platform, arch, probes = {} }) {
@@ -83,6 +92,9 @@ function compareVersions(left, right) {
 		if (left[i] !== right[i]) return left[i] > right[i] ? 1 : -1;
 	}
 	return 0;
+}
+if (compareVersions(versionParts(persistencePins.node), versionParts(requirements.node)) < 0) {
+	throw new Error("Persistent Node pin is below the repository minimum");
 }
 function classify(observation, required, extraCheck = () => true, exact = false) {
 	if (observation?.available === false) return "unavailable";
@@ -146,6 +158,21 @@ export function planPreflight(inventory) {
 	acquire("node");
 	acquire("pnpm");
 	if (tools.globalBin.status !== "reusable") action("setup-global-bin", "setup", "globalBin");
+	// A bootstrap Node lives in a temporary tools directory, and Gentle AI's Engram
+	// step needs a genuine npm: persist what is missing under PNPM_HOME through
+	// pnpm itself. A persistent Node is never replaced or shadowed.
+	const node = inventory.node;
+	if (tools.node.status === "reusable" && node.persistent === false) {
+		action("persist-node", "persist-runtime", "node", persistencePins.node);
+		action("persist-package-managers", "install-global", "package-managers");
+		action("configure-npm-prefix", "configure", "npm-prefix");
+	} else if (tools.node.status === "reusable") {
+		const npm = node.npm === false;
+		const pnpm = inventory.pnpm?.persistent === false;
+		if (npm && pnpm) action("persist-package-managers", "install-global", "package-managers");
+		else if (npm) action("persist-npm", "install-global", "npm", persistencePins.npm);
+		else if (pnpm) action("persist-pnpm", "install-global", "pnpm", persistencePins.pnpm);
+	}
 	acquire("go");
 	if (tools.pi.status === "unavailable") action("install-pi", "install-global", "pi", requirements.pi);
 	if (missingShell) action("install-shell", "install-global", "shell", requirements.shell);

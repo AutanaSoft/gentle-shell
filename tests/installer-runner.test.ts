@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { gentleAiBinaryPath } from "../runtime/gentle-ai-binary.mjs";
-import { planPreflight, requirements } from "../scripts/installer-preflight.mjs";
+import { persistencePins, planPreflight, requirements } from "../scripts/installer-preflight.mjs";
 import { PI_INSTALL_VERSION, packageNativeGentleAi, runStandardInstall } from "../scripts/installer-runner.mjs";
 
 const HOME = "/home/u";
@@ -25,18 +25,57 @@ const W_PNPM_HOME = "C:\\Users\\u\\AppData\\Local\\pnpm";
 const W_BIN = `${W_PNPM_HOME}\\bin`;
 const W_ROOT = `${W_PNPM_HOME}\\global\\v11\\node_modules\\gentle-pi`;
 
+// Runtime persisted through pnpm: node in $PNPM_HOME/bin plus a pnpm-global npm shim.
+const PERSISTENT_NODE = `${BIN}/node`;
+const PM_NPM_DIR = `${PNPM_HOME}/global/v11/abc/node_modules/npm`;
+const PM_NPM_CLI = `${PM_NPM_DIR}/bin/npm-cli.js`;
+const STORE = `${PNPM_HOME}/store`;
+// `pnpm store path` reports the versioned store directory.
+const STORE_PATH = `${STORE}/v11`;
+const STORE_PREFIX = `${STORE_PATH}/links/node/24.21.0/hash`;
+const PM_PNPM_DIR = `${PNPM_HOME}/global/v11/abc/node_modules/pnpm`;
+const PM_PNPM_ENTRY = `${PM_PNPM_DIR}/bin/pnpm.mjs`;
+const POSIX_SHIM = `#!/bin/sh
+basedir=$(dirname "$(echo "$0" | sed -e 's,\\\\,/,g')")
+if [ -x "$basedir/node" ]; then
+  exec "$basedir/node"  "$basedir/../global/v11/abc/node_modules/npm/bin/npm-cli.js" "$@"
+else
+  exec node  "$basedir/../global/v11/abc/node_modules/npm/bin/npm-cli.js" "$@"
+fi
+`;
+const POSIX_PNPM_SHIM = POSIX_SHIM.replaceAll("npm/bin/npm-cli.js", "pnpm/bin/pnpm.mjs");
+const W_PERSISTENT_NODE = `${W_BIN}\\node.exe`;
+const W_PM_PNPM_DIR = `${W_PNPM_HOME}\\global\\v11\\abc\\node_modules\\pnpm`;
+const W_PM_PNPM_ENTRY = `${W_PM_PNPM_DIR}\\bin\\pnpm.mjs`;
+const W_PM_NPM_DIR = `${W_PNPM_HOME}\\global\\v11\\abc\\node_modules\\npm`;
+const W_PM_NPM_CLI = `${W_PM_NPM_DIR}\\bin\\npm-cli.js`;
+const W_STORE = `${W_PNPM_HOME}\\store`;
+const W_STORE_PATH = `${W_STORE}\\v11`;
+const W_STORE_PREFIX = `${W_STORE_PATH}\\links\\node\\24.21.0\\hash`;
+const WINDOWS_SHIM = `@IF EXIST "%~dp0\\node.exe" (\r\n  "%~dp0\\node.exe"  "%~dp0\\..\\global\\v11\\abc\\node_modules\\npm\\bin\\npm-cli.js" %*\r\n) ELSE (\r\n  node  "%~dp0\\..\\global\\v11\\abc\\node_modules\\npm\\bin\\npm-cli.js" %*\r\n)\r\n`;
+
 type Call = { command: string; args: string[]; env: Record<string, string>; deadlineMs: number };
 type Result = { code: number | null; signal?: string | null; timedOut?: boolean; stdout?: string };
 type Layout = { platform: string; node: string; entry: string; npmCli: string; shellEntry: string; bin: string;
-	root: string; env: Record<string, string>; files: string[]; realpaths: Record<string, string>; texts: Record<string, string> };
+	root: string; env: Record<string, string>; files: string[]; realpaths: Record<string, string>; texts: Record<string, string>;
+	persistentNode: string; pmNpmCli: string; pmPnpmEntry: string; pmHome: string; storePath: string; storePrefix: string;
+	creates: Record<string, string[]> };
 
 const npmPackage = JSON.stringify({ name: "npm", version: "11.19.0" });
+const pnpmPackage = JSON.stringify({ name: "pnpm", version: "11.1.1" });
 const posixLayout: Layout = {
 	platform: "linux", node: NODE, entry: ENTRY, npmCli: NPM_CLI, shellEntry: SHELL_ENTRY, bin: BIN, root: PACKAGE_ROOT,
 	env: { HOME, PATH: `${BIN}:/opt/node/bin:/usr/bin`, GENTLE_INSTALL_PNPM_NODE: NODE, GENTLE_INSTALL_PNPM_ENTRY: ENTRY },
 	files: ["/opt/node/bin/npm", NPM_CLI, `${BIN}/gentle-shell`],
-	realpaths: { "/opt/node/bin/npm": NPM_CLI, [PNPM_HOME]: PNPM_HOME, [PACKAGE_ROOT]: PACKAGE_ROOT },
-	texts: { "/opt/node/lib/node_modules/npm/package.json": npmPackage },
+	realpaths: { "/opt/node/bin/npm": NPM_CLI, [PNPM_HOME]: PNPM_HOME, [PACKAGE_ROOT]: PACKAGE_ROOT,
+		[`${BIN}/npm`]: `${BIN}/npm`, [PM_NPM_CLI]: PM_NPM_CLI, [STORE]: STORE, [STORE_PATH]: STORE_PATH, [STORE_PREFIX]: STORE_PREFIX,
+		[`${BIN}/pnpm`]: `${BIN}/pnpm`, [PM_PNPM_ENTRY]: PM_PNPM_ENTRY },
+	texts: { "/opt/node/lib/node_modules/npm/package.json": npmPackage, [`${BIN}/npm`]: POSIX_SHIM,
+		[`${PM_NPM_DIR}/package.json`]: npmPackage, [`${BIN}/pnpm`]: POSIX_PNPM_SHIM, [`${PM_PNPM_DIR}/package.json`]: pnpmPackage },
+	persistentNode: PERSISTENT_NODE, pmNpmCli: PM_NPM_CLI, pmPnpmEntry: PM_PNPM_ENTRY, pmHome: PNPM_HOME, storePath: STORE_PATH,
+	storePrefix: STORE_PREFIX,
+	creates: { "runtime set node 24.21.0 -g": [PERSISTENT_NODE], "add-pm": [`${BIN}/npm`, PM_NPM_CLI, `${BIN}/pnpm`, PM_PNPM_ENTRY],
+		"add-npm": [`${BIN}/npm`, PM_NPM_CLI], "add-pnpm": [`${BIN}/pnpm`, PM_PNPM_ENTRY] },
 };
 // The user's Path already holds the global bin, spelled with different case.
 const windowsLayout: Layout = {
@@ -46,8 +85,16 @@ const windowsLayout: Layout = {
 		Path: `c:\\users\\u\\appdata\\local\\PNPM\\bin\\;${W_NODE_DIR};C:\\Windows`,
 		GENTLE_INSTALL_PNPM_NODE: W_NODE, GENTLE_INSTALL_PNPM_ENTRY: W_ENTRY },
 	files: [W_NPM_CMD, W_NPM_CLI, `${W_BIN}\\gentle-shell.cmd`],
-	realpaths: { [W_PNPM_HOME]: W_PNPM_HOME, [W_ROOT]: W_ROOT },
-	texts: { [`${W_NODE_DIR}\\node_modules\\npm\\package.json`]: npmPackage },
+	realpaths: { [W_PNPM_HOME]: W_PNPM_HOME, [W_ROOT]: W_ROOT, [W_PM_NPM_CLI]: W_PM_NPM_CLI, [W_STORE]: W_STORE,
+		[W_STORE_PATH]: W_STORE_PATH, [W_STORE_PREFIX]: W_STORE_PREFIX, [W_PM_PNPM_ENTRY]: W_PM_PNPM_ENTRY },
+	texts: { [`${W_NODE_DIR}\\node_modules\\npm\\package.json`]: npmPackage, [`${W_BIN}\\npm.cmd`]: WINDOWS_SHIM,
+		[`${W_PM_NPM_DIR}\\package.json`]: npmPackage,
+		[`${W_BIN}\\pnpm.cmd`]: WINDOWS_SHIM.replaceAll("npm\\bin\\npm-cli.js", "pnpm\\bin\\pnpm.mjs"),
+		[`${W_PM_PNPM_DIR}\\package.json`]: pnpmPackage },
+	persistentNode: W_PERSISTENT_NODE, pmNpmCli: W_PM_NPM_CLI, pmPnpmEntry: W_PM_PNPM_ENTRY,
+	pmHome: W_PNPM_HOME, storePath: W_STORE_PATH, storePrefix: W_STORE_PREFIX,
+	creates: { "runtime set node 24.21.0 -g": [W_PERSISTENT_NODE], "add-pm": [`${W_BIN}\\npm.cmd`, W_PM_NPM_CLI],
+		"add-pnpm": [`${W_BIN}\\pnpm.cmd`, W_PM_PNPM_ENTRY] },
 };
 
 const absent = { available: false };
@@ -68,11 +115,14 @@ function listing(pi = PI_INSTALL_VERSION, shell = requirements.shell, path = PAC
 const LIST = "list -g --depth 0 --json";
 const emptyList = { code: 0, stdout: "[]" };
 
-function harness({ env = {}, results = {}, files = [] as string[], integrity = { ok: true } as object, layout = posixLayout } = {}) {
+function harness({ env = {}, results = {}, files = [] as string[], integrity = { ok: true } as object, layout = posixLayout,
+	realpaths: extraRealpaths = {} as Record<string, string>, texts: extraTexts = {} as Record<string, string>,
+	creates = layout.creates } = {}) {
 	const calls: Call[] = [];
 	const logs: object[] = [];
 	const fileSet = new Set([...layout.files, ...files]);
-	const { realpaths, texts } = layout;
+	const realpaths = { ...layout.realpaths, ...extraRealpaths };
+	const texts = { ...layout.texts, ...extraTexts };
 	const defaults: Record<string, Result | Result[]> = {
 		"--version": { code: 0, stdout: "11.19.0\n" },
 		"bin -g": { code: 0, stdout: `${layout.bin}\n` },
@@ -80,14 +130,27 @@ function harness({ env = {}, results = {}, files = [] as string[], integrity = {
 		[LIST]: [emptyList, { code: 0, stdout: listing(PI_INSTALL_VERSION, requirements.shell, layout.root) }],
 		"gentle-shell setup": { code: 0 },
 		"pnpm setup": { code: 0 },
+		"runtime set node 24.21.0 -g": { code: 0 },
+		"add-pm": { code: 0 },
+		"add-npm": { code: 0 },
+		"add-pnpm": { code: 0 },
+		"store path": { code: 0, stdout: `${layout.storePath}\n` },
+		"pm-pnpm --version": { code: 0, stdout: "11.1.1\n" },
+		"persistent-node --version": { code: 0, stdout: "v24.21.0\n" },
+		"pm-npm --version": { code: 0, stdout: "11.19.0\n" },
+		"pm-npm config get prefix": [{ code: 0, stdout: `${layout.storePrefix}\n` }, { code: 0, stdout: `${layout.pmHome}\n` }],
+		[`pm-npm config set prefix ${layout.pmHome} --location=user`]: { code: 0 },
 	};
 	const responses = { ...defaults, ...results } as Record<string, Result | Result[]>;
 	const seen: Record<string, number> = {};
 	function key(command: string, args: string[]) {
 		if (command === layout.node && args[0] === layout.npmCli) return args.slice(1).join(" ");
+		if (args[0] === layout.pmNpmCli) return `pm-npm ${args.slice(1).join(" ")}`;
+		if (args[0] === layout.pmPnpmEntry) return `pm-pnpm ${args.slice(1).join(" ")}`;
+		if (command === layout.persistentNode) return `persistent-node ${args.join(" ")}`;
 		if (command === layout.node && args[0] === layout.shellEntry) return `gentle-shell ${args.slice(1).join(" ")}`;
 		const rest = command === layout.node && args[0] === layout.entry ? args.slice(1) : args;
-		if (rest[0] === "add") return "add";
+		if (rest[0] === "add") return ({ [PM_ADD]: "add-pm", [NPM_ADD]: "add-npm", [PNPM_ADD]: "add-pnpm" } as Record<string, string>)[rest.join(" ")] ?? "add";
 		if (rest.join(" ") === "setup") return "pnpm setup";
 		return rest.join(" ");
 	}
@@ -104,6 +167,7 @@ function harness({ env = {}, results = {}, files = [] as string[], integrity = {
 			const index = seen[k] ?? 0;
 			seen[k] = index + 1;
 			const response = Array.isArray(entry) ? entry[Math.min(index, entry.length - 1)] : entry;
+			if (response.code === 0) for (const file of creates[k] ?? []) fileSet.add(file);
 			return { signal: null, timedOut: false, stdout: "", stderr: "", ...response };
 		},
 		fs: {
@@ -128,6 +192,10 @@ function harness({ env = {}, results = {}, files = [] as string[], integrity = {
 }
 
 const INSTALL = `add -g @earendil-works/pi-coding-agent@${PI_INSTALL_VERSION} gentle-pi@${requirements.shell} --allow-build=gentle-pi`;
+const PM_ADD = "add -g npm@11.19.0 pnpm@11.1.1";
+const NPM_ADD = "add -g npm@11.19.0";
+const PNPM_ADD = "add -g pnpm@11.1.1";
+const RUNTIME_SET = "runtime set node 24.21.0 -g";
 
 test("declined or missing consent runs no commands", async () => {
 	for (const consent of [false, undefined, "yes", 1]) {
@@ -437,4 +505,331 @@ test("package-native integrity rejects development overrides and unverified pack
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+// Plans whose inventory says Node is bootstrap-only (or npm is not genuine) include fixed persistence steps.
+const bootstrapNode = { ...tool("24.18.0"), persistent: false, npm: false };
+function persistPlan(platform = "linux", node: object = bootstrapNode) {
+	return plan(platform, { node });
+}
+// pnpm 11 keeps each global add in its own project: npm+pnpm and the stack are listed separately.
+function persistedListing(root = PACKAGE_ROOT, home = PNPM_HOME) {
+	return JSON.stringify([
+		{ path: `${home}/global/v11/abc`, dependencies: { npm: { version: "11.19.0" }, pnpm: { version: "11.1.1" } } },
+		{ path: `${home}/global/v11/def`, dependencies: { "@earendil-works/pi-coding-agent": { version: PI_INSTALL_VERSION },
+			"gentle-pi": { version: requirements.shell, path: root } } },
+	]);
+}
+const persistedList = { [LIST]: [emptyList, { code: 0, stdout: persistedListing() }] };
+const PERSISTED_STEPS = ["check-global-bin", "check-existing-stack", "persist-node", "persist-package-managers",
+	"verify-persistent-runtime", "check-npm", "configure-npm-prefix"];
+
+test("persistence pins are fixed: Node 24.21.0 with its bundled npm 11.19.0 and the pnpm acquisition pin", () => {
+	assert.deepEqual(persistencePins, { node: "24.21.0", npm: "11.19.0", pnpm: requirements.pnpm });
+});
+
+test("bootstrap-only Node persists node, npm and pnpm under PNPM_HOME before the stack install", async () => {
+	const h = harness({ results: persistedList });
+	const result = await runStandardInstall({ plan: persistPlan(), consent: true }, h.adapters);
+	assert.equal(result.outcome, "ready");
+	assert.equal(result.npmPrefix, "configured");
+	assert.deepEqual(h.pnpmCalls(), ["bin -g", LIST, RUNTIME_SET, PM_ADD, "store path", INSTALL, LIST]);
+	assert.deepEqual(result.completed, [...PERSISTED_STEPS, "install-global", "verify-global-list", "verify-shell-bin",
+		"verify-gentle-ai", "shell-setup"]);
+	for (const call of h.calls.filter((c) => c.args[1] === "add" || c.args[1] === "runtime")) {
+		assert.equal(call.command, NODE);
+		assert.equal(call.args.some((arg) => /dangerously|allow-build=\*|--allow-build$|approve-builds/.test(arg)), false);
+		assert.equal(call.env.PNPM_HOME, PNPM_HOME);
+		assert.equal(call.env.PATH.split(":")[0], BIN);
+	}
+	assert.equal(h.pnpmCalls().filter((call) => call === PM_ADD)[0].includes("allow-build"), false);
+	// After persistence, node and npm resolve from $PNPM_HOME/bin in the child env.
+	assert.deepEqual(h.calls.filter((call) => call.args[0] === PM_NPM_CLI).map((call) => [call.command, ...call.args]), [
+		[NODE, PM_NPM_CLI, "--version"],
+		[PERSISTENT_NODE, PM_NPM_CLI, "config", "get", "prefix"],
+		[PERSISTENT_NODE, PM_NPM_CLI, "config", "set", "prefix", PNPM_HOME, "--location=user"],
+		[PERSISTENT_NODE, PM_NPM_CLI, "config", "get", "prefix"],
+	]);
+	assert.deepEqual(h.calls.find((call) => call.command === PERSISTENT_NODE)?.args, ["--version"]);
+});
+
+test("the full persistence group runs exactly when Node is bootstrap-only", async () => {
+	for (const pnpm of [{ ...tool("11.1.1"), compatible: true, persistent: true }, { ...tool("11.1.1"), compatible: true, persistent: false }]) {
+		const h = harness({ results: persistedList });
+		const result = await runStandardInstall({ plan: plan("linux", { node: { ...tool("24.18.0"), persistent: false, npm: true }, pnpm }),
+			consent: true }, h.adapters);
+		assert.equal(result.outcome, "ready");
+		assert.deepEqual(h.pnpmCalls().slice(2, 4), [RUNTIME_SET, PM_ADD]);
+	}
+	const h = harness();
+	const result = await runStandardInstall({ plan: plan("linux", { node: { ...tool("24.18.0"), persistent: true, npm: true } }), consent: true }, h.adapters);
+	assert.equal(result.outcome, "ready");
+	assert.equal(result.npmPrefix, undefined);
+	assert.deepEqual(h.pnpmCalls(), ["bin -g", LIST, INSTALL, LIST]);
+	assert.equal(h.calls.some((call) => call.args[0] === PM_NPM_CLI || call.command === PERSISTENT_NODE), false);
+});
+
+test("a failed persistence step stops before the stack install and reports completed steps", async () => {
+	const cases: [string, object, string[]][] = [
+		["persist-node", { [RUNTIME_SET]: { code: 1 } }, [RUNTIME_SET]],
+		["persist-node", { [RUNTIME_SET]: { code: 0, timedOut: true } }, [RUNTIME_SET]],
+		["persist-package-managers", { "add-pm": { code: 1 } }, [RUNTIME_SET, PM_ADD]],
+		["verify-persistent-runtime", { "persistent-node --version": { code: 0, stdout: "v24.18.0\n" } }, [RUNTIME_SET, PM_ADD]],
+	];
+	for (const [failedStep, results, mutations] of cases) {
+		const h = harness({ results: { ...persistedList, ...results } });
+		const result = await runStandardInstall({ plan: persistPlan(), consent: true }, h.adapters);
+		assert.equal(result.outcome, "failed");
+		assert.equal(result.failedStep, failedStep);
+		assert.deepEqual(result.completed, PERSISTED_STEPS.slice(0, PERSISTED_STEPS.indexOf(failedStep)));
+		assert.deepEqual(h.pnpmCalls(), ["bin -g", LIST, ...mutations]);
+	}
+	// pnpm reports success but node or npm is not in $PNPM_HOME/bin.
+	for (const creates of [{ "add-pm": [`${BIN}/npm`, PM_NPM_CLI] }, { [RUNTIME_SET]: [PERSISTENT_NODE] }]) {
+		const h = harness({ results: persistedList, creates });
+		const result = await runStandardInstall({ plan: persistPlan(), consent: true }, h.adapters);
+		assert.equal(result.failedStep, "verify-persistent-runtime");
+		assert.equal(h.pnpmCalls().includes(INSTALL), false);
+	}
+});
+
+test("pnpm-global npm shim: wrong version, foreign target or ambiguous shim is rejected", async () => {
+	// Each variant is otherwise a working npm, so only the rule under test rejects it.
+	const foreign = "/elsewhere/node_modules/npm/bin/npm-cli.js";
+	const variants = [
+		{ texts: { [`${PM_NPM_DIR}/package.json`]: JSON.stringify({ name: "npm", version: "11.18.0" }) },
+			results: { "pm-npm --version": { code: 0, stdout: "11.18.0\n" } } },
+		{ texts: { [`${PM_NPM_DIR}/package.json`]: JSON.stringify({ name: "not-npm", version: "11.19.0" }) } },
+		{ realpaths: { [PM_NPM_CLI]: foreign }, files: [foreign],
+			texts: { "/elsewhere/node_modules/npm/package.json": npmPackage },
+			results: { [`${foreign} --version`]: { code: 0, stdout: "11.19.0\n" } } },
+		{ texts: { [`${BIN}/npm`]: POSIX_SHIM.replace("abc/node_modules/npm/bin/npm-cli.js\" \"$@\"\nelse", "xyz/node_modules/npm/bin/npm-cli.js\" \"$@\"\nelse") } },
+		{ texts: { [`${BIN}/npm`]: "#!/bin/sh\nexec /opt/fake/npm \"$@\"\n" } },
+		{ results: { "pm-npm --version": { code: 0, stdout: "10.0.0\n" } } },
+	];
+	for (const variant of variants) {
+		const h = harness({ ...variant, results: { ...persistedList, ...(variant as { results?: object }).results } });
+		const result = await runStandardInstall({ plan: persistPlan(), consent: true }, h.adapters);
+		assert.equal(result.outcome, "failed");
+		assert.equal(result.failedStep, "check-npm");
+		assert.equal(h.pnpmCalls().includes(INSTALL), false);
+	}
+});
+
+test("an existing pnpm-global npm shim first on PATH satisfies check-npm without persistence", async () => {
+	const files = [`${BIN}/npm`, PM_NPM_CLI];
+	const h = harness({ files });
+	const result = await runStandardInstall({ plan: plan(), consent: true }, h.adapters);
+	assert.equal(result.outcome, "ready");
+	assert.deepEqual(h.pnpmCalls(), ["bin -g", LIST, INSTALL, LIST]);
+	assert.deepEqual(h.calls[0].args, [PM_NPM_CLI, "--version"]);
+	const wrong = harness({ files, texts: { [`${PM_NPM_DIR}/package.json`]: JSON.stringify({ name: "npm", version: "11.20.0" }) },
+		results: { "pm-npm --version": { code: 0, stdout: "11.20.0\n" } } });
+	const blocked = await runStandardInstall({ plan: plan(), consent: true }, wrong.adapters);
+	assert.equal(blocked.outcome, "blocked");
+	assert.equal(blocked.reason, "npm-unavailable");
+});
+
+test("npm prefix is set only when inside the pnpm store and not explicit; never overwritten", async () => {
+	const set = `pm-npm config set prefix ${PNPM_HOME} --location=user`;
+	const cases: [object, object][] = [
+		[{ "pm-npm config get prefix": { code: 0, stdout: "/home/u/.npm-global\n" } }, {}],
+		[{}, { NPM_CONFIG_PREFIX: STORE_PREFIX }],
+		[{}, { npm_config_prefix: STORE_PREFIX }],
+		[{}, { Npm_Config_Prefix: STORE_PREFIX }],
+		[{}, { PREFIX: STORE_PREFIX }],
+	];
+	for (const [results, env] of cases) {
+		const h = harness({ env, results: { ...persistedList, ...results } });
+		const result = await runStandardInstall({ plan: persistPlan(), consent: true }, h.adapters);
+		assert.equal(result.outcome, "ready");
+		assert.equal(result.npmPrefix, "unchanged");
+		assert.equal(h.calls.some((call) => call.args[0] === PM_NPM_CLI && call.args.includes("set")), false);
+		assert.ok(result.completed.includes("configure-npm-prefix"));
+		// An explicit prefix never needs the store; an effective one is compared with `pnpm store path`.
+		assert.equal(h.pnpmCalls().includes("store path"), Object.keys(env).length === 0);
+	}
+	const failures = [
+		{ [set]: { code: 1 } },
+		{ "pm-npm config get prefix": [{ code: 0, stdout: `${STORE_PREFIX}\n` }, { code: 0, stdout: `${STORE_PREFIX}\n` }] },
+		{ "pm-npm config get prefix": { code: 1, stdout: "" } },
+		{ "pm-npm config get prefix": { code: 0, stdout: "relative/prefix\n" } },
+		// The store must be resolved by pnpm itself; an unknown store is a failure, never "unchanged".
+		{ "store path": { code: 1, stdout: "" } },
+		{ "store path": { code: 0, timedOut: true, stdout: `${STORE_PATH}\n` } },
+		{ "store path": { code: 0, stdout: "store/v11\n" } },
+		{ "store path": { code: 0, stdout: "/missing/store/v11\n" } },
+	];
+	for (const results of failures) {
+		const h = harness({ results: { ...persistedList, ...results } });
+		const result = await runStandardInstall({ plan: persistPlan(), consent: true }, h.adapters);
+		assert.equal(result.outcome, "failed");
+		assert.equal(result.failedStep, "configure-npm-prefix");
+		assert.deepEqual(result.completed, PERSISTED_STEPS.slice(0, -1));
+		assert.equal(h.pnpmCalls().includes(INSTALL), false);
+	}
+});
+
+test("Windows persistence resolves node.exe and the npm.cmd shim from $PNPM_HOME\\bin", async () => {
+	const h = harness({ layout: windowsLayout, results: { [LIST]: [emptyList, { code: 0, stdout: persistedListing(W_ROOT, W_PNPM_HOME) }] } });
+	const result = await runStandardInstall({ plan: persistPlan("win32"), consent: true }, h.adapters);
+	assert.equal(result.outcome, "ready");
+	assert.equal(result.npmPrefix, "configured");
+	assert.deepEqual(h.calls.filter((call) => call.args[0] === W_PM_NPM_CLI).map((call) => [call.command, ...call.args]), [
+		[W_NODE, W_PM_NPM_CLI, "--version"],
+		[W_PERSISTENT_NODE, W_PM_NPM_CLI, "config", "get", "prefix"],
+		[W_PERSISTENT_NODE, W_PM_NPM_CLI, "config", "set", "prefix", W_PNPM_HOME, "--location=user"],
+		[W_PERSISTENT_NODE, W_PM_NPM_CLI, "config", "get", "prefix"],
+	]);
+	// An npm.exe beside the shim resolves first in PATHEXT order and is not accepted.
+	const shadowed = harness({ layout: windowsLayout, creates: { ...windowsLayout.creates, "add-pm": [`${W_BIN}\\npm.exe`, `${W_BIN}\\npm.cmd`, W_PM_NPM_CLI] },
+		results: { [LIST]: [emptyList, { code: 0, stdout: persistedListing(W_ROOT, W_PNPM_HOME) }] } });
+	const failed = await runStandardInstall({ plan: persistPlan("win32"), consent: true }, shadowed.adapters);
+	assert.equal(failed.outcome, "failed");
+	assert.equal(failed.failedStep, "check-npm");
+});
+
+test("partial or altered persistence actions are rejected before any command", async () => {
+	const base = persistPlan();
+	const partial = { ...base, actions: base.actions.filter((action: { id: string }) => action.id !== "configure-npm-prefix") };
+	const h = harness();
+	assert.equal((await runStandardInstall({ plan: partial, consent: true }, h.adapters)).reason, "unsupported-plan");
+	const altered = { ...base, actions: base.actions.map((action: { id: string }) => action.id === "persist-node" ? { ...action, version: "25.0.0" } : action) };
+	assert.equal((await runStandardInstall({ plan: altered, consent: true }, h.adapters)).reason, "invalid-request");
+	assert.deepEqual(h.calls, []);
+});
+
+test("gentle-shell setup receives no GENTLE_BOOTSTRAP_* or GENTLE_INSTALL_* keys", async () => {
+	const h = harness({ env: { GENTLE_BOOTSTRAP_TOOLS: "/home/u/.gentle-shell-bootstrap-tools.x", gentle_install_lower: "kept", KEEP: "1" } });
+	assert.equal((await runStandardInstall({ plan: plan(), consent: true }, h.adapters)).outcome, "ready");
+	const setup = h.calls.find((call) => call.args[0] === SHELL_ENTRY);
+	assert.ok(setup);
+	assert.deepEqual(Object.keys(setup.env).filter((key) => /^gentle_/i.test(key)), ["gentle_install_lower"]);
+	assert.equal(setup.env.KEEP, "1");
+	assert.equal(setup.env.PNPM_HOME, PNPM_HOME);
+	// pnpm still receives the bootstrap handoff; only setup is stripped.
+	assert.equal(h.calls.find((call) => call.args[1] === "add")?.env.GENTLE_INSTALL_PNPM_ENTRY, ENTRY);
+	const w = harness({ layout: windowsLayout, env: { gentle_bootstrap_tools: "C:\\x", Gentle_Install_Other: "y" } });
+	assert.equal((await runStandardInstall({ plan: plan("win32"), consent: true }, w.adapters)).outcome, "ready");
+	const wSetup = w.calls.find((call) => call.args[0] === `${W_ROOT}\\bin\\gentle-shell.mjs`);
+	assert.deepEqual(Object.keys(wSetup?.env ?? {}).filter((key) => /^gentle_/i.test(key)), []);
+});
+
+test("npm prefix compares with the store pnpm reports, not an assumed $PNPM_HOME/store", async () => {
+	const custom = "/srv/pnpm-store/v11";
+	const prefix = `${custom}/links/node/24.21.0/hash`;
+	const h = harness({ realpaths: { [custom]: custom, [prefix]: prefix }, results: { ...persistedList,
+		"store path": { code: 0, stdout: `${custom}\n` },
+		"pm-npm config get prefix": [{ code: 0, stdout: `${prefix}\n` }, { code: 0, stdout: `${PNPM_HOME}\n` }] } });
+	const result = await runStandardInstall({ plan: persistPlan(), consent: true }, h.adapters);
+	assert.equal(result.outcome, "ready");
+	assert.equal(result.npmPrefix, "configured");
+	const storeCall = h.calls.find((call) => call.args[1] === "store");
+	assert.deepEqual(storeCall?.args, [ENTRY, "store", "path"]);
+	assert.equal(storeCall?.env.PNPM_HOME, PNPM_HOME);
+	assert.ok((storeCall?.deadlineMs ?? 0) > 0);
+	// The default $PNPM_HOME/store is no longer assumed when pnpm reports another store.
+	const elsewhere = harness({ realpaths: { [custom]: custom }, results: { ...persistedList, "store path": { code: 0, stdout: `${custom}\n` } } });
+	const unchanged = await runStandardInstall({ plan: persistPlan(), consent: true }, elsewhere.adapters);
+	assert.equal(unchanged.npmPrefix, "unchanged");
+});
+
+test("a symlinked $PNPM_HOME/bin/npm must resolve inside PNPM_HOME to npm@11.19.0", async () => {
+	const outside = "/usr/lib/node_modules/npm/bin/npm-cli.js";
+	const foreign = harness({ files: [`${BIN}/npm`, outside], realpaths: { [`${BIN}/npm`]: outside },
+		texts: { "/usr/lib/node_modules/npm/package.json": npmPackage },
+		results: { [`${outside} --version`]: { code: 0, stdout: "11.19.0\n" } } });
+	const blocked = await runStandardInstall({ plan: plan(), consent: true }, foreign.adapters);
+	assert.equal(blocked.outcome, "blocked");
+	assert.equal(blocked.reason, "npm-unavailable");
+	assert.equal(foreign.pnpmCalls().some((call) => call.startsWith("add")), false);
+	const old = harness({ files: [`${BIN}/npm`, PM_NPM_CLI], realpaths: { [`${BIN}/npm`]: PM_NPM_CLI },
+		texts: { [`${PM_NPM_DIR}/package.json`]: JSON.stringify({ name: "npm", version: "11.18.0" }) },
+		results: { "pm-npm --version": { code: 0, stdout: "11.18.0\n" } } });
+	assert.equal((await runStandardInstall({ plan: plan(), consent: true }, old.adapters)).reason, "npm-unavailable");
+	const linked = harness({ files: [`${BIN}/npm`, PM_NPM_CLI], realpaths: { [`${BIN}/npm`]: PM_NPM_CLI } });
+	assert.equal((await runStandardInstall({ plan: plan(), consent: true }, linked.adapters)).outcome, "ready");
+	assert.deepEqual(linked.calls[0].args, [PM_NPM_CLI, "--version"]);
+});
+
+// Node already persistent: only the missing package managers, in one add -g, never runtime set.
+const persistentNode = (npm: boolean) => ({ ...tool("24.18.0"), persistent: true, npm });
+const pnpmTool = (persistent: boolean) => ({ ...tool("11.1.1"), compatible: true, persistent });
+const AFTER_STACK = ["install-global", "verify-global-list", "verify-shell-bin", "verify-gentle-ai", "shell-setup"];
+
+test("persistent Node adds only the missing npm and/or pnpm with exact fixed argv", async () => {
+	const cases: [boolean, boolean, string, string[]][] = [
+		[false, true, NPM_ADD, ["check-global-bin", "check-existing-stack", "persist-npm", "check-npm"]],
+		[true, false, PNPM_ADD, ["check-npm", "check-global-bin", "check-existing-stack", "persist-pnpm", "verify-persistent-pnpm"]],
+		[false, false, PM_ADD, ["check-global-bin", "check-existing-stack", "persist-package-managers", "check-npm", "verify-persistent-pnpm"]],
+	];
+	for (const [npm, pnpmPersistent, add, steps] of cases) {
+		const fixed = plan("linux", { node: persistentNode(npm), pnpm: pnpmTool(pnpmPersistent) });
+		const h = harness({ results: persistedList });
+		const result = await runStandardInstall({ plan: fixed, consent: true }, h.adapters);
+		assert.equal(result.outcome, "ready", add);
+		assert.deepEqual(h.pnpmCalls(), ["bin -g", LIST, add, INSTALL, LIST]);
+		assert.deepEqual(result.completed, [...steps, ...AFTER_STACK]);
+		assert.equal(result.npmPrefix, undefined);
+		assert.equal(h.calls.some((call) => call.command === PERSISTENT_NODE || call.args.includes("config")), false);
+		const persisted = h.calls.find((call) => call.args[1] === "add" && call.args.join(" ") !== `${ENTRY} ${INSTALL}`);
+		assert.equal(persisted?.env.PATH.split(":")[0], BIN);
+		if (!pnpmPersistent) assert.ok(h.calls.some((call) => call.command === NODE && call.args.join(" ") === `${PM_PNPM_ENTRY} --version`));
+	}
+	const none = harness();
+	const reused = await runStandardInstall({ plan: plan("linux", { node: persistentNode(true), pnpm: pnpmTool(true) }), consent: true }, none.adapters);
+	assert.deepEqual(none.pnpmCalls(), ["bin -g", LIST, INSTALL, LIST]);
+	assert.equal(reused.outcome, "ready");
+});
+
+test("an added pnpm must resolve from $PNPM_HOME/bin at 11.1.1", async () => {
+	const fixed = plan("linux", { node: persistentNode(true), pnpm: pnpmTool(false) });
+	const variants = [
+		{ creates: { "add-pnpm": [] } },
+		{ texts: { [`${PM_PNPM_DIR}/package.json`]: JSON.stringify({ name: "pnpm", version: "11.2.0" }) },
+			results: { "pm-pnpm --version": { code: 0, stdout: "11.2.0\n" } } },
+		{ results: { "pm-pnpm --version": { code: 0, stdout: "10.0.0\n" } } },
+		{ realpaths: { [PM_PNPM_ENTRY]: "/elsewhere/node_modules/pnpm/bin/pnpm.mjs" } },
+		{ texts: { [`${BIN}/pnpm`]: "#!/bin/sh\nexec /opt/fake/pnpm \"$@\"\n" } },
+	];
+	for (const variant of variants) {
+		const h = harness({ ...variant, results: { ...persistedList, ...(variant as { results?: object }).results } });
+		const result = await runStandardInstall({ plan: fixed, consent: true }, h.adapters);
+		assert.equal(result.outcome, "failed");
+		assert.equal(result.failedStep, "verify-persistent-pnpm");
+		assert.equal(h.pnpmCalls().includes(INSTALL), false);
+	}
+	const npmFixed = plan("linux", { node: persistentNode(false), pnpm: pnpmTool(true) });
+	const wrongNpm = harness({ results: { ...persistedList, "pm-npm --version": { code: 0, stdout: "11.18.0\n" } },
+		texts: { [`${PM_NPM_DIR}/package.json`]: JSON.stringify({ name: "npm", version: "11.18.0" }) } });
+	const failed = await runStandardInstall({ plan: npmFixed, consent: true }, wrongNpm.adapters);
+	assert.equal(failed.failedStep, "check-npm");
+	assert.equal(wrongNpm.pnpmCalls().includes(RUNTIME_SET), false);
+});
+
+test("Windows persistent Node adds only pnpm and verifies the pnpm.cmd shim target", async () => {
+	const fixed = plan("win32", { node: persistentNode(true), pnpm: pnpmTool(false) });
+	const h = harness({ layout: windowsLayout, results: { [LIST]: [emptyList, { code: 0, stdout: persistedListing(W_ROOT, W_PNPM_HOME) }] } });
+	const result = await runStandardInstall({ plan: fixed, consent: true }, h.adapters);
+	assert.equal(result.outcome, "ready");
+	assert.ok(result.completed.includes("verify-persistent-pnpm"));
+	assert.ok(h.calls.some((call) => call.command === W_NODE && call.args.join(" ") === `${W_PM_PNPM_ENTRY} --version`));
+});
+
+test("persistence variants are accepted only as fixed sets", async () => {
+	const npmAction = { id: "persist-npm", kind: "install-global", target: "npm", version: "11.19.0" };
+	const pnpmAction = { id: "persist-pnpm", kind: "install-global", target: "pnpm", version: "11.1.1" };
+	const both = { id: "persist-package-managers", kind: "install-global", target: "package-managers" };
+	const prefix = { id: "configure-npm-prefix", kind: "configure", target: "npm-prefix" };
+	const node = { id: "persist-node", kind: "persist-runtime", target: "node", version: "24.21.0" };
+	const base = plan();
+	for (const extra of [[npmAction, pnpmAction], [both, prefix], [node, npmAction, prefix], [node, both], [npmAction, prefix]]) {
+		const h = harness();
+		const result = await runStandardInstall({ plan: { ...base, actions: [...extra, ...base.actions] }, consent: true }, h.adapters);
+		assert.equal(result.outcome, "blocked");
+		assert.equal(result.reason, "unsupported-plan");
+		assert.deepEqual(h.calls, []);
+	}
+	const altered = { ...base, actions: [{ ...npmAction, version: "11.20.0" }, ...base.actions] };
+	assert.equal((await runStandardInstall({ plan: altered, consent: true }, harness().adapters)).reason, "invalid-request");
 });

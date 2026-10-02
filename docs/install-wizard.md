@@ -1,8 +1,9 @@
 # Installation wizard groundwork
 
-The preflight planner, POSIX bootstrap, Windows prerequisite foundation and the
-standard installation runner module are implemented. Windows native validation
-remains unavailable locally.
+The preflight planner, real host probes, POSIX bootstrap, Windows prerequisite
+foundation and the standard installation runner module (including runtime
+persistence) are implemented. Windows native validation remains unavailable
+locally.
 **There is no working browser wizard or complete installation path yet.**
 The bootstrap stops explicitly when the future wizard entry is absent.
 For ordinary installation and terminal use, follow the [README](../README.md).
@@ -17,6 +18,10 @@ For ordinary installation and terminal use, follow the [README](../README.md).
 | `collectInventory({ platform, arch, probes })` | Calls injected named read-only probes serially. Missing/failed probes become unknown; error text is not retained. |
 | `planPreflight(inventory)` | Pure classification and ordered action intents; no commands, downloads, installation or setup execution. |
 | `pnpmGlobalBin({ platform, env })` | Pure pnpm 11 global-bin resolution: `{ pnpmHome, path, onPath }` or `null` when unknowable. |
+| `persistencePins` | Fixed runtime persisted under PNPM_HOME: Node 24.21.0, its bundled npm 11.19.0 and the pnpm acquisition pin. |
+
+`scripts/installer-probes.mjs` supplies the real read-only probes for
+`collectInventory`; see [Host probes](#host-probes).
 
 Current requirements come from `package.json` and
 [`gentle-ai-installer.mjs`](../scripts/gentle-ai-installer.mjs): Node ≥22.19.0,
@@ -35,15 +40,21 @@ minimum OS versions, libc compatibility, artifact trust and elevation handling
 remain to be verified in later units.
 
 Probes are named `node`, `pnpm`, `pi`, `shell`, `gentleAi`, `go`, `globalBin`, and
-`setup`. There are deliberately no built-in host process probes yet. Adapters
-must use bounded read-only checks, never launcher setup, postinstall, paid model
-requests, credential inspection or home writes. The collector cannot enforce
-purity of caller-provided functions; adapter implementations require review.
+`setup`. `collectInventory` has no default probes; the real implementations live
+in [`installer-probes.mjs`](#host-probes). Probes must use bounded read-only
+checks, never launcher setup, postinstall, paid model requests, credential
+inspection or home writes. The collector cannot enforce purity of
+caller-provided functions; adapter implementations require review.
 
 - Tool observations use `{ available: true, version, usable: true }`; absence is
   `{ available: false }`. Unknown availability, usability or unparseable versions
   block planning. Versions are exact stable `major.minor.patch` strings (optional
   `v` prefix); prereleases and raw command output are unknown, not silently reused.
+- Node may add `persistent` (resolvable from the user's PATH without bootstrap
+  tool directories) and `npm` (a genuine npm resolves there) booleans; pnpm
+  may add `persistent` (resolvable from the user's PATH). A `false` value
+  yields the runtime persistence intents below; absent or `null` values add
+  nothing, and the runner's own npm gate still applies.
 - Shell additionally needs `global: true`, proving normal global ownership.
   Compatible newer Node, Pi and Shell versions are reused, never downgraded.
 - pnpm additionally needs `compatible: true`, based on its actual Node engine and
@@ -81,6 +92,13 @@ this inventory, **not that verification has executed**.
 A clean target receives these intents in dependency order:
 
 1. Acquire and verify Node, then pnpm; prepare the usable global-bin environment.
+   Persist only what is missing. A bootstrap-only reusable Node gets the full
+   group, always together: `persist-node` (`persist-runtime`, version
+   24.21.0), `persist-package-managers` (`install-global`) and
+   `configure-npm-prefix` (`configure`). A persistent Node is never replaced:
+   it gets at most one intent, `persist-npm` (npm 11.19.0) when no genuine
+   npm resolves, `persist-pnpm` (pnpm 11.1.1) when pnpm is bootstrap-only, or
+   `persist-package-managers` when both are missing.
 2. On Windows, acquire and verify Go before missing native provisioning.
 3. Install Pi globally, then `gentle-pi` globally (its existing postinstall owns
    native installation). For an existing Shell with missing native binary, call
@@ -110,9 +128,57 @@ tests do not prove clean-machine installation on Windows, macOS or Linux.
 Focused verification:
 
 ```sh
-node --experimental-strip-types --test tests/installer-runner.test.ts tests/installer-preflight.test.ts tests/installer-posix-bootstrap.test.ts tests/installer-windows-bootstrap.test.ts
+node --experimental-strip-types --test tests/installer-probes.test.ts tests/installer-runner.test.ts tests/installer-preflight.test.ts tests/installer-posix-bootstrap.test.ts tests/installer-windows-bootstrap.test.ts
 sh -n scripts/bootstrap.sh
 ```
+
+## Host probes
+
+`scripts/installer-probes.mjs` exports `createProbes({ platform, env, run, fs,
+home?, verifyGentleAi? })`, returning the eight named probes for
+`collectInventory`. `env` is the wizard's own environment, with bootstrap tools
+first on PATH. Every probe returns the documented shape or the unknown shape
+`{ available: null }`; adapter errors are caught and never retained.
+
+| Export | Contract |
+| --- | --- |
+| `bootstrapRoots({ platform, env })` | Bootstrap tool roots: an absolute `GENTLE_BOOTSTRAP_TOOLS` plus every PATH entry segment named `.gentle-shell-bootstrap-tools.*` (case-insensitive on Windows). |
+| `userEnvironment({ platform, env })` | A copy of `env` whose PATH omits entries inside those roots: the user's real PATH. |
+| `hostAdapters({ maxOutputBytes?, maxTextBytes? })` | Real `run` and read-only `fs` adapters, described below. |
+
+Adapters:
+
+- `run(command, argv, { env, deadlineMs })` is the runner's process contract:
+  argv arrays with `shell:false`, SIGKILL at the deadline and stdout bounded
+  to `maxOutputBytes` (default 1 MiB, reported as `truncated: true`). stderr
+  is discarded because it can hold private paths. A spawn failure returns
+  `code: null`. The deadline signals the direct child only, not descendants;
+  it then destroys the child's pipes and settles as timed out (`code: null`,
+  `signal: "SIGKILL"`) without waiting for `close`, which a descendant holding
+  stdout could otherwise delay indefinitely.
+- `fs` offers `isFile`, `isDirectory`, `exists` (only ENOENT/ENOTDIR are
+  absent), `realpath`, `readText` (regular files up to `maxTextBytes`) and
+  `writable` (an access check, never a write). No probe creates, deletes or
+  writes anything.
+
+Probes run only fixed argv: `node --version`, `pnpm --version`,
+`pnpm list -g --depth 0 --json` (once, shared), `go version` and npm's
+`npm-cli.js --version`. Deadlines are 10 seconds for versions and 30 seconds for
+the listing; truncated, nonzero, signalled or timed-out output is unknown.
+
+| Probe | Evidence |
+| --- | --- |
+| `node` | The first `node` on the user's real PATH (Go `exec.LookPath` order, PATHEXT on Windows), else the bootstrap one. `persistent` says which. `npm` is the runner's genuine-npm proof in the user's real PATH with `$PNPM_HOME/bin` first, so a bootstrap npm never counts. A Windows `.cmd`/`.bat` cannot run with `shell:false` and is unknown. |
+| `pnpm` | The runner's invocation (bootstrap handoff, or a POSIX `pnpm` on PATH). `compatible` requires a successful run (pnpm checks its Node engine at startup) at the pinned major and at least the pin, because the runner's argv is verified for pnpm 11 only. `persistent` is whether any `pnpm` resolves on the real PATH. |
+| `pi`, `shell` | pnpm-global entries from the listing. A package that is not pnpm-global but whose command (`pi`, `gentle-shell`) resolves on the real PATH is unknown, never absent, so another installation is not duplicated. Shell is `usable` only when `$PNPM_HOME/bin/gentle-shell` (`.cmd` on Windows) exists. |
+| `gentleAi` | Absent without gentle-pi or without its package-native binary. Otherwise compatible only for this package version, a listed path that resolves inside PNPM_HOME and `verifyGentleAi` (default `packageNativeGentleAi`) success; anything else is unknown. |
+| `go` | `go version` from the real PATH; `go1.22` normalizes to `1.22.0`; devel and release-candidate builds are unknown. |
+| `globalBin` | `pnpmGlobalBin` over the real PATH; `writable` is write access on the nearest existing ancestor of `$PNPM_HOME/bin` (itself included). A non-directory ancestor is not writable. |
+| `setup` | `false` when gentle-pi is absent; unknown otherwise, because an existing Shell's setup readiness has no read-only evidence yet. |
+
+A failed, empty or unparseable listing makes Pi, Shell, Gentle AI and setup
+unknown, which blocks planning. A package listed in two projects is ambiguous
+and unknown.
 
 ## Standard installation runner
 
@@ -130,8 +196,9 @@ The request is exactly `{ plan, consent }`. `plan` must be an unmodified
 request keys, commands, URLs, roots, environment or altered versions are
 rejected as `invalid-request` before any process runs. `consent` must be the
 boolean `true`; anything else returns `consent-required` with no commands. The
-consent covers the whole displayed plan, including the PATH profile change
-below, so the wizard must show that change before asking.
+consent covers the whole displayed plan, including the PATH profile change and
+the runtime persistence and npm prefix actions below, so the wizard must show
+those changes before asking.
 
 ### Adapters
 
@@ -142,7 +209,7 @@ below, so the wizard must show that change before asking.
 | `env` | The user's environment. Never mutated; child environments are copies. |
 | `home` | Optional; defaults to `HOME` (`USERPROFILE` on Windows). |
 | `run(command, argv, { env, deadlineMs })` | Argv arrays with `shell:false` semantics and a hard deadline; returns `{ code, signal, timedOut, stdout }` with bounded output. |
-| `fs` | Read-only `isFile`, `realpath`, `readText`. The runner has no delete or write operation. |
+| `fs` | Read-only `isFile`, `realpath`, `readText` (also used to read pnpm's npm shim). The runner has no delete or write operation. |
 | `verifyGentleAi({ packageRoot, platform, env, home })` | Returns `{ ok: true }` only for package-native integrity. `packageNativeGentleAi` is the default implementation over `runtime/gentle-ai-binary.mjs`. |
 | `log({ step, status, reason? })` | Receives step identifiers and statuses only, never raw command output or error text. |
 
@@ -153,9 +220,13 @@ No-process gates, all returning `blocked`:
 1. Valid request and explicit consent.
 2. Preflight blockers are absent. Only the clean-stack plan is supported: it
    must contain `install-pi`, `install-shell`, `setup-shell` and
-   `verify-readiness`, plus optional `setup-global-bin`. Prerequisite acquisition
-   intents (Node, pnpm, Go), `provision-native`, partial existing stacks and
-   fully reused stacks are `unsupported-plan`.
+   `verify-readiness`, plus optional `setup-global-bin` and at most one exact
+   persistence variant: `persist-node` + `persist-package-managers` +
+   `configure-npm-prefix`, or `persist-package-managers` alone, or
+   `persist-npm` alone, or `persist-pnpm` alone. Prerequisite acquisition
+   intents (Node, pnpm, Go), `provision-native`, any other persistence
+   combination, partial existing stacks and fully reused stacks are
+   `unsupported-plan`.
 3. On Windows, Go must be `reusable` in the plan because gentle-pi's postinstall
    may build Gentle AI from source; T4 never acquires Go (`go-required`).
 4. `pnpmGlobalBin` resolves PNPM_HOME (`pnpm-home-unknown` otherwise) and
@@ -178,7 +249,14 @@ Pre-install checks, returning `blocked` on a false result or adapter error:
    first candidate must be the npm package's own `bin/npm-cli.js` (symlink
    target on POSIX; on Windows the candidate must be `npm.cmd`, with
    `node_modules/npm` beside it), its `package.json` must name `npm` with a
-   stable version, and `node npm-cli.js --version` must print that version. On
+   stable version, and `node npm-cli.js --version` must print that version.
+   A candidate in `$PNPM_HOME/bin` must instead be pnpm's global npm: a POSIX
+   symlink, or a shim whose single quoted `npm-cli.js` target (`$basedir/...`
+   on POSIX, `%~dp0\...` or `%dp0%\...` on Windows, or absolute), must
+   resolve (realpath) to `node_modules/npm/bin/npm-cli.js` inside PNPM_HOME,
+   and the package must be exactly `npm@11.19.0`. Two different targets, a
+   target outside PNPM_HOME or another version are rejected. When the plan
+   adds npm, this check runs after the add and fails as a mutating step. On
    Windows an `npm.com`, `npm.exe` or `npm.bat` that resolves first, in the
    same or an earlier directory, blocks as `npm-shadowed`; any other mismatch
    blocks as `npm-unavailable`. No npm wrapper is created.
@@ -192,7 +270,9 @@ Pre-install checks, returning `blocked` on a false result or adapter error:
    unexpected JSON shape, blocks as `global-list-unavailable`.
 
 Mutating and verification steps, returning `failed` with `failedStep` and the
-`completed` step list:
+`completed` step list. When the plan contains a persistence variant, its
+[runtime persistence](#runtime-persistence) steps run first, after
+`check-global-bin` and `check-existing-stack`:
 
 1. `install-global`: exactly one
    `pnpm add -g @earendil-works/pi-coding-agent@1.0.0 gentle-pi@<package version> --allow-build=gentle-pi`.
@@ -201,17 +281,19 @@ Mutating and verification steps, returning `failed` with `failedStep` and the
    approval runs only gentle-pi's postinstall, which provisions Gentle AI. No
    blanket build approval is ever passed.
 2. `verify-global-list`: `pnpm list -g --depth 0 --json` must report exactly the
-   two pinned versions, and gentle-pi's absolute `path` must resolve inside
-   PNPM_HOME.
+   two pinned versions in the single listed project that owns gentle-pi
+   (other projects, such as the persisted npm and pnpm, are ignored), and
+   gentle-pi's absolute `path` must resolve inside PNPM_HOME.
 3. `verify-shell-bin`: `$PNPM_HOME/bin/gentle-shell` (`gentle-shell.cmd` on
    Windows) exists.
 4. `verify-gentle-ai`: package-native integrity of the installed package. A
    declared development override (`GENTLE_PI_GENTLE_AI_DEV_BINARY` or its
    registration file) is never package-native proof and fails.
 5. `shell-setup`: the installed public CLI, `node <gentle-pi>/bin/gentle-shell.mjs
-   setup`, with the child environment. Nonzero, signal or deadline fails. The
-   runner neither duplicates setup logic nor writes the automatic provisioning
-   marker.
+   setup`, with the child environment minus every `GENTLE_BOOTSTRAP_*` and
+   `GENTLE_INSTALL_*` key (case-insensitive on Windows); pnpm commands keep the
+   handoff. Nonzero, signal or deadline fails. The runner neither duplicates
+   setup logic nor writes the automatic provisioning marker.
 6. `persist-path`, only when `$PNPM_HOME/bin` was not on the user's own PATH:
    `pnpm setup`, then the outcome is `terminal-action-required` with
    `action: "open-new-terminal"`. A child environment never proves that a fresh
@@ -220,8 +302,60 @@ Mutating and verification steps, returning `failed` with `failedStep` and the
 `ready` requires every step above to complete and the global bin to already be
 on the user's PATH. Skipped, unverified or failed mandatory steps never yield
 `ready`, and no existing installation, home or data is deleted on any outcome.
-Deadlines are 30 seconds for probes and `pnpm setup` and 20 minutes each for
-the install and setup steps.
+Deadlines are 30 seconds for probes, npm config commands and `pnpm setup`, and
+20 minutes each for the install, persistence and setup steps.
+
+### Runtime persistence
+
+A bootstrap-acquired Node lives in a temporary tools directory, so a later
+terminal would not find `node` or the genuine npm that Gentle AI's Engram step
+needs. Every persistence step uses the same pnpm argv prefix and child
+environment as the stack install, and the runner persists only what is missing.
+
+For a bootstrap-only Node, the full group runs these fixed steps:
+
+1. `persist-node`: `pnpm runtime set node 24.21.0 -g`, which installs Node under
+   PNPM_HOME and links `node` into `$PNPM_HOME/bin`.
+2. `persist-package-managers`: `pnpm add -g npm@11.19.0 pnpm@11.1.1`, which
+   adds the `npm`, `npx` and `pnpm` shims to `$PNPM_HOME/bin`. No build
+   approval of any kind is passed.
+3. `verify-persistent-runtime`: in the child environment both `node` and `npm`
+   must resolve (`exec.LookPath` order) from `$PNPM_HOME/bin`, the node must be
+   spawnable (`.exe`/`.com` on Windows) and print `v24.21.0`.
+4. `check-npm`: the genuine-npm gate above, now accepting the pinned shim.
+5. `configure-npm-prefix`: with a pnpm-managed node, npm's default prefix is
+   derived from a path inside pnpm's store, so `npm install -g` would write
+   there. The runner reads `npm config get prefix` with the persisted node.
+   Unless an `npm_config_prefix` (any case) or `PREFIX` variable is set, it
+   asks pnpm for its store with `pnpm store path` (30-second deadline); a
+   failed, non-absolute or unresolvable answer fails this step rather than
+   assuming `$PNPM_HOME/store`. Only when the effective prefix resolves inside
+   that store does it run
+   `npm config set prefix <PNPM_HOME> --location=user`, then require the
+   effective prefix to equal PNPM_HOME. An explicit user prefix elsewhere
+   makes npm report that prefix, so it is never overwritten. A failed read,
+   write or verification fails this step with the completed list.
+
+The outcome then also reports `npmPrefix: "configured"` or `"unchanged"`.
+
+A persistent Node is never replaced or shadowed: there is no `runtime set` and
+no prefix change. One fixed add runs, then only the matching checks:
+
+| Intent | Command | Then |
+| --- | --- | --- |
+| `persist-npm` | `pnpm add -g npm@11.19.0` | `check-npm` |
+| `persist-pnpm` | `pnpm add -g pnpm@11.1.1` | `verify-persistent-pnpm` |
+| `persist-package-managers` | `pnpm add -g npm@11.19.0 pnpm@11.1.1` | `check-npm`, `verify-persistent-pnpm` |
+
+`check-npm` is the genuine-npm gate above. `verify-persistent-pnpm` requires
+the first `pnpm` in the child environment to be in `$PNPM_HOME/bin` (`.cmd`
+on Windows), resolving like the npm shim to `node_modules/pnpm/bin/pnpm.mjs`
+inside PNPM_HOME, with `package.json` `pnpm@11.1.1`, and `node pnpm.mjs
+--version` printing `11.1.1`. When pnpm is not added, `check-npm` stays a
+pre-install gate.
+`npm config get` ignores `--location`, and `.npmrc` files can hold credentials,
+so the runner never reads them: a user-level prefix that itself points into
+the store is indistinguishable from the default and would be replaced.
 
 ### Remaining T7 real-machine checks
 
@@ -244,7 +378,26 @@ must establish on real Windows, macOS and Linux machines:
   resolvable);
 - the chosen deadlines suffice on slow networks, and pnpm's registry and
   update-notice traffic is acceptable;
-- interrupted installs are recoverable by rerunning the wizard without data loss.
+- interrupted installs are recoverable by rerunning the wizard without data loss;
+- `pnpm runtime set node -g` on Windows links a spawnable `node.exe` (a `.cmd`
+  shim fails `verify-persistent-runtime`), and pnpm's real `npm.cmd`/POSIX
+  shim text matches the accepted target forms;
+- npm's Windows global layout: it places executables in the prefix itself, so
+  a PNPM_HOME prefix may not put `npm install -g` executables on PATH; also
+  whether Windows npm's default prefix lands in the store at all;
+- `pnpm store path` reports a directory (for example `$PNPM_HOME/store/v11`)
+  that actually contains the effective npm prefix of a pnpm-managed node;
+- pnpm's real global `pnpm` shim targets `node_modules/pnpm/bin/pnpm.mjs`, and
+  a persistent Node missing npm has a prefix outside the store (the variant
+  without `runtime set` configures no prefix);
+- download integrity of the Node runtime and the npm and pnpm tarballs fetched
+  during persistence (the Linux lab saw a lockfile hash matching the Node pin,
+  not download-time verification);
+- pnpm's update notifier contacting registry.npmjs.org during these commands;
+- `pnpm list -g --json` listing persisted npm/pnpm and the stack as separate
+  projects with a usable gentle-pi `path`;
+- the probes' `access(W_OK)` writability check, which ignores Windows ACLs, and
+  process deadlines that kill only the direct child.
 
 ## POSIX bootstrap: bundle-local tooling only
 
