@@ -1,0 +1,126 @@
+import { readFileSync } from "node:fs";
+import {
+	INSTALLER_VERSION,
+	GENTLE_AI_WINDOWS_MINIMUM_GO_VERSION,
+} from "./gentle-ai-installer.mjs";
+
+// Read package metadata only: never import the launcher or execute postinstall.
+const metadata = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+function minimum(range) {
+	if (!/^>=\d+\.\d+\.\d+$/.test(range)) throw new Error("Unsupported preflight requirement range");
+	return range.slice(2);
+}
+export const requirements = Object.freeze({
+	node: minimum(metadata.engines.node),
+	pi: minimum(metadata.peerDependencies["@earendil-works/pi-coding-agent"]),
+	pnpm: metadata.packageManager.replace(/^pnpm@/, ""),
+	shell: metadata.version,
+	gentleAi: INSTALLER_VERSION,
+	go: GENTLE_AI_WINDOWS_MINIMUM_GO_VERSION,
+});
+
+const probeNames = ["node", "pnpm", "pi", "shell", "gentleAi", "go", "globalBin", "setup"];
+
+/** Collect with caller-owned read-only probes; no default process/home adapters.
+ * A tool probe returns { available, version, usable }; missing is available:false.
+ * pnpm also needs compatible:true (runtime/capability evidence), shell global:true,
+ * and Gentle AI compatible:true (normal binary resolver/integrity evidence).
+ * globalBin returns { available, path, writable, onPath }; setup returns boolean.
+ * Version values are exact stable versions, not raw arbitrary command output.
+ */
+export async function collectInventory({ platform, arch, probes = {} }) {
+	const inventory = { platform, arch };
+	for (const name of probeNames) {
+		try {
+			inventory[name] = probes[name] ? await probes[name]() : { available: null };
+		} catch {
+			// Do not retain probe errors: they can contain private paths or credentials.
+			inventory[name] = { available: null };
+		}
+	}
+	return inventory;
+}
+
+function versionParts(version) {
+	if (typeof version !== "string" || !/^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)) return null;
+	const parts = version.replace(/^v/, "").split(".").map(Number);
+	return parts.every(Number.isSafeInteger) ? parts : null;
+}
+function compareVersions(left, right) {
+	for (let i = 0; i < 3; i += 1) {
+		if (left[i] !== right[i]) return left[i] > right[i] ? 1 : -1;
+	}
+	return 0;
+}
+function classify(observation, required, extraCheck = () => true, exact = false) {
+	if (observation?.available === false) return "unavailable";
+	if (observation?.available !== true) return "unknown";
+	const version = versionParts(observation.version);
+	if (!version || observation.usable !== true) return "unknown";
+	const order = compareVersions(version, versionParts(required));
+	if (order < 0 || (exact && order !== 0)) return "incompatible";
+	const extra = extraCheck(observation);
+	if (extra === false) return "incompatible";
+	return extra === true ? "reusable" : "unknown";
+}
+
+/** Pure ordered intent plan, not executable commands or a readiness certificate.
+ * Blocked plans contain no actions: never overwrite an incompatible/unknown tool.
+ * Compatible newer Node/Pi/Shell versions remain owned by their existing install.
+ */
+export function planPreflight(inventory) {
+	const tools = {};
+	const blockers = [];
+	const actions = [];
+	const { platform, arch } = inventory;
+	const supportedTarget = ["linux", "darwin", "win32"].includes(platform) && ["x64", "arm64"].includes(arch);
+	if (!supportedTarget) {
+		return { tools, blockers: [{ code: "unsupported-target", tool: "target" }], actions, ready: false };
+	}
+	function record(name, status, required) {
+		tools[name] = { status, ...(required ? { required } : {}) };
+		if (status === "unknown" || status === "incompatible") {
+			blockers.push({ code: `${status}-tool`, tool: name });
+		}
+	}
+	for (const name of ["node", "pi", "shell"]) {
+		record(name, classify(inventory[name], requirements[name], name === "shell" ? (o) => o.global : undefined), requirements[name]);
+	}
+	// packageManager pins the acquisition choice, not a minimum supported pnpm.
+	// Existing versions require explicit engine/capability evidence from the probe.
+	record("pnpm", classify(inventory.pnpm, "0.0.0", (o) => o.compatible), requirements.pnpm);
+	record("gentleAi", classify(inventory.gentleAi, requirements.gentleAi, (o) => o.compatible, true), requirements.gentleAi);
+	const needsNative = tools.gentleAi.status === "unavailable";
+	record("go", platform === "win32" && needsNative ? classify(inventory.go, requirements.go) : "not-required", requirements.go);
+	const bin = inventory.globalBin;
+	const binKnown = bin?.available === true && typeof bin.path === "string" && bin.path.trim().length > 0 &&
+		bin.writable === true && typeof bin.onPath === "boolean";
+	record("globalBin", bin?.available === false ? "unavailable" : binKnown ? (bin.onPath ? "reusable" : "needs-setup") : "unknown");
+	const missingShell = tools.shell.status === "unavailable";
+	let setupStatus = "unknown";
+	if (missingShell || needsNative || inventory.setup === false) setupStatus = "needs-setup";
+	else if (inventory.setup === true) setupStatus = "reusable";
+	record("setup", setupStatus);
+	if (blockers.length) return { tools, blockers, actions, ready: false };
+
+	function action(id, kind, target, version) {
+		actions.push({ id, kind, target, ...(version ? { version } : {}) });
+	}
+	function acquire(name) {
+		if (tools[name].status !== "unavailable") return;
+		action(`acquire-${name}`, "acquire", name, requirements[name]);
+		action(`verify-${name}`, "verify", name);
+	}
+	acquire("node");
+	acquire("pnpm");
+	if (tools.globalBin.status !== "reusable") action("setup-global-bin", "setup", "globalBin");
+	acquire("go");
+	if (tools.pi.status === "unavailable") action("install-pi", "install-global", "pi", requirements.pi);
+	if (missingShell) action("install-shell", "install-global", "shell", requirements.shell);
+	// Global gentle-pi postinstall owns native provisioning when Shell is missing.
+	// Otherwise the later runner must reuse that existing installer, not duplicate it.
+	if (needsNative && !missingShell) action("provision-native", "existing-installer", "gentleAi", requirements.gentleAi);
+	if (tools.setup.status !== "reusable") action("setup-shell", "normal-setup", "shell");
+	action("verify-readiness", "verify", "stack");
+	return { tools, blockers, actions, ready: actions.length === 1 };
+}
