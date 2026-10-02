@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { syncBuiltinESMExports } from "node:module";
 import fs from "node:fs/promises";
-import { readFileSync } from "node:fs";
-import startup, { readGitBranch } from "../extensions/startup-banner.ts";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import startup, { isPiCliSubcommandInvocation, readGitBranch } from "../extensions/startup-banner.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { stripAnsi } from "../lib/terminal-theme.ts";
@@ -74,6 +76,15 @@ test("startup branch lookup uses direct git argv and hides its Windows child", a
 });
 
 test("startup banner keeps animating after invalidate and cleans up on dispose", async (t) => {
+	const home = mkdtempSync(join(tmpdir(), "gp-banner-quality-"));
+	writeFileSync(join(home, "animations.json"), '{"schema":"gentle-pi.animations/v1","policy":"quality"}');
+	const previousHome = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = home;
+	t.after(() => {
+		if (previousHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previousHome;
+		rmSync(home, { recursive: true, force: true });
+	});
 	t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
 	t.mock.method(fs, "readFile", async () => JSON.stringify({ showRose: true, showTextLogo: true, color: "pink" }));
 	syncBuiltinESMExports();
@@ -115,11 +126,96 @@ test("startup banner keeps animating after invalidate and cleans up on dispose",
 	assert.equal(renders, afterDispose, "session_shutdown cleanup stays idle");
 });
 
+test("animation modes retain banner lifetime policy, final artwork and approximate duration", async (t) => {
+	const home = mkdtempSync(join(tmpdir(), "gp-banner-animations-"));
+	const previousHome = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = home;
+	t.after(() => {
+		if (previousHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previousHome;
+		rmSync(home, { recursive: true, force: true });
+	});
+	t.mock.method(fs, "readFile", async () => JSON.stringify({ showRose: true, showTextLogo: true, color: "pink" }));
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const argv = process.argv;
+	process.argv = ["node"];
+	t.after(() => { process.argv = argv; });
+	for (const [key, value] of [["rows", 40], ["columns", 200]] as const) {
+		const descriptor = Object.getOwnPropertyDescriptor(process.stdout, key);
+		Object.defineProperty(process.stdout, key, { configurable: true, writable: true, value });
+		t.after(() => descriptor ? Object.defineProperty(process.stdout, key, descriptor) : Reflect.deleteProperty(process.stdout, key));
+	}
+	let boot: () => void;
+	let pulse: () => void;
+	let active = false;
+	let delay = 0;
+	let clock = 0;
+	let paints = 0;
+	t.mock.method(Date, "now", () => clock);
+	t.mock.method(globalThis, "setTimeout", (callback: () => void, ms: number) => {
+		if (ms === 50) boot = callback; // Never run operational stats/home reads.
+		return {};
+	});
+	t.mock.method(globalThis, "setInterval", (callback: () => void, ms: number) => {
+		pulse = callback; delay = ms; active = true; return {};
+	});
+	t.mock.method(globalThis, "clearInterval", () => { active = false; });
+	let start: (event: unknown, ctx: unknown) => Promise<void>;
+	let shutdown: () => void;
+	let header: { render(width: number): string[]; dispose(): void };
+	// Stroke warmup is module-global; keep duration driving isolated from cold-start tests.
+	const { default: isolatedStartup } = await import(new URL("../extensions/startup-banner.ts?animations", import.meta.url).href) as typeof import("../extensions/startup-banner.ts");
+	isolatedStartup({ on: (name: string, fn: typeof start) => {
+		if (name === "session_start") start = fn;
+		if (name === "session_shutdown") shutdown = fn as unknown as () => void;
+	}, registerCommand() {}, getCommands: () => [], getAllTools: () => [] } as unknown as ExtensionAPI);
+	const ctx = { hasUI: true, cwd: "/fixture", ui: { setHeader(factory: (tui: unknown, theme: unknown) => typeof header) {
+		header = factory({ requestRender() { paints++; } }, { fg: (_role: string, text: string) => text });
+	} } };
+	const save = (policy: string) => writeFileSync(join(home, "animations.json"), JSON.stringify({ schema: "gentle-pi.animations/v1", policy }));
+	try {
+		save("potato");
+		await start!({}, ctx); boot!();
+		assert.equal(active, false, "potato starts no animation interval");
+		const staticArt = stripAnsi(header!.render(200).join("\n"));
+		assert.match(staticArt, /[▄▀█]/);
+		assert.match(staticArt, /[\u2800-\u28ff]/);
+		header!.dispose();
+		let qualityDuration = 0;
+		let qualityPaints = 0;
+		for (const policy of ["quality", "performance"]) {
+			save(policy);
+			await start!({}, ctx); boot!();
+			for (let i = 0; i < 15; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+			assert.equal(delay, policy === "quality" ? 25 : 250);
+			save("potato"); // Already-created animation keeps its policy.
+			const began = clock;
+			const before = paints;
+			while (active && clock - began <= 5500) { clock += delay; pulse!(); }
+			assert.equal(active, false, "finishes and clears the interval");
+			assert.equal(stripAnsi(header!.render(200).join("\n")), staticArt);
+			if (policy === "quality") { qualityDuration = clock - began; qualityPaints = paints - before; }
+			else {
+				assert.ok(Math.abs(clock - began - qualityDuration) <= 250);
+				assert.ok(paints - before <= Math.ceil(qualityPaints / 10));
+			}
+			header!.dispose();
+		}
+	} finally { shutdown!(); }
+});
+
 // Drive the real header factory; background git/home reads never run.
 for (const showRose of [false, true]) for (const showTextLogo of [false, true]) {
 	test(`startup art respects rose=${showRose}, logo=${showTextLogo} and cyan palette`, async (t) => {
 		t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
 		t.mock.method(fs, "readFile", async () => JSON.stringify({ showRose, showTextLogo, color: "cyan" }));
+		t.mock.method(fs, "readdir", async () => [
+			{ name: "sdd-apply.md", isFile: () => true },
+			{ name: "sdd-status.md", isFile: () => true },
+			{ name: "gentle-ai-worker.md", isFile: () => true },
+			{ name: "notes.txt", isFile: () => true },
+		] as any);
 		syncBuiltinESMExports();
 		t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
 		const argv = process.argv;
@@ -134,7 +230,8 @@ for (const showRose of [false, true]) for (const showTextLogo of [false, true]) 
 		let shutdown: Function;
 		let header: { render(width: number): string[]; dispose(): void };
 		const writes: string[] = [];
-		startup({ on: (name: string, fn: Function) => {
+		const { default: coldStartup } = await import(new URL(`../extensions/startup-banner.ts?art-${showRose}-${showTextLogo}`, import.meta.url).href) as typeof import("../extensions/startup-banner.ts");
+		coldStartup({ on: (name: string, fn: Function) => {
 			if (name === "session_start") start = fn;
 			if (name === "session_shutdown") shutdown = fn;
 		}, registerCommand() {}, getCommands: () => [], getAllTools: () => [] } as unknown as ExtensionAPI);
@@ -142,7 +239,8 @@ for (const showRose of [false, true]) for (const showTextLogo of [false, true]) 
 		await start!({}, { hasUI: true, cwd: "/fixture", ui: { setHeader: (factory: Function) => {
 			header = factory({ requestRender() {} }, { fg: (_role: string, text: string) => text });
 		} } });
-		t.mock.timers.tick(50);
+		t.mock.timers.tick(200);
+		for (let i = 0; i < 5; i++) await Promise.resolve();
 		try {
 			for (const width of [40, 80, 160, 200]) {
 				const lines = header!.render(width);
@@ -150,6 +248,8 @@ for (const showRose of [false, true]) for (const showTextLogo of [false, true]) 
 				const text = stripAnsi(lines.join("\n"));
 				assert.match(text, /GIT:/);
 				assert.match(text, /PATH:/);
+				assert.doesNotMatch(text, /phases\b/i, "historical SDD files never appear as active phases");
+				assert.match(text, /AGENTS:\s+1 agents/, "only the installed background agent is counted");
 				if (width >= 160) {
 					assert.equal(/[\u2800-\u28ff]/.test(text), showRose);
 					assert.equal(/[▒▄▀█]/.test(text), showTextLogo);
@@ -177,3 +277,122 @@ for (const showRose of [false, true]) for (const showTextLogo of [false, true]) 
 		}
 	});
 }
+
+test("startup banner counts MCP servers from the active Pi agent dir", async (t) => {
+	const agentDir = join(tmpdir(), "gp-banner-agent-dir");
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	t.after(() => {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+	});
+	t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+	// Only the active agent dir's mcp.json declares two servers; any other
+	// mcp.json (for example ~/.pi/agent/mcp.json) declares five.
+	t.mock.method(fs, "readFile", async (path: string) => {
+		if (String(path) === join(agentDir, "mcp.json")) return JSON.stringify({ mcpServers: { one: {}, two: {} } });
+		if (String(path).endsWith("mcp.json")) return JSON.stringify({ mcpServers: { a: {}, b: {}, c: {}, d: {}, e: {} } });
+		return JSON.stringify({ showRose: false, showTextLogo: false, color: "pink" });
+	});
+	t.mock.method(fs, "readdir", async () => [] as any);
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const argv = process.argv;
+	process.argv = ["node"];
+	t.after(() => { process.argv = argv; });
+	for (const [key, value] of [["rows", 40], ["columns", 160]] as const) {
+		const descriptor = Object.getOwnPropertyDescriptor(process.stdout, key);
+		Object.defineProperty(process.stdout, key, { configurable: true, writable: true, value });
+		t.after(() => descriptor ? Object.defineProperty(process.stdout, key, descriptor) : Reflect.deleteProperty(process.stdout, key));
+	}
+	let start: Function;
+	let shutdown: Function;
+	let header: { render(width: number): string[]; dispose(): void };
+	const { default: coldStartup } = await import(new URL("../extensions/startup-banner.ts?mcp-agent-dir", import.meta.url).href) as typeof import("../extensions/startup-banner.ts");
+	coldStartup({ on: (name: string, fn: Function) => {
+		if (name === "session_start") start = fn;
+		if (name === "session_shutdown") shutdown = fn;
+	}, registerCommand() {}, getCommands: () => [], getAllTools: () => [] } as unknown as ExtensionAPI);
+	await start!({}, { hasUI: true, cwd: "/fixture", ui: { setHeader: (factory: Function) => {
+		header = factory({ requestRender() {} }, { fg: (_role: string, text: string) => text });
+	} } });
+	t.mock.timers.tick(200);
+	for (let i = 0; i < 5; i++) await Promise.resolve();
+	try {
+		assert.match(stripAnsi(header!.render(160).join("\n")), /MCP:\s+2 server\(s\)/);
+	} finally {
+		header!.dispose();
+		shutdown!();
+	}
+});
+
+test("startup banner counts packages, extensions and agents from the active Pi agent dir", async (t) => {
+	const agentDir = join(tmpdir(), "gp-banner-active-agent-dir");
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	t.after(() => {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+	});
+	t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+	// The active agent dir declares one package with two extensions and three
+	// agents; any other agent dir (for example ~/.pi/agent) declares more.
+	t.mock.method(fs, "readFile", async (path: string) => {
+		const file = String(path);
+		if (file === join(agentDir, "settings.json")) return JSON.stringify({ packages: ["npm:@acme/pi-kit@1.0.0"] });
+		if (file.endsWith("settings.json")) return JSON.stringify({ packages: ["npm:a", "npm:b", "npm:c", "npm:d"] });
+		if (file === join(agentDir, "npm", "node_modules", "@acme/pi-kit", "package.json")) {
+			return JSON.stringify({ pi: { extensions: ["one.ts", "two.ts"] } });
+		}
+		if (file.endsWith("package.json")) return JSON.stringify({ pi: { extensions: ["x.ts", "y.ts", "z.ts", "w.ts", "v.ts"] } });
+		if (file.endsWith("mcp.json")) return JSON.stringify({ mcpServers: {} });
+		return JSON.stringify({ showRose: false, showTextLogo: false, color: "pink" });
+	});
+	const agentFile = (name: string) => ({ name, isFile: () => true });
+	t.mock.method(fs, "readdir", async (path: string) => String(path) === join(agentDir, "agents")
+		? [agentFile("one.md"), agentFile("two.md"), agentFile("three.md"), agentFile("sdd-apply.md")] as any
+		: [agentFile("a.md"), agentFile("b.md"), agentFile("c.md"), agentFile("d.md"), agentFile("e.md"), agentFile("f.md"), agentFile("g.md")] as any);
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const argv = process.argv;
+	process.argv = ["node"];
+	t.after(() => { process.argv = argv; });
+	for (const [key, value] of [["rows", 40], ["columns", 160]] as const) {
+		const descriptor = Object.getOwnPropertyDescriptor(process.stdout, key);
+		Object.defineProperty(process.stdout, key, { configurable: true, writable: true, value });
+		t.after(() => descriptor ? Object.defineProperty(process.stdout, key, descriptor) : Reflect.deleteProperty(process.stdout, key));
+	}
+	let start: Function;
+	let shutdown: Function;
+	let header: { render(width: number): string[]; dispose(): void };
+	const { default: coldStartup } = await import(new URL("../extensions/startup-banner.ts?active-agent-dir-counts", import.meta.url).href) as typeof import("../extensions/startup-banner.ts");
+	coldStartup({ on: (name: string, fn: Function) => {
+		if (name === "session_start") start = fn;
+		if (name === "session_shutdown") shutdown = fn;
+	}, registerCommand() {}, getCommands: () => [], getAllTools: () => [] } as unknown as ExtensionAPI);
+	await start!({}, { hasUI: true, cwd: "/fixture", ui: { setHeader: (factory: Function) => {
+		header = factory({ requestRender() {} }, { fg: (_role: string, text: string) => text });
+	} } });
+	t.mock.timers.tick(200);
+	for (let i = 0; i < 10; i++) await Promise.resolve();
+	try {
+		const text = stripAnsi(header!.render(160).join("\n"));
+		assert.match(text, /PLUGINS:\s+1 package\(s\)/);
+		assert.match(text, /EXTENSIONS:\s+2 active/);
+		assert.match(text, /AGENTS:\s+3 agents/);
+	} finally {
+		header!.dispose();
+		shutdown!();
+	}
+});
+
+test("launcher-injected extension directories do not suppress the startup banner", () => {
+	// Gentle Shell launches `pi -e <package-root-dir>`; a directory path is not a subcommand.
+	assert.equal(isPiCliSubcommandInvocation(["node", "pi", "-e", "/opt/gentle-pi"]), false);
+	assert.equal(isPiCliSubcommandInvocation(["node", "pi", "--no-extensions", "-e", "/a", "-e", "/b/ext.mjs"]), false);
+	assert.equal(isPiCliSubcommandInvocation(["node", "pi"]), false);
+	assert.equal(isPiCliSubcommandInvocation(["node", "pi", "-e", "/opt/gentle-pi", "install"]), false);
+	for (const sub of ["install", "remove", "uninstall", "update", "list", "config", "auth"]) {
+		assert.equal(isPiCliSubcommandInvocation(["node", "pi", sub, "npm:x"]), true, sub);
+	}
+});

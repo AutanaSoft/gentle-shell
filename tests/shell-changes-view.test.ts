@@ -62,6 +62,30 @@ function mouseButton(type: TuiMouseEvent["type"], button: TuiMouseEvent["button"
 	return { type, button, x, y, screenX: x, screenY: y, width: 80, height, shift: false, alt: false, ctrl: false };
 }
 
+// H1 (odd/tasks/usage-click-and-changes-attribution.md): the same shared
+// hover role every other clickable surface uses, and it never overrides the
+// already-selected row's own role.
+test("WorktreeChangesView paints the shared hover role over an unselected row, never the selected one", async () => {
+	const trees = ["/main", "/linked"].map((root) => ({ root, branch: root === "/main" ? "main" : undefined, model: changesModel([file("same.ts", 1, 0)]) }));
+	const component = new WorktreeChangesView(trees, {
+		theme: taggedTheme, rows: 10,
+		loadDiff: async () => "",
+		onOpen: () => {},
+		onClose: () => {}, requestRender() {}, onRefresh() {},
+	});
+	component.render(80);
+	// Row y=1 is the selected group header (/main, index 0); row y=2 is /linked's header.
+	const hoverOther = component.handleMouse(mouseButton("move", "none", 3, 2, 10));
+	assert.deepEqual(hoverOther, { handled: true, render: true });
+	assert.match(component.render(80)[2]!, /<warning>[^<]*detached/, "hovering the unselected row paints the shared hover role");
+	assert.doesNotMatch(component.render(80)[1]!, /<warning>/, "the selected row keeps its own role");
+
+	const hoverSelected = component.handleMouse(mouseButton("move", "none", 3, 1, 10));
+	assert.deepEqual(hoverSelected, { handled: true, render: true });
+	assert.doesNotMatch(component.render(80)[1]!, /<warning>/, "hovering the selected row still never paints the hover role");
+	assert.doesNotMatch(component.render(80)[2]!, /<warning>/, "leaving the other row clears its hover");
+});
+
 test("worktree accordion keeps groups and nested files beside a framed lazy diff", async () => {
 	const trees = ["/main", "/linked"].map((root) => ({ root, branch: root === "/main" ? "main" : undefined, model: changesModel([file("same.ts", 1, 0)]) }));
 	const loaded: string[] = [];
@@ -446,6 +470,30 @@ test("colorDiff drops git headers and colors hunks, additions, and removals by r
 	]);
 });
 
+test("colorDiff sanitizes control characters, strips carriage returns, and expands tabs", () => {
+	const raw = [
+		"diff --git a/file.ts b/file.ts\r",
+		"index 1..2 100644\r",
+		"--- a/file.ts\r",
+		"+++ b/file.ts\r",
+		"@@ -1,3 +1,3 @@\r",
+		" \tconst before = 1;\r",
+		"-\tconst removed = 2;\x1b[31minjected\x1b[0m\r",
+		"+\t\tconst added = 3;\x07\r",
+	].join("\n");
+	const lines = colorDiff(raw, taggedTheme);
+	assert.deepEqual(lines, [
+		"<customMessageLabel>@@ -1,3 +1,3 @@</customMessageLabel>",
+		"<toolDiffContext>   const before = 1;</toolDiffContext>",
+		"<toolDiffRemoved>-  const removed = 2;injected</toolDiffRemoved>",
+		"<toolDiffAdded>+    const added = 3;</toolDiffAdded>",
+	]);
+	for (const line of lines) {
+		assert.ok(!line.includes("\t"), "tabs must be expanded to spaces");
+		assert.ok(!line.includes("\r"), "carriage returns must be stripped");
+	}
+});
+
 test("ChangesView renders a framed two-pane layout at the requested size", async () => {
 	const { view: component } = view();
 	await settle();
@@ -458,6 +506,34 @@ test("ChangesView renders a framed two-pane layout at the requested size", async
 	assert.match(plain[2], /^│   A lib\/b\.ts +\+10 -0 +│  const a = 1; +│$/);
 	assert.match(plain[11], /^╰─+╯$/);
 	assert.match(plain[10], /j\/k file .* o open in editor .* esc close/);
+});
+
+test("ChangesView renders tabbed CRLF modified diffs with aligned frame columns", async () => {
+	const tabbedDiff = [
+		"diff --git a/lib/a.ts b/lib/a.ts\r",
+		"index 1..2 100644\r",
+		"--- a/lib/a.ts\r",
+		"+++ b/lib/a.ts\r",
+		"@@ -1,2 +1,3 @@\r",
+		" \tconst a = 1;\r",
+		"-\tconst b = 2;\r",
+		"+\tconst b = 3;\r",
+		"+\t\tconst c = 4;\r",
+	].join("\n");
+	const { view: component } = view({
+		loadDiff: async () => tabbedDiff,
+	});
+	await settle();
+	const lines = component.render(80);
+	assert.equal(lines.length, 12);
+	for (const line of lines) {
+		assert.equal(visibleWidth(line), 80, `"${stripAnsi(line)}" is not 80 wide`);
+		assert.ok(!line.includes("\r"), "carriage return must not leak into rendered line");
+		assert.ok(!line.includes("\t"), "raw tab must not leak into rendered line");
+	}
+	const plain = lines.map(stripAnsi);
+	assert.match(plain[1], /^│ ▸ M lib\/a\.ts +\+2 -1 +│ @@ -1,2 \+1,3 @@ +│$/);
+	assert.match(plain[2], /^│   A lib\/b\.ts +\+10 -0 +│ +const a = 1; +│$/);
 });
 
 test("ChangesView loads the selected diff lazily and moves with j/k and arrows", async () => {
@@ -501,6 +577,29 @@ test("ChangesView opens the selected file and closes on escape or q", async () =
 	component.handleInput("\x1b");
 	component.handleInput("q");
 	assert.equal(events.filter((event) => event === "close").length, 2);
+});
+
+// H1 (odd/tasks/usage-click-and-changes-attribution.md): the same shared
+// hover role every other clickable surface uses, and it never overrides the
+// already-selected row's own role.
+test("ChangesView paints the shared hover role over an unselected file row, never the selected one", async () => {
+	const { view: component } = view({ theme: taggedTheme });
+	await settle();
+	component.render(80);
+	// Row y=1 is the selected file (lib/a.ts, index 0); row y=2 is lib/b.ts.
+	const hoverOther = component.handleMouse(mouseButton("move", "none", 3, 2, 12));
+	assert.deepEqual(hoverOther, { handled: true, render: true });
+	assert.match(component.render(80)[2]!, /<warning>[^<]*lib\/b\.ts/, "the hovered, unselected row paints the shared hover role");
+	assert.doesNotMatch(component.render(80)[1]!, /<warning>/, "the selected row keeps its own role instead");
+
+	const hoverSelected = component.handleMouse(mouseButton("move", "none", 3, 1, 12));
+	assert.deepEqual(hoverSelected, { handled: true, render: true });
+	assert.doesNotMatch(component.render(80)[1]!, /<warning>/, "hovering the selected row still never paints the hover role");
+	assert.doesNotMatch(component.render(80)[2]!, /<warning>/, "leaving lib/b.ts clears its hover paint");
+
+	const left = component.handleMouse(mouseButton("move", "none", 60, 1, 12)); // outside the list pane entirely
+	assert.deepEqual(left, { handled: true, render: true });
+	assert.doesNotMatch(component.render(80).join("\n"), /<warning>/, "moving off the list clears any hover");
 });
 
 test("ChangesView click selects a file without opening it", async () => {
