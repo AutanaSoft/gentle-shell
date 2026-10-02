@@ -275,6 +275,21 @@ test("/api/plan reports blockers with guidance and no profile change when alread
 	}
 });
 
+test("/api/plan keeps the preflight's camelCase tool names, but no other tool text", async () => {
+	const { host, port, login } = await start({ collect: async () => {
+		const result = collected({ gentleAi: { available: true, version: "1.0.0", usable: true, compatible: false },
+			globalBin: { available: true, path: BIN, writable: false, onPath: true } });
+		result.plan.blockers.push({ code: "unknown-tool", tool: "Evil<tool>" }, { code: "unknown-tool", tool: "x".repeat(65) });
+		return result;
+	} });
+	try {
+		const view = await plan(port, await login());
+		assert.deepEqual(view.blockers.map((blocker: { tool: string }) => blocker.tool), ["gentleAi", "globalBin", "unknown", "unknown"]);
+	} finally {
+		await host.close("test");
+	}
+});
+
 test("install body must be exactly { planId, consent: true }; the runner is not called otherwise", async () => {
 	const { host, port, login, runs } = await start();
 	try {

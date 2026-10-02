@@ -197,6 +197,8 @@ test("required package paths include every browser installation wizard file", ()
 		"scripts/bootstrap.sh",
 		"scripts/bootstrap.cmd",
 		"assets/install-wizard/index.html",
+		"assets/install-wizard/wizard.js",
+		"assets/install-wizard/wizard.css",
 	];
 	assert.deepEqual([...installerPaths].sort(), [...expected].sort());
 	for (const relativePath of expected) assert.ok(requiredPaths.includes(relativePath), relativePath);

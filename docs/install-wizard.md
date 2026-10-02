@@ -2,12 +2,13 @@
 
 The preflight planner, real host probes, POSIX bootstrap, Windows prerequisite
 foundation, the standard installation runner module (including runtime
-persistence) and the secure local wizard host with its packaged entry are
-implemented. Windows native validation remains unavailable locally.
-**There is no interactive browser wizard or complete installation path yet:**
-the served page is a static placeholder until the wizard UI ships (T6), so
-nothing can be installed from the browser.
-For ordinary installation and terminal use, follow the [README](../README.md).
+persistence), the secure local wizard host with its packaged entry and the
+interactive browser wizard UI are implemented. Windows native validation
+remains unavailable locally.
+**This is not a supported installation path yet:** published bootstrap
+artifacts, real browsers and native clean-machine runs are still unverified
+(T7). For ordinary installation and terminal use, follow the
+[README](../README.md).
 
 ## What is available
 
@@ -502,7 +503,7 @@ simply unknown paths.
 | --- | --- |
 | `GET /session?code=` | Consumes the one-time code, sets the cookie and returns 200 `text/html` that refreshes to `/`; 401 for a missing, wrong, used or expired code. |
 | `GET /`, `/wizard.js`, `/wizard.css` | `index.html`, `wizard.js`, `wizard.css` from `assetsDir`; 404 when absent. |
-| `GET /api/plan` | Runs `collectPlan()` server-side, stores the plan under a new opaque `planId` and returns a view model: `actions` (`id` plus a fixed English description), `blockers` (`code`, `tool`, guidance), `profileChange` (whether `pnpm setup` edits the shell profile or Windows user PATH, and the bin directory), `persistence` (which of node, npm and pnpm go under `$PNPM_HOME`) and `ready`. 409 while installing. Accepts no input. |
+| `GET /api/plan` | Runs `collectPlan()` server-side, stores the plan under a new opaque `planId` and returns a view model: `actions` (`id` plus a fixed English description), `blockers` (`code`, `tool` — a preflight tool key such as `node` or `gentleAi`, otherwise `unknown` — and guidance), `profileChange` (whether `pnpm setup` edits the shell profile or Windows user PATH, and the bin directory), `persistence` (which of node, npm and pnpm go under `$PNPM_HOME`) and `ready`. 409 while installing. Accepts no input. |
 | `POST /api/install` | Body exactly `{ "planId": string, "consent": true }` (400 otherwise, including extra keys or a plan). 409 `install-running` while an installation runs; 409 `already-completed` once an installation has a final outcome (one installation per wizard run; the outcome is never replaced); 409 `plan-changed` for a stale `planId` or when a fresh re-inventory differs from the stored plan. Otherwise 202, and the runner receives the server-stored plan with `consent: true`. |
 | `GET /api/progress?after=<seq>` | Entries `{ seq, step, status, reason }` after `seq` from a ring buffer of the last 200; values outside `[a-z][a-z0-9-]*` become `unknown`, and no other runner field is kept. Also `running` and the final `outcome` with fixed guidance. |
 | `POST /api/shutdown` | Body empty or `{}`. Closes the host (409 while installing). |
@@ -515,21 +516,79 @@ arrays `blockedReasons` and `failedSteps`; a test requires guidance for exactly
 those entries, and the runner tests check that every reason and step their
 scenarios observe is listed.
 
-### Placeholder page
+### Wizard UI
 
-`assets/install-wizard/index.html` is static HTML: it confirms the session,
-says that installation steps are not available yet and points to the README.
-The strict CSP blocks inline script and style, so it uses no script and only
-legacy color attributes (background `#1a1218`, text `#f6eff3`, links `#f095c8`)
-and `color-scheme: dark`; the system font stack and real styling arrive with
-`wizard.css` in T6. With this placeholder the wizard always ends with exit 1
-(Ctrl+C or the idle close).
+`assets/install-wizard/index.html`, `wizard.js` (an ES module) and
+`wizard.css` are the whole browser side. They load only from the host itself
+and follow its CSP: no inline script or style, no external fonts, images or
+requests, and server strings are inserted as text nodes only (never parsed as
+HTML).
+
+| Screen | What the user sees |
+| --- | --- |
+| Check | Shown while `GET /api/progress?after=0` and `GET /api/plan` run. A running installation resumes the Install screen; a finished one shows its outcome instead of a new plan. |
+| Review | Each fixed action with its description, the `profileChange` and `persistence` disclosures (state as text: "Will change", "No change"), one consent checkbox and **Install Gentle Shell**. Without the checkbox no request is sent; the error is announced and focus moves to the checkbox. Preflight blockers replace the plan with their guidance, **Check again** and **Close installer**. |
+| Install | Expected runner steps (`expectedSteps`) with a text status (Done, In progress, Pending, Failed, Blocked, Not run), a `<progress>` bar and a terminal-style log of `{ seq, step, status, reason }` entries. |
+| Done | `ready`: run `gentle-shell`. `terminal-action-required`: open a new terminal, then run `gentle-shell`. `blocked`/`failed`: the host's guidance, the reason or failed step, the steps that finished and the log. Every outcome offers **Close installer** (`POST /api/shutdown`). |
+
+Behavior worth knowing:
+
+- `409 plan-changed` reloads the plan, clears consent and explains why;
+  `409 install-running` and `already-completed` resume the current state; 401
+  or 403 ends the session with instructions to run the installer again. When
+  the install request itself fails on the network, the wizard checks
+  `/api/progress` once: a running or finished installation is followed
+  instead of an error, and the install request is never re-sent
+  automatically.
+- Progress polling starts at 500 ms, backs off by 1.5× to 4 s while nothing
+  changes, resets when entries arrive and stops on the final outcome. Five
+  consecutive errors, or three answers that are neither running nor finished,
+  stop polling and offer **Try again**. The client keeps the last 200 log
+  entries, like the host.
+- Accessibility: landmarks, one `h1` per screen that receives focus on each
+  step change (it is not interactive, so it shows no focus ring), a polite
+  `role="status"` region for progress and the closed state, an assertive
+  `role="alert"` region for errors, labelled controls, native buttons and
+  checkbox (keyboard operable), visible `:focus-visible` rings on every
+  control, text labels for every color state, `prefers-reduced-motion` and
+  `forced-colors` support.
+- Visual language: the gentlemanprogramming.com dark palette (accent
+  `#f095c8` on `#1a1218`) and its static hero glow behind the panel, with
+  local font stacks only and a text wordmark; no logos, brand images or
+  favicon are copied.
+
+`wizard.js` exports its pure models (`planModel`, `progressModel`,
+`outcomeModel`, `expectedSteps`, `installBody`, `interpretInstall`,
+`nextPoll`), its renderers and `createWizard({ document, fetch, setTimeout,
+clearTimeout, clipboard? })`; it starts itself only inside a page.
+`tests/install-wizard.test.ts` drives the controller with a fake DOM (where
+`innerHTML` throws), fake fetch and fake timers, and serves the real assets
+through the real host.
+
+### Development preview
+
+`scripts/install-wizard-preview.mjs` starts the **real** host with the real
+assets but a fake `collectPlan` and a fake runner, so it never probes the
+machine, runs a package manager, downloads or installs anything:
+
+```sh
+node scripts/install-wizard-preview.mjs --scenario=terminal --step-ms=600
+```
+
+Scenarios: `ready`, `terminal` (`terminal-action-required` with runtime
+persistence), `blocked` (`existing-stack`), `failed` (`install-global`),
+`plan-changed` (the first plan goes stale, so the host answers 409) and
+`preflight` (blockers, no plan). It prints the one-time session URL; Ctrl+C
+or **Close installer** stops it. The preview is a development tool: it is not
+listed in `installerPaths` (the entry never imports it), although it ships
+with the rest of `scripts/` in the package.
 
 ### Remaining T6/T7 checks
 
-- T6: the interactive `wizard.js`/`wizard.css` (plan, single consent, install,
-  progress polling, outcome, shutdown) must work under the CSP above; add both
-  to `installerPaths` when they ship; verify in a real browser.
+- T6 (done): `wizard.js` and `wizard.css` are in `installerPaths`; the preview
+  scenarios ran end to end in headless Chromium 1148 at 1440 and 390 px wide,
+  including a keyboard-only consent and install, with no CSP violations.
+  Screen readers and other browsers were not tested.
 - T7: the opener on each desktop (including a missing `xdg-open`); that the
   redirect file opens in the browser rather than another `.html` handler, and
   that sandboxed browsers with a private `/tmp` (for example snap or flatpak

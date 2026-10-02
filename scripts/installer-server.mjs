@@ -127,6 +127,11 @@ const ID = /^[a-z][a-z0-9-]{0,63}$/;
 function identifier(value, fallback = "unknown") {
 	return typeof value === "string" && ID.test(value) ? value : fallback;
 }
+// Preflight tool names include camelCase keys such as gentleAi and globalBin.
+const TOOL = /^[a-z][A-Za-z0-9-]{0,63}$/;
+function toolName(value) {
+	return typeof value === "string" && TOOL.test(value) ? value : "unknown";
+}
 function plainObject(value) {
 	return typeof value === "object" && value !== null && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
 }
@@ -162,7 +167,7 @@ function planView(planId, { inventory, plan }) {
 		})),
 		blockers: plan.blockers.map((blocker) => ({
 			code: identifier(blocker.code),
-			tool: identifier(blocker.tool),
+			tool: toolName(blocker.tool),
 			guidance: guidance.blockers[blocker.code] ?? guidance.fallback,
 		})),
 		profileChange: {

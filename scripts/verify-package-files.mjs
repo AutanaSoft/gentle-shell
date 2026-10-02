@@ -20,6 +20,8 @@ export const installerPaths = Object.freeze([
   "scripts/bootstrap.sh",
   "scripts/bootstrap.cmd",
   "assets/install-wizard/index.html",
+  "assets/install-wizard/wizard.js",
+  "assets/install-wizard/wizard.css",
 ]);
 
 export const requiredPaths = [
