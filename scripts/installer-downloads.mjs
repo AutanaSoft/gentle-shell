@@ -20,11 +20,17 @@ const pnpm = Object.freeze({
 	maxBytes: 32 * 1024 * 1024,
 });
 
-/** Fixed allowlist; callers cannot supply download URLs, checksums or commands.
- * Node descriptors are reusable by T3; this unit intentionally has no Windows pin.
- */
+/** Fixed allowlist; callers cannot supply download URLs, checksums or commands. */
 export function artifactFor(name, platform, arch) {
 	if (name === "pnpm") return pnpm;
+	if (name === "node" && platform === "win32" && ["x64", "arm64"].includes(arch)) {
+		const pin = JSON.parse(readFileSync(new URL("./installer-windows-artifacts.json", import.meta.url), "utf8")).node;
+		const target = pin[arch];
+		if (pin.version !== "24.21.0" || target.url !== `https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-${arch}.zip` || !/^[a-f0-9]{64}$/.test(target.sha256) || pin.maxBytes !== 104857600) {
+			throw new Error("Windows artifact metadata rejected");
+		}
+		return Object.freeze({ name, version: pin.version, platform, arch, url: target.url, integrity: `sha256-${target.sha256}`, maxBytes: pin.maxBytes });
+	}
 	const hash = nodeHashes[`${platform}-${arch}`];
 	if (name !== "node" || !hash) throw new Error("Unsupported acquisition target");
 	return Object.freeze({ name, version: "24.21.0", platform, arch,
@@ -241,7 +247,12 @@ async function bootstrap(bundle, suppliedTools) {
 	}
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-	if (process.argv.length !== 5 || process.argv[2] !== "--bootstrap") {
+	if (process.argv.length === 5 && process.argv[2] === "--bootstrap-windows") {
+		import("./installer-windows.mjs").then(({ bootstrapWindows }) => bootstrapWindows({ bundle: process.argv[3], tools: process.argv[4], env: process.env })).catch(() => {
+			console.error("Windows bootstrap failed; policy, prerequisite or bundle evidence rejected. No installation completed.");
+			process.exitCode = 1;
+		});
+	} else if (process.argv.length !== 5 || process.argv[2] !== "--bootstrap") {
 		console.error("Use the bundle's POSIX bootstrap script");
 		process.exitCode = 1;
 	} else {

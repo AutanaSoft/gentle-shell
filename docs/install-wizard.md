@@ -1,6 +1,7 @@
 # Installation wizard groundwork
 
-The preflight planner and POSIX prerequisite bootstrap are implemented.
+The preflight planner, POSIX bootstrap and Windows prerequisite foundation are
+implemented. Windows native validation remains unavailable locally.
 **There is no working browser wizard or complete installation path yet.**
 The bootstrap stops explicitly when the future wizard entry is absent.
 For ordinary installation and terminal use, follow the [README](../README.md).
@@ -92,15 +93,15 @@ companion installer belongs in this plan.
 `npmCommand` supports pnpm, but independent upstream `npm exec` control remains
 unverified. **This preflight does not establish an npm-free installation chain.**
 
-Windows bootstrap, standard installation driver, local server, consent UI,
-distribution packaging and native acceptance evidence remain future work in the
+Standard installation driver, local server, consent UI, distribution packaging
+and native acceptance evidence remain future work in the
 [feature plan](../odd/tasks/browser-install-wizard.md). Deterministic injected
 tests do not prove clean-machine installation on Windows, macOS or Linux.
 
 Focused verification:
 
 ```sh
-node --experimental-strip-types --test tests/installer-preflight.test.ts tests/installer-posix-bootstrap.test.ts
+node --experimental-strip-types --test tests/installer-preflight.test.ts tests/installer-posix-bootstrap.test.ts tests/installer-windows-bootstrap.test.ts
 sh -n scripts/bootstrap.sh
 ```
 
@@ -176,7 +177,8 @@ timeout. Raw downloader/process error text is not logged.
 | Node native darwin/linux x64/arm64 | 24.21.0; parent-verified SHA256 entries from [official SHASUMS256](https://nodejs.org/dist/latest-v24.x/SHASUMS256.txt), applied to fixed [v24.21.0 archive URLs](https://nodejs.org/dist/v24.21.0/). |
 | pnpm JavaScript CLI | 11.1.1; parent-verified raw engine `>=22.13` (comparison minimum `22.13.0`), tarball and SHA512 SRI from [registry version metadata](https://registry.npmjs.org/pnpm/11.1.1); [fixed tarball](https://registry.npmjs.org/pnpm/-/pnpm-11.1.1.tgz). |
 
-The exact integrity values live in `installer-downloads.mjs`; the shell copies
+POSIX/pnpm integrity values live in `installer-downloads.mjs`; Windows Node
+values live in `installer-windows-artifacts.json`. The shell copies
 only Node's acquisition pin/hashes because first acquisition cannot depend on
 Node. Tests cross-check shell selection against the shared descriptors. Changing
 these pins requires renewed primary-source integrity evidence and updating both
@@ -194,9 +196,8 @@ arch)` (verified bytes), `compatibleEngine(range, version)`,
 caller URLs/checksums/commands. Trusted local test adapters inject byte download,
 digest and process checks; they are not exposed through any browser interface.
 The caller owns a private `tools` directory. `ensurePnpm` returns `{ env,
-acquired }`, leaving the supplied environment unchanged. Future T3 can reuse
-descriptors/integrity verification; Windows descriptors, process semantics and
-wrapper publication are intentionally not implemented by this POSIX unit.
+acquired }`, leaving the supplied environment unchanged. The Windows adapter reuses descriptors/integrity verification without changing
+POSIX process semantics, defaults or pins.
 
 ### Evidence, not platform certification
 
@@ -235,3 +236,161 @@ may keep pipes open; this unit does not claim bounded return or descendant
 cleanup for those programs. The fixtures prove neither native macOS behavior
 nor live artifact acquisition. Independent verification and native review remain
 separate parent-owned gates.
+
+## Windows foundation: fixed commands, no policy repair
+
+Run `scripts\bootstrap.cmd` from a trusted extracted bundle or checkout. Like
+POSIX, it stops before acquisition or home writes when T5's entry or any
+Windows-dependent helper/metadata file is missing. There is no published bundle
+URL, remote-pipe contract or working installation wizard yet.
+
+| Step | Windows contract |
+| --- | --- |
+| Entry | Small CMD entry invokes fixed stock Windows PowerShell commands with no profile. Paths are environment data, not interpolated PowerShell source. Delayed CMD expansion is disabled. |
+| Storage | Claim a new random-named prerequisite directory below LOCALAPPDATA, never reuse an existing destination. Verify each path component's reparse attributes, owner and role-specific ACL rights. Protect the claimed directory's DACL for the invoking SID, SYSTEM and Administrators, and read it back. |
+| Node | Reuse a proven stable existing Node ≥24.3.0 and the repository minimum. Otherwise acquire only the fixed official Node 24.21.0 Windows x64/arm64 ZIP, with no redirects and bounded transport, verify SHA256 before opening the archive, validate the whole namespace and extract only regular `node.exe`. |
+| pnpm | Reuse only a fully recognized npm CMD shim with package identity, bin target, stable CLI version, compatible engine and global add/bin help evidence. Preserve its sibling-Node preference or prove its inherited cwd/PATH/PATHEXT Node selection. Never execute the shim via cmd.exe. Unknown wrappers block without replacement. |
+| Missing pnpm | Shared pnpm 11.1.1 URL/SRI and raw `>=22.13` engine identity are unchanged. Parse bounded gzip/USTAR bytes, reject unsupported extensions, links and unsafe Windows namespaces before no-clobber publication. Return a direct Node + JS-entry invocation; do not fabricate a wrapper. |
+| Handoff | Existing Node helper starts the fixed future `bin/gentle-shell-install.mjs`. Only child PATH is refreshed. No persistent PATH, global installation, product root or companion installation is created here. |
+
+Windows Node SHA256 provenance is the parent's fresh primary-source read of
+[24.21.0 SHASUMS256](https://nodejs.org/dist/v24.21.0/SHASUMS256.txt). A narrow
+JSON metadata file lets pre-Node PowerShell and the shared Node helper consume
+the same Windows pins without mixing the POSIX archive format or copying pnpm
+integrity into another runtime. Pin changes still require fresh primary evidence.
+
+### T4/T5 integration contract
+
+`scripts/installer-windows.mjs` exports:
+
+- `ensureWindowsPnpm({ tools, env, node?, adapters? })` → `{ acquired, env,
+  command, prefix }`. Invoke `[command, ...prefix, ...args]` with `shell:false`;
+  keep the returned environment. `tools` must be a private attempt-owned root.
+  Test adapters are trusted local code only, never a browser API.
+- `bootstrapWindows({ bundle, tools, env })` validates fixed bundle files and
+  requirements, acquires/reuses pnpm, then delegates to shared `launchWizard`.
+  CLI entry is `installer-downloads.mjs --bootstrap-windows BUNDLE TOOLS`.
+- T5 receives `GENTLE_INSTALL_PNPM_NODE` and `GENTLE_INSTALL_PNPM_ENTRY` as data
+  for that proven direct invocation. T4 must re-inventory before installation;
+  these values are not an arbitrary command API or persistent terminal repair.
+- Storage, namespace, wrapper, tar and bounded process functions are exported
+  for focused verification. Production storage verification requires native
+  Windows and fixed stock PowerShell ACL commands, never POSIX mode/UID evidence.
+
+Go preparation is deliberately **not implemented or invoked** in this unit.
+T4 must first prove whether its actual standard operation needs a compiler:
+package-native Gentle AI manifest/hash reuse can avoid Go, but the current
+installer resolves Go before source-bundle reuse. Do not reinstall just to test
+reuse, treat an explicit override as native-package evidence, or assume a source
+bundle bypasses Go. If required, T4 must use the existing companion installer,
+a lazy verified prerequisite with Go ≥1.25.10, and `GOTOOLCHAIN=local`.
+
+### Policy, bounds and evidence limits
+
+No unsigned `.ps1` file, script-file evaluation, execution-policy relaxation,
+file unblocking, certificate/TLS bypass, elevation, security exclusion or profile
+change is used. Restricted permits individual commands; it is not every Windows
+client's default. [Execution policies](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_execution_policies)
+do not override [AppLocker CMD/BAT rules](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/app-control-for-business/applocker/script-rules-in-applocker)
+or [managed App Control constraints](https://learn.microsoft.com/en-us/powershell/scripting/security/app-control/how-app-control-works).
+ConstrainedLanguage and any download/execution denial stop with an error. There
+is no fallback intended to evade those controls; if CMD itself is denied, the
+OS owns the denial diagnostic before our entry can run.
+
+Node transport is capped at 100 MiB with a 60-second request/total elapsed check
+and 10-second blocking-read timeout. A blocking read can consume up to that last
+read timeout beyond the elapsed check. ZIP metadata caps expanded size at 512 MiB
+and the selected executable at 150 MiB. Namespace checks reject traversal,
+backslashes, links/reparse attributes, duplicate/case-aliased names, conflicting
+file/directory parents, devices, ADS and trailing dots/spaces. Shared pnpm
+transport remains 32 MiB/60 seconds; tar expansion is capped at 128 MiB.
+Unsupported archive extensions fail closed. **Actual pnpm 11.1.1 TGZ acceptance
+is unproved:** it requires an integrity-backed offline copy of the pinned
+artifact, not a synthetic USTAR fixture or an injected digest. No such evidence
+was supplied and no acquisition is authorized in this correction.
+
+The pre-Node probe drains both pipes with a combined 1-MiB cap and kills only
+its direct child at 10 seconds, with a bounded one-second final wait. Node helper
+probes use the shared 15-second/1-MiB-style bounds and an unignorable direct-child
+kill. Valid output followed by a hang is a failure. Production never kills
+process groups or unrelated processes. Forked descendants retaining stdio are
+outside the guarantee; the interactive wizard has no total deadline.
+
+### Target-versus-ancestor ACL boundary
+
+For untrusted SIDs, the fixed predicates allow ReadAndExecute plus Synchronize
+(`0x1200a9`), with one narrow directory-specific distinction:
+
+| Role | Mutation boundary |
+| --- | --- |
+| Actual file/executable or owned tooling root (depth 0) | No write, deletion, child-deletion, ACL or ownership rights. |
+| Immediate parent (depth 1) | Same strict protection, including no CreateDirectories/AppendData. A new tooling claim starts checking its parent at this depth. |
+| Distant **existing directory** (depth ≥2) | May additionally allow CreateDirectories/AppendData (`4`) for sibling-only creation. WriteData/CreateFiles, WriteExtendedAttributes, WriteAttributes, Delete, DeleteSubdirectoriesAndFiles, WriteDACL, TakeOwnership, generic/unknown rights still reject. |
+
+Directory CreateDirectories and file AppendData share an enum bit; a distant
+ancestor here must actually be an existing directory. This is not permission to
+append to an executable. Reparse checks, trusted ownership and every actual path
+component remain mandatory. An inheritable ACE is checked again where it becomes
+effective on the descendant; InheritOnly does not grant rights on its current
+object. Effective unsafe allow ACEs block even when deny ACEs might otherwise
+limit them: this is a conservative mutation boundary, not a general Windows
+ACL/access-check framework. Trusted SIDs and protected-DACL readback are unchanged.
+The portable fixture model checks parity with all three fixed production
+predicates; it does not execute Windows ACL APIs or claim prevalence on Windows.
+
+Failure cleanup targets only the directory claimed by the actual attempt;
+collisions and unrelated storage are not removed. Successful prerequisite tools
+remain available to children. ACL/ancestor checks are conservative and may
+reject managed/nonstandard layouts rather than relax security. They do not
+claim protection from a malicious process running as the same principal or an
+administrator, nor eliminate same-principal time-of-check/time-of-use races.
+
+### Implemented fixtures versus missing execution evidence
+
+The native gates now contain runnable assertions, not empty or always-skipped
+callbacks. They run on Windows without a pending-fixture override:
+
+- Actual production claim/check predicates: protected-root creation, collision
+  preservation, harmless distant sibling creation, dangerous-right refusal,
+  strict target/immediate-parent checks and junction rejection. Junction creation
+  alone can be capability-skipped after an actual permission/unsupported error.
+  DACL changes are limited to new disposable fixture-owned objects.
+- Actual fixed PowerShell ZIP namespace/publication stage: local ZIPs with the
+  fixed archive/member identity; valid publication and traversal, aliases,
+  symlink/reparse attributes, ADS, devices, trailing names and parent conflicts.
+  The valid member contains the available fixture Node's unchanged bytes and is
+  never executed. Collision tests preserve unrelated published storage.
+- Actual pre-Node process primitive: approved Node executes local fixture JS;
+  nonzero exit, both output limits, quiet/stdout/stderr/both-pipe hangs and valid
+  output followed by a hang are rejected. Production drain/deadline/validation/
+  cleanup lines are unchanged. An independent hard guard checks recorded process
+  creation ticks and only kills fresh fixture-owned handles. A guard firing or
+  finding a residual recorded child is a test failure, not successful deadline
+  evidence; fixture cleanup cannot mask a missing production reap.
+- Complete local sentinel composition exercises CMD continuation/quoting,
+  bundle checks, claim, existing-Node resolution/probe, real helper pnpm handoff
+  and late cleanup with spaces, Unicode and CMD metacharacters. Only the approved
+  available Node's unchanged bytes are cloned into the disposable fixture PATH,
+  excluding operator npm/Corepack/pnpm shims. A local JS pnpm fixture provides
+  read-only identity/help responses. The trusted fixture helper copy has a fixed,
+  fail-only fetch guard: accidental acquisition throws before any network call;
+  it never supplies bytes/digests or adds a production integrity-bypass switch.
+  No network/install occurs.
+
+The fixtures preserve the exact production command lines and insert only
+fixture-owned process observations. They compose primitives in a disposable
+`.cmd`, not a loaded/evaluated PowerShell script file. Native AppLocker and
+ConstrainedLanguage denials still apply, with no policy relaxation. This is
+**stage/composition evidence, not uninstrumented whole-entry certification**:
+transport/integrity gates and the real pinned artifacts require separate proof.
+The original missing-entry test also exercises the unchanged whole entry.
+
+All these native fixtures are **implemented but unrun on this Linux host**:
+Windows PowerShell and a Windows runner are unavailable. Portable descriptor,
+ACL-predicate model, tar, wrapper and process fixtures are not native Windows
+proof. Native OS/ACL/CMD/loader acceptance remains T7 evidence work; the actual
+pinned pnpm TGZ offline acceptance remains an explicitly unfinished evidence
+item. No live artifact was downloaded/executed, operator-home installation
+performed, operator/global ACL or policy changed, or Windows OS minimum/support
+claimed. No same-principal-adversary or forked-descendant guarantee is made.
+T7 must establish those facts before advertising clean-machine support.
