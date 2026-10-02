@@ -2317,6 +2317,77 @@ test("applying a populated profile asks for confirmation naming the diff and abo
 	assert.deepEqual(fixture.liveSwitches, [], "declined apply must not switch the live session");
 });
 
+test("applying a populated profile with an unreadable routing authority discloses the replace effect instead of added labels", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings, settingsPath } = profilesStoreFixture(t);
+	writeSettings();
+	mkdirSync(fixture.configHome, { recursive: true });
+	// Malformed JSON makes readModelRoutingAuthorityAsync report the global
+	// models.json as invalid: real routes exist on disk but cannot be diffed.
+	writeFileSync(fixture.globalPath, "{ not json\n");
+	const subagentsPath = join(fixture.root, ".pi", "subagents.json");
+	writeFileSync(subagentsPath, `${JSON.stringify({ model_profiles: { worker: { model: "openai/alpha", effort: "high" } } }, null, 2)}\n`);
+	writeStore({
+		team: {
+			orchestrator: { model: "nan/glm5.3", thinking: "max" },
+			worker: { model: "openai/alpha" },
+		},
+	});
+	const before = {
+		models: readFileSync(fixture.globalPath, "utf8"),
+		subagents: readFileSync(subagentsPath, "utf8"),
+		store: readFileSync(storePath, "utf8"),
+		settings: readFileSync(settingsPath, "utf8"),
+	};
+
+	fixture.onConfirm(async () => false);
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 1, "a populated global apply must ask for confirmation");
+	const [title, message] = fixture.confirmCalls[0];
+	assert.equal(title, 'Apply profile "team"?');
+	assert.match(message, /could not be read/, "the dialog must disclose that the current global routing is unreadable");
+	assert.match(message, /replace global routing/, "the dialog must name the global replacement");
+	assert.match(message, /inherit/, "the dialog must disclose the clear-back-to-inherit effect");
+	assert.doesNotMatch(message, /\(added\)/, "unread current routes must not be presented as merely added");
+
+	assert.equal(readFileSync(fixture.globalPath, "utf8"), before.models, "declined apply must preserve models.json byte-identically");
+	assert.equal(readFileSync(subagentsPath, "utf8"), before.subagents, "declined apply must preserve subagents.json byte-identically");
+	assert.equal(readFileSync(storePath, "utf8"), before.store, "declined apply must preserve the profiles store byte-identically");
+	assert.equal(readFileSync(settingsPath, "utf8"), before.settings, "declined apply must preserve settings.json byte-identically");
+	assert.deepEqual(fixture.liveSwitches, [], "declined apply must not switch the live session");
+});
+
+test("applying a populated profile with an unreadable routing authority still applies when confirmed", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, "{ not json\n");
+	writeStore({
+		team: {
+			orchestrator: { model: "nan/glm5.3", thinking: "max" },
+			worker: { model: "openai/alpha" },
+		},
+	});
+
+	fixture.onConfirm(async () => true);
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 1, "a populated global apply must ask for confirmation");
+	const [, message] = fixture.confirmCalls[0];
+	assert.match(message, /could not be read/, "the dialog must disclose that the current global routing is unreadable");
+	const models = JSON.parse(readFileSync(fixture.globalPath, "utf8"));
+	assert.deepEqual(models, {
+		orchestrator: { model: "nan/glm5.3", thinking: "max" },
+		worker: { model: "openai/alpha" },
+	}, "confirmed apply proceeds as before despite the unreadable authority");
+	const store = JSON.parse(readFileSync(storePath, "utf8"));
+	assert.equal(store.active, "team", "active profile must be set to team when confirmed");
+});
+
 test("applying a populated profile with explicit confirmation applies the routing diff", async (t) => {
 	const { fixture, storePath, writeStore, writeSettings } = profilesStoreFixture(t);
 	writeSettings();

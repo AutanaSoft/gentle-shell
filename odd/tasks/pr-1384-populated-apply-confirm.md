@@ -44,6 +44,23 @@ naming what changes before anything is written.
   unchanged), `git diff --check` clean.
 - [ ] T4 — Work-unit commit (local only) and delivery report.
 
+## QA R4 closure (2026-09-30)
+
+- Finding: with an invalid routing authority the apply guard fell back to
+  `currentRouting = {}`, so the populated dialog labeled every profile route
+  `(added)` and never disclosed the replace/clear-to-inherit effect.
+- Fix: when `readModelRoutingAuthorityAsync` is not `valid` at prompt time, the
+  populated dialog uses an alternative message disclosing the unreadable
+  current routing and that applying replaces global routing so every existing
+  agent route may be replaced or cleared back to inherit. Guard structure,
+  decline semantics, empty/orchestrator-only dialogs, and repo-pinned silence
+  unchanged.
+- T5 — RED observed: `AssertionError ... the dialog must disclose that the
+  current global routing is unreadable` with actual message ending
+  `worker: openai/alpha (added). Continue?` on both new tests.
+- T6 — GREEN: focused profile tests 39 pass, full `tests/gentle-ai.test.ts`
+  98 pass, typecheck 187 diagnostics (baseline), `git diff --check` clean.
+
 ## Constraints
 
 - Strict TDD: observe RED before changing production code.

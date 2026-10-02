@@ -4198,14 +4198,22 @@ async function runProfilesPanelAction(
 			} else {
 				// A populated profile keeps the same abort semantics as the empty and
 				// orchestrator-only dialogs: declining leaves every surface untouched.
-				const changes = [...replacedRoutes, ...clearedRoutes, ...addedRoutes];
-				const changeSummary = changes.length > 0
-					? changes.join("; ")
-					: "its agent routes already match the current global routing";
-				const approved = await ctx.ui.confirm(
-					`Apply profile "${result.name}"?`,
-					`Profile "${result.name}" has agent routing entries. Applying it will replace global routing in ${sanitizeTerminalText(modelConfigPath(ctx.cwd))} with this profile's routes: ${changeSummary}. Continue?`,
-				);
+				// When the routing authority is unreadable the diff above was computed
+				// against an empty map, so the dialog must disclose the unreadable
+				// routing and the replace/clear-to-inherit effect instead of presenting
+				// existing routes as merely "(added)" (the #1349 wipe-bug class).
+				let confirmMessage: string;
+				if (savedRouting.status !== "valid") {
+					const modelsPath = sanitizeTerminalText(modelConfigPath(ctx.cwd));
+					confirmMessage = `Profile "${result.name}" has agent routing entries, but the current global routing in ${modelsPath} could not be read, so existing routes are not listed. Applying it will replace global routing in ${modelsPath} with this profile's routes, so every existing agent route may be replaced or cleared back to inherit. Continue?`;
+				} else {
+					const changes = [...replacedRoutes, ...clearedRoutes, ...addedRoutes];
+					const changeSummary = changes.length > 0
+						? changes.join("; ")
+						: "its agent routes already match the current global routing";
+					confirmMessage = `Profile "${result.name}" has agent routing entries. Applying it will replace global routing in ${sanitizeTerminalText(modelConfigPath(ctx.cwd))} with this profile's routes: ${changeSummary}. Continue?`;
+				}
+				const approved = await ctx.ui.confirm(`Apply profile "${result.name}"?`, confirmMessage);
 				if (!approved) return file;
 			}
 			// Applying spans three files — the store, models.json, and Pi's global
