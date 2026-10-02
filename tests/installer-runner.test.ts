@@ -5,7 +5,23 @@ import { join } from "node:path";
 import test from "node:test";
 import { gentleAiBinaryPath } from "../runtime/gentle-ai-binary.mjs";
 import { persistencePins, planPreflight, requirements } from "../scripts/installer-preflight.mjs";
-import { PI_INSTALL_VERSION, packageNativeGentleAi, runStandardInstall } from "../scripts/installer-runner.mjs";
+import {
+	PI_INSTALL_VERSION,
+	blockedReasons,
+	failedSteps,
+	packageNativeGentleAi,
+	runStandardInstall as runUnobserved,
+} from "../scripts/installer-runner.mjs";
+
+// Every scenario below runs through this wrapper, which records the blocked
+// reasons and failed steps the runner actually returns.
+const observed = { reasons: new Set<string>(), steps: new Set<string>() };
+async function runStandardInstall(...args: Parameters<typeof runUnobserved>) {
+	const result = await runUnobserved(...args);
+	if (result.outcome === "blocked") observed.reasons.add(result.reason);
+	if (result.outcome === "failed") observed.steps.add(result.failedStep);
+	return result;
+}
 
 const HOME = "/home/u";
 const PNPM_HOME = "/home/u/.local/share/pnpm";
@@ -832,4 +848,25 @@ test("persistence variants are accepted only as fixed sets", async () => {
 	}
 	const altered = { ...base, actions: [{ ...npmAction, version: "11.20.0" }, ...base.actions] };
 	assert.equal((await runStandardInstall({ plan: altered, consent: true }, harness().adapters)).reason, "invalid-request");
+});
+
+test("gates without PNPM_HOME or an absolute host Node block before any command", async () => {
+	const h = harness();
+	const noHome = await runStandardInstall({ plan: plan(), consent: true }, { ...h.adapters, env: { PATH: "/usr/bin" } });
+	assert.equal(noHome.reason, "pnpm-home-unknown");
+	const relativeNode = await runStandardInstall({ plan: plan(), consent: true }, { ...h.adapters, nodePath: "node" });
+	assert.equal(relativeNode.reason, "node-unavailable");
+	assert.deepEqual(h.calls, []);
+});
+
+// Declared last: node:test runs a file's top-level tests in order.
+test("exported blocked reasons and failed steps match what the scenarios observed", () => {
+	assert.ok(Object.isFrozen(blockedReasons) && Object.isFrozen(failedSteps));
+	assert.equal(new Set(blockedReasons).size, blockedReasons.length);
+	assert.equal(new Set(failedSteps).size, failedSteps.length);
+	for (const reason of observed.reasons) assert.ok(blockedReasons.includes(reason), reason);
+	for (const step of observed.steps) assert.ok(failedSteps.includes(step), step);
+	// Every reason is reached; only the single-manager add failures have no scenario above.
+	assert.deepEqual(blockedReasons.filter((reason) => !observed.reasons.has(reason)), []);
+	assert.deepEqual(failedSteps.filter((step) => !observed.steps.has(step)), ["persist-npm", "persist-pnpm"]);
 });

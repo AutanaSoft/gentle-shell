@@ -18,6 +18,40 @@ export const PI_INSTALL_VERSION = "1.0.0";
 export const PI_PACKAGE = "@earendil-works/pi-coding-agent";
 export const SHELL_PACKAGE = "gentle-pi";
 
+/** Every `reason` a `blocked` outcome can carry (for host guidance; no behavior). */
+export const blockedReasons = Object.freeze([
+	"invalid-request",
+	"consent-required",
+	"preflight-blocked",
+	"go-required",
+	"unsupported-plan",
+	"pnpm-home-unknown",
+	"node-unavailable",
+	"pnpm-unavailable",
+	"npm-unavailable",
+	"npm-shadowed",
+	"global-bin-mismatch",
+	"global-list-unavailable",
+	"existing-stack",
+]);
+/** Every `failedStep` a `failed` outcome can carry (for host guidance; no behavior). */
+export const failedSteps = Object.freeze([
+	"persist-node",
+	"persist-package-managers",
+	"persist-npm",
+	"persist-pnpm",
+	"verify-persistent-runtime",
+	"verify-persistent-pnpm",
+	"check-npm",
+	"configure-npm-prefix",
+	"install-global",
+	"verify-global-list",
+	"verify-shell-bin",
+	"verify-gentle-ai",
+	"shell-setup",
+	"persist-path",
+]);
+
 const SECOND = 1000;
 const MINUTE = 60 * SECOND;
 const deadlines = Object.freeze({ probe: 30 * SECOND, install: 20 * MINUTE, setup: 20 * MINUTE });

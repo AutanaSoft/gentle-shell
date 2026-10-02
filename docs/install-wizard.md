@@ -1,11 +1,12 @@
 # Installation wizard groundwork
 
 The preflight planner, real host probes, POSIX bootstrap, Windows prerequisite
-foundation and the standard installation runner module (including runtime
-persistence) are implemented. Windows native validation remains unavailable
-locally.
-**There is no working browser wizard or complete installation path yet.**
-The bootstrap stops explicitly when the future wizard entry is absent.
+foundation, the standard installation runner module (including runtime
+persistence) and the secure local wizard host with its packaged entry are
+implemented. Windows native validation remains unavailable locally.
+**There is no interactive browser wizard or complete installation path yet:**
+the served page is a static placeholder until the wizard UI ships (T6), so
+nothing can be installed from the browser.
 For ordinary installation and terminal use, follow the [README](../README.md).
 
 ## What is available
@@ -120,15 +121,15 @@ companion installer belongs in this plan.
 `npmCommand` supports pnpm, but independent upstream `npm exec` control remains
 unverified. **This preflight does not establish an npm-free installation chain.**
 
-Local server, consent UI, distribution packaging and native acceptance evidence
-remain future work in the
+The consent UI, distribution packaging and native acceptance evidence remain
+future work in the
 [feature plan](../odd/tasks/browser-install-wizard.md). Deterministic injected
 tests do not prove clean-machine installation on Windows, macOS or Linux.
 
 Focused verification:
 
 ```sh
-node --experimental-strip-types --test tests/installer-probes.test.ts tests/installer-runner.test.ts tests/installer-preflight.test.ts tests/installer-posix-bootstrap.test.ts tests/installer-windows-bootstrap.test.ts
+node --experimental-strip-types --test tests/installer-server.test.ts tests/verify-package-files.test.ts tests/installer-probes.test.ts tests/installer-runner.test.ts tests/installer-preflight.test.ts tests/installer-posix-bootstrap.test.ts tests/installer-windows-bootstrap.test.ts
 sh -n scripts/bootstrap.sh
 ```
 
@@ -398,6 +399,147 @@ must establish on real Windows, macOS and Linux machines:
   projects with a usable gentle-pi `path`;
 - the probes' `access(W_OK)` writability check, which ignores Windows ACLs, and
   process deadlines that kill only the direct child.
+
+## Local wizard host and entry
+
+`bin/gentle-shell-install.mjs` is the entry the bootstrap's `launchWizard`
+starts with no argv and inherited stdio. It is not a `package.json` `bin`
+command; it ships inside the package's `bin/` directory and is listed in
+`scripts/verify-package-files.mjs` with the other installer files
+(`installerPaths`).
+
+### Entry wiring
+
+- Probes: `createProbes` over the wizard's own environment with
+  `hostAdapters()` (argv spawn with `shell:false`, deadlines, bounded output,
+  read-only fs). Each plan request creates fresh probes, then
+  `collectInventory` and `planPreflight` run server-side.
+- Runner: `runStandardInstall` with `nodePath: process.execPath`, the same
+  adapters, `packageNativeGentleAi` and `runnerEnvironment`: the user's real
+  PATH from `userEnvironment`, so a temporary bootstrap npm or node never counts
+  as persistent and `onPath` stays truthful. A POSIX bootstrap pnpm, which the
+  bootstrap passes only through PATH, stays reachable as the **last** PATH
+  entry (its directory holds only the `pnpm` wrapper); Windows uses the
+  `GENTLE_INSTALL_PNPM_*` handoff, which `userEnvironment` keeps.
+- The entry prints the session URL, then opens it through a private redirect
+  file so the one-time code never appears in the opener's argv (visible to
+  local process listings). `writeRedirect` creates a fresh `mkdtemp` directory
+  `gentle-shell-install-*` under the OS temp dir (mode 0700) holding
+  `open.html` (mode 0600, exclusive create): a static page with a meta refresh
+  and a link to the session URL, no script. `openBrowser` passes only that file
+  path to a fixed opener spawned with `shell:false` and detached:
+  `/usr/bin/open` on macOS, `xdg-open` on Linux, `%SystemRoot%\System32\rundll32.exe
+  url.dll,FileProtocolHandler` on Windows (absolute, so the current directory is
+  never searched). Without an opener nothing is written; a failed write opens
+  nothing; an opener that fails to start removes the file. The file and its
+  directory are removed (file, then directory, best effort) once the code is
+  redeemed (`onRedeemed`) or when the host closes. File modes are POSIX only;
+  on Windows the per-user `%TEMP%` ACLs apply. The printed URL stays the
+  fallback.
+
+| Exit code | When |
+| --- | --- |
+| 0 | The last installation outcome was `ready` or `terminal-action-required`. The bootstrap keeps its tools. |
+| 1 | `blocked`, `failed`, a shutdown or idle close without a completed installation, a signal, or a host start failure. The bootstrap removes its tools. |
+
+SIGINT and SIGTERM close the server and exit with the code above. An
+installation that is still running is not cancelled cleanly: Ctrl+C reaches the
+runner's children through the terminal's process group, but SIGTERM does not.
+
+### Security model
+
+`scripts/installer-server.mjs` exports `createInstallerServer({ collectPlan,
+runInstall, assetsDir, now?, random?, limits?, onRedeemed? })`, a
+dependency-free `node:http` host. Every effect is injected; tests use fake
+plans and runners. `onRedeemed()` runs once when the one-time code is used; an
+exception from it is ignored.
+
+- Binds `127.0.0.1` on port 0 only and asserts the bound IPv4 address; never
+  `localhost`, `::` or `0.0.0.0`.
+- Every request needs `Host` exactly `127.0.0.1:<port>`, otherwise 421 before
+  any authorization (a missing Host included).
+- Every response carries `Content-Security-Policy: default-src 'self';
+  frame-ancestors 'none'; base-uri 'none'; form-action 'none'`,
+  `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`,
+  `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`,
+  `Cross-Origin-Resource-Policy: same-origin` and
+  `Cross-Origin-Opener-Policy: same-origin`. No CORS header is ever sent; error
+  bodies are generic codes such as `{ "error": "forbidden" }`.
+- Session: a 32-byte random secret becomes the cookie
+  `gentle_install_session` (`HttpOnly; SameSite=Strict; Path=/`). The printed
+  URL `http://127.0.0.1:<port>/session?code=<code>` carries a separate random
+  one-time code that expires after 2 minutes; a valid `GET /session` consumes it
+  and answers 200 with a minimal HTML page that sets the cookie and refreshes
+  to `/` (`<meta http-equiv="refresh" content="0; url=/">`, no script or
+  style, same strict headers). It is not a 303: reached from the `file:`
+  redirect page, a redirect chain counts as cross-site and the
+  `SameSite=Strict` cookie could be withheld on `/`, while a navigation started
+  by this same-origin page carries it. Code and cookie comparisons use
+  `timingSafeEqual`. Every asset and `/api/*` request needs the cookie (401).
+- A request with an `Origin` other than `http://127.0.0.1:<port>` is rejected
+  (403), including GET. Every `/api/*` request, GET included, needs the header
+  `X-Gentle-Install: 1` (403 otherwise, before any probe or plan rotation), so
+  a cross-origin fetch always needs a CORS preflight, which never succeeds.
+  POST also requires that exact Origin and `Content-Type: application/json`
+  (415 otherwise).
+- Bodies are limited to 1 KiB (413, by declared length and while streaming).
+  Server `headersTimeout` is 10 s and `requestTimeout` 30 s.
+- The host closes after 30 minutes without activity while no installation
+  runs (`limits.idleMs`, checked every 15 s with the injected clock). Only a
+  request with the right Host and a valid session cookie, a successful code
+  redemption or a finished installation counts as activity; wrong-Host,
+  unauthenticated or bad-code traffic never extends the timeout.
+
+### Endpoints
+
+Fixed allowlist, matched on the raw request path: anything else is 404, a
+known path with another method is 405. Only `/session` and `/api/progress`
+take a query string. Assets map to fixed file names in `assetsDir`; no request
+path reaches the filesystem, so traversal forms (`/../`, `%2e%2e`, `%2f`) are
+simply unknown paths.
+
+| Route | Contract |
+| --- | --- |
+| `GET /session?code=` | Consumes the one-time code, sets the cookie and returns 200 `text/html` that refreshes to `/`; 401 for a missing, wrong, used or expired code. |
+| `GET /`, `/wizard.js`, `/wizard.css` | `index.html`, `wizard.js`, `wizard.css` from `assetsDir`; 404 when absent. |
+| `GET /api/plan` | Runs `collectPlan()` server-side, stores the plan under a new opaque `planId` and returns a view model: `actions` (`id` plus a fixed English description), `blockers` (`code`, `tool`, guidance), `profileChange` (whether `pnpm setup` edits the shell profile or Windows user PATH, and the bin directory), `persistence` (which of node, npm and pnpm go under `$PNPM_HOME`) and `ready`. 409 while installing. Accepts no input. |
+| `POST /api/install` | Body exactly `{ "planId": string, "consent": true }` (400 otherwise, including extra keys or a plan). 409 `install-running` while an installation runs; 409 `already-completed` once an installation has a final outcome (one installation per wizard run; the outcome is never replaced); 409 `plan-changed` for a stale `planId` or when a fresh re-inventory differs from the stored plan. Otherwise 202, and the runner receives the server-stored plan with `consent: true`. |
+| `GET /api/progress?after=<seq>` | Entries `{ seq, step, status, reason }` after `seq` from a ring buffer of the last 200; values outside `[a-z][a-z0-9-]*` become `unknown`, and no other runner field is kept. Also `running` and the final `outcome` with fixed guidance. |
+| `POST /api/shutdown` | Body empty or `{}`. Closes the host (409 while installing). |
+
+`guidance` (exported) holds fixed English text for every runner blocked
+reason, every failed step, every preflight blocker code and both successful
+outcomes, plus a generic fallback; a runner exception becomes a `failed`
+outcome with the fallback. `scripts/installer-runner.mjs` exports the frozen
+arrays `blockedReasons` and `failedSteps`; a test requires guidance for exactly
+those entries, and the runner tests check that every reason and step their
+scenarios observe is listed.
+
+### Placeholder page
+
+`assets/install-wizard/index.html` is static HTML: it confirms the session,
+says that installation steps are not available yet and points to the README.
+The strict CSP blocks inline script and style, so it uses no script and only
+legacy color attributes (background `#1a1218`, text `#f6eff3`, links `#f095c8`)
+and `color-scheme: dark`; the system font stack and real styling arrive with
+`wizard.css` in T6. With this placeholder the wizard always ends with exit 1
+(Ctrl+C or the idle close).
+
+### Remaining T6/T7 checks
+
+- T6: the interactive `wizard.js`/`wizard.css` (plan, single consent, install,
+  progress polling, outcome, shutdown) must work under the CSP above; add both
+  to `installerPaths` when they ship; verify in a real browser.
+- T7: the opener on each desktop (including a missing `xdg-open`); that the
+  redirect file opens in the browser rather than another `.html` handler, and
+  that sandboxed browsers with a private `/tmp` (for example snap or flatpak
+  packages on Linux) can read it; that a meta refresh from a `file:` page
+  reaches the session and the session page's same-origin refresh to `/`
+  carries the `SameSite=Strict` cookie in each browser; browsers honouring
+  `SameSite=Strict` and the cookie on `127.0.0.1`; DNS-rebinding and
+  cross-site request rejection in real browsers; the bootstrap's handling of
+  exit 0 and 1 end to end; SIGTERM during a running installation; Windows
+  `rundll32` behavior; real probe and runner execution through the host.
 
 ## POSIX bootstrap: bundle-local tooling only
 
