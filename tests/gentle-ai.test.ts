@@ -17,7 +17,7 @@ import type {
 import { __testing, applyModelConfig, applyModelConfigAsync, createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { PROFILES_KIND, PROFILES_VERSION, readProfilesFileResult } from "../lib/agent-profiles.ts";
 import { readSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
-import type { AgentRoutingEntry } from "../lib/model-routing-authority.ts";
+import type { AgentRoutingEntry, ThinkingLevel } from "../lib/model-routing-authority.ts";
 type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel" | "getThinkingLevel">;
 import { PROFILE_PIN_KIND, PROFILE_PIN_VERSION, setProfilePinWorktreeResolverForTesting, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
 import { NATIVE_REVIEW_ERROR_CODE, NativeReviewCliError, type NativeReviewCli } from "../lib/native-review-cli.ts";
@@ -3618,7 +3618,7 @@ test("Enter binds the selected profile to the parent session and writes nothing"
 		ui: { notify(message: string, severity: string) { notifications.push({ message, severity }); } },
 		sessionManager: { getSessionId: () => "session-panel" },
 	} as unknown as ExtensionContext;
-	const live = { setModel: async () => true, setThinkingLevel() {} };
+	const live = { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel(): ThinkingLevel { return "medium"; } };
 	const file = readValidProfilesStore(storePath);
 	await __testing.runProfilesPanelAction(ctx, live, storePath, file, { type: "apply", name: "team" }, {});
 	const binding = readSessionProfileBinding("session-panel");
@@ -3648,7 +3648,7 @@ test("a keeps the legacy global apply semantics", async (t) => {
 		ui: { notify() {}, confirm: async () => true },
 		sessionManager: { getSessionId: () => "session-panel" },
 	} as unknown as ExtensionContext;
-	const live = { setModel: async () => true, setThinkingLevel() {} };
+	const live = { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel(): ThinkingLevel { return "medium"; } };
 	const file = readValidProfilesStore(storePath);
 	await __testing.runProfilesPanelAction(ctx, live, storePath, file, { type: "apply-global", name: "team" }, {});
 	assert.equal(JSON.parse(readFileSync(storePath, "utf8")).active, "team", "the global store claims the profile");
@@ -3669,7 +3669,7 @@ test("Enter with a winning pin binds the session and never touches the pin layer
 		ui: { notify() {} },
 		sessionManager: { getSessionId: () => "session-panel" },
 	} as unknown as ExtensionContext;
-	const live = { setModel: async () => true, setThinkingLevel() {} };
+	const live = { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel(): ThinkingLevel { return "medium"; } };
 	const file = readValidProfilesStore(storePath);
 	await __testing.runProfilesPanelAction(ctx, live, storePath, file, { type: "apply", name: "team" }, {});
 	assert.equal(readSessionProfileBinding("session-panel")?.name, "team");
@@ -3689,7 +3689,7 @@ test("Enter without a parent session id fails loud and writes nothing", async (t
 		hasUI: true,
 		ui: { notify(message: string, severity: string) { notifications.push({ message, severity }); } },
 	} as unknown as ExtensionContext;
-	const live = { setModel: async () => true, setThinkingLevel() {} };
+	const live = { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel(): ThinkingLevel { return "medium"; } };
 	const file = readValidProfilesStore(storePath);
 	await __testing.runProfilesPanelAction(ctx, live, storePath, file, { type: "apply", name: "team" }, {});
 	assert.equal(readSessionProfileBinding(undefined), undefined);
