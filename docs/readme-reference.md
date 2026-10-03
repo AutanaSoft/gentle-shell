@@ -87,6 +87,42 @@ flowchart TD
 
 This is guidance through existing tools, not a new CLI, phase, state engine, or execution harness. Static prompt tests and scripted hook checks prove instruction delivery, not autonomous model adherence; actual create/update/resume behavior requires observed Pi sessions.
 
+## Herdr active-work summary
+
+Under Herdr, root interactive Pi sessions publish only the `in_progress` Todo
+title, prefixed with `◐`. No phase, working/verifying label or tool fallback is
+used; prompts, tool arguments, output and Todo notes never supply text. Missing,
+invalid or empty active titles clear the display. Children, RPC/print modes and
+missing Herdr/socket contexts do not publish. The packaged extension loads through
+`gentle-shell`, including its isolated home; loading does not change your config.
+
+Herdr 0.8.2/protocol 20 needs **two separate rows**, not a newline inside a token:
+add `['$summary'], ['$summary2']` to the Agents sidebar rows in your config.
+The first row is `◐ title`; the extension prefixes the optional continuation with
+two spaces, though Herdr may normalize leading whitespace.
+Text wraps by display cells, preferring word boundaries unless a grapheme-safe
+word split avoids unnecessary truncation across the two rows. Ellipsis appears
+only on the last overflowing row, or on an extremely narrow first row. Each token
+is capped at 80 Unicode scalar characters, including icon, spaces and ellipsis,
+before Herdr normalizes it; both tokens together are capped at 256 UTF-8 bytes
+(excluding private newline framing). ANSI/bidi controls are removed while emoji
+ZWJ sequences are preserved. Pathological oversized graphemes may be replaced by
+an ellipsis.
+
+Width comes from root `sidebar_width` in `session.json` beside `HERDR_SOCKET_PATH`,
+less five columns for divider, possible scrollbar and the detail-row prefix.
+Snapshots are bounded to 256 KiB and cached for five seconds while active; persisted
+width can itself lag resize by five seconds. This is not live geometry. Missing,
+malformed, oversized or unsupported snapshots fall back to 24 available columns;
+other layouts may need manual adjustment. No CLI/socket query measures width.
+
+Source `gentle:activity` owns only `summary`/`summary2`, not lifecycle. Updates are
+latest-only, serialized and best-effort offline, with a 30-second TTL refreshed every
+10 seconds while active. Each report clears an unused second row; idle, session
+changes and shutdown clear both. TTL expiry covers abrupt exits. The managed Herdr
+bridge remains lifecycle authority. Reports invoke `HERDR_BIN_PATH` when supplied,
+otherwise `herdr` from `PATH`, without a shell.
+
 ## Navigation
 
 - [Capabilities](#capability-reference)
