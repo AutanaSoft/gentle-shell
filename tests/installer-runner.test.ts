@@ -537,6 +537,18 @@ test("$PNPM_HOME/bin absent from the user PATH runs pnpm setup and requires a ne
 	assert.equal(failed.failedStep, "persist-path");
 });
 
+test("pnpm setup gets the network setup deadline, not the short probe deadline", async () => {
+	// pnpm setup installs @pnpm/exe from the registry, so it shares the shell-setup budget.
+	const h = harness({ env: { PATH: "/opt/node/bin:/usr/bin" } });
+	await runStandardInstall({ plan: plan(), consent: true }, h.adapters);
+	const setupCalls = h.calls.filter((call) => call.args.at(-1) === "setup");
+	assert.equal(setupCalls.length, 2);
+	assert.equal(setupCalls[0].args.at(-2), SHELL_ENTRY);
+	assert.equal(setupCalls[1], h.calls.at(-1));
+	assert.equal(h.pnpmCalls().at(-1), "setup");
+	assert.deepEqual(setupCalls.map((call) => call.deadlineMs), [20 * 60 * 1000, 20 * 60 * 1000]);
+});
+
 test("already on PATH and fully verified is ready without pnpm setup", async () => {
 	const h = harness();
 	const result = await runStandardInstall({ plan: plan(), consent: true }, h.adapters);

@@ -326,7 +326,8 @@ test("host fs adapter is read-only and bounded", async () => {
 		assert.equal(await fs.readText(file), "hello");
 		await assert.rejects(fs.readText(join(dir, "large.txt")));
 		assert.equal(await fs.writable(dir), true);
-		if (process.getuid?.() !== 0) assert.equal(await fs.writable(join(dir, "locked")), false);
+		// chmod 0o500 does not make a Windows directory read-only; root bypasses mode bits.
+		if (process.platform !== "win32" && process.getuid?.() !== 0) assert.equal(await fs.writable(join(dir, "locked")), false);
 		assert.equal(await fs.realpath(join(dir, ".", "small.txt")), realpathSync(file));
 	} finally {
 		chmodSync(join(dir, "locked"), 0o700);

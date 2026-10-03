@@ -383,11 +383,21 @@ export function createInstallerServer({ collectPlan, runInstall, assetsDir, now 
 		}
 		stored = null;
 		const request = { plan: structuredClone(current.collected.plan), consent: true };
+		// Viewing an untrusted result can throw; the installation must still end
+		// with a failed outcome and release the single-flight and idle locks.
 		Promise.resolve()
 			.then(() => runInstall(request, record))
-			.then(outcomeView, () => outcomeView(null))
+			.then((result) => {
+				try {
+					return outcomeView(result);
+				} catch {
+					return outcomeView(null);
+				}
+			}, () => outcomeView(null))
 			.then((view) => {
 				lastOutcome = view;
+			})
+			.finally(() => {
 				installing = false;
 				lastActivity = now();
 			});

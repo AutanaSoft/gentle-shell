@@ -181,7 +181,9 @@ function findWindowsCommand(env, name = "pnpm") {
 	if (typeof path !== "string" || typeof pathExt !== "string") throw new Error("Unknown Windows PATH/PATHEXT");
 	const extensions = pathExt.toLowerCase().split(";");
 	if (!extensions.length || new Set(extensions).size !== extensions.length || extensions.some((extension) => !/^\.(com|exe|bat|cmd|vbs|vbe|js|jse|wsf|wsh|msc)$/.test(extension))) throw new Error("Unknown Windows PATHEXT semantics");
-	for (const directory of [process.cwd(), ...path.split(";")]) {
+	// CMD ignores empty entries (a trailing `;` is the Windows default); every
+	// other non-absolute, quoted or UNC entry still fails closed.
+	for (const directory of [process.cwd(), ...path.split(";").filter((entry) => entry !== "")]) {
 		if (!win32.isAbsolute(directory) || directory.startsWith("\\\\") || directory.includes('"')) throw new Error("Unknown Windows PATH");
 		// CMD searches cwd too. An extensionless/other target must block rather
 		// than be silently skipped; honor the wrapper's inherited PATHEXT order.

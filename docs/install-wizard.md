@@ -123,8 +123,8 @@ companion installer belongs in this plan.
 `npmCommand` supports pnpm, but independent upstream `npm exec` control remains
 unverified. **This preflight does not establish an npm-free installation chain.**
 
-The consent UI, distribution packaging and native acceptance evidence remain
-future work in the
+The consent UI is the local wizard host described below. A published
+distribution bundle and native acceptance evidence remain future work in the
 [feature plan](../odd/tasks/browser-install-wizard.md). Deterministic injected
 tests do not prove clean-machine installation on Windows, macOS or Linux.
 
@@ -189,8 +189,9 @@ and unknown.
 ## Standard installation runner
 
 `scripts/installer-runner.mjs` exports `runStandardInstall({ plan, consent },
-adapters)`, the fixed installation step the future wizard host (T5) calls after
-bootstrap and a fresh preflight. It is a pure module: every process, filesystem,
+adapters)`, the fixed installation step the local wizard host
+(`bin/gentle-shell-install.mjs`, below) calls after bootstrap and a fresh
+preflight. It is a pure module: every process, filesystem,
 environment, integrity and log effect goes through adapters supplied by trusted
 local code, never through the browser.
 
@@ -323,8 +324,9 @@ Mutating and verification steps, returning `failed` with `failedStep` and the
 `ready` requires every step above to complete and the global bin to already be
 on the user's PATH. Skipped, unverified or failed mandatory steps never yield
 `ready`, and no existing installation, home or data is deleted on any outcome.
-Deadlines are 30 seconds for probes, npm config commands and `pnpm setup`, and
-20 minutes each for the install, persistence and setup steps.
+Deadlines are 30 seconds for probes and npm config commands, and 20 minutes
+each for the install, persistence and setup steps, including `pnpm setup`,
+which installs `@pnpm/exe` from the registry.
 
 ### Runtime persistence
 
@@ -465,6 +467,11 @@ command; it ships inside the package's `bin/` directory and is listed in
 SIGINT and SIGTERM close the server and exit with the code above. An
 installation that is still running is not cancelled cleanly: Ctrl+C reaches the
 runner's children through the terminal's process group, but SIGTERM does not.
+
+Known debt, not fixed yet: on SIGINT or SIGTERM, `close` does not wait for a
+running installation to settle, and runner deadlines kill only the direct child
+process, not the processes it started (for example, the ones `pnpm` or
+`gentle-shell setup` spawn).
 
 ### Security model
 
@@ -633,9 +640,10 @@ with the rest of `scripts/` in the package.
 
 Run `sh scripts/bootstrap.sh` from a trusted extracted installation bundle or
 checkout. There is **no published bundle URL or remote-pipe installer contract**.
-The bundle must include `package.json`, both bootstrap modules and the future
-`bin/gentle-shell-install.mjs` (T5). Today that entry is absent: the script reports
-it before downloads or home writes. T7 owns packaging and distribution proof.
+The bundle must include `package.json`, both bootstrap modules and the wizard
+entry `bin/gentle-shell-install.mjs`. When that entry is missing, the script
+reports it before downloads or home writes. T7 owns packaging and distribution
+proof.
 
 With that entry available, the fixed sequence is:
 
@@ -772,9 +780,10 @@ separate parent-owned gates.
 ## Windows foundation: fixed commands, no policy repair
 
 Run `scripts\bootstrap.cmd` from a trusted extracted bundle or checkout. Like
-POSIX, it stops before acquisition or home writes when T5's entry or any
-Windows-dependent helper/metadata file is missing. There is no published bundle
-URL, remote-pipe contract or working installation wizard yet.
+POSIX, it stops before acquisition or home writes when the wizard entry
+`bin/gentle-shell-install.mjs` or any Windows-dependent helper/metadata file is
+missing. There is no published bundle URL or remote-pipe contract, and the
+Windows bootstrap end to end still lacks native acceptance evidence.
 
 | Step | Windows contract |
 | --- | --- |
@@ -783,7 +792,7 @@ URL, remote-pipe contract or working installation wizard yet.
 | Node | Reuse a proven stable existing Node ≥24.3.0 and the repository minimum. Otherwise acquire only the fixed official Node 24.21.0 Windows x64/arm64 ZIP, with no redirects and bounded transport, verify SHA256 before opening the archive, validate the whole namespace and extract only regular `node.exe`. |
 | pnpm | Reuse only a fully recognized npm CMD shim with package identity, bin target, stable CLI version, compatible engine and global add/bin help evidence. Preserve its sibling-Node preference or prove its inherited cwd/PATH/PATHEXT Node selection. Never execute the shim via cmd.exe. Unknown wrappers block without replacement. |
 | Missing pnpm | Shared pnpm 11.1.1 URL/SRI and raw `>=22.13` engine identity are unchanged. Parse bounded gzip/USTAR bytes, reject unsupported extensions, links and unsafe Windows namespaces before no-clobber publication. Return a direct Node + JS-entry invocation; do not fabricate a wrapper. |
-| Handoff | Existing Node helper starts the fixed future `bin/gentle-shell-install.mjs`. Only child PATH is refreshed. No persistent PATH, global installation, product root or companion installation is created here. |
+| Handoff | Existing Node helper starts the fixed wizard entry `bin/gentle-shell-install.mjs`. Only child PATH is refreshed. No persistent PATH, global installation, product root or companion installation is created here. |
 
 Windows Node SHA256 provenance is the parent's fresh primary-source read of
 [24.21.0 SHASUMS256](https://nodejs.org/dist/v24.21.0/SHASUMS256.txt). A narrow

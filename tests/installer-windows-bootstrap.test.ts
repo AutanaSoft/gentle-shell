@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, readdirSync, rmSync, copyFileSync, existsSync, symlinkSync } from "node:fs";
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, readdirSync, rmSync, copyFileSync, existsSync, symlinkSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { gzipSync } from "node:zlib";
@@ -145,7 +145,8 @@ function pnpmTar(metadata = pinnedPackage) {
 }
 const digest = () => Buffer.from(artifactFor("pnpm").integrity.slice(7), "base64");
 function fixture() {
-	const root = mkdtempSync(join(tmpdir(), "gentle windows 雪 & ! % (fixture) "));
+	// Canonical root: macOS tmpdir() is /var -> /private/var, and the tools guard rejects aliased paths.
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle windows 雪 & ! % (fixture) ")));
 	return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
 
@@ -202,6 +203,25 @@ for (const failure of ["integrity", "namespace", "metadata", "probe", "conflict"
 		} finally { f.cleanup(); }
 	});
 }
+
+test("Windows PATH resolver skips empty entries but still rejects relative, quoted and UNC entries", async () => {
+	const adapters = { storage: () => {}, download: async () => pnpmTar(), digest, process: (_command: string, args: string[]) => args[0] === "--version" ? "v24.21.0" : args.at(-1) === "--version" ? "11.1.1" : "--global" };
+	// A trailing `;` is the Windows default PATH shape; `;;` also appears after edits.
+	for (const Path of ["C:\\x;", "C:\\x;;C:\\y", ";C:\\x"]) {
+		const f = fixture();
+		try {
+			const result = await ensureWindowsPnpm({ tools: f.root, env: { Path, PATHEXT: ".EXE;.CMD" }, adapters });
+			assert.equal(result.acquired, true, Path);
+		} finally { f.cleanup(); }
+	}
+	for (const Path of ["C:\\x;relative", "C:\\x;\"C:\\quoted\"", "C:\\x;\\\\server\\share", "C:\\x; "]) {
+		const f = fixture();
+		try {
+			await assert.rejects(ensureWindowsPnpm({ tools: f.root, env: { Path, PATHEXT: ".EXE;.CMD" }, adapters }), /Unknown Windows PATH/, Path);
+			assert.deepEqual(readdirSync(f.root), []);
+		} finally { f.cleanup(); }
+	}
+});
 
 for (const sibling of [true, false]) {
 	test(`known cmd wrapper honors ${sibling ? "sibling" : "PATH"}-selected Node without cmd.exe`, async () => {
@@ -370,6 +390,8 @@ function nativeEnv(root: string, tools = join(root, "tools")) {
 
 // Independent hard guard: kill only fresh fixture handles with matching creation
 // ticks, never a name, ambient group or unverified reused PID. No tree guarantee.
+// The explicit `exit 0` keeps a caught lookup of an already-exited PID from
+// leaking $? into the exit code; every ownership failure throws first.
 const guardCommand = String.raw`
 $ErrorActionPreference = 'Stop';
 if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'Policy constrained' };
@@ -388,16 +410,17 @@ if (Test-Path -LiteralPath $env:GENTLE_FIXTURE_RECORDS) {
   };
 };
 if ($reaped) { [Console]::WriteLine('fixture guard reaped residual owned process') };
+exit 0;
 `;
 function cleanNativeProcesses(root: string) {
 	const ps = join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe");
 	const result = spawnSync(ps, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", guardCommand], { env: nativeEnv(root), timeout: 5000, killSignal: "SIGKILL", encoding: "utf8", maxBuffer: 65536 });
 	assert.equal(result.error, undefined, "fixture guard must be bounded and available");
-	assert.equal(result.status, 0, "fixture guard must only clean verified owned processes");
+	assert.equal(result.status, 0, `fixture guard must only clean verified owned processes: ${(result.stderr ?? "").slice(0, 4000)}`);
 	assert.ok(["", "fixture guard reaped residual owned process"].includes(result.stdout.trim()), "unexpected fixture guard output");
 	return result.stdout.trim().length > 0;
 }
-async function nativeCmd(root: string, stages: string[], env = nativeEnv(root), limit = 14000): Promise<NativeResult> {
+async function nativeCmd(root: string, stages: string[], env: NodeJS.ProcessEnv = nativeEnv(root), limit = 14000): Promise<NativeResult> {
 	writeFileSync(join(root, "fixture.cmd"), cmdComposition(stages));
 	const child = spawn(join(process.env.SystemRoot!, "System32/cmd.exe"), ["/d", "/c", "fixture.cmd"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
 	let stdout = ""; let stderr = ""; let guardKilled = false;

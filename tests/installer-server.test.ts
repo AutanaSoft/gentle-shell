@@ -446,6 +446,27 @@ test("a throwing runner becomes a failed outcome with generic guidance", async (
 	}
 });
 
+test("a runner result that throws while being viewed still ends the installation as failed", async () => {
+	const clock = { value: 5_000 };
+	const hostile = { outcome: "failed", completed: [], get failedStep(): string { throw new Error("/home/u/secret getter"); } };
+	const { host, port, login } = await start({ clock, limits: { idleMs: 60_000 }, runInstall: async () => hostile });
+	try {
+		const cookie = await login();
+		const { planId } = await plan(port, cookie);
+		assert.equal((await post(port, "/api/install", cookie, { planId, consent: true })).status, 202);
+		await waitFor(() => host.outcome() !== null);
+		const progress = JSON.parse((await send(port, { path: "/api/progress", headers: { cookie, ...API } })).body);
+		assert.equal(progress.running, false);
+		assert.deepEqual(progress.outcome, { outcome: "failed", failedStep: null, completed: [], guidance: guidance.fallback });
+		assert.doesNotMatch(JSON.stringify(progress), /secret/);
+		// installing was reset, so the idle timeout can close the wizard again.
+		clock.value += 60_000;
+		assert.equal(host.checkIdle(), true);
+	} finally {
+		await host.close("test");
+	}
+});
+
 test("a failed setup passes only its bounded detail through, with rate-limit guidance when it matches", async () => {
 	const rateLimited = "Error: execute install pipeline: download engram binary: fetch latest engram version: GitHub API returned HTTP 403";
 	const cases = [

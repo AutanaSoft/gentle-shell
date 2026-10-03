@@ -567,10 +567,11 @@ export async function runStandardInstall(request, adapters) {
 	];
 	// A child PATH never proves a fresh terminal; persist it with pnpm's own setup.
 	// globalBin.onPath was computed from the user's own PATH, not the child env.
+	// pnpm setup installs @pnpm/exe over the network, so it gets the setup deadline.
 	const persistPath = !globalBin.onPath;
 	if (persistPath) {
 		steps.push(["persist-path", async () => {
-			const result = await adapters.run(pnpm.command, [...pnpm.prefix, "setup"], { env: child, deadlineMs: deadlines.probe, stderrTail: 4096 });
+			const result = await adapters.run(pnpm.command, [...pnpm.prefix, "setup"], { env: child, deadlineMs: deadlines.setup, stderrTail: 4096 });
 			if (succeeded(result)) return true;
 			// pnpm prints its own errors, such as ERR_PNPM_UNKNOWN_SHELL, on stdout.
 			setupDetail = setupErrorDetail(result?.stderrTail, home, platform) ?? setupErrorDetail(result?.stdout, home, platform);

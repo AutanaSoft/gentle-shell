@@ -13,7 +13,7 @@ const helper = resolve("scripts/installer-downloads.mjs");
 const node = process.execPath;
 // Shell and private-tools fixtures need POSIX sh, stock utilities and uids.
 const posixHost = process.platform === "win32" ? "POSIX shell bootstrap fixtures need a POSIX host" : false;
-const posixTest = (name: string, fn: (t: TestContext) => unknown) => test(name, { skip: posixHost }, fn);
+const posixTest = (name: string, fn: (t: TestContext) => void | Promise<void>) => test(name, { skip: posixHost }, fn);
 // macOS keeps several stock utilities only in /bin.
 const systemUtility = (name: string) => ["/usr/bin", "/bin"].map((dir) => join(dir, name)).find((path) => existsSync(path)) ?? `/usr/bin/${name}`;
 function fixture() {
@@ -276,7 +276,7 @@ for (const [utility, body, message] of [
 	["sha256sum", "exit 2", /SHA256 process failed/],
 	["tar", "exit 2", /archive is invalid/],
 	["tar", "echo 'lrwxrwxrwx malicious-link'", /not a regular file/],
-]) {
+] as [string, string, RegExp][]) {
 	posixTest(`native acquisition process rejection: ${utility}/${message}`, () => {
 		const f = fixture();
 		try {
