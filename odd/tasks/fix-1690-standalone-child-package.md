@@ -107,6 +107,16 @@ gentle-shell UI/timers, the gentle-agents host, gentle-todo, runtime-metrics, ge
 - T1-T2 live on `fix/1690-standalone-child-package` (worktree `gentle-shell-worktrees/fix-1690-standalone-child-package`). Its RDD review of `a67bb7f5` runs from a separate native Claude Code session, and nothing else writes in that worktree while the review is open.
 - T3 onward continue on `fix/1690-child-package-forwarding` (worktree `gentle-shell-worktrees/fix-1690-child-package-forwarding`), stacked on `a67bb7f5`. If the review adds a correction commit, rebase this branch onto it before delivery.
 
+## Polish round (2026-10-03)
+
+- P1 `d2ca0c46` (PR1): awaited `tool_execution_start` handlers; a child test proving `yolo.reset`/`reviewSidebar.reset` (it bites when either call is removed or the guard moves above them). 109/109.
+- P2 `c3de137b` (PR2): `buildPiInvocation` takes an explicit `cwd` (bin passes `process.cwd()`); the signal is deduped after absolutizing; the `-e` argv is unchanged; runtime regenerated. 405/405.
+- P4 `4a9b4d69` (PR4): helper self-checks split from the product tests; test (b) notes that it mirrors Pi's rules by hand; a docs bullet on the pre-existing takeover crash.
+- The chain was rebased cleanly: PR1 `d2ca0c46`, PR2 `c3de137b` (T3 = `45fcc37d`), PR3 `8efa46c7` (T4 `c7c03449`, T5 `0e6521b3`, T6 `fd405cb1`, T6b `8efa46c7`), PR4 `4a9b4d69`. The approved patches are unchanged; only the bases moved.
+- Chain verification (verifier musll8ax-i-gkko): every branch clean and ancestry correct. Targeted tests 159/564/1063/1067 pass. check-types, runtime `--check` and verify-package-files pass on all four. The PR4 full suite gives 4635 pass, 1 fail, 44 skipped. The failure is `tests/history-session-scan-extract.test.ts:244` (file mtime vs `Date.now()` under `os.tmpdir()`); it fails the same way on the PR1 base, and the stack never touches that file. It is pre-existing and environment-dependent (likely the WSL2 clock), not caused by #1690.
+- RDD pending for P1, P2 and P4.
+- PR #1712 (carlosmoradev, "Fixes #1688", opened 14:37Z) adds `child-capture.ts` as a third curated entry. That conflicts with the frozen list, and once the package is forwarded `installSessionChangeCapture` (no idempotency guard) would be installed twice in children. A coordination comment is drafted for the user.
+
 ## Delivery budget
 
 As of `f384d2a1`, the branch carries 322 changed lines against origin/main in code and tests (T2), plus about 100 in this ODD document, roughly 420 in total. The forecast for T2b-T7 is about 600-800 more lines, so a single PR would exceed the 400-line budget several times over. Proposed: stacked PRs to main, each landable on its own:
