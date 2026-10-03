@@ -1636,7 +1636,7 @@ test("normal and forced installation copy generic agents with complete role cont
 					assert.match(source, /compressed (?:handoff|evidence handoff)/);
 					assert.match(source, /Do not use review lenses\. RDD review remains independent and parent-owned\./);
 					if (name === "gentle-ai-verify") {
-						assert.match(source, /exact test, build, or lint commands explicitly authorized by the parent/);
+						assert.match(source, /exact test, build, lint, or spec example commands explicitly authorized by the parent/);
 						assert.match(source, /only outputs the parent explicitly identified as expected/);
 						assert.match(source, /unexpected mutation as a blocker/);
 						assert.match(source, /do not clean it up or fix it/);
