@@ -128,7 +128,8 @@ test("AC5: the high-risk list lives once in the core, native tier wins, unclear 
 const MODULE_BUDGETS: Record<string, number> = {
 	"orchestrator-delegation.md": 20_000,
 	"orchestrator-tracking.md": 12_500,
-	"orchestrator-verification.md": 5_500,
+	// gentle-shell#1731 T3: parallel review protocol; lazy (delegation or high risk only), core and normative rule untouched.
+	"orchestrator-verification.md": 6_000,
 	"orchestrator-writer.md": 4_500,
 	"orchestrator-prompts.md": 13_000,
 };
@@ -175,7 +176,11 @@ test("T4: tracking updates edit in place and mirror without re-emitting the docu
 test("T6: each delegation module carries its own clauses and names the modules it depends on", () => {
 	const placement: Record<string, readonly string[]> = {
 		"orchestrator-tracking.md": ["#### Authorization and progress", "Delivery follows work units", "Raise a candidate you know is high risk"],
-		"orchestrator-verification.md": ["| Native risk tier | Verification when RDD is `off`/`unknown` |", "## Agent escalation (gentle-shell#1494)"],
+		"orchestrator-verification.md": [
+			"| Native risk tier | Verification when RDD is `off`/`unknown` |",
+			"## Agent escalation (gentle-shell#1494)",
+			"## Parallel review protocol (gentle-shell#1731)",
+		],
 		"orchestrator-writer.md": ["#### Allowed edit surfaces (MANDATORY)", "#### Judgment Day fix dispatch"],
 		"orchestrator-prompts.md": ["### Lossless Blocking Prompts (MANDATORY)", "#### Gentle AI Provider Defect Handoff (MANDATORY)"],
 	};

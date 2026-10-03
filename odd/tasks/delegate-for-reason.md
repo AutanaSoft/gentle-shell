@@ -33,7 +33,10 @@ S8. Bench: "corras los bench utilizando estas configuraciones para ver cómo fun
   38/38. Core 8,175/8,192 B at 128-char root (17 B headroom); writer.md 4,249/4,500; delegation.md 19,929/20,000. Risk medium; RDD off.
   Notes for T3/T4: put new protocol text in orchestrator-verification.md; T4 must free core bytes to relax the Safety single-writer line;
   docs/readme-reference.md still says "one writer per task" (fix in T4 docs).
-- [ ] T3 (S5-S7, AC5) delegated writer · parallel review protocol in the verification/writer lazy modules
+- [x] T3 (S5-S7, AC5) delegated writer (reason: context backstop) · parallel review protocol in the verification/writer lazy modules.
+  Writer musuzf0z-5-058m + continuation musv39ow-6-rqa4: RED 4 -> GREEN 51/51 focused; typecheck no regressions; npm test 4728/4728
+  (env -u GENTLE_PI_AGENTS_CHILD). Parent spot check below. verification.md 5,950/6,000 B (budget raised, L9), writer.md 4,360/4,500 B,
+  normative Verification rule SHA-pinned. Risk medium; RDD off.
 - [ ] T4 (S2, AC6) delegated writer, HIGH risk (concurrency) + independent verify · disjoint-surface writer admission; relax single-writer text
 - [ ] T5 (S8, AC8) delegated writer in bench repo · scenarios x5 (two independent features) and expensive-orchestrator profile; pin before/after products
 - [ ] T6 (S8, AC8) runs · bench before/after and report (stage cap reuses user's USD 60 approval)
@@ -50,3 +53,4 @@ L6 2026-10-03 forecast: T1 ~200, T2 ~150, T3 ~100, T4 ~300 authored changed line
 L7 2026-10-03 user (answer): delivery > Un PR con size exception (single-pr, work-unit commits per task, size:exception label).
 L8 2026-10-03 user (verbatim): > Acordate que después, cuando vayamos a hacer esta paridad para Chatly AI, vamos a tener un problema, porque damos soporte a muchísimos agentes. ¿Y cómo hacemos para que esos agentes puedan menevalor el coste de los subagentes? ¿Se entiende lo que te quiero decir? No todos creo que lo dan eso, eh? No es el momento para hacer un control agente por agente de todo esto.
    decision (constraint for T2/G1): the cost rule is fact-gated with a safe default. Canon wording: delegate implementation only when the runtime REPORTS a price ratio >= ~3x; when no ratio is reported, the cost reason does not fire and #1494 behavior holds. Parallelism, context and risk reasons need no prices and work in every agent. Parity = copy text verbatim, no per-agent work. Optional later: gentle-ai computes the ratio at sync from the role models it configures and stamps it as a static fact.
+L9 2026-10-03 parent decision (T3): orchestrator-verification.md lazy budget 5,500 -> 6,000 B to fit the parallel review protocol (~840 B; base measured 5,113 B, not ~4,590). Alternatives rejected: condensing the normative Verification rule (breaks AC4) or splitting the protocol across modules. Core budget unchanged.

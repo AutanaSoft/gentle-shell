@@ -1,6 +1,6 @@
 # Orchestrator — Writer Handoff (lazy-loaded)
 
-Bind this to the parent Pi session only. Load it when the Writer rule fires or an explicitly activated Judgment Day fix batch is dispatched; small tasks never need it (see `orchestrator.md` Task Size). The Writer rule fires on a named reason (parallel units, a reported price ratio of about 3x or more, the context backstop), never on size alone: a large task without a reason stays inline, following its logbook.
+Bind this to the parent Pi session only. Load it when the Writer rule fires or an explicitly activated Judgment Day fix batch is dispatched; small tasks never need it (see `orchestrator.md` Task Size). The Writer rule fires on a named reason (parallel units, a reported price ratio of about 3x or more, the context backstop), never on size alone: a large task without a reason stays inline, following its logbook. Each writer prompt requires the self-review of the Parallel review protocol in `orchestrator-verification.md`.
 
 #### Allowed edit surfaces (MANDATORY)
 

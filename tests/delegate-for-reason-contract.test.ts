@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
@@ -15,6 +16,7 @@ const read = (relative: string): string => readFileSync(join(import.meta.dirname
 const core = read("assets/orchestrator.md");
 const delegation = readDelegationDetail();
 const writer = read("assets/orchestrator-writer.md");
+const verification = read("assets/orchestrator-verification.md");
 const skill = read("skills/gentle-ai/SKILL.md");
 
 function lineStarting(text: string, prefix: string): string {
@@ -102,6 +104,70 @@ test("AC4: verification stays risk-gated and the writer reasons never include ri
 		assert.ok(!/high risk|high-risk|verify/i.test(text), `${label} mixes risk or verification into the writer reasons`);
 	}
 	assert.ok(!writer.includes("(1) data or irreversible effects"), "the writer module restates the high-risk list");
+});
+
+// T3 (S5-S7, AC5): the parallel review protocol lives in the lazy verification
+// module, so it loads only when delegation happens.
+function sectionFrom(text: string, heading: string): string {
+	const start = text.indexOf(heading);
+	assert.ok(start >= 0, `missing section: ${heading}`);
+	const next = text.indexOf("\n## ", start + heading.length);
+	return text.slice(start, next < 0 ? undefined : next + 1);
+}
+
+const reviewSection = (): string => sectionFrom(verification, "## Parallel review protocol (gentle-shell#1731)");
+
+function reviewItem(prefix: string): string {
+	return lineStarting(reviewSection(), prefix);
+}
+
+test("AC5/S5: every worker self-reviews against the spec by reference before returning", () => {
+	const item = reviewItem("1. **Self-review**");
+	for (const clause of [
+		"in its own session before returning",
+		"spec sections by reference (#1713)",
+		"the request's authorized examples, tests, and typecheck",
+		"fixes and continues",
+		"requirement by requirement",
+		"Low and medium risk need nothing else.",
+	]) {
+		assert.ok(item.includes(clause), `self-review item is missing: ${clause}`);
+	}
+	assert.ok(writer.includes("Parallel review protocol") && writer.includes("`orchestrator-verification.md`"), "the writer module must point at the review protocol");
+});
+
+test("AC5/S6/L4: per-worker independent verify fires only on assess or escalate, never on the summary alone", () => {
+	const item = reviewItem("2. **Independent verify per unit**");
+	for (const clause of [
+		"in parallel when several finish together",
+		"only when that unit is high risk",
+		"`assess` over its actual diff",
+		"the worker's own `escalate`",
+		"never inferred from the worker's summary alone",
+		'its work-unit commit (`{"baseRef":"<previous>","committedOnly":true}`)',
+		"its own isolated worktree",
+	]) {
+		assert.ok(item.includes(clause), `independent verify item is missing: ${clause}`);
+	}
+	assert.ok(!reviewSection().includes("(1) data or irreversible effects"), "the protocol restates the high-risk list instead of referencing it");
+	assert.ok(item.includes("high-risk list in Task Size"), "the protocol must reference the core high-risk list");
+});
+
+test("AC5/S7: one inline full-suite seam check after parallel units", () => {
+	const item = reviewItem("3. **Seam check**");
+	for (const clause of ["after parallel units finish", "one inline full-suite command", "parent spot check", "seams between units"]) {
+		assert.ok(item.includes(clause), `seam check item is missing: ${clause}`);
+	}
+});
+
+test("AC4/S4: the normative verification rule text is unchanged by the review protocol", () => {
+	const normative = sectionFrom(verification, "## Verification rule (normative)");
+	assert.equal(
+		createHash("sha256").update(normative).digest("hex"),
+		"decd9979faa4f6329df9b8fec16d69230428f14d116edff136f1bee2f540a888",
+		"the normative Verification rule section changed",
+	);
+	assert.ok(verification.includes("or a delegated writer returns"), "the module must still load when a delegated writer returns");
 });
 
 test("S1: the small path stays inline and no lazy surface keeps the size-based writer route", () => {

@@ -18,3 +18,9 @@ The small-model bias raises the tier by one for verification purposes (medium be
 ## Agent escalation (gentle-shell#1494)
 
 When the change touches an item of the high-risk list in the always-on Task Size section and the native tier is passive or medium, pass `"escalate": {"item": <1-6>, "reason": "<one line>"}` in the same assess input. The tool raises the tier to high, keeps the native tier as `nativeRisk`, and returns `agentEscalation`. It never lowers a tier. Until the installed gentle-ai assess accepts the field, the raise applies to this verification plan only, not to the native review tier.
+
+## Parallel review protocol (gentle-shell#1731)
+
+1. **Self-review**, required by each writer prompt, in its own session before returning: spec sections by reference (#1713), the request's authorized examples, tests, and typecheck; it fixes and continues, reporting requirement by requirement. Low and medium risk need nothing else.
+2. **Independent verify per unit**, in parallel when several finish together, only when that unit is high risk: `assess` over its actual diff or the worker's own `escalate` (high-risk list in Task Size), never inferred from the worker's summary alone. Assess per unit via its work-unit commit (`{"baseRef":"<previous>","committedOnly":true}`) or its own isolated worktree.
+3. **Seam check**: after parallel units finish, one inline full-suite command (the parent spot check) catches seams between units.
