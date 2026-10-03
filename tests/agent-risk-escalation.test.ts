@@ -81,7 +81,7 @@ test("gentle_review assess: an agent escalation raises a medium candidate to hig
 	const plan = details as { risk: string; nativeRisk: string; agentEscalation: { item: number; label: string; reason: string }; plan: { independentVerifier: boolean } };
 	assert.equal(plan.nativeRisk, "medium");
 	assert.equal(plan.risk, VERIFICATION_TIER.HIGH);
-	assert.deepEqual(plan.agentEscalation, { item: 2, label: "security", reason: "weakens the permission check in utils.ts" });
+	assert.deepEqual(plan.agentEscalation, { item: 2, label: "security", reason: "weakens the permission check in utils.ts", applied: true });
 	assert.equal(plan.plan.independentVerifier, true, "a raised candidate always gets the independent verifier");
 });
 
@@ -113,4 +113,11 @@ test("the rule text tells the agent when and how to escalate, and that it never 
 	assert.match(verification, /never lowers a tier/);
 	assert.match(tracking, /assess `escalate` field \(`orchestrator-verification\.md`\); never lower one/);
 	assert.match(extension, /\{"escalate":\{"item":1-6,"reason":"<one line>"\}\}/);
+});
+
+test("gentle_review assess: agentEscalation says whether the escalation changed the tier", async () => {
+	const tool = assessTool();
+	const input = JSON.stringify({ escalate: { item: 4, reason: "reorders an async write" } });
+	const { details } = await tool.execute("esc-5", { operation: "assess", input }, undefined, undefined, ctx);
+	assert.equal((details as { agentEscalation: { applied: boolean } }).agentEscalation.applied, true, "medium raised to high is applied");
 });

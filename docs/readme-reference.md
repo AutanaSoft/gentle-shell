@@ -5,7 +5,7 @@ This reference preserves detailed installation, configuration, ODD, runtime, and
 
 ## Organic Driven Development
 
-Organic Driven Development (ODD) keeps explore → implement → proportionate checks as the development workflow. For substantial authorized implementation, the parent automatically tracks feature progress after exploration, without asking for task-tracking or storage permission. Small, understood work creates no durable task artifact; investigation and proposal-only work stay read-only.
+Organic Driven Development (ODD) keeps explore → implement → proportionate checks as the development workflow. For large authorized implementation (its resume test fails), the parent automatically tracks feature progress after exploration, without asking for task-tracking or storage permission. Small, understood work creates no durable task artifact; investigation and proposal-only work stay read-only.
 
 ### The ODD protocol
 
@@ -15,7 +15,7 @@ ODD runs on every request, without the user asking for a workflow, a plan, or ta
 2. **Explore** — read existing code and requirements first, proportionately to the request.
 3. **Resolve uncertainty** — optional research or one focused product question only for a real unresolved decision.
 4. **Classify** — by the Task Size section: small when understood, risk is contained, and the work could be resumed from the request plus `git diff`; large only when that resume test fails. Counts never classify.
-5. **Track before the first write** — create the feature document and Engram mirror automatically for substantial work, and tell the user in one line.
+5. **Track before the first write** — create the feature document and Engram mirror automatically for large work, and tell the user in one line.
 6. **Implement task by task** — route each task through the smallest safe workflow, with configured TDD and applicable checks. Every task closes with at least one work-unit commit on the feature branch (branch first when on the default branch), with tests and docs alongside the behavior, using a Conventional Commit message; the feature document records the commit identity as evidence.
 7. **Close** — report the verified outcome, failed/pending checks, and the next step. The native review candidate is a work-unit commit or a PR slice, never a TODO checkbox and never the accumulated feature branch.
 
@@ -404,12 +404,12 @@ Typical flow:
 1. Open Pi in your repo.
 2. Run `/gentle:status`.
 3. Describe the outcome, for example: "Add CSV export using the existing report filters." ODD explores, implements authorized changes, and checks the result.
-4. For substantial work, inspect the feature document and evidence; resume reconciles the full file and Engram copy.
+4. For large work, inspect the feature document and evidence; resume reconciles the full file and Engram copy.
 
 ## Core workflow
 
 1. **Install and inspect.** Install `gentle-pi`, open Pi in the target repository, then run `/gentle:status` or `/gentle:doctor`.
-2. **Use ODD.** Explore and clarify proportionately; track substantial work in one feature document with a full Engram recovery copy.
+2. **Use ODD.** Explore and clarify proportionately; track large work in one feature document with a full Engram recovery copy.
 3. **Build with evidence.** One focused writer implements authorized scope using the forwarded TDD mode/source/runner. Enabled TDD requires observed RED → GREEN → REFACTOR; disabled still runs functional checks. Test presence is not activation.
 4. **Use runtime-owned RDD only when enabled by the user.** Gentle AI supplies any runtime-specific review instructions; this package does not recreate a lifecycle in documentation or prompts.
 5. **Deliver through ordinary repository policy.** Review and Judgment Day evidence is informational only; Pi never creates a delivery route, authorization, target rederivation, or receipt gate.
@@ -439,7 +439,7 @@ Size and uncertainty can call for scoped exploration or delegation within ODD. T
 | A high-risk change                                                                                                          | Run an independent verifier after the change's own checks; otherwise the focused test and suite run inline. |
 | Commit, push, or PR after code changes                                                                                      | Follow the loaded native instruction, or ordinary repository policy when none is supplied. |
 | Wrong cwd, worktree/git accident, merge recovery, confusing test/env issue                                                  | Stop, preserve the affected scope, and investigate separately before resuming. |
-| Parent context past ~150k tokens | Pause and delegate the next bounded unit of work, or stop and explain the exact blocker. Keep command output bounded; send full suites and builds to a verifier. |
+| Parent context past ~150k tokens | Pause and delegate the next bounded unit of work, or stop and explain the exact blocker. Keep command output bounded; a small task still runs its focused test and suite inline. |
 
 The intended balanced loop for a bounded bugfix is:
 
@@ -1032,7 +1032,7 @@ pi install npm:gentle-engram
 
 When memory tools are actually active, el Gentleman can save decisions, bug fixes, discoveries, user prompts, and session summaries across Pi sessions.
 
-For substantial ODD work, the parent reconciles the full `odd/tasks/<feature-name>.md` document with its `odd/<feature-name>/tasks` Engram mirror when memory is available. It passes relevant context to subagents; subagents save significant verified discoveries and completed work before returning, without independently searching unrelated memory.
+For large ODD work, the parent reconciles the full `odd/tasks/<feature-name>.md` document with its `odd/<feature-name>/tasks` Engram mirror when memory is available. It passes relevant context to subagents; subagents save significant verified discoveries and completed work before returning, without independently searching unrelated memory.
 
 ## Telemetry
 
@@ -1130,7 +1130,7 @@ Do not run `npm publish` locally for `gentle-pi`. Dispatch the trusted workflow 
 - Human control over agent momentum.
 - Concepts before code.
 - Artifacts over floating chat context.
-- ODD for development work, with recoverable progress for substantial changes.
+- ODD for development work, with recoverable progress for large changes.
 - TDD from configured mode or explicit choice, not test presence.
 - One parent orchestrator, focused subagents.
 - Reviewable changes over giant diffs.

@@ -166,3 +166,29 @@ test("T4: tracking updates edit in place and mirror without re-emitting the docu
 	}
 	assert.ok(!memory.includes("For substantial authorized organic implementation"), "memory detail must size by Task Size, not 'substantial'");
 });
+
+// RDD follow-ups (lineages review-6d2889a73f541791, review-* slice 2): every
+// module must be self-contained for the mechanism that loads it, and each
+// moved clause must live in the module its pointer names.
+test("T6: each delegation module carries its own clauses and names the modules it depends on", () => {
+	const placement: Record<string, readonly string[]> = {
+		"orchestrator-tracking.md": ["#### Authorization and progress", "Delivery follows work units", "Raise a candidate you know is high risk"],
+		"orchestrator-verification.md": ["| Native risk tier | Verification when RDD is `off`/`unknown` |", "## Agent escalation (gentle-shell#1494)"],
+		"orchestrator-writer.md": ["#### Allowed edit surfaces (MANDATORY)", "#### Judgment Day fix dispatch"],
+		"orchestrator-prompts.md": ["### Lossless Blocking Prompts (MANDATORY)", "#### Gentle AI Provider Defect Handoff (MANDATORY)"],
+	};
+	for (const [file, clauses] of Object.entries(placement)) {
+		const text = read(`assets/${file}`);
+		for (const clause of clauses) assert.ok(text.includes(clause), `${file} must carry: ${clause}`);
+	}
+	const writer = read("assets/orchestrator-writer.md");
+	assert.ok(!/Lossless Blocking Prompts rules above/.test(writer), "the writer module must not point at rules 'above' that live in another module");
+	assert.ok(writer.includes("`orchestrator-prompts.md`"), "the writer module must name the module that holds the blocking-prompt rules");
+	assert.ok(!delegation.includes("precedence in rule 2"), "cross-references name rules, not ambiguous numbers");
+});
+
+test("T6: the readme no longer sends every suite to a verifier or tracks 'substantial' work", () => {
+	const readme = read("docs/readme-reference.md");
+	assert.ok(!readme.includes("send full suites and builds to a verifier"), "readme still delegates every suite");
+	assert.ok(!/track substantial work|for substantial work|substantial authorized implementation/i.test(readme), "readme still sizes by 'substantial'");
+});

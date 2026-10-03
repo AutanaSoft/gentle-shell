@@ -1681,7 +1681,8 @@ test("orchestrator routes generic roles without static RDD lens routing", () => 
 		assert.match(routing, /`gentle-ai-worker`/);
 		assert.match(routing, /`gentle-ai-verify`/);
 		assert.match(routing, /focused test and (?:the )?suite/);
-		assert.match(routing, /high[- ]risk[\s\S]*`gentle-ai-verify`|`gentle-ai-verify`[\s\S]*high[- ]risk/i);
+		// The Verification rule line itself must route high risk to the verifier.
+		assert.match(routing, /^\d\. \*\*Verification rule\*\*[^\n]*high[- ]risk[^\n]*`gentle-ai-verify`/m);
 		assert.match(routing, /missing(?: or |\/)unusable[\s\S]*native `Agent`[\s\S]*(?:the )?same read-only/);
 		assert.match(routing, /report (?:the )?fallback/);
 		assert.doesNotMatch(routing, /review lenses? (?:inside|only inside)|review lens routing/i);

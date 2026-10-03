@@ -57,7 +57,8 @@ S9. Measurement: bench baseline (origin/main cf3012f7) vs after, same scenarios:
 - [x] G3 (S6) filed as gentle-ai#5216 (follow-up, not implemented here)
 - [x] F1 filed as gentle-shell#1722 (~/AGENTS.md is 58,881 B with gentle-ai blocks)
 - [x] F3 filed as engram#1636 (gentle-engram lives in the engram repo, plugin/pi)
-- [x] F2 (S7) inline · skip the mirrored RDD review contract (8.5 KB) when RDD reads off; on/unknown keep it · RED→GREEN · this work unit
+- [x] F2 (S7) inline · skip the mirrored RDD review contract (8.5 KB) when RDD reads off; on/unknown keep it · RED→GREEN · 08fda673
+- [x] T6 (S2-S7) inline · RDD review follow-ups from the four slice reviews (L28) · RED→GREEN · this work unit
 
 ## Log
 L1 2026-10-03 user (verbatim): > sin delegar y en nuevo worktree, vamos a analizar https://github.com/Gentleman-Programming/gentle-shell/issues/1494
@@ -122,3 +123,13 @@ L27 2026-10-03 F2 evidence (risk: medium; RDD loading only, RDD behavior unchang
    RED: review-contract-prompt "skips the review execution contract when RDD is off" failed (contract still appended).
    GREEN: review-contract-prompt 12/12; all unit tests 4636/0; provider-contract pass; runtime-harness pass; typecheck no regressions.
    Rule: the contract is appended only when the primary session's RDD line is not a validated `off`; `unknown` keeps it (fails safe). Re-evaluated on every agent start through the existing 30 s status memo, so enabling RDD restores it on the next turn.
+L28 2026-10-03 RDD: the whole branch exceeded the reviewer context budget (`lens_context_budget_exceeded`, 33 files, 1,131 lines); user chose per-part review and granted each slice. All four approved and acknowledged (lens review-reliability, worktree gentle-pi-1494-rv):
+   slice 1 T1 7693fe49..fea6c543 review-6d2889a73f541791: R3-T1-checkoff-unproved (W), R3-weak-verify-regex (W), R3-readme-stale-verifier (W), R3-ratchet-parity-lost (S), R3-rule-number-ambiguity (S).
+   slice 2 T2 fea6c543..fa9bc41b: R3-writer-dangling-above-ref (W), R3-union-read-loses-placement (W), R3-harness-duplicated-module-list (S), R3-mislabeled-union-assertion (S).
+   slice 3 T3+T4+docs fa9bc41b..0da7dfbd: R3-001 agentEscalation present even when the tier did not change (S).
+   slice 4 F2 0da7dfbd..08fda673: R3-memo-cleanup-not-finally (S).
+L29 2026-10-03 T6 evidence (risk: medium; inline per L1): all eleven follow-ups fixed.
+   RED: task-size-routing-contract T6 placement/readme tests and agent-risk-escalation `applied` test failed first.
+   GREEN: real dependencies installed in the worktree (`CI=true pnpm install --frozen-lockfile`, replacing the node_modules symlink); `npm test` all stages passed (unit 4650 pass / 0 fail, provider-contract, runtime-harness), which now proves AC9 directly; typecheck no regressions.
+   Changes: writer module points at orchestrator-prompts.md; Writer rule named instead of numbered; readme sizes by large/small; `agentEscalation.applied`; per-module placement test; exact Verification-rule regex; ratchet tripwire that fails once the canon gains Task Size (gentle-ai#5217); harness imports DELEGATION_MODULES; Judgment Day shape asserted against orchestrator-writer.md; memo cleanup in finally.
+L30 2026-10-03 delivery: user approved gentle-shell#1494 and gentle-ai#5217 (status:approved added, read back); PRs gentle-shell#1723 and gentle-ai#5218 opened with type:bug and size:exception (L14 "pr con size exception"); branches pushed.

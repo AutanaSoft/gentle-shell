@@ -857,7 +857,8 @@ interface ReviewAssessmentPlanDetails {
 	// gentle-shell#1494: the native tier before any agent escalation. `risk`
 	// differs from it only when the agent raised the candidate to high.
 	nativeRisk: VerificationTier;
-	agentEscalation?: { item: number; label: string; reason: string };
+	// `applied` is false when the native tier was already high or unassessable.
+	agentEscalation?: { item: number; label: string; reason: string; applied: boolean };
 	reasons: readonly ReviewAssessmentReason[];
 	changedPaths: number;
 	changedLines: number;
@@ -1030,7 +1031,7 @@ async function resolveReviewAssessmentPlan(
 		nativeRisk,
 		...(input.escalate === undefined
 			? {}
-			: { agentEscalation: { item: input.escalate.item, label: HIGH_RISK_ITEMS[input.escalate.item], reason: input.escalate.reason } }),
+			: { agentEscalation: { item: input.escalate.item, label: HIGH_RISK_ITEMS[input.escalate.item], reason: input.escalate.reason, applied: risk !== nativeRisk } }),
 		// No path is known for an unassessable candidate: omit it rather than
 		// emitting an empty string the native reason shape forbids.
 		reasons: assessment?.reasons ?? (unassessableDetail === undefined ? [] : [{ code: unassessableCode, detail: unassessableDetail }]),

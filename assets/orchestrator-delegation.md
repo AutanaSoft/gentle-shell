@@ -75,7 +75,7 @@ For a large task's bounded writes, prefer the installed package-owned `gentle-ai
 
 Once a trigger fires, the parent MUST delegate through the best available subagent runtime. Prefer `subagent_run` when present; otherwise use Pi's native `Agent` or another available delegation mechanism. Do not replace a required delegation with inline execution. Do not inject these as child-agent permission to spawn subagents; children receive concrete role work and must not orchestrate.
 
-The bounded writer precedence in rule 2 overrides that general runtime preference. If no delegation mechanism is available, stop and explain the blocker.
+The bounded writer precedence in the Writer rule below overrides that general runtime preference. If no delegation mechanism is available, stop and explain the blocker.
 
 1. **Evidence-budget rule**: when the reading exceeds the evidence budget, launch `scout`, `context-builder`, or the closest read-only mapping subagent with fresh context and a narrow mapping task that returns a handoff of at most ~2k tokens with `path:line` evidence. Route generic exploration to `gentle-ai-explore`; if missing or unusable, use native `Agent` with the same read-only mapping task and report the fallback.
 2. **Writer rule**: for a large task's bounded writes, prefer the installed package-owned `gentle-ai-worker`, then a user-configured `worker`. If neither worker definition exists, fall back to the native `Agent` even when `subagent_*` tools are available. If no delegation mechanism is available, stop and explain the blocker.

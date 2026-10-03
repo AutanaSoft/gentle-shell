@@ -334,7 +334,7 @@ test("Judgment Day fix routing has one canonical shape and never falls back to g
 		[FIX_AGENT, read(FIX_AGENT)],
 		[JD_SKILL, read(JD_SKILL)],
 		[JD_PROMPTS, fencedBlock(JD_PROMPTS, "## Fix Agent Prompt")],
-		["assets/orchestrator-delegation.md", readDelegationDetail()],
+		["assets/orchestrator-writer.md", read("assets/orchestrator-writer.md")],
 	] as const) {
 		assert.ok(content.includes(canonicalShape), `${path} must carry the canonical Judgment Day fix shape`);
 		assert.match(content, /requires no graph-v1 or native review lineage/i);

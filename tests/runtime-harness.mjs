@@ -450,7 +450,8 @@ async function run() {
 	// rules) moved verbatim to assets/orchestrator-delegation.md; the
 	// always-on combined prompt now only carries a pointer to it. Union read
 	// so these assertions are repointed, not weakened.
-	const delegationDetail = (await Promise.all(["orchestrator-delegation.md", "orchestrator-tracking.md", "orchestrator-verification.md", "orchestrator-writer.md", "orchestrator-prompts.md"].map((file) => readFile(join(ROOT, "assets", file), "utf8")))).join("\n\n");
+	const { DELEGATION_MODULES } = await import("./support/orchestrator-modules.ts");
+	const delegationDetail = (await Promise.all(DELEGATION_MODULES.map((file) => readFile(join(ROOT, "assets", file), "utf8")))).join("\n\n");
 
 	const promptCwd = await tempWorkspace();
 	try {

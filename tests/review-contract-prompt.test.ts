@@ -244,13 +244,16 @@ function rddCli(effective: "on" | "off" | "throws"): NativeReviewCli {
 for (const [effective, injected] of [["off", false], ["on", true], ["throws", true]] as const) {
 	test(`before_agent_start ${injected ? "injects" : "skips"} the review execution contract when RDD is ${effective === "throws" ? "unknown" : effective}`, async () => {
 		__testing.clearRddStatusMemoForTesting();
-		const { beforeAgentStart } = harness(rddCli(effective));
-		const event = primaryEvent();
-		await beforeAgentStart(event, ctx());
-		const appended = event.systemPromptOptions.appendSystemPrompt;
-		assert.match(appended, /# el Gentleman Orchestrator/, "the harness itself is always injected");
-		if (injected) assert.match(appended, /Gentle AI review execution contract/);
-		else assert.doesNotMatch(appended, /Gentle AI review execution contract/);
-		__testing.clearRddStatusMemoForTesting();
+		try {
+			const { beforeAgentStart } = harness(rddCli(effective));
+			const event = primaryEvent();
+			await beforeAgentStart(event, ctx());
+			const appended = event.systemPromptOptions.appendSystemPrompt;
+			assert.match(appended, /# el Gentleman Orchestrator/, "the harness itself is always injected");
+			if (injected) assert.match(appended, /Gentle AI review execution contract/);
+			else assert.doesNotMatch(appended, /Gentle AI review execution contract/);
+		} finally {
+			__testing.clearRddStatusMemoForTesting();
+		}
 	});
 }

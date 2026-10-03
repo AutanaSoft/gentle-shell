@@ -225,6 +225,16 @@ test("the pi mirror surfaces carry every mapped mandatory-delegation anchor", ()
 	}
 });
 
+// gentle-shell#1494 tripwire: the writer and mapping anchors keep the old
+// canonical text only while Gentle Shell leads the canon. Once the regenerated
+// fixture carries the Task Size section (gentle-ai#5217), restore real parity.
+test("the writer anchor's divergence expires when the canon gains Task Size", () => {
+	assert.ok(
+		!fixtureBody().includes("### Task Size"),
+		"the canon now carries Task Size (gentle-ai#5217): replace the file-count writer and mapping anchors with the canonical Task Size wording",
+	);
+});
+
 test("the always-on core prompt carries the condensed incident and verification trigger rows", () => {
 	const core = readRepo(CORE_PATH);
 	for (const row of CORE_ONLY_TRIGGERS) {
