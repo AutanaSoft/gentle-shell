@@ -6,6 +6,7 @@ import test, { type TestContext } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { bindSessionRepositoryPreparation } from "../lib/bounded-writer-admission.ts";
+import { GENTLE_AI_TIMING_ENTRY } from "../lib/gentle-ai-elapsed-store.ts";
 
 // gentle-shell#1690: the package is forwarded to delegated rpc children
 // (GENTLE_PI_AGENTS_CHILD=1, where ctx.hasUI is true). Parent-owned startup
@@ -85,7 +86,12 @@ test("child session_start keeps local resets but skips parent-owned startup work
 	const settingsPath = legacySettings(cwd);
 	const before = readFileSync(settingsPath, "utf8");
 	const h = harness(true, cwd);
+	const timings = () => h.entries.filter((entry) => entry.customType === GENTLE_AI_TIMING_ENTRY);
+	h.handlers.get("tool_execution_start")!({ toolName: "gentle_review", toolCallId: "before" }, h.ctx);
+	assert.equal(timings().length, 0, "no elapsed-timing ledger exists before session_start");
 	await h.handlers.get("session_start")!({ reason: "startup" }, h.ctx);
+	h.handlers.get("tool_execution_start")!({ toolName: "gentle_review", toolCallId: "after" }, h.ctx);
+	assert.equal(timings().length, 1, "the child still creates its elapsed-timing ledger");
 	assert.deepEqual(readdirSync(agentHome), [], "a child must not install package assets");
 	assert.equal(readFileSync(settingsPath, "utf8"), before, "a child must not migrate project model overrides");
 	assert.deepEqual(h.sweeps, [], "a child must not sweep candidate views");
@@ -102,6 +108,26 @@ test("parent session_start still runs the startup work skipped in children", asy
 	assert.notEqual(readFileSync(settingsPath, "utf8"), before, "the parent migrates legacy project model overrides");
 	assert.deepEqual(h.sweeps, [cwd]);
 	assert.ok(h.nativeAccesses.length > 0, "the parent negotiates review status");
+});
+
+test("child session_start re-arms the reminder session for its own session manager", async (t) => {
+	const { cwd } = isolate(t);
+	mkdirSync(join(cwd, "src"), { recursive: true });
+	writeFileSync(join(cwd, "src", "a.ts"), "export {};\n");
+	const h = harness(true, cwd);
+	const next = { ...h.sessionManager, getSessionId: () => "session-child-next" };
+	const nextCtx = { ...h.ctx, sessionManager: next } as unknown as ExtensionContext;
+	const write = (ctx: ExtensionContext, toolCallId: string) => h.handlers.get("tool_result")!({ toolName: "write", toolCallId, isError: false, input: { path: "src/a.ts" } }, ctx);
+	const mutations = () => h.entries.filter((entry) => (entry.data as { kind?: string })?.kind === "mutation");
+	await h.handlers.get("session_start")!({ reason: "startup" }, h.ctx);
+	await h.handlers.get("session_shutdown")!({ reason: "new" }, h.ctx);
+	await write(h.ctx, "after-shutdown");
+	assert.equal(mutations().length, 0, "a shut-down session records nothing");
+	await h.handlers.get("session_start")!({ reason: "new" }, nextCtx);
+	await write(h.ctx, "stale-manager");
+	assert.equal(mutations().length, 0, "the reminder manager moved to the new session");
+	await write(nextCtx, "current-manager");
+	assert.equal(mutations().length, 1, "the restarted child records its own mutation");
 });
 
 async function writeToolResult(child: boolean, t: TestContext) {

@@ -37,7 +37,7 @@ barbatdev on #1690 (2026-10-03 04:19Z):
 
 - [x] T1 Hook audit: classify every gentle-pi package hook that would newly run in a child (session_start, before_agent_start, tool_call, timers, UI, registrations) as must-run, must-skip or harmless. Record the table in this document. Route: delegated read-only (`gentle-ai-explore`, task mus95p0g-1-r2m0); the parent spot-checked `hasUI` in the Pi rpc loader. See "Child hook audit". Commit `5848fb80`.
 - [x] T2 Child guards for the must-skip items in "Child hook audit" (gentle-ai session_start writes, skill-registry, history, pi-pretty fallback, optional startup-banner), with tests. Route: delegated writer (musez9uu-2-2u6i), verified by `gentle-ai-verify` (musfh6tb-3-entu). The child also skips the review-permission revoke/refresh: the grant is host-only (`lib/review-session-standing-permission.ts:162`) and the child relay is created at load. Commit: see Evidence.
-- [ ] T2b Review follow-ups from the T2 RDD review (non-blocking): (a) WARNING `tests/gentle-ai-child-guards.test.ts:83-93`: the "keeps local resets" test does not assert that the child-local resets still run; add a real assertion. (b) SUGGESTION `extensions/gentle-ai.ts:9681-9686`: the early return skips any session state initialized further down; wrap only the parent steps in the guard, or assert the child state explicitly. Route: small writer task.
+- [x] T2b Review follow-ups from the T2 RDD review (non-blocking): (a) WARNING `tests/gentle-ai-child-guards.test.ts:83-93`: the "keeps local resets" test does not assert that the child-local resets still run; add a real assertion. (b) SUGGESTION `extensions/gentle-ai.ts:9681-9686`: the early return skips any session state initialized further down; wrap only the parent steps in the guard, or assert the child state explicitly. Route: delegated writer (musgdawc-4-k2ug). Done: (a) the tests now prove that the child elapsed-timing ledger and the reminder re-arm run (RED 2/6 with the guard moved above the resets; GREEN 6/6); (b) the parent-only work moved into `startParentSession`, which children never call. `tests/gentle-ai.test.ts` 102/102; typecheck shows no regressions. Known gaps: `yolo.reset`/`reviewSidebar.reset` have no direct assertion, and the `reminderManager` reset is proven only in the green direction. Commit: the T2b commit carrying this line.
 - [ ] T3 Launcher injection signal: `buildPiInvocation` exports the injected extension set (and the takeover flag) to the parent env for the three cases, with tests. Route: per the ladder.
 - [ ] T4 Runner forwarding: gentle-agents builds the child extension args from that signal (takeover set with `--no-extensions`; nothing when declared) and drops the curated entries when the package is forwarded, with tests. Route: per the ladder.
 - [ ] T5 Move the `child-context.ts`/`child-safety.ts` behavior into the loaded package, gated on `GENTLE_PI_AGENTS_CHILD`, with no double registration, with tests. Route: per the ladder.
@@ -80,6 +80,22 @@ gentle-shell UI/timers, the gentle-agents host, gentle-todo, runtime-metrics, ge
 
 - T1-T2 live on `fix/1690-standalone-child-package` (worktree `gentle-shell-worktrees/fix-1690-standalone-child-package`). Its RDD review of `a67bb7f5` runs from a separate native Claude Code session, and nothing else writes in that worktree while the review is open.
 - T3 onward continue on `fix/1690-child-package-forwarding` (worktree `gentle-shell-worktrees/fix-1690-child-package-forwarding`), stacked on `a67bb7f5`. If the review adds a correction commit, rebase this branch onto it before delivery.
+
+## Delivery budget
+
+As of `f384d2a1`, the branch carries 322 changed lines against origin/main in code and tests (T2), plus about 100 in this ODD document, roughly 420 in total. The forecast for T2b-T7 is about 600-800 more lines, so a single PR would exceed the 400-line budget several times over. Proposed: stacked PRs to main, each landable on its own:
+
+1. PR1, child guards: T1 + T2 + T2b. On its own it changes nothing for isolated children, and it hardens regular gentle-pi children, which already load the package. About 460 lines including this document; slightly over budget because of the tests and the doc.
+2. PR2, package forwarding: T3 + T4 + T5.
+3. PR3, the missing-tool warning, the acceptance probe and docs: T6 + T7.
+
+**Chain strategy: stacked PRs to main, confirmed by the user on 2026-10-03.** Branch plan:
+
+- PR1: `fix/1690-standalone-child-package`. Once T2b is committed here, fast-forward that branch to include it (the docs commit plus T2b).
+- PR2: a new branch from the PR1 tip, for T3-T5.
+- PR3: a new branch from the PR2 tip, for T6-T7.
+
+Every PR carries the chain context and a dependency diagram (chained-pr skill). No PR before barbatdev answers on `status:approved`.
 
 ## Pending follow-ups
 

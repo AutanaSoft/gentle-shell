@@ -9801,7 +9801,12 @@ function createGentleAiExtensionForTesting(
 		// model config belong to the parent session and write shared state. The
 		// standing review grant is host-only (a child never captures an identity),
 		// so revoke/refresh have nothing to act on; the child relay is load-time.
-		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1") return;
+		// Only that parent-owned work is skipped: the session-local resets above,
+		// and any step added after this call, still run in children.
+		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") await startParentSession(event, ctx);
+	});
+
+	const startParentSession = async (event: unknown, ctx: ExtensionContext): Promise<void> => {
 		const epoch = reminderEpoch;
 		const manager = ctx.sessionManager;
 		const originalCwd = manager?.getCwd?.() ?? ctx.cwd;
@@ -9870,7 +9875,7 @@ function createGentleAiExtensionForTesting(
 		} catch {
 			// Startup negotiation is best-effort only; never surface or throw.
 		}
-	});
+	};
 
 	pi.on("before_agent_start", async (event, ctx) => {
 		const isNamedAgent = isNamedAgentStartEvent(event);
