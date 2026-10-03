@@ -22,8 +22,8 @@ import { createAgentMessageQueue, type PendingAgentMessage } from "../lib/agents
 import { AGENT_MODE, discoverAgents, formatModelRef, loadAgentsConfig, resolveAgentProfile, withPinnedModelProfiles, type AgentDefinition, type AgentMode } from "../lib/agents-config.ts";
 import { resolveBackgroundSubagentsPolicy } from "../lib/background-subagents-policy.ts";
 import { installBackgroundCacheWarming } from "../lib/background-cache-warming.ts";
-import { isFinished, TASK_EVENT, TASK_STATUS, TaskStore, type AskRequest, type TaskRecord } from "../lib/agents-protocol.ts";
-import { AgentRunner, piCommand, abortReasonText, type AskAnswer, type RunnerDeps, type TaskRequest } from "../lib/agents-runner.ts";
+import { isFinished, MISSING_TOOLS_NOTE_PREFIX, TASK_EVENT, TASK_STATUS, TaskStore, type AskRequest, type TaskRecord } from "../lib/agents-protocol.ts";
+import { AgentRunner, piCommand, abortReasonText, REQUESTED_TOOLS_ENV, type AskAnswer, type RunnerDeps, type TaskRequest } from "../lib/agents-runner.ts";
 import { parseChildPackageInjection } from "../lib/child-package-injection.ts";
 import { ChildMessenger, type IpcEndpoint } from "../lib/agents-messaging.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceRegistry, type PresenceRecord, type ReceivedNotification, type SentNotification, type SessionPresenceCandidate } from "../lib/agents-session-transport.ts";
@@ -218,6 +218,26 @@ function ownedChildIpc(env: NodeJS.ProcessEnv, candidate: IpcEndpoint | undefine
 	return candidate;
 }
 
+// Pi drops unknown --tools names without a diagnostic (#1690), so the child
+// reports them once through the one notify the parent keeps. MCP tools
+// register after session_start, and entries that cannot be tool names (the
+// `"*": false` frontmatter entry) are not checkable.
+function registerMissingToolsCheck(pi: ExtensionAPI, env: NodeJS.ProcessEnv): void {
+	const requested = (env[REQUESTED_TOOLS_ENV] ?? "").split(",").map((name) => name.trim())
+		.filter((name) => /^[A-Za-z0-9_.:-]+$/.test(name) && !name.startsWith("mcp__"));
+	if (requested.length === 0) return;
+	let reported = false;
+	pi.on("session_start", (_event, ctx) => {
+		if (reported) return;
+		reported = true;
+		try {
+			const available = new Set(pi.getAllTools().map((tool) => tool.name));
+			const missing = [...new Set(requested.filter((name) => !available.has(name)))];
+			if (missing.length > 0) ctx.ui.notify(`${MISSING_TOOLS_NOTE_PREFIX} ${missing.join(", ")}`, "warning");
+		} catch { /* A diagnostic must never break the child's session start. */ }
+	});
+}
+
 function registerChildMessaging(pi: ExtensionAPI, ipc: IpcEndpoint): void {
 	const messenger = new ChildMessenger(ipc);
 	pi.registerTool({
@@ -370,6 +390,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			return;
 		}
 		if (childIpc) registerChildMessaging(pi, childIpc);
+		registerMissingToolsCheck(pi, env);
 		return;
 	}
 	if (!agentsEnabled(env)) return;

@@ -21,13 +21,13 @@ import { ActiveSessionClient, ActiveSessionListener, SessionPresenceRegistry } f
 import { WindowsActiveSessionClient, WindowsActiveSessionListener } from "../lib/windows-session-transport.ts";
 import { historyDir, loadHistory, saveTask } from "../lib/agents-history.ts";
 import { STALE_COMPLETION_MS } from "../lib/agents-completion-delivery.ts";
-import { applyTaskEvent, emptyThread, TASK_EVENT, TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
+import { applyTaskEvent, emptyThread, MISSING_TOOLS_NOTE_PREFIX, TASK_EVENT, TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
 import { NativePointerScope } from "../lib/native-pointer-region.ts";
 import { PresenceCursor, PresencePublisher, listPresence, readActivity, readDiscovery } from "../lib/orchestrator-presence.ts";
 import { OrchestratorScopeCache } from "../lib/orchestrator-scope.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
-import { AgentRunner } from "../lib/agents-runner.ts";
+import { AgentRunner, REQUESTED_TOOLS_ENV } from "../lib/agents-runner.ts";
 import { bindSessionRepositoryPreparation } from "../lib/bounded-writer-admission.ts";
 import { CHILD_METRICS_EVENT } from "../lib/runtime-metrics-children.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
@@ -1511,6 +1511,45 @@ test("live-only directory traverses presence overflow, excludes expired and othe
 	await panel.opened;
 });
 
+// #1690: Pi drops unknown --tools names without a diagnostic, so the child
+// compares the runner's requested list with its own tools at session_start.
+function missingToolsChild(env: NodeJS.ProcessEnv, toolNames: string[] | (() => string[])) {
+	const child = fakePi();
+	Object.assign(child.pi, { getAllTools: () => (typeof toolNames === "function" ? toolNames() : toolNames).map((name) => ({ name })) });
+	gentleAgents(child.pi, { GENTLE_PI_AGENTS_CHILD: "1", ...env });
+	const notes: Array<{ message: string; type: unknown }> = [];
+	const ctx = { hasUI: true, ui: { notify: (message: string, type?: unknown) => notes.push({ message, type }) } } as unknown as ExtensionContext;
+	return { fire: () => child.fire("session_start", ctx, { type: "session_start", reason: "startup" }), notes };
+}
+
+test("a child warns once about requested tools it does not have", async () => {
+	const child = missingToolsChild({ [REQUESTED_TOOLS_ENV]: "read,gentle_review_scope,grep,codegraph,subagent_parent_message" }, ["read", "grep", "subagent_parent_message"]);
+	await child.fire();
+	assert.deepEqual(child.notes, [{ message: `${MISSING_TOOLS_NOTE_PREFIX} gentle_review_scope, codegraph`, type: "warning" }]);
+	await child.fire();
+	assert.equal(child.notes.length, 1, "a session replacement does not repeat the warning");
+});
+
+test("a child stays quiet when every checkable requested tool exists or nothing was requested", async () => {
+	for (const [label, env] of [
+		["all present", { [REQUESTED_TOOLS_ENV]: "read,grep,subagent_parent_message" }],
+		["MCP names register late", { [REQUESTED_TOOLS_ENV]: "read,mcp__github__search,mcp__x" }],
+		["frontmatter wildcard entries are not tool names", { [REQUESTED_TOOLS_ENV]: "read,\"*\": false,*, ," }],
+		["no requested list", {}],
+		["empty requested list", { [REQUESTED_TOOLS_ENV]: "" }],
+	] as const) {
+		const child = missingToolsChild(env, ["read", "grep", "subagent_parent_message"]);
+		await child.fire();
+		assert.deepEqual(child.notes, [], label);
+	}
+});
+
+test("the missing-tools check never throws into session_start", async () => {
+	const child = missingToolsChild({ [REQUESTED_TOOLS_ENV]: "read,codegraph" }, () => { throw new Error("tool registry unavailable"); });
+	await child.fire();
+	assert.deepEqual(child.notes, []);
+});
+
 test("retired managed SDD child envelopes deny all tools without registering a delegation host", () => {
 	for (const env of [{ GENTLE_PI_RESEARCH_TOOLS: '["read"]' }, { GENTLE_PI_RESEARCH_SELECTION: '{}' }, { GENTLE_PI_RESEARCH_ARTIFACT: '{}' }, { GENTLE_PI_SDD_REMEDIATION_PLAN: '{}' }]) {
 		const hooks = new Map<string, (event: { toolName: string }) => { block: boolean }>();
@@ -2126,7 +2165,7 @@ test("default Node spawn adapter distinguishes IPC-only and permission-capable c
 			assert.equal(captured[index]?.command, "/fixture/pi");
 			assert.deepEqual(captured[index]?.args, args);
 			assert.equal(captured[index]?.options.cwd, permissionChannel ? canonicalGitCwd : nonGitCwd);
-			assert.deepEqual(captured[index]?.options.env, { PATH: "/bin", FIXTURE: fixture, GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: ownedIpc, ...(permissionChannel ? { GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3" } : {}) });
+			assert.deepEqual(captured[index]?.options.env, { PATH: "/bin", FIXTURE: fixture, GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: ownedIpc, ...(permissionChannel ? { GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3" } : {}), [REQUESTED_TOOLS_ENV]: "read,grep,subagent_parent_message" });
 			assert.equal(captured[index]?.options.shell, undefined, "the adapter does not invoke a shell");
 			assert.equal(captured[index]?.options.windowsHide, true, "the adapter always hides a Windows console");
 			assert.equal(captured[index]?.options.detached, process.platform !== "win32", "the adapter forwards the runner's platform selection");
