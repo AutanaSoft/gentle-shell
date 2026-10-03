@@ -26,6 +26,7 @@ import { installPackageAssets } from "../lib/agent-assets.ts";
 import type { ReviewCollectInputV3, ReviewStatusV3 } from "../lib/review-integration-v2.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { cardBody, cardTitle, cardTone } from "./gentle-card-text.ts";
+import { readDelegationDetail } from "./support/orchestrator-modules.ts";
 
 initTheme("dark");
 
@@ -885,7 +886,7 @@ test("runtime guidance keeps review policy out of the static orchestrator and te
 	}
 
 	const orchestrator = readFileSync("assets/orchestrator.md", "utf8")
-		+ readFileSync("assets/orchestrator-delegation.md", "utf8");
+		+ readDelegationDetail();
 	assert.match(orchestrator, /injects the mirrored provider-bundle review execution contract/);
 	assert.match(orchestrator, /this package invents no lifecycle instructions/);
 	for (const lifecycleMarker of ["review-risk", "review-reliability", "review-resilience", "review-readability", "Authority-First Terminal Procedure", "reconcile-terminal-mirrors"]) {
