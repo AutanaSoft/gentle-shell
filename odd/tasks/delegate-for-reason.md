@@ -28,7 +28,11 @@ S8. Bench: "corras los bench utilizando estas configuraciones para ver cómo fun
   Writer musucqhs-2-ob1l: RED (ERR_MODULE_NOT_FOUND x2 + 4 prompt assertions) -> GREEN 23/23; typecheck no regressions; npm test 4718/4718 with
   `env -u GENTLE_PI_AGENTS_CHILD` (1 known env-only failure inside subagents). Parent spot check 23/23. Risk medium. RDD consent declined for this
   candidate (no native review). Kernel rule "ratio >= 3 delegates" deferred to T2.
-- [ ] T2 (S1-S4, AC1-AC4, AC7) delegated writer · kernel: writer mechanism by reasons within byte budget; ratchet/contract tests (pi leads wording)
+- [x] T2 (S1-S4, AC1-AC4, AC7) delegated writer (reason: context backstop) · kernel: writer mechanism by reasons within byte budget; ratchet/contract tests (pi leads wording).
+  Writer musuop7e-4-t3xk: RED 5/6 -> GREEN 76/76 focused; typecheck no regressions; npm test 4724/4724 (env -u GENTLE_PI_AGENTS_CHILD). Parent spot check
+  38/38. Core 8,175/8,192 B at 128-char root (17 B headroom); writer.md 4,249/4,500; delegation.md 19,929/20,000. Risk medium; RDD off.
+  Notes for T3/T4: put new protocol text in orchestrator-verification.md; T4 must free core bytes to relax the Safety single-writer line;
+  docs/readme-reference.md still says "one writer per task" (fix in T4 docs).
 - [ ] T3 (S5-S7, AC5) delegated writer · parallel review protocol in the verification/writer lazy modules
 - [ ] T4 (S2, AC6) delegated writer, HIGH risk (concurrency) + independent verify · disjoint-surface writer admission; relax single-writer text
 - [ ] T5 (S8, AC8) delegated writer in bench repo · scenarios x5 (two independent features) and expensive-orchestrator profile; pin before/after products

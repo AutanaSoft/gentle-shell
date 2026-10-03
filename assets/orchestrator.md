@@ -32,7 +32,7 @@ A task is **small** when all three hold:
 2. **Contained risk** — no high-risk item below.
 3. **Resumable from the diff** — resume test: if the session stopped now, someone could finish from the original request and `git diff` alone.
 
-The number of files, commands or tests, fixes, or a requested `todo` list never decides size. A task is **large** only when the resume test fails (several sessions, external waits, separate deliverables, or requirements compaction could lose); large tasks get ODD tracking and workers.
+The number of files, commands or tests, fixes, or a requested `todo` list never decides size. A task is **large** only when the resume test fails (several sessions, external waits, separate deliverables, or requirements compaction could lose); large tasks get ODD tracking and workers only by the Writer rule, else inline.
 
 Small path: inline. Read and edit (one understood change may span files); observe RED inline before the fix; run the focused test and the suite inline, once each. No explore, worker, or verifier; no feature document, mirror, or commits unless the user asks; `todo` optional. It needs no lazy asset.
 
@@ -44,23 +44,23 @@ ODD (Default Workflow, harness section above) is mandatory on every request, wit
 
 Core question: does this inflate parent context without need?
 
-Before launching bounded writer (`gentle-ai-worker` or `worker`), task/context needs nonempty `## Allowed edit surfaces`: narrow repository-relative paths/globs; never `.`, bare repo root, or absolute. Parent derives surfaces, maps unknown targets read-only, shows derived candidates only for genuine scope choices. Do not ask the human to author paths or globs.
+Before launching a bounded writer (`gentle-ai-worker` or `worker`), derive nonempty `## Allowed edit surfaces`: narrow repository-relative paths/globs; never `.`, bare repo root, or absolute. Do not ask the human to author paths or globs.
 
 ## Mechanisms
 
-Mandatory Delegation Triggers — each mechanism turns on only by its own trigger and is then mandatory (prefer `subagent_run`). If a role is missing or unusable, use native `Agent` with the same read-only constraints and report the fallback. When it resolves, re-evaluate task size.
+Mandatory Delegation Triggers — each mechanism turns on only by its own trigger and is then mandatory (prefer `subagent_run`; role missing or unusable: native `Agent`, same read-only constraints, report the fallback). When it resolves, re-evaluate task size.
 
 1. **Ask** — open product or design decision → one focused question; stop and wait.
 2. **Evidence-budget rule** — understanding needs more than one read batch or >~5 sequential lookups → one `gentle-ai-explore`, handoff at most ~2k tokens with `path:line` evidence; re-read nothing it covered beyond one spot check.
 3. **Verification rule** — high risk → independent `gentle-ai-verify` after the change's own checks (`orchestrator-verification.md`); otherwise checks run inline.
 4. **Track** — large task → feature document, Engram mirror, `todo`, work-unit commits (`orchestrator-tracking.md`, `orchestrator-memory.md`).
-5. **Writer rule** — large task → one bounded `gentle-ai-worker` per task (`orchestrator-writer.md`); never by file count.
+5. **Writer rule** — never by file count or a large task alone; only for a reason (`orchestrator-writer.md`): 2+ independent units, disjoint files, each heavier than a subagent start; a reported Model routing ratio ~3x+ (unknown: no), beyond one trivial edit; Context backstop.
 6. **Incident rule** — diagnose wrong cwd/worktree/git/tooling incidents separately before resuming.
 7. **Context backstop** — parent context past ~150k tokens → delegate the next bounded unit. Bound command output (counts, `--stat`, `tail`).
 
 {{GENTLE_PI_BACKGROUND_POLICY}}; rules: the background-subagents block in the delegation contract.
 
-Per-action table, Work Routing Ladder examples, Canonical Workflows, mirrored canon (language, delegation): `orchestrator-delegation.md`; blocking-prompt relays and provider defects: `orchestrator-prompts.md`.
+Per-action table, Work Routing Ladder examples, Canonical Workflows: `orchestrator-delegation.md`; blocking-prompt relays and provider defects: `orchestrator-prompts.md`.
 
 ## Memory Contract
 

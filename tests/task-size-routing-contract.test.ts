@@ -92,6 +92,8 @@ test("AC4: each mechanism turns on only by its own trigger and size is re-evalua
 		"open product or design decision",
 		"high risk",
 		"never by file count",
+		// gentle-shell#1731: the writer fires on reasons, not on size alone.
+		"never by file count or a large task alone",
 	]) {
 		assert.ok(triggers.includes(clause), `mechanism list is missing: ${clause}`);
 	}

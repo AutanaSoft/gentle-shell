@@ -42,14 +42,15 @@ Core principle: **does this inflate the parent context without need?** If yes, u
 | Read to explore/understand beyond the evidence budget | — | ✅ one narrow explorer (handoff of at most ~2k tokens, `path:line` evidence) |
 | Read as preparation for writing | — | ✅ together with the write |
 | Write a small task (one understood change, any number of files) | ✅ | — |
-| Write a large (tracked) task | — | ✅ one writer per task |
+| Write a large task with no Writer rule reason | ✅ following the logbook | — |
+| Write a unit with a Writer rule reason | — | ✅ one bounded writer per unit |
 | Bash for state (`git`, `gh`) | ✅ | — |
 | Focused test and suite of the change being made | ✅ once each | — |
 | High-risk change, or long suites, builds, or installs of a large task | — | ✅ independent `gentle-ai-verify` |
 
 Use the platform's native bounded worker for delegated-direct work.
 
-Keep one writer and a short synthesized handoff. Delegation is mandatory only when a mechanism's own trigger fires, and remains an ODD implementation route.
+Keep each delegated writer bounded, with a short synthesized handoff. Delegation is mandatory only when a mechanism's own trigger fires, and remains an ODD implementation route.
 
 #### Mandatory Delegation Triggers
 
@@ -59,11 +60,11 @@ These are parent-orchestrator routing boundaries; do not pass these rules to chi
 2. **Mapping trigger (Evidence-budget rule):** read inline only when the evidence fits one parallel batch of at most 3 calls totaling ~10k tokens, using grep and line ranges, never whole large files. When understanding needs more reading or more than ~5 sequential lookups, delegate one scout/explorer that returns a handoff of at most ~2k tokens with `path:line` evidence before deciding or writing anything. Never force delegation for a small targeted question. The parent does not re-read what the handoff covered, except a single spot check. With the handoff, re-evaluate task size; an understood change continues inline.
 3. **Verification rule** (gentle-pi#661/#662, RDD-aware): a high-risk change (Task Size) gets an independent `gentle-ai-verify` run after the change's own checks; otherwise whoever made the change runs its focused test and suite inline, small tasks included. The normative on/off/unknown routing is stated once in `orchestrator-verification.md`; reference it, do not restate it.
 4. **Track:** a large task gets the feature document, Engram mirror, `todo`, and work-unit commits (`orchestrator-memory.md`).
-5. **Writer trigger (Writer rule):** a large task delegates one bounded writer per task; file count never fires this trigger.
+5. **Writer trigger (Writer rule):** a large task alone never delegates, and file count never fires this trigger. Delegate one bounded writer per unit only for a named reason: (a) parallelism — 2+ independent units with disjoint files, each clearly heavier than starting a subagent; medium tasks included; (b) model routing — the harness reports a `Model routing:` price ratio of about 3x or more: delegate implementation of anything beyond a trivial single edit; when no ratio is reported, or it is unknown, this reason does not fire; (c) context — the Context backstop below. Without a reason, the parent works inline, following the logbook (feature document, mirror, `todo`, work-unit commits).
 6. **Incident rule:** after wrong `cwd`, accidental repository/worktree mutation, failed merge recovery, confusing test command, or environment workaround, stop and diagnose the incident separately before resuming.
 7. **Context backstop:** when the parent context passes ~150k tokens, pause and delegate the next bounded unit of work. Always keep command output bounded in the parent (counts, `--stat`, `tail`).
 
-**Preparation trigger:** on a large task, reading that prepares a write, and broad research or context compression, delegate together with or ahead of the write instead of filling the parent context. On a small task the parent reads and writes inline.
+**Preparation trigger:** when the Writer rule delegates a write, reading that prepares it, and broad research or context compression, delegate together with or ahead of the write instead of filling the parent context. When the parent writes inline, small or large, it reads inline too.
 
 **Route declaration:** for large work, record the chosen route per task (inline or delegated) and the trigger evidence in the feature document, so skipped delegation is observable instead of silent.
 
@@ -93,7 +94,7 @@ Use inline execution when the task is small by the always-on Task Size section: 
 
 #### 2. Simple Delegation
 
-Delegate when a mechanism's own trigger fires, within the ODD workflow: understanding an unfamiliar module beyond the evidence budget (explore), implementing a large tracked task (writer), or checking a high-risk change (independent verifier).
+Delegate when a mechanism's own trigger fires, within the ODD workflow: understanding an unfamiliar module beyond the evidence budget (explore), implementing a unit with a Writer rule reason (writer), or checking a high-risk change (independent verifier).
 
 Use the configured subagent runtime when available. Prefer the `subagent_*` tools (`subagent_run`, status/result helpers) when the Pi Subagents extension is installed, because they run the user's configured project/global subagent definitions and preserve history/background behavior.
 
@@ -139,10 +140,10 @@ Small task pattern:
 parent clarifies and checks git → parent edits inline → focused test and suite inline → parent reports
 ```
 
-Large task pattern:
+Large task pattern (with a Writer rule reason, one bounded worker per unit writes instead):
 
 ```text
-parent clarifies and checks git → one worker writes when authorized → focused verification → parent reports
+parent clarifies and checks git → parent edits inline following the logbook → focused test and suite inline → parent reports
 ```
 
 Add agents only where a mechanism's own trigger fires.
