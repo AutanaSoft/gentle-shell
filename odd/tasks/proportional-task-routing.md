@@ -50,10 +50,10 @@ S9. Measurement: bench baseline (origin/main cf3012f7) vs after, same scenarios:
 - [x] T1 (S1-S5, S7) inline · always-on Task Size + Mechanisms in assets/orchestrator.md; harness Classify/steps 5-6; delegation, skill, readme aligned; contract tests · RED→GREEN · 3e5c8012 (rebased from 6f882b6b)
 - [x] T2 (S7) inline · orchestrator-delegation.md split into tracking/verification/writer/prompts modules; union test helper; AC7 budget test · refactor under existing contract tests · 6f8a78b8
 - [x] T3 (S5, S6) inline · `escalate` input on gentle_review assess (raise-only, pi-side), HIGH_RISK_ITEMS, rule text in verification/tracking modules · RED→GREEN · 711ad9db
-- [x] T4 (S7) inline · edit-not-rewrite rule and codemode mirror refresh in orchestrator-memory.md; extension-side auto-mirror spike → F3 · RED→GREEN · this work unit
-- [ ] T5 (S9) inline · bench after; AC8 verdicts
-- [ ] G1 (S8) other repo · port the kernel to the gentle-ai canon with parity
-- [ ] G2 (S6) other repo · gentle-ai assess accepts escalate-only agent raise
+- [x] T4 (S7) inline · edit-not-rewrite rule and codemode mirror refresh in orchestrator-memory.md; extension-side auto-mirror spike → F3 · RED→GREEN · f508715f
+- [ ] T5 (S9) in progress · bench after (after1494a, product 6f8a78b8): s1 done, s2/l1 running; new scenarios not authored yet
+- [x] G1 (S8) gentle-ai `fix/1494-task-size-canon` (worktree ~/work/gentle-ai-1494, stacked on fix/odd-spec-by-reference) · canon + 12 orchestrators + shared sections + docs · RED→GREEN · 2d6cea5f
+- [x] G2 (S6) gentle-ai · `review assess --escalate-item/--escalate-reason` · RED→GREEN · a0f8584c
 - [ ] G3 (S6) other repo · deterministic lowering accuracy using the Laya/Kev corpus (40 RDD candidates + 113 ODD commits)
 - [ ] F1 follow-up issue · Pi loads the canon twice (`~/AGENTS.md` + gentle-pi injection)
 - [ ] F3 follow-up issue (gentle-engram) · mirror `odd/tasks/*.md` to Engram automatically on write, with zero model output
@@ -102,3 +102,7 @@ L21 2026-10-03 T4 evidence (risk: medium, prompt text; inline per L1):
    RED: task-size-routing-contract "T4: tracking updates edit in place..." failed on the missing clauses.
    GREEN: all unit tests 4633 pass / 0 fail.
    Spike: gentle-pi cannot mirror to Engram without the model today; memory tools belong to the separate gentle-engram package (engram CLI `save` has no topic-key upsert in its help). The zero-output path available now is a codemode script that reads the file and calls mem_save (used throughout this feature). Automatic mirroring on write belongs in gentle-engram → F3.
+L22 2026-10-03 G1/G2 in gentle-ai (outside this repo, authorized by L19): worktree ~/work/gentle-ai-1494, branch fix/1494-task-size-canon stacked on fix/odd-spec-by-reference (the #1713 canon parity, not yet merged). G2 a0f8584c: assess flags raise passive/medium to high with an `agent_escalation` reason; START lens selection still uses the native tier (the raise makes the review due now, it does not change lens count). G1 2d6cea5f: routing.go Task Size + high-risk list + per-mechanism triggers, 12 orchestrator assets, shared sections, hermes skill, usage/trigger-rules docs. Full `go test ./... -timeout 30m`: 79 packages ok; the only failure was the refusal-resolution ratchet on the two new escalation errors, fixed by naming the rerun command (targeted rerun ok).
+L23 2026-10-03 T5 partial: baseline (main cd4ba5a7, base1494b) vs after (6f8a78b8, after1494a), arm B gpt-6.1-sol low:
+   s1-tasklog base 335 s, 56 turns, $0.339, input 108k + 503k cache, output 7.2k, subagents (verify/worker), odd doc created · after 77 s, 10 turns, $0.105, input 40k + 148k cache, output 1.1k, 0 subagents, 0 odd files, accepted at round 0. Vanilla A: 56 s, 6 turns, $0.062.
+   s2-ledger base 479 s, 43 turns, $0.361 · after pending. l1-tasklog base 559 s, 48 turns, $0.403, accepted at round 1 · after pending.
