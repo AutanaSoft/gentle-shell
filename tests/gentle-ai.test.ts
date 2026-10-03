@@ -2326,6 +2326,7 @@ test("applying a populated profile whose routes already match skips the confirma
 	// the dialog is pure friction and the apply must proceed without it.
 	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
 	writeStore({ team: { worker: { model: "openai/alpha" } } });
+	const settingsBefore = readFileSync(settingsPath, "utf8");
 
 	applyOnce(fixture);
 	await fixture.run("gentle:profiles");
@@ -2338,7 +2339,7 @@ test("applying a populated profile whose routes already match skips the confirma
 	const store = JSON.parse(readFileSync(storePath, "utf8"));
 	assert.equal(store.active, "team", "the apply still claims the profile as active");
 	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), { worker: { model: "openai/alpha" } }, "the routing is unchanged");
-	assert.equal(readFileSync(settingsPath, "utf8"), readFileSync(settingsPath, "utf8"), "settings.json is untouched");
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore, "settings.json is untouched");
 });
 
 test("applying a populated profile whose routes match and whose orchestrator is already set skips the confirmation", async (t) => {
