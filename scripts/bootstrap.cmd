@@ -135,41 +135,44 @@ if errorlevel 1 goto failed
 
 rem Production direct non-forking Node probe: 10s deadline and combined 1-MiB cap.
 rem Drain both pipes asynchronously; valid output followed by a hang still fails.
+rem Failures append one fixed reason code; walk codes name the component role only.
 "%GENTLE_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
-  "& { $child = $null; $started = $false; try { $ErrorActionPreference = 'Stop';" ^
-  "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'Managed policy constraint' };" ^
-  "$tools = $env:GENTLE_BOOTSTRAP_TOOLS; $node = (Get-Content -LiteralPath (Join-Path $tools '.node-target') -Raw).TrimEnd([char]13,[char]10);" ^
-  "$item = Get-Item -LiteralPath $node -Force; if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Unsafe Node target' };" ^
-  "if (-not [IO.Path]::IsPathRooted($node) -or $node.StartsWith('\\')) { throw 'Unsafe Node path' };" ^
+  "& { $child = $null; $started = $false; $step = 'policy'; try { $ErrorActionPreference = 'Stop';" ^
+  "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'policy' };" ^
+  "$step = 'target'; $tools = $env:GENTLE_BOOTSTRAP_TOOLS; $node = (Get-Content -LiteralPath (Join-Path $tools '.node-target') -Raw).TrimEnd([char]13,[char]10);" ^
+  "$item = Get-Item -LiteralPath $node -Force; if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'unsafe-target' };" ^
+  "if (-not [IO.Path]::IsPathRooted($node) -or $node.StartsWith('\\')) { throw 'unsafe-path' };" ^
   "$me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $trusted = @($me,'S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'); $path = $node;" ^
   "$depth = 0;" ^
-  "while ($path) {" ^
-  "  $item = Get-Item -LiteralPath $path -Force; if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Node reparse ancestor' };" ^
+  "$step = 'acl-walk'; while ($path) {" ^
+  "  $role = 'ancestor'; if ($depth -eq 0) { $role = 'target' } elseif ($depth -eq 1) { $role = 'parent' };" ^
+  "  $item = Get-Item -LiteralPath $path -Force; if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw ($role + '-reparse') };" ^
   "  if ($item.PSIsContainer) { $acl = [IO.Directory]::GetAccessControl($path) } else { $acl = [IO.File]::GetAccessControl($path) };" ^
-  "  if ($trusted -notcontains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value) { throw 'Unknown Node owner' };" ^
+  "  if ($trusted -notcontains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value) { throw ($role + '-owner') };" ^
   "  $allowedRights = 0x1200a9; if ($depth -ge 2) { $allowedRights = 0x1200ad };" ^
-  "  foreach ($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) { if ($rule.AccessControlType -eq 'Allow' -and -not ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and ([long]$rule.FileSystemRights -band (-bnot [long]$allowedRights)) -and $trusted -notcontains $rule.IdentityReference.Value) { throw 'Unsafe Node ACL' } };" ^
+  "  foreach ($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) { if ($rule.AccessControlType -eq 'Allow' -and -not ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and ([long]$rule.FileSystemRights -band (-bnot [long]$allowedRights)) -and $trusted -notcontains $rule.IdentityReference.Value) { throw ($role + '-acl-mask') } };" ^
   "  $parent = [IO.Directory]::GetParent($path); if ($null -eq $parent) { break }; $path = $parent.FullName; $depth++;" ^
   "};" ^
   "$start = New-Object Diagnostics.ProcessStartInfo; $start.FileName = $node; $start.Arguments = '--version'; $start.UseShellExecute = $false; $start.CreateNoWindow = $true; $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true;" ^
-  "$child = New-Object Diagnostics.Process; $child.StartInfo = $start; if (-not $child.Start()) { throw 'Node cannot start' }; $started = $true;" ^
-  "$streams = @($child.StandardOutput.BaseStream,$child.StandardError.BaseStream); $buffers = @((New-Object byte[] 4096),(New-Object byte[] 4096));" ^
+  "$step = 'start'; $child = New-Object Diagnostics.Process; $child.StartInfo = $start; if (-not $child.Start()) { throw 'no-start' }; $started = $true;" ^
+  "$step = 'drain'; $streams = @($child.StandardOutput.BaseStream,$child.StandardError.BaseStream); $buffers = @((New-Object byte[] 4096),(New-Object byte[] 4096));" ^
   "$tasks = @($streams[0].ReadAsync($buffers[0],0,4096),$streams[1].ReadAsync($buffers[1],0,4096)); $closed = @($false,$false); $text = ''; $total = 0; $watch = [Diagnostics.Stopwatch]::StartNew();" ^
   "while (-not ($closed[0] -and $closed[1] -and $child.HasExited)) {" ^
-  "  if ($watch.ElapsedMilliseconds -ge 10000) { throw 'Node deadline' };" ^
+  "  if ($watch.ElapsedMilliseconds -ge 10000) { throw 'deadline' };" ^
   "  for ($index = 0; $index -lt 2; $index++) { if (-not $closed[$index] -and $tasks[$index].IsCompleted) {" ^
   "    $count = $tasks[$index].GetAwaiter().GetResult(); if ($count -eq 0) { $closed[$index] = $true } else {" ^
-  "      $total += $count; if ($total -gt 1048576) { throw 'Node output limit' };" ^
+  "      $total += $count; if ($total -gt 1048576) { throw 'output-limit' };" ^
   "      if ($index -eq 0) { $text += [Text.Encoding]::UTF8.GetString($buffers[$index],0,$count) };" ^
   "      $tasks[$index] = $streams[$index].ReadAsync($buffers[$index],0,4096);" ^
   "    }" ^
   "  } }; Start-Sleep -Milliseconds 10;" ^
-  "}; if ($child.ExitCode -ne 0) { throw 'Node nonzero exit' };" ^
-  "$version = $text.Trim(); if ($version -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { throw 'Unknown Node version' };" ^
+  "}; if ($child.ExitCode -ne 0) { throw 'exit-code' };" ^
+  "$step = 'version'; $version = $text.Trim(); if ($version -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { throw 'version-format' };" ^
   "$actual = [Version]$version.Substring(1); $metadata = Get-Content -LiteralPath (Join-Path $env:GENTLE_BOOTSTRAP_BUNDLE 'package.json') -Raw | ConvertFrom-Json;" ^
-  "if ($actual -lt [Version]'24.3.0' -or $actual -lt [Version]$metadata.engines.node.Substring(2)) { throw 'Incompatible Node; refusing replacement' };" ^
-  "if ((Test-Path -LiteralPath (Join-Path $tools '.node-stem')) -and $version -ne 'v24.21.0') { throw 'Acquired Node version rejected' };" ^
-  "} catch { [Console]::Error.WriteLine('Bootstrap: Node version, execution, deadline, output bound or policy check failed; refusing replacement.'); exit 1 }" ^
+  "if ($actual -lt [Version]'24.3.0' -or $actual -lt [Version]$metadata.engines.node.Substring(2)) { throw 'engine' };" ^
+  "if ((Test-Path -LiteralPath (Join-Path $tools '.node-stem')) -and $version -ne 'v24.21.0') { throw 'acquired-version' };" ^
+  "} catch { $reason = 'unexpected-' + $step; if ($_.Exception.Message -cmatch '^(policy|unsafe-target|unsafe-path|(target|parent|ancestor)-(reparse|owner|acl-mask)|no-start|deadline|output-limit|exit-code|version-format|engine|acquired-version)$') { $reason = $_.Exception.Message };" ^
+  "[Console]::Error.WriteLine('Bootstrap: Node version, execution, deadline, output bound or policy check failed; refusing replacement. Reason: ' + $reason); exit 1 }" ^
   "finally { try { if ($child) { if ($started -and -not $child.HasExited) { $child.Kill(); if (-not $child.WaitForExit(1000)) { throw 'Child termination unconfirmed' } }; $child.Dispose() } } catch { [Console]::Error.WriteLine('Bootstrap: direct-child termination could not be confirmed.'); exit 1 } } }"
 if errorlevel 1 goto failed
 

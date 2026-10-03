@@ -967,6 +967,36 @@ never pose as an intentional rejection:
 | `unexpected-private-acl` | Writing or reading back the private DACL. |
 | `unexpected-marker` | Writing the ownership marker. |
 
+The Node probe stage follows the same contract. Its message is unchanged and
+ends with `Reason: <code>`. Walk codes are prefixed with the role of the path
+component that failed: `target` (`node.exe` itself, depth 0), `parent` (its
+directory, depth 1) or `ancestor` (depth 2 and above). The role is fixed text,
+never the path.
+
+| Code | Rejected check |
+|------|----------------|
+| `policy` | PowerShell is not in FullLanguage mode. |
+| `unsafe-target` | The recorded Node target is a directory or a reparse point. |
+| `unsafe-path` | The recorded Node target is not rooted, or is UNC. |
+| `<role>-reparse` | A walked component is a reparse point. |
+| `<role>-owner` | A walked component's owner is not the invoking SID, SYSTEM, Administrators or TrustedInstaller. |
+| `<role>-acl-mask` | An untrusted effective allow ACE on a walked component exceeds its depth's allowed rights mask. |
+| `no-start` | The process did not start. |
+| `deadline` | Node did not exit and close both pipes within 10 seconds. |
+| `output-limit` | Combined stdout and stderr exceeded 1 MiB. |
+| `exit-code` | Node exited with a nonzero code. |
+| `version-format` | `node --version` did not print exactly `vMAJOR.MINOR.PATCH`. |
+| `engine` | The version is below 24.3.0 or the repository `engines.node` floor. |
+| `acquired-version` | A Node acquired by this bootstrap is not exactly v24.21.0. |
+
+Any other exception reports `unexpected-<step>`: `unexpected-policy`,
+`unexpected-target` (reading the recorded target), `unexpected-acl-walk`
+(reading a component's attributes or ACL), `unexpected-start` (for example, an
+application-control denial while starting the process), `unexpected-drain`
+(reading the pipes) or `unexpected-version` (reading the repository metadata).
+A child that cannot be confirmed terminated keeps its separate
+`direct-child termination could not be confirmed` message.
+
 ACLs are read and written with .NET Framework APIs
 (`[IO.Directory]::GetAccessControl`, `[IO.File]::GetAccessControl`,
 `[IO.Directory]::SetAccessControl`) instead of `Get-Acl`/`Set-Acl`. Those

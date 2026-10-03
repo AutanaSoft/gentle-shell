@@ -357,6 +357,41 @@ test("claim reports one fixed non-sensitive reason code per check beside the unc
 	assert.deepEqual(order, [...order].sort((left, right) => left - right));
 });
 
+// The Node probe follows the same contract. Walk rejections also name the path
+// component role (target, immediate parent or distant ancestor), never the path.
+const probeRoles = ["target", "parent", "ancestor"];
+const probeWalkChecks = ["reparse", "owner", "acl-mask"];
+const probeRejections = ["policy", "unsafe-target", "unsafe-path", ...probeRoles.flatMap((role) => probeWalkChecks.map((check) => `${role}-${check}`)),
+	"no-start", "deadline", "output-limit", "exit-code", "version-format", "engine", "acquired-version"];
+const probeSteps = ["policy", "target", "acl-walk", "start", "drain", "version"];
+const probeMessage = "Bootstrap: Node version, execution, deadline, output bound or policy check failed; refusing replacement.";
+test("Node probe reports one fixed non-sensitive reason code per check beside the unchanged message", () => {
+	const stage = cmdStage(stageMarkers.probe);
+	const literal = [...stage.matchAll(/throw '([^']*)'/g)].map((match) => match[1]).filter((code) => code !== "Child termination unconfirmed");
+	const walk = [...stage.matchAll(/throw \(\$role \+ '-([^']*)'\)/g)].map((match) => match[1]);
+	assert.deepEqual([...new Set(walk)].sort(), [...probeWalkChecks].sort(), "walk checks carry the component role");
+	assert.match(stage, /\$role = 'ancestor'; if \(\$depth -eq 0\) \{ \$role = 'target' \} elseif \(\$depth -eq 1\) \{ \$role = 'parent' \};/);
+	const thrown = [...literal, ...probeRoles.flatMap((role) => walk.map((check) => `${role}-${check}`))];
+	for (const code of thrown) assert.ok(probeRejections.includes(code), `unlisted probe rejection: ${code}`);
+	assert.deepEqual([...new Set(thrown)].sort(), [...probeRejections].sort(), "every rejection is reachable");
+	const steps = [...stage.matchAll(/\$step = '([^']*)'/g)].map((match) => match[1]);
+	assert.deepEqual([...new Set(steps)].sort(), [...probeSteps].sort(), "every step is reachable");
+	assert.ok(stage.indexOf("$step = 'policy'") < stage.indexOf("try {"), "the step exists before any check can fail");
+	const allowlist = stage.match(/\$_\.Exception\.Message -cmatch '(\^[^']+\$)'\) \{ \$reason = \$_\.Exception\.Message \}/);
+	assert.ok(allowlist, "only allowlisted rejection codes are copied from an exception");
+	const allowed = new RegExp(allowlist[1]);
+	for (const code of probeRejections) assert.match(code, allowed);
+	for (const other of [...probeSteps.map((step) => `unexpected-${step}`), "Exception calling Start", "C:\\Users\\someone", "owner", "target-", "target-owner ", ""]) assert.doesNotMatch(other, allowed);
+	assert.match(stage, /\$reason = 'unexpected-' \+ \$step;/, "unexpected exceptions never pose as an intentional rejection");
+	assert.ok(stage.includes(`[Console]::Error.WriteLine('${probeMessage} Reason: ' + $reason)`), "user-facing message is unchanged; the code is appended");
+	assert.ok(stage.includes("[Console]::Error.WriteLine('Bootstrap: direct-child termination could not be confirmed.')"), "termination failure keeps its own message");
+	const order = ["'policy'", "'target'", "'acl-walk'", "'start'", "'drain'", "'version'"].map((step) => stage.indexOf(`$step = ${step}`));
+	assert.deepEqual(order, [...order].sort((left, right) => left - right));
+	// The fixture primitive keeps production's step tracking from the child onward.
+	assert.ok(processPrimitive().includes("$step = 'start'"));
+	assert.ok(processPrimitive().includes("$step = 'policy'"));
+});
+
 // Windows PowerShell 5.1 autoloads Microsoft.PowerShell.Security from PSModulePath.
 // Started from PowerShell 7, the inherited path finds a Core-only copy and every
 // cmdlet of that module fails, so ACL work uses .NET Framework APIs directly.
@@ -732,7 +767,10 @@ if (mode.endsWith('hang')) { process.on('SIGTERM', () => {}); setInterval(() => 
 `);
 			const result = await nativeCmd(f.root, [processPrimitive()], { ...env, GENTLE_FIXTURE_NODE: process.execPath, GENTLE_FIXTURE_PROBE: probe, GENTLE_FIXTURE_PID: pidFile, GENTLE_FIXTURE_MODE: mode });
 			assertNative(result, mode === "valid" ? 0 : 1);
-			if (mode !== "valid") assert.match(result.stderr, /Node version, execution, deadline, output bound or policy check failed/);
+			if (mode !== "valid") {
+				const expected = { nonzero: "exit-code", "stdout-limit": "output-limit", "stderr-limit": "output-limit" }[mode as string] ?? "deadline";
+				assert.ok(result.stderr.includes(`${probeMessage} Reason: ${expected}`), `stderr: ${result.stderr.slice(0, 4000)}`);
+			}
 			assert.equal(existsSync(pidFile), true, "the approved fixture Node must actually start");
 			const pid = Number(readFileSync(pidFile, "utf8")); assert.ok(Number.isSafeInteger(pid) && pid > 0);
 			assert.throws(() => process.kill(pid, 0), { code: "ESRCH" }, "owned direct fixture Node must be reaped");
