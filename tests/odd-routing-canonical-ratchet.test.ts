@@ -90,15 +90,18 @@ const ANCHORS: readonly RoutingAnchor[] = [
 		// evidence-budget rule the local mirrors already carried.
 		mirrors: [
 			{ surface: DELEGATION, includes: "**Mapping trigger (Evidence-budget rule):** read inline only when the evidence fits one parallel batch of at most 3 calls" },
-			{ surface: CORE, includes: "**Evidence-budget rule** — read inline only if evidence fits one parallel batch (at most 3 calls, ~10k tokens" },
+			{ surface: CORE, includes: "**Evidence-budget rule** — understanding needs more than one read batch" },
 		],
 	},
 	{
 		label: "writer trigger at 2 or more non-trivial files",
 		canonical: "**Writer trigger:** when implementation touches 2 or more non-trivial files",
+		// Gentle Shell intentionally leads the canon here: task size, not file
+		// count, fires the writer (gentle-shell#1494). The canonical anchor stays
+		// until gentle-ai follows.
 		mirrors: [
-			{ surface: DELEGATION, includes: "**Writer trigger (Multi-file write rule):** when implementation touches 2 or more non-trivial files" },
-			{ surface: CORE, includes: "**Multi-file write rule** — 2+ non-trivial files touched" },
+			{ surface: DELEGATION, includes: "**Writer trigger (Writer rule):** a large task delegates one bounded writer per task" },
+			{ surface: CORE, includes: "**Writer rule** — large task → one bounded `gentle-ai-worker` per task" },
 		],
 	},
 	{
@@ -156,7 +159,7 @@ const ANCHORS: readonly RoutingAnchor[] = [
 // rows, so they are mirror-only and not fixture-derived anchors.
 const CORE_ONLY_TRIGGERS = [
 	"**Incident rule** — diagnose wrong cwd/worktree/git/tooling incidents separately",
-	"**Verification rule** — executing/delegating verification commands",
+	"**Verification rule** — high risk → independent `gentle-ai-verify`",
 ] as const;
 
 function fixtureBody(): string {

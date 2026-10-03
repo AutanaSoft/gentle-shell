@@ -203,7 +203,7 @@ const DISPOSITION_MAP: DispositionRange[] = [
 	{ lines: [25, 28], target: "delegation", label: "Language Boundary LB5 (exceptions)" },
 	{ lines: [29, 29], target: "obsolete", label: "Retired artifact exception" },
 	{ lines: [31, 40], target: "replaced", label: "Mental Model: ODD-only" },
-	{ lines: [42, 42], target: "core", label: "Work Routing Ladder heading" },
+	{ lines: [42, 42], target: "replaced", label: "Work Routing Ladder heading replaced by Task Size and Mechanisms (gentle-shell#1494)" },
 	{
 		lines: [44, 97],
 		target: "replaced",
@@ -351,7 +351,7 @@ for (const range of DISPOSITION_MAP) {
 test("core-alone: load-bearing direct-delegation tokens remain without lazy union", () => {
 	const core = readRealAsset("orchestrator.md");
 	assert.match(core, /Evidence-budget rule/);
-	assert.match(core, /Multi-file write rule/);
+	assert.match(core, /Writer rule/);
 	assert.match(core, /Incident rule/);
 	assert.match(core, /Verification rule/);
 	assert.match(core, /Context backstop/);

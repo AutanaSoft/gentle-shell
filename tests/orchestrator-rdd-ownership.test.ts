@@ -73,7 +73,7 @@ test("rendered parent prompt keeps the RDD boundary while omitting lifecycle mir
 });
 
 test("static prompts retain ODD and delegated-work guidance without SDD", () => {
-	for (const heading of ["## Memory Contract", "## Work Routing Ladder"]) {
+	for (const heading of ["## Memory Contract", "## Task Size", "## Mechanisms"]) {
 		assert.ok(core.includes(heading), `core lost ${heading}`);
 	}
 	for (const heading of [

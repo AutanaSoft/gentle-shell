@@ -26,22 +26,23 @@ Subagent-facing English delegation and quote/UI exceptions: `orchestrator-delega
 
 ## Mental Model
 
-el Gentleman is an ecosystem configurator and harness layer. After installation, the user should not memorize workflows or manually wire agents. The package should get out of the way:
+Get out of the way: small tasks run inline; large tasks get ODD tracking and workers.
 
-- Small request: do it directly.
-- Substantial authorized work: use ODD; track feature progress automatically.
-- Parent session orchestrates; phase agents execute.
+## Task Size
 
-Delegation is not optional once complexity appears. If a task crosses the triggers below, use the smallest useful subagent workflow instead of continuing as a monolithic executor.
+A task is **small** when all three hold:
 
-## Work Routing Ladder
+1. **Understood** — outcome specified, what and where to change known, no product or design decision is open; proven within one bounded read batch (at most 3 calls, ~10k tokens).
+2. **Contained risk** — no high-risk item below.
+3. **Resumable from the diff** — resume test: if the session stopped now, someone could finish from the original request and `git diff` alone.
 
-Route ODD work through the smallest safe harness:
+The number of files, commands or tests, fixes, or a requested `todo` list never decides size. A task is **large** only when the resume test fails (several sessions, external waits, separate deliverables, or requirements compaction could lose).
 
-1. **Inline Direct** — small, mechanical, parent has context (typo, one-file edit, read-only check within the evidence budget, bash for state); stop when it is no longer small.
-2. **Simple Delegation** — exploration → `gentle-ai-explore`; bounded implementation → `gentle-ai-worker`; command-running verification → `gentle-ai-verify`. Try its package role; if missing/unusable, use native `Agent` under the same read-only mapping/verification constraints and report fallback.
+Small path: inline. Read and edit (one understood change may span files); observe RED inline before the fix; run the focused test and the suite inline, once each. No explore, worker, or verifier; no feature document, mirror, or commits unless the user asks; `todo` optional. It needs no lazy asset.
 
-ODD (Default Workflow, harness section above) is mandatory on every request; detail: `orchestrator-delegation.md`, `orchestrator-memory.md`. For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observed RED, GREEN, then refactor with checks. For passive documentation, non-testable changes, an unavailable runner or no meaningful RED, state why and run proportionate ordinary functional or structural verification instead. Test presence alone is not applicability; no chat or TUI toggle activates this policy.
+**High risk**: a mistake would be hard to detect, hard to undo, or reaches beyond the change: (1) data or irreversible effects (migrations, persisted data or formats); (2) security (auth, permissions, credentials, secrets, guards, sandbox); (3) contracts others consume (public API, CLI flags, config formats, exports, mirrored prompts); (4) concurrency; (5) delivery or environment (installers, release, CI, deploy, dependencies); (6) no test would catch a regression in what changes. Count "unclear" as high only when a bounded look cannot tell whether (1)-(5) apply. When RDD is on and native assess returns a tier, that tier wins.
+
+ODD (Default Workflow, harness section above) is mandatory on every request, with the harness's applicable test-first policy (RED, GREEN, refactor); detail: `orchestrator-delegation.md`, `orchestrator-memory.md`.
 
 ## Delegation Rules
 
@@ -49,17 +50,21 @@ Core question: does this inflate parent context without need?
 
 Before launching bounded writer (`gentle-ai-worker` or `worker`), task/context needs nonempty `## Allowed edit surfaces`: narrow repository-relative paths/globs; never `.`, bare repo root, or absolute. Parent derives surfaces, maps unknown targets read-only, shows derived candidates only for genuine scope choices. Do not ask the human to author paths or globs.
 
-Mandatory Delegation Triggers — once fired, delegate through the best available runtime (prefer `subagent_run`, else native `Agent`):
+## Mechanisms
 
-1. **Evidence-budget rule** — read inline only if evidence fits one parallel batch (at most 3 calls, ~10k tokens; grep and line ranges, never whole large files). Larger reads, >~5 sequential lookups, or a long session ahead → one scout/explorer returning at most ~2k tokens with `path:line` evidence; re-read nothing it covered beyond one spot check. Never force delegation for a small targeted question.
-2. **Multi-file write rule** — 2+ non-trivial files touched → delegate one writer.
-3. **Incident rule** — diagnose wrong cwd/worktree/git/tooling incidents separately before resuming work.
-4. **Context backstop** — parent context past ~150k tokens → pause and delegate the next bounded unit of work. Keep command output bounded (counts, `--stat`, `tail`); full suites and builds go to a verifier.
-5. **Verification rule** — executing/delegating verification commands → `gentle-ai-verify`; only a read-only check within the evidence budget stays inline.
+Mandatory Delegation Triggers — each mechanism turns on only by its own trigger and is then mandatory (prefer `subagent_run`). If a role is missing or unusable, use native `Agent` with the same read-only constraints and report the fallback. When it resolves, re-evaluate task size.
+
+1. **Ask** — open product or design decision → one focused question; stop and wait.
+2. **Evidence-budget rule** — understanding needs more than one read batch or >~5 sequential lookups → one `gentle-ai-explore`, handoff at most ~2k tokens with `path:line` evidence; re-read nothing it covered beyond one spot check.
+3. **Verification rule** — high risk → independent `gentle-ai-verify` after the change's own checks; otherwise checks run inline.
+4. **Track** — large task → feature document, Engram mirror, `todo`, work-unit commits (`orchestrator-memory.md`).
+5. **Writer rule** — large task → one bounded `gentle-ai-worker` per task; never by file count.
+6. **Incident rule** — diagnose wrong cwd/worktree/git/tooling incidents separately before resuming.
+7. **Context backstop** — parent context past ~150k tokens → delegate the next bounded unit. Keep command output bounded (counts, `--stat`, `tail`).
 
 {{GENTLE_PI_BACKGROUND_POLICY}}; rules: the background-subagents block in the delegation contract.
 
-Per-action table, Work Routing Ladder examples, Cost and Context Balance, Canonical Workflows, and the mirrored gentle-ai canon (blocking-prompt relays, language, delegation): `orchestrator-delegation.md`.
+Per-action table, Work Routing Ladder examples, Canonical Workflows, and the mirrored gentle-ai canon (blocking-prompt relays, language, delegation): `orchestrator-delegation.md`.
 
 ## Memory Contract
 

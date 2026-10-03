@@ -17,7 +17,7 @@ function containsAll(text: string, clauses: readonly string[]): void {
 
 test("organic entry stays read-only without authorization and loads detail before work", () => {
 	containsAll(core, [
-		"Substantial authorized work: use ODD",
+		"large tasks get ODD tracking and workers",
 		"ODD (Default Workflow, harness section above) is mandatory on every request",
 		"orchestrator-delegation.md",
 		"orchestrator-memory.md",
@@ -25,7 +25,7 @@ test("organic entry stays read-only without authorization and loads detail befor
 	containsAll(delegation, [
 		"Investigation, explanation, review, comparison, and proposal-only requests remain read-only",
 		"without a task or storage permission prompt",
-		"Small, understood work creates no durable task artifacts",
+		"small work creates no durable task artifacts",
 	]);
 	assert.doesNotMatch(core + wrapper, /Prefer SDD\/OpenSpec artifacts|Substantial feature: suggest SDD organically/);
 	assert.doesNotMatch(core + delegation, /Suggest it when proposal\/spec\/design\/tasks|propose SDD only when durable proposal\/spec\/design\/tasks/);
@@ -109,12 +109,12 @@ test("assumption challenge and task checks do not activate or duplicate native r
 
 test("ODD closes each task with a work-unit commit and reviews the commit or PR slice", () => {
 	containsAll(wrapper, [
-		"Every task closes with at least one work-unit commit on the feature branch, branch first when on the default branch",
+		"Every tracked task closes with at least one work-unit commit on the feature branch, branch first when on the default branch",
 		"with tests and docs alongside the behavior, using a Conventional Commit message",
 		"record the commit identity in the feature document as evidence",
-		"Work-unit commits on the feature branch are part of authorized substantial ODD implementation; push, pull request creation, and merge remain the user's decisions",
+		"Work-unit commits on the feature branch are part of authorized large ODD implementation; push, pull request creation, and merge remain the user's decisions",
 		"The native review candidate is a work-unit commit or a PR slice, never a TODO checkbox and never the accumulated feature branch",
-		"close each task with a work-unit commit",
+		"close each tracked task with a work-unit commit",
 	]);
 	containsAll(delegation, [
 		'after each work-unit commit, assess it with that same call and `{"baseRef":"<last reviewed boundary>","committedOnly":true}`',
@@ -270,7 +270,10 @@ test("ODD defaults to applicable test-first without chat or TUI activation", () 
 		containsAll(text, ["applicable", "RED", "GREEN"]);
 		assert.doesNotMatch(text, /(?:configured TDD mode|Strict TDD Mode is enabled|explicit user choice|test presence does not enable it|tests existing does not activate it)/i);
 	}
-	for (const [actor, text] of [["core", core], ["delegation", delegation], ["extension", wrapper], ["skill", skill]] as const) {
+	// The core sits after the harness in the same system prompt, so it points at
+	// the harness test-first policy instead of restating it (gentle-shell#1494).
+	assert.ok(core.includes("the harness's applicable test-first policy"), "core must point at the harness test-first policy");
+	for (const [actor, text] of [["delegation", delegation], ["extension", wrapper], ["skill", skill]] as const) {
 		assert.match(text, /behavior changes with applicable runnable deterministic tests and a clear expected outcome/i, `${actor} must require applicability, not test presence`);
 		assert.match(text, /passive documentation/i, `${actor} must handle passive docs`);
 		assert.match(text, /unavailable runner/i, `${actor} must handle unavailable runners`);
@@ -312,20 +315,24 @@ test("mandatory delegation triggers are behavioral in the lazy canonical port an
 
 test("core and lazy canonical trigger lists agree in numbering and semantics", () => {
 	for (const entry of [
-		"1. **Evidence-budget rule**",
-		"2. **Multi-file write rule**",
-		"3. **Incident rule**",
-		"4. **Context backstop**",
-		"5. **Verification rule**",
+		"1. **Ask**",
+		"2. **Evidence-budget rule**",
+		"3. **Verification rule**",
+		"4. **Track**",
+		"5. **Writer rule**",
+		"6. **Incident rule**",
+		"7. **Context backstop**",
 	]) {
 		assert.ok(core.includes(entry), `always-on core trigger list is missing: ${entry}`);
 	}
 	for (const entry of [
-		"1. **Mapping trigger (Evidence-budget rule):**",
-		"2. **Writer trigger (Multi-file write rule):**",
-		"3. **Incident rule:**",
-		"4. **Context backstop:**",
-		"5. **Verification rule**",
+		"1. **Ask:**",
+		"2. **Mapping trigger (Evidence-budget rule):**",
+		"3. **Verification rule**",
+		"4. **Track:**",
+		"5. **Writer trigger (Writer rule):**",
+		"6. **Incident rule:**",
+		"7. **Context backstop:**",
 	]) {
 		assert.ok(delegation.includes(entry), `lazy canonical trigger list is missing: ${entry}`);
 	}
@@ -374,7 +381,7 @@ test("ODD protocol is always-on in the rendered system prompt and runs by defaul
 		"2. **Explore.**",
 		"3. **Resolve uncertainty.**",
 		"4. **Classify.**",
-		"two or more meaningful implementation steps",
+		"Size the task by the orchestrator's Task Size section",
 		"5. **Track before the first write.**",
 		"create or rebuild the visible `todo` list from the reconciled feature tasks",
 		"Tell the user in one line which feature document was created and how many tasks it holds",

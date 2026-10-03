@@ -103,7 +103,7 @@ test("before_agent_start injects the mirrored review execution contract for the 
 	assert.equal(result, undefined, "the handler must not return a replacement systemPrompt");
 	const appended = event.systemPromptOptions.appendSystemPrompt;
 	const expected = mirroredPiOrchestrationText();
-	assert.match(appended, /Substantial authorized work: use ODD/);
+	assert.match(appended, /large tasks get ODD tracking and workers/);
 	assert.match(appended, /For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observe RED, GREEN, then refactor with focused checks/);
 	assert.match(appended, /Test presence alone does not establish applicability; no chat or TUI toggle activates it/);
 	assert.match(appended, /no meaningful RED, explain why and run proportionate ordinary functional or structural verification/);
@@ -162,7 +162,7 @@ test("before_agent_start does not let legacy prompt text bypass primary ODD and 
 	const event = primaryEvent({ systemPrompt: "SDD apply executor body" });
 	await beforeAgentStart(event, ctx());
 	const appended = event.systemPromptOptions.appendSystemPrompt;
-	assert.match(appended, /Substantial authorized work: use ODD/);
+	assert.match(appended, /large tasks get ODD tracking and workers/);
 	assert.match(appended, /Gentle AI review execution contract/);
 	assert.doesNotMatch(appended, /### 3\. SDD \(optional\)/);
 });
