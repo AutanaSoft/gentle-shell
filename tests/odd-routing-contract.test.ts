@@ -228,7 +228,15 @@ test("feature document is the verbatim specification subagents read by reference
 		"a verdict per `S#`",
 		"reproduce it before deciding it already works",
 	];
-	for (const persona of ["gentleman", "neutral"] as const) containsAll(__testing.buildGentlePrompt(persona), always);
+	for (const persona of ["gentleman", "neutral"] as const) {
+		const prompt = __testing.buildGentlePrompt(persona);
+		containsAll(prompt, [...always,
+			// Parity with the gentle-ai canon (gentle-ai#5215).
+			"name the document, task, and specs (for example `Spec: odd/tasks/<feature>.md, T2, S3-S4`), tell workers to read until `## Log`",
+			"runs the spec's examples the parent authorized, against isolated state when they mutate data",
+		]);
+		assert.doesNotMatch(prompt, /\(read until \\?`## Log\\?`\)\. Do T#/, "inline code spans cannot nest backticks");
+	}
 	containsAll(memory, [
 		"specification subagents read by reference",
 		"stable content first and the growing log last",
@@ -244,6 +252,7 @@ test("feature document is the verbatim specification subagents read by reference
 	]);
 	containsAll(read("assets/agents/gentle-ai-worker.md"), ["until `## Log`", "which `S#` the change covers"]);
 	containsAll(read("assets/agents/gentle-ai-verify.md"), [
+		"execute only exact test, build, lint, or spec example commands explicitly authorized by the parent",
 		"verbatim user entries in `## Log`",
 		"verdict per `S#`",
 		"compare the exact output and error text",

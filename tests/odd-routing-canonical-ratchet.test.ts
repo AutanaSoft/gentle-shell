@@ -84,11 +84,10 @@ const ANCHORS: readonly RoutingAnchor[] = [
 		],
 	},
 	{
-		label: "mapping trigger at 4 or more files",
-		canonical: "**Mapping trigger:** when understanding the work requires 4 or more files",
-		// Gentle Shell intentionally leads the canon here: the local mirrors carry
-		// the measured evidence-budget rule instead of the 4-file count (tracked by
-		// gentle-ai#5139). The canonical anchor stays until gentle-ai follows.
+		label: "mapping trigger at the evidence budget",
+		canonical: "**Mapping trigger:** when evidence exceeds the inline batch budget",
+		// gentle-ai#5139 replaced the canonical 4-file count with the measured
+		// evidence-budget rule the local mirrors already carried.
 		mirrors: [
 			{ surface: DELEGATION, includes: "**Mapping trigger (Evidence-budget rule):** read inline only when the evidence fits one parallel batch of at most 3 calls" },
 			{ surface: CORE, includes: "**Evidence-budget rule** — read inline only if evidence fits one parallel batch (at most 3 calls, ~10k tokens" },
@@ -126,9 +125,23 @@ const ANCHORS: readonly RoutingAnchor[] = [
 	},
 	{
 		label: "triggers select only the ODD topology",
-		canonical: "These triggers never select SDD and never create SDD artifacts",
+		canonical: "These triggers only choose between direct inline and delegated direct inside the organic flow",
 		mirrors: [
 			{ surface: DELEGATION, includes: "These triggers only choose between direct inline and delegated direct inside ODD" },
+		],
+	},
+	{
+		label: "handoffs pass the feature spec by reference (gentle-shell#1713)",
+		canonical: "Hand off by reference, never by paraphrase: name the document, task, and specs",
+		mirrors: [
+			{ surface: EXTENSION, includes: "Hand off by reference, never by paraphrase: name the document, task, and specs" },
+		],
+	},
+	{
+		label: "verify runs only authorized examples on isolated state",
+		canonical: "runs the spec's examples the parent authorized, against isolated state when they mutate data",
+		mirrors: [
+			{ surface: EXTENSION, includes: "runs the spec's examples the parent authorized, against isolated state when they mutate data" },
 		],
 	},
 	{
