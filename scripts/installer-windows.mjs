@@ -97,33 +97,45 @@ export function windowsAclRuleUnsafe({ rights, depth, allow = true, inheritOnly 
 // travel only as environment data. Managed constraints/denials fail closed.
 // ACLs are read through .NET, never Get-Acl: a PowerShell 7 parent's PSModulePath
 // makes Windows PowerShell 5.1 fail to autoload Microsoft.PowerShell.Security.
+// An intentional rejection prints one fixed `unsafe:<role>-<check>` code (the role
+// of the component, never its path); any other exception still exits nonzero.
 const aclCheck = String.raw`
 $ErrorActionPreference = 'Stop';
-if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'Policy constrained' };
-$me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value;
-$trusted = @($me, 'S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464');
-$path = [IO.Path]::GetFullPath($env:GENTLE_WINDOWS_CHECK);
-$depth = 0;
-while ($path) {
-  $item = Get-Item -LiteralPath $path -Force;
-  if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Reparse path' };
-  if ($item.PSIsContainer) { $acl = [IO.Directory]::GetAccessControl($path) } else { $acl = [IO.File]::GetAccessControl($path) };
-  if ($trusted -notcontains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value) { throw 'Unknown owner' };
-  $allowedRights = 0x1200a9; if ($depth -ge 2) { $allowedRights = 0x1200ad };
-  foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
-    if ($rule.AccessControlType -eq 'Allow' -and -not ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and ([long]$rule.FileSystemRights -band (-bnot [long]$allowedRights)) -and $trusted -notcontains $rule.IdentityReference.Value) { throw 'Unsafe ACL' };
+try {
+  if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'policy' };
+  $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value;
+  $trusted = @($me, 'S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464');
+  $path = [IO.Path]::GetFullPath($env:GENTLE_WINDOWS_CHECK);
+  $depth = 0;
+  while ($path) {
+    $role = 'ancestor'; if ($depth -eq 0) { $role = 'target' } elseif ($depth -eq 1) { $role = 'parent' };
+    $item = Get-Item -LiteralPath $path -Force;
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw ($role + '-reparse') };
+    if ($item.PSIsContainer) { $acl = [IO.Directory]::GetAccessControl($path) } else { $acl = [IO.File]::GetAccessControl($path) };
+    if ($trusted -notcontains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value) { throw ($role + '-owner') };
+    $allowedRights = 0x1200a9; if ($depth -ge 2) { $allowedRights = 0x1200ad };
+    foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+      if ($rule.AccessControlType -eq 'Allow' -and -not ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and ([long]$rule.FileSystemRights -band (-bnot [long]$allowedRights)) -and $trusted -notcontains $rule.IdentityReference.Value) { throw ($role + '-acl-mask') };
+    };
+    $parent = [IO.Directory]::GetParent($path);
+    if ($null -eq $parent) { break }; $path = $parent.FullName; $depth++;
   };
-  $parent = [IO.Directory]::GetParent($path);
-  if ($null -eq $parent) { break }; $path = $parent.FullName; $depth++;
-};
-'safe'
+  'safe'
+} catch { if ($_.Exception.Message -cmatch '^(policy|(target|parent|ancestor)-(reparse|owner|acl-mask))$') { 'unsafe:' + $_.Exception.Message } else { throw } }
 `;
+const storageChecks = /^(?:policy|(?:target|parent|ancestor)-(?:reparse|owner|acl-mask))$/;
+/** Only exact `safe` passes. A fixed rejection code is kept as `check`; any other
+ * output is rejected without carrying its text.
+ */
+export function windowsStorageEvidence(output) {
+	if (output === "safe") return;
+	const check = typeof output === "string" && output.startsWith("unsafe:") ? output.slice(7) : "";
+	throw Object.assign(new Error("Windows ACL evidence rejected"), storageChecks.test(check) ? { check } : {});
+}
 export function verifyWindowsStorage(path, env, processAdapter = windowsProcessCheck) {
 	if (process.platform !== "win32") throw new Error("Native Windows storage verification unavailable");
 	if (!win32.isAbsolute(path) || path.startsWith("\\\\")) throw new Error("Unsafe Windows storage path");
-	if (processAdapter(join(env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", aclCheck], { ...env, GENTLE_WINDOWS_CHECK: path }) !== "safe") {
-		throw new Error("Windows ACL evidence rejected");
-	}
+	windowsStorageEvidence(processAdapter(join(env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", aclCheck], { ...env, GENTLE_WINDOWS_CHECK: path }));
 }
 
 /** Strict bounded tar reader: no system tar, archive links or archive execution.
@@ -210,42 +222,55 @@ function proveCli(node, entry, metadata, env, processAdapter) {
 
 /** Returns a direct invocation, NOT a fabricated npm/pnpm executable shim.
  * T4 must call command + prefix with shell:false and retain this child env.
+ * `onStep` receives fixed phase names for diagnostics only; it never alters checks.
  */
-export async function ensureWindowsPnpm({ tools, env, node = process.execPath, adapters = {} }) {
+export async function ensureWindowsPnpm({ tools, env, node = process.execPath, adapters = {}, onStep = () => {} }) {
 	const processAdapter = adapters.process ?? windowsProcessCheck;
 	const storage = adapters.storage ?? verifyWindowsStorage;
+	onStep("pnpm-discovery");
 	const existing = (adapters.findCommand ?? findWindowsCommand)(env);
 	if (existing) {
+		onStep("wrapper-storage");
 		storage(existing, env);
+		onStep("wrapper");
 		if (!/\.cmd$/i.test(existing) || !regular(existing)) throw new Error("Unknown pnpm wrapper; refusing replacement");
 		const proof = proveWindowsWrapper(readFileSync(existing, "utf8"));
 		const directory = dirname(existing);
 		const entry = join(directory, ...proof.entry.split("\\"));
 		const localNode = join(directory, proof.localNode);
 		// npm cmd-shim selects its sibling node.exe before PATH node. Preserve it.
+		onStep("node-discovery");
 		const selectedNode = exists(localNode) ? localNode : (adapters.findNode ?? ((env) => findWindowsCommand(env, "node")))(env);
 		if (!selectedNode || !/\.exe$/i.test(selectedNode)) throw new Error("Unknown wrapper-selected Node");
 		const metadataPath = join(directory, "node_modules", "pnpm", "package.json");
-		for (const path of [selectedNode, entry, metadataPath]) {
+		for (const [step, path] of [["node-storage", selectedNode], ["entry-storage", entry], ["metadata-storage", metadataPath]]) {
+			onStep(step);
 			storage(path, env);
 			if (!regular(path)) throw new Error("Unsafe pnpm wrapper target");
 		}
+		onStep("package");
 		const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
 		if (metadata.bin?.pnpm !== `bin/${proof.entry.endsWith("pnpm.cjs") ? "pnpm.cjs" : "pnpm.mjs"}`) throw new Error("Windows pnpm package target rejected");
+		onStep("cli-proof");
 		proveCli(selectedNode, entry, metadata, env, processAdapter);
 		return { acquired: false, env, command: selectedNode, prefix: [entry] };
 	}
+	onStep("tools-check");
 	storage(tools, env);
 	if (!lstatSync(tools).isDirectory() || realpathSync(tools) !== resolve(tools)) throw new Error("Unsafe Windows tools");
 	const destination = join(tools, "pnpm");
 	if (exists(destination)) throw new Error("Conflicting Windows pnpm destination");
-	const entries = readWindowsPnpmArchive(await verifiedDownload("pnpm", adapters));
+	onStep("download");
+	const bytes = await verifiedDownload("pnpm", adapters);
+	onStep("archive");
+	const entries = readWindowsPnpmArchive(bytes);
 	const pin = artifactFor("pnpm");
 	const packageEntry = entries.find((entry) => entry.name === "package/package.json" && !entry.directory);
 	const metadata = packageEntry && JSON.parse(packageEntry.bytes.toString("utf8"));
 	if (!metadata || metadata.name !== pin.name || metadata.version !== pin.version || metadata.engines?.node !== pin.engine || metadata.bin?.pnpm !== "bin/pnpm.mjs") throw new Error("Windows pnpm pin metadata rejected");
 	if (!entries.some((entry) => entry.name === "package/bin/pnpm.mjs" && !entry.directory)) throw new Error("Windows pnpm entry missing");
 	let owned = false;
+	onStep("publish");
 	try {
 		mkdirSync(destination); // atomic no-clobber claim under the verified private root
 		owned = true;
@@ -267,15 +292,68 @@ export async function ensureWindowsPnpm({ tools, env, node = process.execPath, a
 	}
 }
 
+// Fixed, non-sensitive helper diagnostics. Every explicit check on this path has
+// one code; the step names the phase. Anything else, including fs, JSON or spawn
+// errors, reports `unexpected-<step>`. No path, SID or exception text is copied.
+const helperSteps = new Set(["bundle", "tools-storage", "pnpm-discovery", "wrapper-storage", "wrapper", "node-discovery", "node-storage", "entry-storage",
+	"metadata-storage", "package", "cli-proof", "tools-check", "download", "archive", "publish", "launch"]);
+const helperRejections = new Map(Object.entries({
+	"Windows bootstrap requires native Windows": "native-unavailable",
+	"Native Windows storage verification unavailable": "native-unavailable",
+	"Required wizard bundle file missing": "bundle-missing",
+	"Windows repository prerequisite rejected": "prerequisite",
+	"Unsafe Windows storage path": "unsafe-path",
+	"Windows ACL evidence rejected": "acl-evidence",
+	"Unknown Windows cwd-search semantics": "cwd-search",
+	"Unknown Windows PATH/PATHEXT": "path-missing",
+	"Unknown Windows PATHEXT semantics": "pathext",
+	"Unknown Windows PATH": "path-entry",
+	"Unknown extensionless Windows prerequisite": "extensionless",
+	"Unknown pnpm wrapper; refusing replacement": "wrapper-unknown",
+	"Unknown pnpm wrapper": "wrapper-unproven",
+	"Unknown pnpm wrapper; refusing execution or replacement": "wrapper-unproven",
+	"Unknown wrapper-selected Node": "wrapper-node",
+	"Unsafe pnpm wrapper target": "wrapper-target",
+	"Windows pnpm package target rejected": "package-target",
+	"Windows pnpm engine or identity rejected": "pnpm-engine",
+	"Windows pnpm version rejected": "pnpm-version",
+	"Windows pnpm global capability rejected": "pnpm-capability",
+	"Windows prerequisite process failed": "process-failed",
+	"Unproven command interpreter target": "interpreter",
+	"Unsafe Windows tools": "unsafe-tools",
+	"Conflicting Windows pnpm destination": "pnpm-conflict",
+	"Windows pnpm pin metadata rejected": "pnpm-pin",
+	"Windows pnpm entry missing": "pnpm-entry",
+	"Windows pnpm acquisition failed; no installation completed": "acquisition",
+	"Future wizard entry is missing; no live wizard is available": "wizard-missing",
+	"Wizard child could not start": "wizard-start",
+	"Wizard child failed": "wizard-exit",
+}));
+const archiveRejection = /^Unsafe (?:tar|archive|duplicate archive|truncated tar|pnpm package root)\b/;
+export function windowsBootstrapReason(error, step) {
+	if (!helperSteps.has(step)) throw new Error("Unknown Windows bootstrap step");
+	const message = error instanceof Error ? error.message : undefined;
+	const check = error instanceof Error && storageChecks.test(error.check ?? "") ? error.check : undefined;
+	const code = check ?? helperRejections.get(message) ?? (archiveRejection.test(message ?? "") ? "archive" : undefined);
+	return code ? `${code} (${step})` : `unexpected-${step}`;
+}
+
 export async function bootstrapWindows({ bundle, tools, env }) {
-	if (process.platform !== "win32") throw new Error("Windows bootstrap requires native Windows");
-	for (const file of ["package.json", "bin/gentle-shell-install.mjs", "scripts/installer-downloads.mjs", "scripts/installer-windows.mjs", "scripts/installer-windows-artifacts.json"]) {
-		if (!regular(join(bundle, file))) throw new Error("Required wizard bundle file missing");
+	let step = "bundle";
+	try {
+		if (process.platform !== "win32") throw new Error("Windows bootstrap requires native Windows");
+		for (const file of ["package.json", "bin/gentle-shell-install.mjs", "scripts/installer-downloads.mjs", "scripts/installer-windows.mjs", "scripts/installer-windows-artifacts.json"]) {
+			if (!regular(join(bundle, file))) throw new Error("Required wizard bundle file missing");
+		}
+		const metadata = JSON.parse(readFileSync(join(bundle, "package.json"), "utf8"));
+		if (!compatibleEngine(windowsNodeFloor, process.versions.node) || !compatibleEngine(metadata.engines?.node, process.versions.node) || metadata.packageManager !== `pnpm@${artifactFor("pnpm").version}`) throw new Error("Windows repository prerequisite rejected");
+		step = "tools-storage";
+		verifyWindowsStorage(tools, env);
+		const result = await ensureWindowsPnpm({ tools, env, onStep: (next) => { step = next; } });
+		// Fixed data handoff for the future T5 entry. No caller-controlled command text.
+		step = "launch";
+		await launchWizard({ bundle, env: { ...result.env, GENTLE_INSTALL_PNPM_NODE: result.command, GENTLE_INSTALL_PNPM_ENTRY: result.prefix[0] } });
+	} catch (error) {
+		throw Object.assign(new Error("Windows bootstrap rejected"), { reason: windowsBootstrapReason(error, step) });
 	}
-	const metadata = JSON.parse(readFileSync(join(bundle, "package.json"), "utf8"));
-	if (!compatibleEngine(windowsNodeFloor, process.versions.node) || !compatibleEngine(metadata.engines?.node, process.versions.node) || metadata.packageManager !== `pnpm@${artifactFor("pnpm").version}`) throw new Error("Windows repository prerequisite rejected");
-	verifyWindowsStorage(tools, env);
-	const result = await ensureWindowsPnpm({ tools, env });
-	// Fixed data handoff for the future T5 entry. No caller-controlled command text.
-	await launchWizard({ bundle, env: { ...result.env, GENTLE_INSTALL_PNPM_NODE: result.command, GENTLE_INSTALL_PNPM_ENTRY: result.prefix[0] } });
 }

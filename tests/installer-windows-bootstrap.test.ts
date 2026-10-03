@@ -6,8 +6,9 @@ import { gzipSync } from "node:zlib";
 import { spawn, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
-import { artifactFor, compatibleEngine } from "../scripts/installer-downloads.mjs";
-import { validateWindowsEntries, proveWindowsWrapper, windowsNodeFloor, readWindowsPnpmArchive, ensureWindowsPnpm, windowsProcessCheck, windowsAclRuleUnsafe, verifyWindowsStorage } from "../scripts/installer-windows.mjs";
+import { artifactFor, compatibleEngine, windowsBootstrapMessage } from "../scripts/installer-downloads.mjs";
+import { validateWindowsEntries, proveWindowsWrapper, windowsNodeFloor, readWindowsPnpmArchive, ensureWindowsPnpm, windowsProcessCheck, windowsAclRuleUnsafe, verifyWindowsStorage,
+	bootstrapWindows, windowsBootstrapReason, windowsStorageEvidence } from "../scripts/installer-windows.mjs";
 
 const wrapper = (entry: string) => `@ECHO off\nGOTO start\n:find_dp0\nSET dp0=%~dp0\nEXIT /b\n:start\nSETLOCAL\nCALL :find_dp0\n\nIF EXIST "%dp0%\\node.exe" (\n  SET "_prog=%dp0%\\node.exe"\n) ELSE (\n  SET "_prog=node"\n  SET PATHEXT=%PATHEXT:;.JS;=;%\n)\n\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%" "%dp0%\\${entry}" %*\n`;
 
@@ -412,6 +413,70 @@ test("Node target record round-trips as explicit UTF-8 and an absent or empty re
 	assert.match(probe, /\$step = 'target'; [^"]*if \(-not \[IO\.File\]::Exists\(\$record\)\) \{ throw 'missing-target' \};/, "an absent record is an intentional rejection");
 	assert.match(probe, /if \(-not \$node\) \{ throw 'missing-target' \};/, "an empty record is an intentional rejection, not a null-method exception");
 	assert.ok(probe.indexOf("throw 'missing-target' };") < probe.indexOf("$item = Get-Item -LiteralPath $node"), "the record is proven before the target is inspected");
+});
+
+// The Node helper follows the same contract: an intentional rejection reports
+// `<code> (<step>)`, anything else `unexpected-<step>`. Never a path, SID or raw text.
+const helperFailure = "Windows bootstrap failed; policy, prerequisite or bundle evidence rejected. No installation completed.";
+test("Windows helper reports one fixed non-sensitive reason code beside the unchanged message", async () => {
+	const coded = (message: string, extra = {}) => Object.assign(new Error(message), extra);
+	assert.equal(windowsBootstrapReason(coded("Unknown Windows PATHEXT semantics"), "pnpm-discovery"), "pathext (pnpm-discovery)");
+	assert.equal(windowsBootstrapReason(coded("Windows ACL evidence rejected", { check: "parent-owner" }), "tools-storage"), "parent-owner (tools-storage)");
+	assert.equal(windowsBootstrapReason(coded("Windows ACL evidence rejected", { check: "C:\\Users\\someone" }), "tools-storage"), "acl-evidence (tools-storage)", "an unlisted check never leaks");
+	assert.equal(windowsBootstrapReason(coded("Windows prerequisite process failed"), "cli-proof"), "process-failed (cli-proof)");
+	assert.equal(windowsBootstrapReason(coded("Unsafe tar header"), "archive"), "archive (archive)");
+	assert.equal(windowsBootstrapReason(coded("ENOENT: no such file, open 'C:\\Users\\someone\\x'"), "launch"), "unexpected-launch");
+	assert.equal(windowsBootstrapReason("not an error", "bundle"), "unexpected-bundle");
+	assert.throws(() => windowsBootstrapReason(new Error("x"), "C:\\path"), /Unknown Windows bootstrap step/);
+	// Each platform reaches its first fixed check and reports it, never raw text:
+	// non-Windows stops at the platform guard, Windows at the missing bundle file.
+	const firstBundleReason = process.platform === "win32" ? "bundle-missing (bundle)" : "native-unavailable (bundle)";
+	await assert.rejects(bootstrapWindows({ bundle: "/missing", tools: "/missing", env: {} }), (error: { reason?: string }) => error.reason === firstBundleReason);
+	// The CLI line only prints a reason with the fixed shape.
+	assert.equal(windowsBootstrapMessage({ reason: "pathext (pnpm-discovery)" }), `${helperFailure} Reason: pathext (pnpm-discovery)`);
+	assert.equal(windowsBootstrapMessage({ reason: "unexpected-launch" }), `${helperFailure} Reason: unexpected-launch`);
+	for (const unsafe of [{ reason: "C:\\Users\\someone" }, { reason: "S-1-5-21-1 (bundle)" }, new Error("raw"), null, { reason: "pathext (pnpm-discovery)\nC:\\x" }]) {
+		assert.equal(windowsBootstrapMessage(unsafe), `${helperFailure} Reason: unexpected-helper`);
+	}
+});
+
+test("Windows helper steps name each pnpm discovery, storage and proof phase", async () => {
+	const steps: string[] = [];
+	const env = { Path: "C:\\fixture", PATHEXT: ".EXE;.CMD" };
+	await assert.rejects(ensureWindowsPnpm({ tools: "C:\\tools", env, onStep: (step: string) => steps.push(step), adapters: {
+		findCommand: () => "C:\\fixture\\pnpm.cmd", storage: () => { throw Object.assign(new Error("Windows ACL evidence rejected"), { check: "target-owner" }); },
+	} }), (error: { check?: string }) => error.check === "target-owner");
+	assert.deepEqual(steps, ["pnpm-discovery", "wrapper-storage"]);
+	// Windows PowerShell appends .CPL to PATHEXT for its children; discovery stays
+	// fail-closed on it and names the code, so native CI can confirm or rule it out.
+	const cpl: string[] = [];
+	await assert.rejects(ensureWindowsPnpm({ tools: "C:\\tools", env: { Path: "C:\\fixture", PATHEXT: ".EXE;.CMD;.CPL" }, onStep: (step: string) => cpl.push(step) }), /Unknown Windows PATHEXT semantics/);
+	assert.deepEqual(cpl, ["pnpm-discovery"]);
+	const helper = readFileSync(new URL("../scripts/installer-windows.mjs", import.meta.url), "utf8");
+	const body = helper.slice(helper.indexOf("export async function ensureWindowsPnpm"), helper.indexOf("export async function bootstrapWindows"));
+	const order = ["pnpm-discovery", "wrapper-storage", "wrapper", "node-discovery", "node-storage", "entry-storage", "metadata-storage", "package", "cli-proof", "tools-check", "download", "archive", "publish"].map((step) => body.indexOf(`"${step}"`));
+	assert.ok(order.every((index) => index >= 0), "every pnpm step is reported");
+	assert.deepEqual(order, [...order].sort((left, right) => left - right));
+	const bootstrap = helper.slice(helper.indexOf("export async function bootstrapWindows"));
+	const outer = ["bundle", "tools-storage", "launch"].map((step) => bootstrap.indexOf(`step = "${step}"`));
+	assert.ok(outer.every((index) => index >= 0));
+	assert.deepEqual(outer, [...outer].sort((left, right) => left - right));
+});
+
+test("storage ACL evidence reports a fixed role code and still rejects anything but safe", () => {
+	windowsStorageEvidence("safe");
+	for (const check of ["policy", "target-reparse", "parent-owner", "ancestor-acl-mask"]) {
+		assert.throws(() => windowsStorageEvidence(`unsafe:${check}`), (error: Error & { check?: string }) => error.message === "Windows ACL evidence rejected" && error.check === check);
+	}
+	for (const output of ["", "SAFE", "safe\nextra", "unsafe:C:\\Users\\x", "unsafe:target-owner extra", "unsafe:"]) {
+		assert.throws(() => windowsStorageEvidence(output), (error: Error & { check?: string }) => error.message === "Windows ACL evidence rejected" && error.check === undefined, JSON.stringify(output));
+	}
+	const check = productionAclSources()[2];
+	assert.match(check, /\$role = 'ancestor'; if \(\$depth -eq 0\) \{ \$role = 'target' \} elseif \(\$depth -eq 1\) \{ \$role = 'parent' \};/);
+	assert.match(check, /throw \(\$role \+ '-reparse'\)/);
+	assert.match(check, /throw \(\$role \+ '-owner'\)/);
+	assert.match(check, /throw \(\$role \+ '-acl-mask'\)/);
+	assert.match(check, /if \(\$_\.Exception\.Message -cmatch '\^\(policy\|\(target\|parent\|ancestor\)-\(reparse\|owner\|acl-mask\)\)\$'\) \{ 'unsafe:' \+ \$_\.Exception\.Message \} else \{ throw \}/, "unexpected exceptions still exit nonzero");
 });
 
 test("production and fixture PowerShell never depend on autoloading Microsoft.PowerShell.Security", () => {

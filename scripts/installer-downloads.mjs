@@ -270,10 +270,17 @@ export async function bootstrap(bundle, suppliedTools, { env = process.env, adap
 		console.error(`Bootstrap: installation finished, but temporary tools could not be removed: ${tools}`);
 	}
 }
+/** The Windows helper failure line appends only a fixed-shape reason code. Any
+ * other value, including a failed module import, reports `unexpected-helper`.
+ */
+export function windowsBootstrapMessage(error) {
+	const reason = typeof error?.reason === "string" && /^(?:[a-z][a-z-]* \([a-z][a-z-]*\)|unexpected-[a-z][a-z-]*)$/.test(error.reason) ? error.reason : "unexpected-helper";
+	return `Windows bootstrap failed; policy, prerequisite or bundle evidence rejected. No installation completed. Reason: ${reason}`;
+}
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
 	if (process.argv.length === 5 && process.argv[2] === "--bootstrap-windows") {
-		import("./installer-windows.mjs").then(({ bootstrapWindows }) => bootstrapWindows({ bundle: process.argv[3], tools: process.argv[4], env: process.env })).catch(() => {
-			console.error("Windows bootstrap failed; policy, prerequisite or bundle evidence rejected. No installation completed.");
+		import("./installer-windows.mjs").then(({ bootstrapWindows }) => bootstrapWindows({ bundle: process.argv[3], tools: process.argv[4], env: process.env })).catch((error) => {
+			console.error(windowsBootstrapMessage(error));
 			process.exitCode = 1;
 		});
 	} else if (process.argv.length !== 5 || process.argv[2] !== "--bootstrap") {

@@ -1009,6 +1009,44 @@ explicit BOM-less UTF-8 bytes, and the probe and launch stages read it with
 records (`.bootstrap-owned`, `.node-stem`) hold fixed ASCII text and keep their
 cmdlets.
 
+The Node helper (`installer-downloads.mjs --bootstrap-windows`) follows the same
+contract. Its failure line is unchanged and ends with `Reason: <code> (<step>)`
+for an intentional rejection, or `Reason: unexpected-<step>` for any other
+error, such as a file-system, JSON or spawn error. A value without that fixed
+shape, including a failed module import, prints `Reason: unexpected-helper`.
+
+| Step | Phase |
+|------|-------|
+| `bundle` | Native platform, bundle files and repository Node/pnpm metadata. |
+| `tools-storage` | ACL walk of the claimed tools directory. |
+| `pnpm-discovery` | CMD-equivalent search of the current directory, `Path` and `PATHEXT` for `pnpm`. |
+| `wrapper-storage`, `wrapper` | ACL walk and exact npm cmd-shim proof of the found `pnpm.cmd`. |
+| `node-discovery` | The wrapper's sibling `node.exe`, or `node` on `Path`. |
+| `node-storage`, `entry-storage`, `metadata-storage` | ACL walk of the selected Node, the pnpm entry and its `package.json`. |
+| `package` | The pnpm `package.json` binary target. |
+| `cli-proof` | `node --version`, `pnpm --version` and the `add`/`bin` global capability. |
+| `tools-check`, `download`, `archive`, `publish` | Pinned pnpm acquisition when no `pnpm` was found. |
+| `launch` | The bundle wizard entry and its exit code. |
+
+Codes: `native-unavailable`, `bundle-missing`, `prerequisite`, `unsafe-path`,
+`acl-evidence`, the storage walk codes `policy` and
+`<target|parent|ancestor>-<reparse|owner|acl-mask>`, `cwd-search`,
+`path-missing`, `pathext`, `path-entry`, `extensionless`, `wrapper-unknown`,
+`wrapper-unproven`, `wrapper-node`, `wrapper-target`, `package-target`,
+`pnpm-engine`, `pnpm-version`, `pnpm-capability`, `process-failed`,
+`interpreter`, `unsafe-tools`, `pnpm-conflict`, `archive`, `pnpm-pin`,
+`pnpm-entry`, `acquisition`, `wizard-missing`, `wizard-start` and
+`wizard-exit`. For example, `parent-owner (wrapper-storage)` means the
+directory holding `pnpm.cmd` has an untrusted owner. The helper's storage check
+prints `unsafe:<code>` for a walk rejection and still accepts only exact `safe`;
+any other PowerShell exception exits nonzero and reports `unexpected-<step>`.
+
+`pathext` deserves a note. Windows PowerShell appends `.CPL` to `PATHEXT` in
+its own environment, and the bootstrap starts the helper from PowerShell, so the
+helper may see `.CPL` even when CMD did not. The discovery allowlist does not
+include `.CPL`, so this fails closed with `pathext (pnpm-discovery)`. Accepting
+it is a separate decision that native evidence must justify first.
+
 ACLs are read and written with .NET Framework APIs
 (`[IO.Directory]::GetAccessControl`, `[IO.File]::GetAccessControl`,
 `[IO.Directory]::SetAccessControl`) instead of `Get-Acl`/`Set-Acl`. Those
