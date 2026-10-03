@@ -1512,22 +1512,42 @@ test("live-only directory traverses presence overflow, excludes expired and othe
 });
 
 // #1690: Pi drops unknown --tools names without a diagnostic, so the child
-// compares the runner's requested list with its own tools at session_start.
+// compares the runner's requested list with its own tools at the first
+// before_agent_start, after every extension's session_start has registered.
 function missingToolsChild(env: NodeJS.ProcessEnv, toolNames: string[] | (() => string[])) {
 	const child = fakePi();
 	Object.assign(child.pi, { getAllTools: () => (typeof toolNames === "function" ? toolNames() : toolNames).map((name) => ({ name })) });
 	gentleAgents(child.pi, { GENTLE_PI_AGENTS_CHILD: "1", ...env });
 	const notes: Array<{ message: string; type: unknown }> = [];
 	const ctx = { hasUI: true, ui: { notify: (message: string, type?: unknown) => notes.push({ message, type }) } } as unknown as ExtensionContext;
-	return { fire: () => child.fire("session_start", ctx, { type: "session_start", reason: "startup" }), notes };
+	return {
+		start: () => child.fire("session_start", ctx, { type: "session_start", reason: "startup" }),
+		prompt: () => child.fire("before_agent_start", ctx, { type: "before_agent_start", prompt: "go", systemPrompt: "base", systemPromptOptions: {} }),
+		notes,
+	};
 }
 
 test("a child warns once about requested tools it does not have", async () => {
 	const child = missingToolsChild({ [REQUESTED_TOOLS_ENV]: "read,gentle_review_scope,grep,codegraph,subagent_parent_message" }, ["read", "grep", "subagent_parent_message"]);
-	await child.fire();
+	await child.start();
+	assert.deepEqual(child.notes, [], "session_start runs before later extensions register their tools");
+	assert.deepEqual(await child.prompt(), [undefined], "the check never alters the prompt");
 	assert.deepEqual(child.notes, [{ message: `${MISSING_TOOLS_NOTE_PREFIX} gentle_review_scope, codegraph`, type: "warning" }]);
-	await child.fire();
-	assert.equal(child.notes.length, 1, "a session replacement does not repeat the warning");
+	await child.start();
+	assert.deepEqual(await child.prompt(), [undefined]);
+	assert.equal(child.notes.length, 1, "later prompts and session replacements do not repeat the warning");
+});
+
+test("a child does not report a tool that a later extension registers in its own session_start", async () => {
+	const tools = ["read", "grep"];
+	const child = missingToolsChild({ [REQUESTED_TOOLS_ENV]: "read,late_tool" }, () => tools);
+	await child.start();
+	// Pi runs session_start handlers in load order; an extension loaded after
+	// gentle-agents registers late_tool only now.
+	tools.push("late_tool");
+	const results = await child.prompt();
+	assert.deepEqual(child.notes, []);
+	assert.deepEqual(results, [undefined]);
 });
 
 test("a child stays quiet when every checkable requested tool exists or nothing was requested", async () => {
@@ -1539,14 +1559,17 @@ test("a child stays quiet when every checkable requested tool exists or nothing 
 		["empty requested list", { [REQUESTED_TOOLS_ENV]: "" }],
 	] as const) {
 		const child = missingToolsChild(env, ["read", "grep", "subagent_parent_message"]);
-		await child.fire();
+		await child.start();
+		const results = await child.prompt();
+		assert.ok(results.every((result) => result === undefined), label);
 		assert.deepEqual(child.notes, [], label);
 	}
 });
 
-test("the missing-tools check never throws into session_start", async () => {
+test("the missing-tools check never throws into before_agent_start", async () => {
 	const child = missingToolsChild({ [REQUESTED_TOOLS_ENV]: "read,codegraph" }, () => { throw new Error("tool registry unavailable"); });
-	await child.fire();
+	await child.start();
+	assert.deepEqual(await child.prompt(), [undefined]);
 	assert.deepEqual(child.notes, []);
 });
 

@@ -219,22 +219,25 @@ function ownedChildIpc(env: NodeJS.ProcessEnv, candidate: IpcEndpoint | undefine
 }
 
 // Pi drops unknown --tools names without a diagnostic (#1690), so the child
-// reports them once through the one notify the parent keeps. MCP tools
-// register after session_start, and entries that cannot be tool names (the
-// `"*": false` frontmatter entry) are not checkable.
+// reports them once through the one notify the parent keeps. The check runs
+// at the first before_agent_start, not session_start: Pi runs session_start
+// handlers in extension load order, so an extension loaded after this one may
+// still register its tools there. MCP tools register later still, and entries
+// that cannot be tool names (the `"*": false` frontmatter entry) are not
+// checkable.
 function registerMissingToolsCheck(pi: ExtensionAPI, env: NodeJS.ProcessEnv): void {
 	const requested = (env[REQUESTED_TOOLS_ENV] ?? "").split(",").map((name) => name.trim())
 		.filter((name) => /^[A-Za-z0-9_.:-]+$/.test(name) && !name.startsWith("mcp__"));
 	if (requested.length === 0) return;
 	let reported = false;
-	pi.on("session_start", (_event, ctx) => {
+	pi.on("before_agent_start", (_event, ctx) => {
 		if (reported) return;
 		reported = true;
 		try {
 			const available = new Set(pi.getAllTools().map((tool) => tool.name));
 			const missing = [...new Set(requested.filter((name) => !available.has(name)))];
 			if (missing.length > 0) ctx.ui.notify(`${MISSING_TOOLS_NOTE_PREFIX} ${missing.join(", ")}`, "warning");
-		} catch { /* A diagnostic must never break the child's session start. */ }
+		} catch { /* A diagnostic must never break the child's first prompt. */ }
 	});
 }
 
