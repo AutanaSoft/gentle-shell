@@ -550,7 +550,7 @@ function readMarkdownSection(source: string, heading: string): string {
 
 function assertWorkerFallbackRouting(section: string, sectionName: string): void {
 	const boundedWriterPolicy = section.match(
-		/For bounded multi-file writes,[\s\S]*?(?=\n\n|\n\s*\d+\.|$)/,
+		/For a large task's bounded writes,[\s\S]*?(?=\n\n|\n\s*\d+\.|$)/,
 	)?.[0];
 	assert.ok(boundedWriterPolicy, `${sectionName} must define bounded writer routing`);
 
@@ -1680,8 +1680,9 @@ test("orchestrator routes generic roles without static RDD lens routing", () => 
 		assert.match(routing, /`gentle-ai-explore`/);
 		assert.match(routing, /`gentle-ai-worker`/);
 		assert.match(routing, /`gentle-ai-verify`/);
-		assert.match(routing, /read-only check within the evidence budget/);
-		assert.match(routing, /(?:verification that |verification commands →).*executes? or delegates?|executing\/delegating verification commands/);
+		assert.match(routing, /focused test and (?:the )?suite/);
+		// The Verification rule line itself must route high risk to the verifier.
+		assert.match(routing, /^\d\. \*\*Verification rule\*\*[^\n]*high[- ]risk[^\n]*`gentle-ai-verify`/m);
 		assert.match(routing, /missing(?: or |\/)unusable[\s\S]*native `Agent`[\s\S]*(?:the )?same read-only/);
 		assert.match(routing, /report (?:the )?fallback/);
 		assert.doesNotMatch(routing, /review lenses? (?:inside|only inside)|review lens routing/i);
