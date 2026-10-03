@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection, parseChildPackageInjection } from "../lib/child-package-injection.ts";
 import {
 	MIN_PI_VERSION,
 	MIN_SETUP_GENTLE_AI_VERSION,
@@ -1478,6 +1479,88 @@ test("buildPiInvocation dedupes the launcher's own package root against an other
 		"-e",
 		"/pkg",
 	]);
+});
+
+// --- child package injection signal (#1690) ----------------------------------
+//
+// The launcher exports exactly the -e set it computed itself, so the subagent
+// runner can forward it to delegated children. Passthrough -e flags are not
+// part of the signal.
+
+const injectionInput = {
+	runtime: { kind: "path" as const, command: "/usr/bin/pi", args: [] },
+	home: isolatedHomeResolved,
+	packageRoot: "/pkg",
+	otherPackagePaths: [],
+	passthrough: ["-e", "/user/ext.ts", "--mode", "rpc"],
+	homedir: "/home/u",
+};
+
+test("buildPiInvocation signals the packageRoot injection when there is no declaration", () => {
+	const built = buildPiInvocation({ ...injectionInput, declaration: undefined, takeOver: false, baseEnv: {} });
+	assert.deepEqual(parseChildPackageInjection(built.env), { noExtensions: false, extensionPaths: ["/pkg"] });
+});
+
+test("buildPiInvocation signals the exact deduped takeover -e set in order, without passthrough -e flags", () => {
+	const built = buildPiInvocation({
+		...injectionInput,
+		home: linkHome,
+		declaration: { kind: "path", dir: "/other/checkout" },
+		takeOver: true,
+		otherPackagePaths: ["/agent/npm/node_modules/some-other", "/shared/dup.ts", "/pkg"],
+		looseExtensionEntries: ["/shared/dup.ts", "/agent/extensions/a.ts", "/agent/extensions/a.ts"],
+		baseEnv: {},
+	});
+	const launcherPaths = built.args.slice(0, built.args.indexOf("--mode") - 2).filter((_, index, all) => all[index - 1] === "-e");
+	const signal = parseChildPackageInjection(built.env);
+	assert.deepEqual(signal, {
+		noExtensions: true,
+		// /pkg keeps its first (other-package) position, exactly as in argv.
+		extensionPaths: ["/agent/npm/node_modules/some-other", "/shared/dup.ts", "/pkg", "/agent/extensions/a.ts"],
+	});
+	assert.deepEqual(signal?.extensionPaths, launcherPaths);
+});
+
+test("buildPiInvocation signals absolute paths even when a takeover receives a relative loose entry", () => {
+	const built = buildPiInvocation({
+		...injectionInput,
+		home: linkHome,
+		declaration: { kind: "npm" },
+		takeOver: true,
+		looseExtensionEntries: [join("relative-home", "extensions", "a.ts")],
+		baseEnv: {},
+	});
+	assert.ok(built.args.includes(join("relative-home", "extensions", "a.ts")), "the -e argv itself is unchanged");
+	assert.deepEqual(parseChildPackageInjection(built.env)?.extensionPaths, [resolve("relative-home", "extensions", "a.ts"), "/pkg"]);
+});
+
+test("buildPiInvocation does not signal when settings already declare gentle-pi, and drops an inherited signal", () => {
+	const stale = encodeChildPackageInjection({ noExtensions: false, extensionPaths: ["/outer/pkg"] });
+	for (const baseEnv of [{}, { [CHILD_PACKAGE_INJECTION_ENV]: stale }]) {
+		const built = buildPiInvocation({ ...injectionInput, home: linkHome, declaration: { kind: "npm" }, takeOver: false, baseEnv });
+		assert.equal(Object.hasOwn(built.env, CHILD_PACKAGE_INJECTION_ENV), false);
+	}
+});
+
+test("buildPiInvocation does not signal for a pi subcommand, and drops an inherited signal", () => {
+	const stale = encodeChildPackageInjection({ noExtensions: false, extensionPaths: ["/outer/pkg"] });
+	for (const takeOver of [false, true]) {
+		const built = buildPiInvocation({
+			...injectionInput,
+			declaration: undefined,
+			takeOver,
+			passthrough: ["list"],
+			piSubcommand: "list",
+			baseEnv: { [CHILD_PACKAGE_INJECTION_ENV]: stale },
+		});
+		assert.equal(Object.hasOwn(built.env, CHILD_PACKAGE_INJECTION_ENV), false);
+	}
+});
+
+test("buildPiInvocation replaces an inherited signal with its own injection", () => {
+	const stale = encodeChildPackageInjection({ noExtensions: true, extensionPaths: ["/outer/pkg"] });
+	const built = buildPiInvocation({ ...injectionInput, declaration: undefined, takeOver: false, baseEnv: { [CHILD_PACKAGE_INJECTION_ENV]: stale } });
+	assert.deepEqual(parseChildPackageInjection(built.env), { noExtensions: false, extensionPaths: ["/pkg"] });
 });
 
 // --- discoverLooseExtensionEntries -------------------------------------------
