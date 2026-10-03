@@ -5,7 +5,7 @@ This first unit **Refs #1701**; neither issue is closed by metadata discovery.
 Baseline supplied by parent: `ac671593`; branch: `feat/1701-coordination-discovery`.
 Commits, push, PR creation, and memory mirror remain parent-owned; no merge approval exists.
 
-## Unit 1: recognizable advertised peers
+## Unit 1: recognizable advertised peers (complete)
 
 - Preserve exact schema-1 headers. Optional private, bounded derived sidecars bind metadata to session/incarnation/generation and transport activation; they are not an identity/authority registry.
 - Preserve routing IDs, unknown reachability, heartbeat freshness, and unknown context on ambiguous/missing/stale metadata.
@@ -25,7 +25,7 @@ Commits, push, PR creation, and memory mirror remain parent-owned; no merge appr
 - Discovery fixture teardown removes only each test-owned root; publishers/listeners clean their own resources.
 - Environment incident correction: the previous package-command invocation emitted installation/postinstall output, but its provenance is unknown. Inspection confirms `check-types.mjs` contains no install code. Parent reports replacing the owned dependency symlink with local dependencies installed using frozen lockfile/ignore-scripts. This correction pass used direct Node commands only.
 
-## Follow-up: portable legacy-contract regression (pending parent commit)
+## Follow-up: portable legacy-contract regression (complete, `5e282cbfad69c309a240aa6ea760133dcb0d5c50`)
 
 R3-history-dependent-test replaces the Git-history import with an independent frozen schema-1 field whitelist and scalar/count constraints, not a copy of the historical module. It rejects an added `discovery` field and wrong schema; bad-sidecar coverage remains intact. Earlier exact-validator evidence above describes Unit 1 only, not the current test.
 
