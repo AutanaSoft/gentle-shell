@@ -2381,6 +2381,30 @@ test("applying a populated profile whose routes match and whose orchestrator is 
 	assert.equal(JSON.parse(readFileSync(storePath, "utf8")).active, "team");
 });
 
+test("applying a populated profile with a thinking-only orchestrator entry skips the confirmation", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings, settingsPath } = profilesStoreFixture(t);
+	writeSettings();
+	mkdirSync(fixture.configHome, { recursive: true });
+	// An orchestrator entry without a model is a no-op for the orchestrator:
+	// applyOrchestratorSettings treats a missing model as "leave settings.json
+	// alone", so the apply moves nothing and must not confirm (issue #1683).
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	writeStore({ team: { orchestrator: { thinking: "max" }, worker: { model: "openai/alpha" } } });
+	const settingsBefore = readFileSync(settingsPath, "utf8");
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 0, "a thinking-only orchestrator entry changes nothing and must not confirm");
+	assert.ok(
+		fixture.notifications.some((entry) => entry.severity === "info" && /already matches the current global routing/.test(entry.message)),
+		`the no-op apply is disclosed with an informational notice: ${JSON.stringify(fixture.notifications)}`,
+	);
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore, "settings.json is untouched");
+	assert.deepEqual(fixture.liveSwitches, [], "a thinking-only orchestrator entry never switches the live session");
+	assert.equal(JSON.parse(readFileSync(storePath, "utf8")).active, "team");
+});
+
 test("applying a populated profile with matching routes but a different orchestrator still confirms", async (t) => {
 	const { fixture, storePath, writeStore, writeSettings, settingsPath } = profilesStoreFixture(t);
 	writeSettings();

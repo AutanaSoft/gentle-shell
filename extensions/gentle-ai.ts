@@ -4292,7 +4292,9 @@ async function runProfilesPanelAction(
 				// (issue #1683). Any routing change, any orchestrator change, or an
 				// unreadable routing authority (the diff above cannot prove a no-op)
 				// keeps the confirmation exactly as #1349/#1384 defined it.
-				const orchestratorUnchanged = orchestratorEntry === undefined || (() => {
+				// `applyOrchestratorSettings` treats an entry without a model as "leave
+				// settings.json alone", so such an entry is a no-op too, not a change.
+				const orchestratorUnchanged = (orchestratorEntry === undefined || orchestratorEntry.model === undefined) || (() => {
 					const current = readOrchestratorSettings(orchestratorSettingsPath());
 					return current.status === "valid" && current.entry !== undefined
 						&& current.entry.model === orchestratorEntry.model
