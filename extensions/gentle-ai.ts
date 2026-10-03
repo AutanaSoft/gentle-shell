@@ -4296,6 +4296,10 @@ async function runProfilesPanelAction(
 				// settings.json alone", so such an entry is a no-op too, not a change.
 				const orchestratorUnchanged = (orchestratorEntry === undefined || orchestratorEntry.model === undefined) || (() => {
 					const current = readOrchestratorSettings(orchestratorSettingsPath());
+					// An invalid stored defaultThinkingLevel is dropped from the entry but
+					// applyOrchestratorSettings would delete the key, so the file would
+					// change: a no-op cannot be proven and the dialog must stay.
+					if (current.status === "valid" && "defaultThinkingLevel" in current.value && current.entry?.thinking === undefined) return false;
 					return current.status === "valid" && current.entry !== undefined
 						&& current.entry.model === orchestratorEntry.model
 						&& current.entry.thinking === orchestratorEntry.thinking;

@@ -2378,7 +2378,45 @@ test("applying a populated profile whose routes match and whose orchestrator is 
 	await fixture.run("gentle:profiles");
 
 	assert.equal(fixture.confirmCalls.length, 0, "an already-active profile must not ask for confirmation");
+	assert.deepEqual(fixture.liveSwitches, [], "the no-op apply performs no live switch: the orchestrator is already there");
 	assert.equal(JSON.parse(readFileSync(storePath, "utf8")).active, "team");
+});
+
+test("applying a populated profile keeps the confirmation when settings.json holds an invalid thinking level", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings, settingsPath } = profilesStoreFixture(t);
+	// The stored defaultThinkingLevel is not a valid level: readOrchestratorSettings
+	// drops it from the entry, but applyOrchestratorSettings would delete the key
+	// and rewrite the file, so "unchanged" cannot be proven and the dialog stays.
+	writeSettings({ defaultThinkingLevel: "banana" });
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	writeStore({ team: { orchestrator: { model: "nan/deepseek-v4-flash" }, worker: { model: "openai/alpha" } } });
+	const settingsBefore = readFileSync(settingsPath, "utf8");
+
+	fixture.onConfirm(async () => false);
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 1, "an invalid stored thinking level cannot prove a no-op");
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore, "declining preserves the invalid key byte-identically");
+	assert.notEqual(JSON.parse(readFileSync(storePath, "utf8")).active, "team");
+});
+
+test("applying a populated profile keeps the confirmation when settings.json is unreadable and the profile has an orchestrator", async (t) => {
+	const { fixture, storePath, writeStore, settingsPath } = profilesStoreFixture(t);
+	writeFileSync(settingsPath, "{ not json\n");
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	writeStore({ team: { orchestrator: { model: "nan/glm5.3" }, worker: { model: "openai/alpha" } } });
+
+	fixture.onConfirm(async () => false);
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 1, "an unreadable settings.json cannot prove an orchestrator no-op");
+	assert.notEqual(JSON.parse(readFileSync(storePath, "utf8")).active, "team");
 });
 
 test("applying a populated profile with a thinking-only orchestrator entry skips the confirmation", async (t) => {
