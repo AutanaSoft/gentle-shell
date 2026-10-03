@@ -1041,11 +1041,23 @@ directory holding `pnpm.cmd` has an untrusted owner. The helper's storage check
 prints `unsafe:<code>` for a walk rejection and still accepts only exact `safe`;
 any other PowerShell exception exits nonzero and reports `unexpected-<step>`.
 
-`pathext` deserves a note. Windows PowerShell appends `.CPL` to `PATHEXT` in
-its own environment, and the bootstrap starts the helper from PowerShell, so the
-helper may see `.CPL` even when CMD did not. The discovery allowlist does not
-include `.CPL`, so this fails closed with `pathext (pnpm-discovery)`. Accepting
-it is a separate decision that native evidence must justify first.
+`.CPL` deserves a note. Windows PowerShell 5.1 appends `.CPL` to `PATHEXT` in
+its own environment, so its children see
+`.COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.CPL` even when CMD did
+not. The bootstrap always starts the helper from Windows PowerShell, and native
+CI showed the old discovery allowlist rejecting every Windows run with
+`pathext (pnpm-discovery)`. `.cpl` is now a known extension, but not an
+accepted candidate. Discovery keeps the CMD order (current directory, then each
+`Path` entry, then `PATHEXT` order within a directory). A `pnpm.cpl` found
+before the real `pnpm.cmd` stops with `wrapper-unknown (wrapper)`, and a
+`node.cpl` found before `node.exe` stops with `wrapper-node (node-discovery)`;
+neither is skipped or executed. Any other unknown, duplicate or empty
+`PATHEXT` extension still fails with `pathext`.
+
+The wizard inherits the same environment. The runner's `lookPath` (Go
+`exec.LookPath` order) and the host probes accept any `PATHEXT` extension and
+already refuse a `.cpl` result: npm reports `npm-shadowed`, and Node or Go
+resolving to a non-`.exe`/`.com` file reports unknown without running it.
 
 ACLs are read and written with .NET Framework APIs
 (`[IO.Directory]::GetAccessControl`, `[IO.File]::GetAccessControl`,

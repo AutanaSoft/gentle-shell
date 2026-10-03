@@ -224,6 +224,62 @@ test("Windows PATH resolver skips empty entries but still rejects relative, quot
 	}
 });
 
+// Windows PowerShell 5.1 appends .CPL to PATHEXT, and bootstrap.cmd always starts
+// the helper from it. .CPL is a known extension, never an accepted candidate: the
+// PATH-then-PATHEXT order is kept and a .cpl found first fails closed.
+const powershellPathExt = ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.CPL";
+const cliProcess = (_command: string, args: string[]) => args[0] === "--version" ? "v24.21.0" : args.at(-1) === "--version" ? "11.1.1" : "--global";
+function pnpmWrapperDirectory(directory: string, siblingNode = true) {
+	mkdirSync(join(directory, "node_modules/pnpm/bin"), { recursive: true });
+	writeFileSync(join(directory, "pnpm.cmd"), wrapper("node_modules\\pnpm\\bin\\pnpm.mjs"));
+	writeFileSync(join(directory, "node_modules/pnpm/package.json"), JSON.stringify(pinnedPackage));
+	writeFileSync(join(directory, "node_modules/pnpm/bin/pnpm.mjs"), "fixture");
+	if (siblingNode) writeFileSync(join(directory, "node.exe"), "not executed fixture");
+}
+test("Windows PowerShell's PATHEXT with .CPL resolves an existing pnpm wrapper and still acquires a missing one", async () => {
+	const f = fixture();
+	try {
+		const commands = join(f.root, "commands"); pnpmWrapperDirectory(commands);
+		const existing = await ensureWindowsPnpm({ tools: f.root, env: { Path: commands, PATHEXT: powershellPathExt }, adapters: { storage: () => {}, process: cliProcess } });
+		assert.equal(existing.acquired, false);
+		assert.equal(existing.command, join(commands, "node.exe"));
+		const tools = join(f.root, "tools"); mkdirSync(tools);
+		const acquired = await ensureWindowsPnpm({ tools, env: { Path: join(f.root, "empty"), PATHEXT: powershellPathExt }, adapters: { storage: () => {}, download: async () => pnpmTar(), digest, process: cliProcess } });
+		assert.equal(acquired.acquired, true);
+	} finally { f.cleanup(); }
+});
+test("a .cpl pnpm or node found first in PATH order fails closed instead of being skipped", async () => {
+	const f = fixture();
+	try {
+		const early = join(f.root, "early"); const commands = join(f.root, "commands"); const late = join(f.root, "late");
+		mkdirSync(early); mkdirSync(late); pnpmWrapperDirectory(commands, false);
+		writeFileSync(join(late, "node.exe"), "not executed fixture");
+		const env = { Path: [early, commands, late].join(";"), PATHEXT: powershellPathExt };
+		const steps: string[] = [];
+		// A wrapper-selected Node through PATH is accepted without a shadow...
+		const clean = await ensureWindowsPnpm({ tools: f.root, env, adapters: { storage: () => {}, process: cliProcess } });
+		assert.equal(clean.command, join(late, "node.exe"));
+		// ...but an earlier node.cpl wins PATH order and is never skipped.
+		writeFileSync(join(early, "node.cpl"), "control panel item");
+		await assert.rejects(ensureWindowsPnpm({ tools: f.root, env, onStep: (step: string) => steps.push(step), adapters: { storage: () => {}, process: () => { throw new Error("must not run"); } } }),
+			(error: Error) => error.message === "Unknown wrapper-selected Node" && windowsBootstrapReason(error, "node-discovery") === "wrapper-node (node-discovery)");
+		assert.equal(steps.at(-1), "node-discovery");
+		// An earlier pnpm.cpl shadows the genuine pnpm.cmd and refuses replacement.
+		writeFileSync(join(early, "pnpm.cpl"), "control panel item");
+		await assert.rejects(ensureWindowsPnpm({ tools: f.root, env, adapters: { storage: () => {}, download: () => { throw new Error("must not download"); }, process: () => { throw new Error("must not run"); } } }),
+			(error: Error) => error.message === "Unknown pnpm wrapper; refusing replacement" && windowsBootstrapReason(error, "wrapper") === "wrapper-unknown (wrapper)");
+		// PATHEXT order inside one directory still puts .CMD before .CPL.
+		writeFileSync(join(commands, "pnpm.cpl"), "control panel item");
+		await assert.rejects(ensureWindowsPnpm({ tools: f.root, env: { ...env, Path: commands }, adapters: { storage: () => {}, process: () => { throw new Error("must not run"); } } }), /Unknown wrapper-selected Node/,
+			"pnpm.cmd wins over pnpm.cpl in the same directory; the missing node then stops it");
+	} finally { f.cleanup(); }
+});
+test("Windows PATHEXT still rejects unknown, duplicate and empty extensions", async () => {
+	for (const PATHEXT of [".EXE;.CMD;.XYZ", ".EXE;.CMD;.CPL;.cpl", ".EXE;;.CMD", ".EXE;CPL", ""]) {
+		await assert.rejects(ensureWindowsPnpm({ tools: "C:\\tools", env: { Path: "C:\\fixture", PATHEXT } }), /Unknown Windows PATHEXT semantics/, PATHEXT);
+	}
+});
+
 for (const sibling of [true, false]) {
 	test(`known cmd wrapper honors ${sibling ? "sibling" : "PATH"}-selected Node without cmd.exe`, async () => {
 		const f = fixture();
@@ -447,11 +503,10 @@ test("Windows helper steps name each pnpm discovery, storage and proof phase", a
 		findCommand: () => "C:\\fixture\\pnpm.cmd", storage: () => { throw Object.assign(new Error("Windows ACL evidence rejected"), { check: "target-owner" }); },
 	} }), (error: { check?: string }) => error.check === "target-owner");
 	assert.deepEqual(steps, ["pnpm-discovery", "wrapper-storage"]);
-	// Windows PowerShell appends .CPL to PATHEXT for its children; discovery stays
-	// fail-closed on it and names the code, so native CI can confirm or rule it out.
-	const cpl: string[] = [];
-	await assert.rejects(ensureWindowsPnpm({ tools: "C:\\tools", env: { Path: "C:\\fixture", PATHEXT: ".EXE;.CMD;.CPL" }, onStep: (step: string) => cpl.push(step) }), /Unknown Windows PATHEXT semantics/);
-	assert.deepEqual(cpl, ["pnpm-discovery"]);
+	// An extension outside the known Windows set still stops discovery and names the code.
+	const unknown: string[] = [];
+	await assert.rejects(ensureWindowsPnpm({ tools: "C:\\tools", env: { Path: "C:\\fixture", PATHEXT: ".EXE;.CMD;.XYZ" }, onStep: (step: string) => unknown.push(step) }), /Unknown Windows PATHEXT semantics/);
+	assert.deepEqual(unknown, ["pnpm-discovery"]);
 	const helper = readFileSync(new URL("../scripts/installer-windows.mjs", import.meta.url), "utf8");
 	const body = helper.slice(helper.indexOf("export async function ensureWindowsPnpm"), helper.indexOf("export async function bootstrapWindows"));
 	const order = ["pnpm-discovery", "wrapper-storage", "wrapper", "node-discovery", "node-storage", "entry-storage", "metadata-storage", "package", "cli-proof", "tools-check", "download", "archive", "publish"].map((step) => body.indexOf(`"${step}"`));

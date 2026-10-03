@@ -194,7 +194,10 @@ function findWindowsCommand(env, name = "pnpm") {
 	const pathExt = value("pathext");
 	if (typeof path !== "string" || typeof pathExt !== "string") throw new Error("Unknown Windows PATH/PATHEXT");
 	const extensions = pathExt.toLowerCase().split(";");
-	if (!extensions.length || new Set(extensions).size !== extensions.length || extensions.some((extension) => !/^\.(com|exe|bat|cmd|vbs|vbe|js|jse|wsf|wsh|msc)$/.test(extension))) throw new Error("Unknown Windows PATHEXT semantics");
+	// .cpl is known because Windows PowerShell 5.1 appends it for its children, and
+	// bootstrap.cmd starts this helper from there. Known is not accepted: a .cpl (or
+	// any non-.cmd wrapper / non-.exe Node) found first still fails closed below.
+	if (!extensions.length || new Set(extensions).size !== extensions.length || extensions.some((extension) => !/^\.(com|exe|bat|cmd|vbs|vbe|js|jse|wsf|wsh|msc|cpl)$/.test(extension))) throw new Error("Unknown Windows PATHEXT semantics");
 	// CMD ignores empty entries (a trailing `;` is the Windows default); every
 	// other non-absolute, quoted or UNC entry still fails closed.
 	for (const directory of [process.cwd(), ...path.split(";").filter((entry) => entry !== "")]) {

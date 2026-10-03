@@ -312,6 +312,15 @@ test("Windows npm resolves like Go exec.LookPath: PATH order, then PATHEXT order
 	assert.equal((await runStandardInstall({ plan: plan("win32"), consent: true }, ordered.adapters)).outcome, "ready");
 	const noCmd = harness({ layout: windowsLayout, env: { PATHEXT: ".EXE;.COM" } });
 	assert.equal((await runStandardInstall({ plan: plan("win32"), consent: true }, noCmd.adapters)).reason, "npm-unavailable");
+	// Windows PowerShell 5.1 appends .CPL, and the wizard inherits that environment.
+	// .CPL is resolved in its PATHEXT place like any other extension, never skipped.
+	const powershell = ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.CPL";
+	const cpl = harness({ layout: windowsLayout, env: { PATHEXT: powershell } });
+	assert.equal((await runStandardInstall({ plan: plan("win32"), consent: true }, cpl.adapters)).outcome, "ready");
+	const cplShadow = harness({ layout: windowsLayout, files: ["C:\\Early\\npm.cpl"], env: { PATHEXT: powershell, Path: `C:\\Early;${W_NODE_DIR}` } });
+	const shadowed = await runStandardInstall({ plan: plan("win32"), consent: true }, cplShadow.adapters);
+	assert.equal(shadowed.reason, "npm-shadowed");
+	assert.equal(cplShadow.pnpmCalls().some((call) => call.startsWith("add")), false);
 });
 
 test("Windows without the direct pnpm handoff is blocked rather than spawning a .cmd shim", async () => {

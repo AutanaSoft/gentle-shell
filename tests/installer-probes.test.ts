@@ -267,6 +267,21 @@ test("go version parsing, absence, devel builds and timeouts", async () => {
 	assert.deepEqual(await probes({ env }).probes.go(), { available: false });
 });
 
+test("Windows PowerShell's PATHEXT with .CPL keeps resolving, and a .cpl found first is never run", async () => {
+	// The wizard inherits the helper's environment, which Windows PowerShell 5.1
+	// extends with .CPL. lookPath keeps PATH-then-PATHEXT order; spawnable refuses it.
+	const env = { USERPROFILE: "C:\\Users\\u", LOCALAPPDATA: "C:\\Users\\u\\AppData\\Local", Path: "C:\\Early;C:\\Go\\bin",
+		PATHEXT: ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.CPL" };
+	const go = "C:\\Go\\bin\\go.exe";
+	const found = probes({ platform: "win32", env, files: [go], results: { [`${go} version`]: { code: 0, stdout: "go version go1.26.0 windows/amd64\r\n" } } });
+	assert.deepEqual(await found.probes.go(), { available: true, version: "1.26.0", usable: true });
+	for (const name of ["go", "node"] as const) {
+		const shadowed = probes({ platform: "win32", env, files: [go, `C:\\Early\\${name}.cpl`, "C:\\Go\\bin\\node.exe"] });
+		assert.deepEqual(await shadowed.probes[name](), { available: null }, name);
+		assert.deepEqual(shadowed.calls, [], `${name}.cpl is never executed`);
+	}
+});
+
 test("globalBin writability comes from the nearest existing ancestor of $PNPM_HOME/bin, without writing", async () => {
 	const share = "/home/u/.local/share";
 	assert.deepEqual(await probes({ dirs: [HOME, share], writable: [share] }).probes.globalBin(),
