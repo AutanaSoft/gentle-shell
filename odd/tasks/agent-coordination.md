@@ -33,7 +33,7 @@ R3-history-dependent-test replaces the Git-history import with an independent fr
 - Local focused command above: 5 passed. `node scripts/check-types.mjs`: 186 diagnostics, no regressions. `node scripts/build-runtime-modules.mjs --check`: 8 modules match; metrics sources validated.
 - No source behavior changes, native re-review, live runtime claim, or full feature closure. Unit 1's 237-test evidence and remaining limitations remain historical evidence; parent owns this follow-up commit and mirror.
 
-## Unit 2: subject/rename (verified; parent commit pending)
+## Unit 2: subject/rename (complete, `b88a5dcb3b014cbcd2307364dbfb8591f05f2dc1`)
 
 Previous PR: #1714; current branch: `feat/1701-session-subject-scope`, based on `6bf09b38`.
 One coherent split delivers subject declaration and rename refresh. Authoritative
