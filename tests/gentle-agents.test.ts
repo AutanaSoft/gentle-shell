@@ -3148,6 +3148,8 @@ test("background runs return at once; status, result, send_message, cancel, and 
 	assert.equal((await resumed).content[0].text, "Summary.");
 	assert.match((await tools.get("subagent_cancel")!.execute("c9", { task_id: id }, undefined, undefined, ctx)).content[0].text, /not running/);
 	assert.match((await tools.get("subagent_status")!.execute("c10", { task_id: "nope" }, undefined, undefined, ctx)).content[0].text, /Error: no task nope/);
+	// gentle-shell#1713: a guessed id ("1") must point back to real ids.
+	assert.match((await tools.get("subagent_continue")!.execute("c10b", { task_id: "1", prompt: "more" }, undefined, undefined, ctx)).content[0].text, new RegExp(`^Error: no task 1\\. Recent task ids: .*${id} \\(explore\\)`));
 	assert.match((await tools.get("subagent_run")!.execute("c11", { agent: "ghost", task: "x" }, undefined, undefined, ctx)).content[0].text, /no subagent named "ghost"\. Known: explore/);
 });
 

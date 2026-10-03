@@ -66,8 +66,33 @@ async function assertAccepted(input: Record<string, unknown>, message: string) {
 }
 
 async function assertRejected(input: Record<string, unknown>, message: string) {
-	assert.deepEqual(await dispatchWriter(input), { block: true, reason: REJECTION }, message);
+	const result = await dispatchWriter(input);
+	assert.equal(result?.block, true, message);
+	assert.ok(result.reason.startsWith(REJECTION), message);
 }
+
+// gentle-shell#1713: an unexplained rejection made the orchestrator resend
+// shorter, re-summarized tasks (1786 -> 1542 chars) and lose requirements.
+test("rejection names the offending line and asks for the same task unchanged", async () => {
+	const result = await dispatchWriter({
+		agent: "gentle-ai-worker",
+		mode: "task",
+		task: [
+			"Implement split transactions.",
+			"",
+			"## Allowed edit surfaces",
+			"- src/model.ts",
+			"- test/**/*.test.ts",
+			"",
+			"Requirements: one parent transaction with ordered allocations.",
+		].join("\n"),
+	});
+	assert.equal(result?.block, true);
+	assert.match(result.reason, /Line "Requirements: one parent transaction with ordered allocations\." is not a valid surface entry/);
+	assert.match(result.reason, /Resend the same task text unchanged except for that section; never shorten or re-summarize it\./);
+	const missing = await dispatchWriter({ agent: "gentle-ai-worker", mode: "task", task: "Implement it." });
+	assert.match(missing?.reason ?? "", /No `## Allowed edit surfaces` heading was found\./);
+});
 
 test("task-scoped surfaces are accepted ahead of a deeper heading", async () => {
 	await assertAccepted({

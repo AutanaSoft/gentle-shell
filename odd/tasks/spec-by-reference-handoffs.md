@@ -17,8 +17,8 @@ S7. User-reported failures are reproduced before the orchestrator decides they a
 S8. Handoff friction never shrinks content (#1713 cause 5): writer-surface rejection names the offending line and says to resend the same task unchanged except the section; `subagent_continue` of a writer inherits the original task's surfaces when the follow-up has none; an unknown task id lists recent valid ids.
 
 ## Tasks
-- [x] T1 (S1-S7) inline · doc format + handoff/verify/reproduce contract in assets, agents, extension ODD step, contract tests · RED→GREEN · commit: see L9
-- [ ] T2 (S8) inline · runtime friction in lib/bounded-writer-admission.ts and extensions/gentle-agents.ts + tests
+- [x] T1 (S1-S7) inline · doc format + handoff/verify/reproduce contract in assets, agents, extension ODD step, contract tests · RED→GREEN · 9e890dba
+- [x] T2 (S8) inline · runtime friction in lib/bounded-writer-admission.ts and extensions/gentle-agents.ts + tests · RED→GREEN · commit: see L10
 - [ ] T3 (S1-S6) pending user decision · port the doc format to the gentle-ai canon (`internal/components/agentguidance/routing.go`) and regenerate `fixtures/odd-routing-canonical.md`
 
 ## Log
@@ -36,3 +36,8 @@ L9 2026-10-03 T1 evidence (risk: medium, prompt-contract change; checks: writer 
    GREEN: 20 prompt-contract test files 589/589; `npm run typecheck` no regressions; `npm test` all stages passed.
    Decision: fixture line 19 (LB2 "Translate the user's request into concise English") moved to `replaced` in tests/orchestrator-budget.test.ts; its first sentence stays pinned by tests/persona-single-channel.test.ts.
    Always-on prompt grew by the compact contract in extensions/gentle-ai.ts steps 5-6 (orchestrator.md budget untouched).
+L10 2026-10-03 T2 evidence (risk: HIGH, touches writer admission; independent verifier not run because the user forbade delegation (L2); RDD assess unavailable: `gentle_review` not exposed in this session):
+   RED: rejection-detail test (writer-edit-surface-scope), missing `inheritAllowedEditSurfaces` export (bounded-writer-admission), "Recent task ids" assertion (gentle-agents) all failed first.
+   GREEN: writer-edit-surface-scope 14/14, bounded-writer-admission 8/8, gentle-agents 190/190; `npm run typecheck` no regressions; `npm test` all stages passed.
+   Decisions: inheritance only for generic writers (gentle-ai-worker, worker), never jd-fix-agent; only when the follow-up and its context carry no heading; inherited surfaces come from the original task prompt (surfaces passed only via `context` are not inherited and still reject). Rejection keeps the canonical text as prefix and appends the concrete problem plus "Resend the same task text unchanged...".
+   Gap: continuation inheritance is unit-tested on the helper; the one-line wiring in subagent_continue has no end-to-end writer test.
