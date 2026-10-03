@@ -40,7 +40,7 @@ test("applicability, fallback and honest evidence flow through ODD actors", () =
 	}
 	assert.match(support, /no meaningful RED/);
 	assert.match(worker, /RED — add the smallest behavior-level test and capture its intended observed failure/);
-	assert.match(verifier, /execute only exact test, build, or lint commands explicitly authorized by the parent/);
+	assert.match(verifier, /execute only exact test, build, lint, or spec example commands explicitly authorized by the parent/);
 	assert.match(verifier, /Do not infer RED from a test file existing/);
 });
 

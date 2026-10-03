@@ -129,7 +129,7 @@ test("ODD closes each task with a work-unit commit and reviews the commit or PR 
 		"keep a running count from work-unit commits",
 		"`ask-on-risk` (default), `auto-chain`, `single-pr`, or `exception-ok`",
 		"apply the chosen strategy before the next commit",
-		"`ask-on-risk` asks once for the chain strategy, `stacked-to-main` or `feature-branch-chain`",
+		"`ask-on-risk` asks once using the ordered oversized-delivery menu",
 		"`auto-chain` asks only for a missing chain strategy and slices automatically",
 		"Cache both choices, and record slice boundaries",
 		"Resolve the `work-unit-commits` and `chained-pr` skills by registry name",
@@ -145,8 +145,36 @@ test("ODD closes each task with a work-unit commit and reviews the commit or PR 
 		"Close task with a work-unit commit",
 		"RDD enabled at work-unit commit boundary",
 		"Running authored lines over 400",
-		"Apply delivery strategy: chained PR slice",
+		"Apply selected delivery strategy",
+		"Single PR; no chain artifacts",
 	]);
+});
+
+test("delivery instructions and docs preserve localized ordered outcomes and override chaining", () => {
+	for (const text of [delegation, read("docs/readme-reference.md")]) {
+		// English prose is documentation evidence, not mandatory runtime UI copy.
+		const outcomes = ["chain_strategy=feature-branch-chain", "chain_strategy=stacked-to-main", "delivery_strategy=single-pr"];
+		let previous = -1;
+		for (const outcome of outcomes) {
+			const index = text.indexOf(outcome);
+			assert.ok(index > previous, `missing or out-of-order semantic outcome: ${outcome}`);
+			previous = index;
+		}
+		assert.match(text, /1\. .*feature\/tracker.*feature-branch-chain/i);
+		assert.match(text, /2\. .*verified default\/main.*stacked-to-main/i);
+		assert.match(text, /3\. .*single PR.*least recommended.*delivery_strategy=single-pr/i);
+		containsAll(text, [
+			"delivery_strategy=single-pr", "not a `chain_strategy` token",
+			"overrides the pending chaining path", "clear the chain choice",
+			"suppress later chain prompts", "not automatically select `exception-ok`",
+			"destination repository's documented contribution/size policy",
+			"not a universal label requirement", "no tracker, child dependency diagram, or Chain Context",
+			"complete user-facing question", "every option label, description, and recommendation marker",
+			"active user's conversation language", "unchanged and untranslated",
+			"English examples are illustrative and localizable, not mandatory copy",
+		]);
+		assert.doesNotMatch(text, /single-pr.*requires? `size:exception`/i);
+	}
 });
 
 test("user documentation shows recovery and candidate-level consent without claiming model proof", () => {
@@ -167,21 +195,70 @@ test("user documentation shows recovery and candidate-level consent without clai
 test("one feature document carries intent, accepted rationale and worker context", () => {
 	containsAll(memory, [
 		"one feature document, not a separate plan file or topic",
-		"objective, problem, why, scope, constraints",
-		"progress, verification evidence, and next step",
-		"concise rationale for meaningful accepted changes",
-		"Routine corrections stay with their tasks; no exhaustive decision journal",
+		"verification evidence, progress, and next step",
+		"rationale for meaningful accepted changes",
+		"Routine corrections stay brief; no exhaustive decision journal",
 		"Accepted user, review, or verification changes",
 		"automatically update affected intent and TODOs",
 		"add genuinely new tasks or reopen invalidated items with a reason",
 		"Findings alone never authorize scope expansion or automatic acceptance",
 		"Before implementation or resume, the parent reads both the actual file and full observation",
-		"passes the locator and relevant context; workers read the document before edits",
+		"passes the locator, task IDs, and linked `S#`; workers read the document until `## Log` before edits",
 	]);
 	containsAll(read("assets/agents/gentle-ai-worker.md"), [
 		"Read the parent's ODD feature document locator before edits",
 		"Preserve valid completed work; return proposed intent/task changes and their reasons",
 	]);
+});
+
+// gentle-shell#1713: handoffs paraphrased the user's request, the feature
+// document summarized it, and verify never saw it. The document is now the
+// specification subagents read by reference, in a fixed token-cheap order.
+test("feature document is the verbatim specification subagents read by reference", () => {
+	const always = [
+		"`## Specs`",
+		"`## Tasks`",
+		"`## Log`",
+		"exact strings, error messages, and examples verbatim",
+		"`L1` is the user's original request verbatim",
+		"rewrites only the affected `S#`, and reopens only its task",
+		"Hand off by reference, never by paraphrase",
+		"read until `## Log`",
+		"Without a feature document, include the user's request verbatim",
+		"a verdict per `S#`",
+		"reproduce it before deciding it already works",
+	];
+	for (const persona of ["gentleman", "neutral"] as const) {
+		const prompt = __testing.buildGentlePrompt(persona);
+		containsAll(prompt, [...always,
+			// Parity with the gentle-ai canon (gentle-ai#5215).
+			"name the document, task, and specs (for example `Spec: odd/tasks/<feature>.md, T2, S3-S4`), tell workers to read until `## Log`",
+			"runs the spec's examples the parent authorized, against isolated state when they mutate data",
+		]);
+		assert.doesNotMatch(prompt, /\(read until \\?`## Log\\?`\)\. Do T#/, "inline code spans cannot nest backticks");
+	}
+	containsAll(memory, [
+		"specification subagents read by reference",
+		"stable content first and the growing log last",
+		"never summarize or reword those fragments",
+		"Do not add requirements the user never asked for",
+		"`L1` holds the user's original request verbatim",
+		"rewrites only the affected `S#`, and reopens only its linked task",
+	]);
+	assert.doesNotMatch(delegation, /Translate the user's request into concise English/);
+	containsAll(delegation, [
+		"never translate, condense, or paraphrase the user's requirements",
+		"Reproduce a user-reported failure",
+	]);
+	containsAll(read("assets/agents/gentle-ai-worker.md"), ["until `## Log`", "which `S#` the change covers"]);
+	containsAll(read("assets/agents/gentle-ai-verify.md"), [
+		"execute only exact test, build, lint, or spec example commands explicitly authorized by the parent",
+		"verbatim user entries in `## Log`",
+		"verdict per `S#`",
+		"compare the exact output and error text",
+		"isolated state",
+	]);
+	containsAll(read("assets/agents/gentle-ai-explore.md"), ["until `## Log`"]);
 });
 
 test("ODD defaults to applicable test-first without chat or TUI activation", () => {
