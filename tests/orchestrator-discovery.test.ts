@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
-import { stripTypeScriptTypes } from "node:module";
+
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -15,15 +14,36 @@ function fixture(t: TestContext) {
 	return profile;
 }
 const peer = { version: 1 as const, sessionId: "peer", endpoint: "/socket/activation", createdAt: 1 };
-test("exact ac671593 validator accepts published headers after metadata update", async (t) => {
-	const source = execFileSync("git", ["show", "ac671593:lib/orchestrator-presence.ts"], { encoding: "utf8" });
-	const baseline = await import(`data:text/javascript;base64,${Buffer.from(stripTypeScriptTypes(source + "\nexport { validHeader };", { mode: "transform" })).toString("base64")}`);
+// Frozen schema-1 contract, independent of current Header types and Git history.
+function assertLegacyHeader(h: Record<string, any>) {
+	assert.deepEqual(Object.keys(h).sort(), ["schema", "sessionHash", "incarnation", "label", "heartbeat", "generation", "counts", "digest", "unavailable"].sort());
+	assert.equal(h.schema, 1);
+	assert.match(h.sessionHash, /^[a-f0-9]{64}$/);
+	assert.match(h.incarnation, /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
+	assert.equal(typeof h.label, "string");
+	assert.ok(Array.from(h.label).length <= 120);
+	assert.equal(h.label, h.label.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/g, " ").trim());
+	for (const value of [h.heartbeat, h.generation]) assert.ok(Number.isSafeInteger(value) && value >= 0);
+	assert.ok(h.generation > 0);
+	assert.deepEqual(Object.keys(h.counts).sort(), ["running", "queued", "waiting", "finished"].sort());
+	for (const value of Object.values(h.counts)) assert.ok(Number.isSafeInteger(value) && (value as number) >= 0);
+	if (h.unavailable === null) assert.match(h.digest, /^[a-f0-9]{64}$/);
+	else {
+		assert.equal(h.unavailable, "activity-too-large");
+		assert.equal(h.digest, null);
+	}
+}
+
+test("published headers retain the frozen legacy schema-1 contract after metadata update", (t) => {
 	const profile = fixture(t);
 	const publisher = PresencePublisher.start({ profile, sessionId: "peer", label: "Review", activity: [] });
 	t.after(() => publisher.dispose());
 	publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [] });
 	const name = `${publisher.target.sessionHash}.${publisher.target.incarnation}.header.json`;
-	assert.equal(baseline.validHeader(JSON.parse(readFileSync(join(profile, "gentle-agents", "presence", name), "utf8"))), true);
+	const header = JSON.parse(readFileSync(join(profile, "gentle-agents", "presence", name), "utf8"));
+	assertLegacyHeader(header);
+	assert.throws(() => assertLegacyHeader({ ...header, discovery: {} }));
+	assert.throws(() => assertLegacyHeader({ ...header, schema: 2 }));
 	const sidecar = join(profile, "gentle-agents", "presence", name.replace("header.json", "discovery.json"));
 	const value = JSON.parse(readFileSync(sidecar, "utf8"));
 	for (const invalid of ["{broken", JSON.stringify({ ...value, generation: 999 }), JSON.stringify({ ...value, incarnation: "other" }), JSON.stringify({ ...value, metadata: {} })]) {

@@ -11,7 +11,7 @@ Commits, push, PR creation, and memory mirror remain parent-owned; no merge appr
 - Preserve routing IDs, unknown reachability, heartbeat freshness, and unknown context on ambiguous/missing/stale metadata.
 - Publish recorded labels/workspaces and eight unfinished runtime-owned child labels/statuses/launch workspaces; omit restored running history, prompts, threads, and output.
 - No new public tool, model call, or message. Paths never establish isolation or locks.
-- Review boundary: presence projection/sidecar, discovery join, extension wiring, focused tests, and activity documentation. Commit pending parent review.
+- Unit 1 committed as `8cbb3dfe93c4c116e835296c422da4dbb552497d`; native `review-c80d90707ee9dbab` approved and acknowledged. Its review boundary is closed; the following advisory is later work.
 
 ## Blocker dispositions and observed verification
 
@@ -24,6 +24,14 @@ Commits, push, PR creation, and memory mirror remain parent-owned; no merge appr
 - `node scripts/build-runtime-modules.mjs --check`: 8 generated modules match; one-shot metrics sources validated.
 - Discovery fixture teardown removes only each test-owned root; publishers/listeners clean their own resources.
 - Environment incident correction: the previous package-command invocation emitted installation/postinstall output, but its provenance is unknown. Inspection confirms `check-types.mjs` contains no install code. Parent reports replacing the owned dependency symlink with local dependencies installed using frozen lockfile/ignore-scripts. This correction pass used direct Node commands only.
+
+## Follow-up: portable legacy-contract regression (pending parent commit)
+
+R3-history-dependent-test replaces the Git-history import with an independent frozen schema-1 field whitelist and scalar/count constraints, not a copy of the historical module. It rejects an added `discovery` field and wrong schema; bad-sidecar coverage remains intact. Earlier exact-validator evidence above describes Unit 1 only, not the current test.
+
+- Portability RED/GREEN: copied only the test and its three library modules into an owned OS-temp package root with no `.git`, using `GIT_CEILING_DIRECTORIES` at the OS-temp parent. `node --experimental-strip-types --test tests/orchestrator-discovery.test.ts` initially failed `git show` (4 passed, 1 failed; exit 1); after replacement the same isolated command passed all 5 (exit 0). Each copy root was removed in runner teardown.
+- Local focused command above: 5 passed. `node scripts/check-types.mjs`: 186 diagnostics, no regressions. `node scripts/build-runtime-modules.mjs --check`: 8 modules match; metrics sources validated.
+- No source behavior changes, native re-review, live runtime claim, or full feature closure. Unit 1's 237-test evidence and remaining limitations remain historical evidence; parent owns this follow-up commit and mirror.
 
 ## Next stacked units / remaining acceptance
 
