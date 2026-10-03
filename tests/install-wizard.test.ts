@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import * as wizard from "../assets/install-wizard/wizard.js";
-import { planPreflight } from "../scripts/installer-preflight.mjs";
+import { planPreflight, requirements } from "../scripts/installer-preflight.mjs";
 import { blockedReasons, failedSteps } from "../scripts/installer-runner.mjs";
 import { createInstallerServer, guidance } from "../scripts/installer-server.mjs";
 import { scenarioNames, startPreview } from "../scripts/install-wizard-preview.mjs";
@@ -364,6 +364,25 @@ test("planModel discloses the PATH change and runtime persistence before consent
 		[[false, true], [false, true]]);
 });
 
+test("a recoverable stack is reviewed as completing setup, not as a reinstall", async () => {
+	const view = await serverPlanView({ pi: { available: true, version: "1.0.0", usable: true },
+		shell: { available: true, version: requirements.shell, usable: true, global: true },
+		gentleAi: { available: true, version: requirements.gentleAi, usable: true, compatible: true },
+		setup: { available: true, recoverable: true } });
+	const model = wizard.planModel(view);
+	assert.equal(model.kind, "recovery");
+	assert.deepEqual(model.actions.map((action: { id: string }) => action.id), ["setup-global-bin", "setup-shell", "verify-readiness"]);
+	assert.equal(model.steps.includes("install-global"), false);
+	assert.equal(model.disclosures[1].changes, false);
+	const node = wizard.renderPlan(new FakeDocument(), model, { install() {}, reload() {}, close() {} });
+	assert.match(node.textContent, /Gentle Shell is already installed; this completes setup/);
+	assert.ok(button(node, "Complete setup"));
+	assert.equal(button(node, "Install Gentle Shell"), undefined);
+	assert.equal(/Review the installation plan|Installation steps/.test(node.textContent), false);
+	// A clean plan keeps the installation wording.
+	assert.equal(wizard.planModel(await serverPlanView()).kind, "install");
+});
+
 test("planModel turns preflight blockers into guidance and offers no install", async () => {
 	const model = wizard.planModel(await serverPlanView({ node: { available: true, version: "18.0.0", usable: true, persistent: true, npm: true } }));
 	assert.equal(model.kind, "blocked");
@@ -393,7 +412,12 @@ test("expectedSteps mirrors the runner sequence and every step has a label", () 
 		["check-npm", "check-global-bin", "check-existing-stack", "persist-pnpm", "verify-persistent-pnpm", ...base]);
 	assert.deepEqual(wizard.expectedSteps(["persist-package-managers", "install-pi", "install-shell"]),
 		["check-global-bin", "check-existing-stack", "persist-package-managers", "check-npm", "verify-persistent-pnpm", ...base]);
-	const known = new Set([...failedSteps, "check-global-bin", "check-existing-stack"]);
+	// Setup recovery: the installed stack is re-verified, never reinstalled.
+	const recovery = ["check-npm", "check-global-bin", "check-recoverable-stack", "verify-global-list", "verify-shell-bin",
+		"verify-gentle-ai", "shell-setup"];
+	assert.deepEqual(wizard.expectedSteps(["setup-shell", "verify-readiness"]), recovery);
+	assert.deepEqual(wizard.expectedSteps(["setup-global-bin", "setup-shell", "verify-readiness"]), [...recovery, "persist-path"]);
+	const known = new Set([...failedSteps, "check-global-bin", "check-existing-stack", "check-recoverable-stack"]);
 	for (const id of [...known, "gate"]) assert.notEqual(wizard.stepLabel(id), id, `label for ${id}`);
 	for (const id of wizard.expectedSteps(["setup-global-bin", "persist-node", "persist-package-managers", "configure-npm-prefix"])) {
 		assert.ok(known.has(id), id);
@@ -754,15 +778,17 @@ test("an expired session explains how to restart instead of retrying forever", a
 // ---------------------------------------------------------------------------
 
 test("every preview scenario runs end to end on the real host with fake plans and steps", async () => {
-	assert.deepEqual([...scenarioNames].sort(), ["blocked", "failed", "plan-changed", "preflight", "ready", "terminal"]);
+	assert.deepEqual([...scenarioNames].sort(), ["blocked", "failed", "plan-changed", "preflight", "ready", "recovery", "terminal"]);
 	const expected: Record<string, string | null> = { ready: "ready", terminal: "terminal-action-required", blocked: "blocked", failed: "failed",
-		"plan-changed": "ready", preflight: null };
+		"plan-changed": "ready", preflight: null, recovery: "terminal-action-required" };
 	for (const scenario of scenarioNames) {
 		const { host, url } = await startPreview({ scenario, stepMs: 0, log: () => {} });
 		const port = Number(new URL(url).port);
 		try {
 			const cookie = await login(port, url);
 			let { body: plan } = await getJson(port, "/api/plan", cookie);
+			// The recovery plan only completes setup; its fake steps match the runner's recovery order.
+			if (scenario === "recovery") assert.equal(wizard.planModel(plan).kind, "recovery");
 			if (expected[scenario] === null) {
 				assert.equal(plan.blockers.length > 0, true, scenario);
 				continue;

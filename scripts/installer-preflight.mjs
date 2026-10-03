@@ -66,7 +66,9 @@ const probeNames = ["node", "pnpm", "pi", "shell", "gentleAi", "go", "globalBin"
  * Node may add persistent (resolvable from the user's PATH without bootstrap
  * tool directories) and npm (a genuine npm resolves there) booleans; pnpm may
  * add persistent (resolvable from the user's PATH). globalBin returns { available, path, writable, onPath } for
- * pnpmGlobalBin's `$PNPM_HOME/bin` directory; setup returns boolean.
+ * pnpmGlobalBin's `$PNPM_HOME/bin` directory; setup returns boolean, or
+ * { available: true, recoverable: true } for the pinned stack this pnpm installed
+ * whose setup did not finish (only its setup is then planned).
  * Version values are exact stable versions, not raw arbitrary command output.
  */
 export async function collectInventory({ platform, arch, probes = {} }) {
@@ -141,8 +143,12 @@ export function planPreflight(inventory) {
 		bin.writable === true && typeof bin.onPath === "boolean";
 	record("globalBin", bin?.available === false ? "unavailable" : binKnown ? (bin.onPath ? "reusable" : "needs-setup") : "unknown");
 	const missingShell = tools.shell.status === "unavailable";
+	// Setup recovery: the setup probe proved the pinned stack this pnpm installed
+	// (an earlier run stopped in setup), so only the public setup is rerun.
+	const recovering = inventory.setup?.available === true && inventory.setup.recoverable === true &&
+		["pi", "shell", "gentleAi"].every((name) => tools[name].status === "reusable");
 	let setupStatus = "unknown";
-	if (missingShell || needsNative || inventory.setup === false) setupStatus = "needs-setup";
+	if (missingShell || needsNative || inventory.setup === false || recovering) setupStatus = "needs-setup";
 	else if (inventory.setup === true) setupStatus = "reusable";
 	record("setup", setupStatus);
 	if (blockers.length) return { tools, blockers, actions, ready: false };
@@ -160,13 +166,15 @@ export function planPreflight(inventory) {
 	if (tools.globalBin.status !== "reusable") action("setup-global-bin", "setup", "globalBin");
 	// A bootstrap Node lives in a temporary tools directory, and Gentle AI's Engram
 	// step needs a genuine npm: persist what is missing under PNPM_HOME through
-	// pnpm itself. A persistent Node is never replaced or shadowed.
+	// pnpm itself. A persistent Node is never replaced or shadowed. A recovery
+	// never persists: the earlier run did that before installing the stack.
 	const node = inventory.node;
-	if (tools.node.status === "reusable" && node.persistent === false) {
+	const persistable = tools.node.status === "reusable" && !recovering;
+	if (persistable && node.persistent === false) {
 		action("persist-node", "persist-runtime", "node", persistencePins.node);
 		action("persist-package-managers", "install-global", "package-managers");
 		action("configure-npm-prefix", "configure", "npm-prefix");
-	} else if (tools.node.status === "reusable") {
+	} else if (persistable) {
 		const npm = node.npm === false;
 		const pnpm = inventory.pnpm?.persistent === false;
 		if (npm && pnpm) action("persist-package-managers", "install-global", "package-managers");

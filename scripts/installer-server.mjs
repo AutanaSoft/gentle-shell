@@ -94,6 +94,7 @@ export const guidance = Object.freeze({
 		"global-bin-mismatch": "pnpm reported a different global bin directory than expected. Check PNPM_HOME, then run the installer again.",
 		"global-list-unavailable": "pnpm could not list global packages. Check that `pnpm list -g` works, then run the installer again.",
 		"existing-stack": "Pi or Gentle Shell is already installed globally. Nothing was changed; use `gentle-shell update` instead.",
+		"existing-stack-unverified": "The installed Pi and Gentle Shell changed after the plan was made, or are no longer the versions this installer set up. Nothing was changed; run the installer again to check this computer again.",
 	}),
 	failed: Object.freeze({
 		"persist-node": `Installing Node.js under PNPM_HOME failed. Check your network connection. ${tryAgain}`,

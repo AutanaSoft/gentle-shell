@@ -6,6 +6,7 @@ import test from "node:test";
 import { gentleAiBinaryPath } from "../runtime/gentle-ai-binary.mjs";
 import { collectInventory, planPreflight, requirements } from "../scripts/installer-preflight.mjs";
 import { bootstrapRoots, createProbes, hostAdapters, userEnvironment } from "../scripts/installer-probes.mjs";
+import { PI_INSTALL_VERSION } from "../scripts/installer-runner.mjs";
 
 const HOME = "/home/u";
 const PNPM_HOME = "/home/u/.local/share/pnpm";
@@ -186,9 +187,38 @@ test("pnpm-global Pi and Shell report versions; verified package-native Gentle A
 	assert.deepEqual(await h.probes.shell(), { available: true, version: requirements.shell, usable: true, global: true });
 	assert.deepEqual(await h.probes.gentleAi(), { available: true, version: requirements.gentleAi, usable: true, compatible: true });
 	assert.deepEqual(h.integrityCalls, [{ packageRoot: SHELL_ROOT, platform: "linux", env: bootstrapEnv, home: HOME }]);
-	assert.deepEqual(await h.probes.setup(), { available: null });
+	// The pinned stack in one pnpm project under PNPM_HOME: only its setup may be rerun.
+	assert.deepEqual(await h.probes.setup(), { available: true, recoverable: true });
 	const missingBin = probes({ files: [TOOLS_PNPM], results: { [`${TOOLS_PNPM} ${LIST}`]: { code: 0, stdout } } });
 	assert.equal((await missingBin.probes.shell()).usable, false);
+});
+
+test("setup is recoverable only for the pinned Pi and Shell owned by one pnpm project under PNPM_HOME", async () => {
+	const PI = "@earendil-works/pi-coding-agent";
+	const pi = { version: PI_INSTALL_VERSION, path: `${PNPM_HOME}/global/v11/def/node_modules/pi` };
+	const shell = { version: requirements.shell, path: SHELL_ROOT };
+	const setup = (stdout: string, extra: { realpaths?: Record<string, string> } = {}) => probes({ files: [TOOLS_PNPM],
+		dirs: [HOME, PNPM_HOME, SHELL_ROOT, "/elsewhere/gentle-pi"], results: { [`${TOOLS_PNPM} ${LIST}`]: { code: 0, stdout } }, ...extra })
+		.probes.setup();
+	const recoverable = { available: true, recoverable: true };
+	assert.deepEqual(await setup(listing({ [PI]: pi, "gentle-pi": shell })), recoverable);
+	// The npm and pnpm persisted by an earlier run live in their own project and do not matter.
+	const persisted = { dependencies: { npm: { version: "11.19.0" }, pnpm: { version: "11.1.1" } } };
+	assert.deepEqual(await setup(JSON.stringify([persisted, { dependencies: { [PI]: pi, "gentle-pi": shell } }])), recoverable);
+	const foreign = [
+		listing({ [PI]: { ...pi, version: "1.2.0" }, "gentle-pi": shell }),
+		listing({ [PI]: pi, "gentle-pi": { ...shell, version: "3.0.0" } }),
+		listing({ "gentle-pi": shell }),
+		JSON.stringify([{ dependencies: { [PI]: pi, "gentle-pi": shell } }, { dependencies: { [PI]: pi } }]),
+		JSON.stringify([{ dependencies: { "gentle-pi": shell } }, { dependencies: { [PI]: pi } }]),
+		JSON.stringify([{ dependencies: { [PI]: pi, "gentle-pi": shell } }, { devDependencies: { "gentle-pi": shell } }]),
+		listing({ [PI]: pi, "gentle-pi": { ...shell, path: "/elsewhere/gentle-pi" } }),
+		listing({ [PI]: pi, "gentle-pi": { version: requirements.shell } }),
+	];
+	for (const stdout of foreign) assert.deepEqual(await setup(stdout), { available: null }, stdout);
+	// A root that resolves outside PNPM_HOME through a symlink is not this pnpm's install.
+	assert.deepEqual(await setup(listing({ [PI]: pi, "gentle-pi": shell }), { realpaths: { [SHELL_ROOT]: "/elsewhere/gentle-pi" } }),
+		{ available: null });
 });
 
 test("Gentle AI is absent without its binary, unknown when unverified, unconfined or another Shell version", async () => {

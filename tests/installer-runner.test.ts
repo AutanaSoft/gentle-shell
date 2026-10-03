@@ -930,6 +930,125 @@ test("gates without PNPM_HOME or an absolute host Node block before any command"
 	assert.deepEqual(h.calls, []);
 });
 
+// Setup recovery: the pinned stack this pnpm installed is present and only its setup did not finish.
+function recoveryPlan(platform = "linux", change: object = {}) {
+	return plan(platform, { pi: tool(PI_INSTALL_VERSION), shell: { ...tool(requirements.shell), global: true },
+		gentleAi: { ...tool(requirements.gentleAi), compatible: true }, setup: { available: true, recoverable: true }, ...change });
+}
+const installedList = { [LIST]: { code: 0, stdout: listing() } };
+const RECOVERY_STEPS = ["check-npm", "check-global-bin", "check-recoverable-stack", "verify-global-list", "verify-shell-bin",
+	"verify-gentle-ai", "shell-setup"];
+const actionIds = (fixed: { actions: { id: string }[] }) => fixed.actions.map((action) => action.id);
+
+test("setup recovery re-verifies the installed stack and reruns setup without add -g", async () => {
+	const fixed = recoveryPlan();
+	assert.deepEqual(actionIds(fixed), ["setup-shell", "verify-readiness"]);
+	const h = harness({ results: installedList });
+	const result = await runStandardInstall({ plan: fixed, consent: true }, h.adapters);
+	assert.equal(result.outcome, "ready");
+	assert.deepEqual(result.completed, RECOVERY_STEPS);
+	assert.deepEqual(h.pnpmCalls(), ["bin -g", LIST, LIST]);
+	assert.equal(h.calls.some((call) => call.args.includes("add")), false);
+	assert.deepEqual(h.calls.at(-1)?.args, [SHELL_ENTRY, "setup"]);
+	assert.deepEqual(h.integrityCalls, [{ packageRoot: PACKAGE_ROOT, platform: "linux", env: h.adapters.env, home: HOME }]);
+	// npm and pnpm persisted by the earlier run live in their own project.
+	const persisted = harness({ results: { [LIST]: { code: 0, stdout: persistedListing() } } });
+	assert.equal((await runStandardInstall({ plan: fixed, consent: true }, persisted.adapters)).outcome, "ready");
+});
+
+test("setup recovery off PATH persists PATH, needs a new terminal, and reports failed steps", async () => {
+	const env = { PATH: "/opt/node/bin:/usr/bin" };
+	const fixed = recoveryPlan("linux", { globalBin: { available: true, path: BIN, writable: true, onPath: false } });
+	assert.deepEqual(actionIds(fixed), ["setup-global-bin", "setup-shell", "verify-readiness"]);
+	const h = harness({ env, results: installedList });
+	const result = await runStandardInstall({ plan: fixed, consent: true }, h.adapters);
+	assert.equal(result.outcome, "terminal-action-required");
+	assert.deepEqual(result.completed, [...RECOVERY_STEPS, "persist-path"]);
+	assert.deepEqual(h.pnpmCalls(), ["bin -g", LIST, LIST, "setup"]);
+	const failures: [object, string][] = [
+		[{ "gentle-shell setup": { code: 1, stderrTail: "Error: API rate limit exceeded\n" } }, "shell-setup"],
+		[{ "pnpm setup": { code: 1 } }, "persist-path"],
+	];
+	for (const [results, step] of failures) {
+		const failing = harness({ env, results: { ...installedList, ...results } });
+		const failed = await runStandardInstall({ plan: fixed, consent: true }, failing.adapters);
+		assert.equal(failed.outcome, "failed");
+		assert.equal(failed.failedStep, step);
+		assert.equal(failing.calls.some((call) => call.args.includes("add")), false);
+	}
+	const unverified = harness({ results: installedList, integrity: { ok: false } });
+	const failed = await runStandardInstall({ plan: recoveryPlan(), consent: true }, unverified.adapters);
+	assert.equal(failed.failedStep, "verify-gentle-ai");
+	assert.equal(unverified.calls.some((call) => call.args[0] === SHELL_ENTRY), false);
+});
+
+test("setup recovery blocks when the installed stack changed between plan and run", async () => {
+	const stack = JSON.parse(listing());
+	const changed = [
+		"[]",
+		listing("1.2.0"),
+		listing(PI_INSTALL_VERSION, "3.0.0"),
+		listing(PI_INSTALL_VERSION, requirements.shell, "/elsewhere/gentle-pi"),
+		JSON.stringify([...stack, { dependencies: { "gentle-pi": { version: requirements.shell, path: PACKAGE_ROOT } } }]),
+		JSON.stringify([...stack, { optionalDependencies: { "@earendil-works/pi-coding-agent": { version: PI_INSTALL_VERSION } } }]),
+		"{}",
+		"not json",
+	];
+	for (const stdout of changed) {
+		const h = harness({ results: { [LIST]: { code: 0, stdout } }, realpaths: { "/elsewhere/gentle-pi": "/elsewhere/gentle-pi" } });
+		const result = await runStandardInstall({ plan: recoveryPlan(), consent: true }, h.adapters);
+		assert.equal(result.outcome, "blocked", stdout);
+		assert.equal(result.reason, "existing-stack-unverified", stdout);
+		assert.deepEqual(result.completed, ["check-npm", "check-global-bin"]);
+		assert.deepEqual(h.pnpmCalls(), ["bin -g", LIST]);
+		assert.equal(h.calls.some((call) => call.args[0] === SHELL_ENTRY), false);
+	}
+	// A root that now resolves outside PNPM_HOME through a symlink is not this pnpm's install.
+	const moved = harness({ results: installedList, realpaths: { [PACKAGE_ROOT]: "/elsewhere/gentle-pi" } });
+	assert.equal((await runStandardInstall({ plan: recoveryPlan(), consent: true }, moved.adapters)).reason, "existing-stack-unverified");
+	const failing = harness({ results: { [LIST]: { code: 1, stdout: listing() } } });
+	assert.equal((await runStandardInstall({ plan: recoveryPlan(), consent: true }, failing.adapters)).reason, "global-list-unavailable");
+});
+
+test("the setup recovery variant is accepted only as a fixed set", async () => {
+	const clean = plan();
+	const descriptor = (id: string) => clean.actions.find((action: { id: string }) => action.id === id);
+	const persistNpm = { id: "persist-npm", kind: "install-global", target: "npm", version: "11.19.0" };
+	const provision = { id: "provision-native", kind: "existing-installer", target: "gentleAi", version: requirements.gentleAi };
+	const base = recoveryPlan();
+	const offPath = recoveryPlan("linux", { globalBin: { available: true, path: BIN, writable: true, onPath: false } });
+	const variants = [
+		[descriptor("install-pi"), ...base.actions],
+		[descriptor("install-shell"), ...base.actions],
+		[persistNpm, ...base.actions],
+		[provision, ...base.actions],
+		base.actions.filter((action: { id: string }) => action.id !== "setup-shell"),
+		offPath.actions.filter((action: { id: string }) => action.id !== "setup-shell"),
+		base.actions.filter((action: { id: string }) => action.id !== "verify-readiness"),
+	];
+	for (const actions of variants) {
+		const h = harness({ results: installedList });
+		const result = await runStandardInstall({ plan: { ...base, actions }, consent: true }, h.adapters);
+		assert.equal(result.outcome, "blocked");
+		assert.equal(result.reason, "unsupported-plan");
+		assert.deepEqual(h.calls, []);
+	}
+});
+
+test("Windows setup recovery needs no Go: it never runs add -g, and the native binary is verified", async () => {
+	const fixed = recoveryPlan("win32", { go: absent });
+	assert.equal(fixed.tools.go.status, "not-required");
+	const h = harness({ layout: windowsLayout, results: { [LIST]: { code: 0, stdout: listing(PI_INSTALL_VERSION, requirements.shell, W_ROOT) } } });
+	const result = await runStandardInstall({ plan: fixed, consent: true }, h.adapters);
+	assert.equal(result.outcome, "ready");
+	assert.deepEqual(result.completed, RECOVERY_STEPS);
+	assert.equal(h.pnpmCalls().some((call) => call.startsWith("add")), false);
+	assert.deepEqual(h.calls.at(-1)?.args, [`${W_ROOT}\\bin\\gentle-shell.mjs`, "setup"]);
+	// A clean Windows install still requires Go before gentle-pi's postinstall.
+	assert.equal((await runStandardInstall({ plan: plan("win32", { go: absent }), consent: true }, harness({ layout: windowsLayout }).adapters)).reason,
+		"go-required");
+});
+
 // Declared last: node:test runs a file's top-level tests in order.
 test("exported blocked reasons and failed steps match what the scenarios observed", () => {
 	assert.ok(Object.isFrozen(blockedReasons) && Object.isFrozen(failedSteps));

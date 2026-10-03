@@ -11,7 +11,9 @@ import { persistencePins, pnpmGlobalBin, requirements } from "./installer-prefli
 // of Pi plus gentle-pi, then the public `gentle-shell setup`. Every adapter is
 // injected by trusted local code; requests carry no commands, URLs, roots or env.
 // When Node is bootstrap-only or npm is not genuine, fixed steps first persist
-// node, npm and pnpm under PNPM_HOME through pnpm itself.
+// node, npm and pnpm under PNPM_HOME through pnpm itself. When an earlier run
+// installed the pinned stack but stopped in setup, a fixed recovery re-verifies
+// that stack and reruns only `gentle-shell setup` (and `pnpm setup`), never `add -g`.
 
 /** Pi version installed next to gentle-pi (optional peer, resolved in one add). */
 export const PI_INSTALL_VERSION = "1.0.0";
@@ -33,6 +35,7 @@ export const blockedReasons = Object.freeze([
 	"global-bin-mismatch",
 	"global-list-unavailable",
 	"existing-stack",
+	"existing-stack-unverified",
 ]);
 /** Every `failedStep` a `failed` outcome can carry (for host guidance; no behavior). */
 export const failedSteps = Object.freeze([
@@ -76,9 +79,12 @@ const knownActions = Object.freeze({
 	"setup-shell": { kind: "normal-setup", target: "shell" },
 	"verify-readiness": { kind: "verify", target: "stack" },
 });
-// T4 implements only the clean-stack path: both global packages are missing.
+// The clean-stack path: both global packages are missing.
 const requiredActions = ["install-pi", "install-shell", "setup-shell", "verify-readiness"];
 const optionalActions = ["setup-global-bin"];
+// Setup recovery: the pinned stack this pnpm installed is present (planPreflight
+// saw a recoverable setup), so only setup and the optional PATH step remain.
+const recoveryActions = ["setup-shell", "verify-readiness"];
 // Runtime persistence is one of these exact sets planPreflight emits, or nothing:
 // bootstrap-only Node, or a persistent Node missing npm and/or pnpm (one add -g).
 const persistenceVariants = Object.freeze([
@@ -128,14 +134,17 @@ function validRequest(request) {
 function planGate(plan, platform) {
 	if (plan.blockers.length > 0) return "preflight-blocked";
 	const ids = plan.actions.map((action) => action.id);
-	// gentle-pi's postinstall may build Gentle AI from source on Windows; T4 never acquires Go.
-	if (platform === "win32" && (ids.includes("acquire-go") || plan.tools.go?.status !== "reusable")) return "go-required";
+	const only = (allowed) => ids.every((id) => allowed.includes(id));
+	// All or nothing, like the persistence variants: never part of an installation.
+	const recovery = recoveryActions.every((id) => ids.includes(id)) && only([...recoveryActions, ...optionalActions]);
+	// gentle-pi's postinstall may build Gentle AI from source on Windows; the runner
+	// never acquires Go. A recovery runs no postinstall: its binary is verified.
+	if (platform === "win32" && (ids.includes("acquire-go") || (!recovery && plan.tools.go?.status !== "reusable"))) return "go-required";
 	const persisting = persistenceActions.filter((id) => ids.includes(id));
 	if (persisting.length > 0 && !persistenceVariants.some((variant) =>
 		variant.length === persisting.length && variant.every((id) => persisting.includes(id)))) return "unsupported-plan";
-	const supported = requiredActions.every((id) => ids.includes(id)) &&
-		ids.every((id) => requiredActions.includes(id) || optionalActions.includes(id) || persistenceActions.includes(id));
-	return supported ? null : "unsupported-plan";
+	const clean = requiredActions.every((id) => ids.includes(id)) && only([...requiredActions, ...optionalActions, ...persistenceActions]);
+	return clean || recovery ? null : "unsupported-plan";
 }
 
 function pathKeyOf(env, platform) {
@@ -323,22 +332,32 @@ export function contains(parent, child, platform) {
 	return inside.length > 0 && !inside.startsWith("..") && !path.isAbsolute(inside);
 }
 
+/** How many times Pi and gentle-pi are listed across every project and
+ * dependency field of a `list -g --json` output, or null when the shape is unknown.
+ */
+function stackListings(stdout) {
+	const projects = JSON.parse(stdout);
+	if (!Array.isArray(projects)) return null;
+	let listed = 0;
+	for (const project of projects) {
+		if (!plainObject(project)) return null;
+		for (const field of ["dependencies", "devDependencies", "optionalDependencies"]) {
+			const dependencies = project[field];
+			if (dependencies === undefined) continue;
+			if (!plainObject(dependencies)) return null;
+			listed += [PI_PACKAGE, SHELL_PACKAGE].filter((name) => Object.hasOwn(dependencies, name)).length;
+		}
+	}
+	return listed;
+}
+
 /** Pre-install `list -g --json`: true when neither package is listed in any
  * project, "existing-stack" when one is, false when the shape is unknown.
  */
 function noExistingStack(stdout) {
-	const projects = JSON.parse(stdout);
-	if (!Array.isArray(projects)) return false;
-	for (const project of projects) {
-		if (!plainObject(project)) return false;
-		for (const field of ["dependencies", "devDependencies", "optionalDependencies"]) {
-			const dependencies = project[field];
-			if (dependencies === undefined) continue;
-			if (!plainObject(dependencies)) return false;
-			if (Object.hasOwn(dependencies, PI_PACKAGE) || Object.hasOwn(dependencies, SHELL_PACKAGE)) return "existing-stack";
-		}
-	}
-	return true;
+	const listed = stackListings(stdout);
+	if (listed === null) return false;
+	return listed === 0 ? true : "existing-stack";
 }
 
 /** Installed gentle-pi root from `list -g --json`, confined under PNPM_HOME.
@@ -358,6 +377,15 @@ async function verifiedPackageRoot(stdout, pnpmHome, platform, fs) {
 	if (typeof shell.path !== "string" || !path.isAbsolute(shell.path)) return null;
 	const [root, home] = [await fs.realpath(shell.path), await fs.realpath(pnpmHome)];
 	return contains(home, root, platform) ? root : null;
+}
+
+/** A stack this pnpm installed whose setup may only be rerun (setup recovery):
+ * Pi and gentle-pi are each listed exactly once, in the single project that
+ * verifiedPackageRoot accepts (Pi at PI_INSTALL_VERSION, gentle-pi at this
+ * package version, realpath confined under PNPM_HOME). Returns the root or null.
+ */
+export async function recoverableStackRoot(stdout, pnpmHome, platform, fs) {
+	return stackListings(stdout) === 2 ? verifiedPackageRoot(stdout, pnpmHome, platform, fs) : null;
 }
 
 /** After persistence, node and npm must resolve from `$PNPM_HOME/bin` in the
@@ -460,7 +488,9 @@ export function setupErrorDetail(text, home, platform) {
  * run(command, argv, { env, deadlineMs, stderrTail? }) with shell:false semantics returning
  * { code, signal, timedOut, stdout, stderrTail? }, fs { isFile, realpath, readText },
  * verifyGentleAi({ packageRoot, platform, env, home }) and log({ step, status }).
- * Nothing is ever deleted; no provisioning marker is written.
+ * Nothing is ever deleted; no provisioning marker is written. A setup-recovery
+ * plan replaces check-existing-stack with check-recoverable-stack and skips
+ * install-global; every later step and outcome rule is the same.
  */
 export async function runStandardInstall(request, adapters) {
 	const { platform, env, log = () => {} } = adapters;
@@ -486,6 +516,8 @@ export async function runStandardInstall(request, adapters) {
 
 	const list = () => runPnpm(["list", "-g", "--depth", "0", "--json"], deadlines.probe);
 	const ids = request.plan.actions.map((action) => action.id);
+	// planGate accepted either the clean-stack path or the fixed setup recovery.
+	const recovering = !ids.includes("install-shell");
 	// Fixed variants (planGate): runtime + both managers, or one add of the missing ones.
 	const persistRuntime = ids.includes("persist-node");
 	const addNpm = ids.includes("persist-package-managers") || ids.includes("persist-npm");
@@ -508,11 +540,20 @@ export async function runStandardInstall(request, adapters) {
 			const reported = String(result.stdout ?? "").trim();
 			return succeeded(result) && path.isAbsolute(reported) && samePath(reported, globalBin.path, platform);
 		}],
-		// Never rely on the caller's plan alone: an existing Pi or gentle-pi is not overwritten.
-		["check-existing-stack", "global-list-unavailable", async () => {
-			const result = await list();
-			return succeeded(result) && noExistingStack(String(result.stdout ?? ""));
-		}],
+		// Never rely on the caller's plan alone: an existing Pi or gentle-pi is not overwritten,
+		// and a recovery still finds exactly the pinned stack this pnpm installed.
+		recovering
+			? ["check-recoverable-stack", "global-list-unavailable", async () => {
+				const result = await list();
+				if (!succeeded(result)) return false;
+				const root = await recoverableStackRoot(String(result.stdout ?? ""), globalBin.pnpmHome, platform, adapters.fs)
+					.catch(() => null);
+				return root !== null || "existing-stack-unverified";
+			}]
+			: ["check-existing-stack", "global-list-unavailable", async () => {
+				const result = await list();
+				return succeeded(result) && noExistingStack(String(result.stdout ?? ""));
+			}],
 	];
 	for (const [step, reason, check] of checks) {
 		const verdict = await check().catch(() => false);
@@ -544,10 +585,12 @@ export async function runStandardInstall(request, adapters) {
 		...(addNpm ? [["check-npm", async () => (await npmCheck()) === true]] : []),
 		...(addPnpm ? [["verify-persistent-pnpm", () => persistentPnpm(child, platform, adapters.nodePath, globalBin, adapters)]] : []),
 	];
+	// A recovery never runs `add -g`: the installed packages are verified as they are.
+	const install = ["install-global", async () => succeeded(await runPnpm(["add", "-g", `${PI_PACKAGE}@${PI_INSTALL_VERSION}`,
+		`${SHELL_PACKAGE}@${requirements.shell}`, `--allow-build=${SHELL_PACKAGE}`], deadlines.install))];
 	const steps = [
 		...(persistRuntime ? persistence : addOnly ? packageManagers : []),
-		["install-global", async () => succeeded(await runPnpm(["add", "-g", `${PI_PACKAGE}@${PI_INSTALL_VERSION}`,
-			`${SHELL_PACKAGE}@${requirements.shell}`, `--allow-build=${SHELL_PACKAGE}`], deadlines.install))],
+		...(recovering ? [] : [install]),
 		["verify-global-list", async () => {
 			const result = await list();
 			if (!succeeded(result)) return false;

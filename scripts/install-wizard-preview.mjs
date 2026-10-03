@@ -10,7 +10,7 @@
 // Then open the printed one-time session URL. Not part of the installer entry.
 
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { planPreflight } from "./installer-preflight.mjs";
+import { planPreflight, requirements } from "./installer-preflight.mjs";
 import { createInstallerServer } from "./installer-server.mjs";
 
 const BIN = "/home/you/.local/share/pnpm/bin";
@@ -32,6 +32,15 @@ const freshInventory = Object.freeze({
 	node: { available: true, version: "24.21.0", usable: true, persistent: false, npm: false },
 	pnpm: { available: true, version: "11.1.1", usable: true, compatible: true, persistent: false },
 	globalBin: { ...baseInventory.globalBin, onPath: false },
+});
+// An earlier run installed the pinned stack, but its setup and `pnpm setup` did not finish.
+const recoveryInventory = Object.freeze({
+	...baseInventory,
+	pi: { available: true, version: "1.0.0", usable: true },
+	shell: { available: true, version: requirements.shell, usable: true, global: true },
+	gentleAi: { available: true, version: requirements.gentleAi, usable: true, compatible: true },
+	globalBin: { ...baseInventory.globalBin, onPath: false },
+	setup: { available: true, recoverable: true },
 });
 const checks = ["check-npm", "check-global-bin", "check-existing-stack"];
 const install = ["install-global", "verify-global-list", "verify-shell-bin", "verify-gentle-ai", "shell-setup"];
@@ -58,6 +67,11 @@ const scenarios = Object.freeze({
 	// The first plan goes stale before install (the PATH was fixed meanwhile): the host
 	// answers 409 plan-changed and the wizard must show the new plan and ask again.
 	"plan-changed": { inventories: [freshInventory, baseInventory], steps: [...checks, ...install], result: { outcome: "ready" } },
+	recovery: {
+		inventories: [recoveryInventory],
+		steps: ["check-npm", "check-global-bin", "check-recoverable-stack", ...install.slice(1), "persist-path"],
+		result: { outcome: "terminal-action-required", action: "open-new-terminal" },
+	},
 	preflight: {
 		inventories: [{ ...baseInventory, node: { available: true, version: "18.20.0", usable: true, persistent: true, npm: true },
 			gentleAi: { available: true, version: "1.0.0", usable: true, compatible: false } }],

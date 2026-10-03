@@ -66,7 +66,7 @@ Planned closure checks: `pnpm test`, `pnpm run typecheck`, `pnpm run check:runti
 - T1 writer observed RED (`ERR_MODULE_NOT_FOUND`), then GREEN/refactor with 21/21 focused tests and whitespace checks passing. Independent verifier also passed 21/21 with no severe deterministic candidate-caused findings. T1 native assessment was medium; its single reliability review approved and exact acknowledgement consumed authority. Full suites, builds, actual installs and packaging checks remain pending.
 
 ## Progress and next step
-T1–T6 and T7a are closed; PR #1703 is open (Closes #1700). T7b (PR review + CI fixes) is implemented and parent-checked, pending native review, commit and push. T7c (partial-install recovery) follows. Merge and release remain the user's decisions.
+T1–T6 and T7a are closed; PR #1703 is open (Closes #1700). T7b committed in `81b420c7` (native review `review-81da8731c385acb8` approved; advisories: native guard `exit 0` unproved, install chain lacks terminal catch). User chose to push T7b and T7c together. T7c implemented by `mus7ethc-g-b41x` (partial-install recovery; parent check 258 tests/244 pass/0 fail/14 native skips, typecheck no regressions); native review and commit next, then one push of T7b+T7c. Merge and release remain the user's decisions.
 
 ## Work-unit evidence (condensed)
 Full per-unit evidence lives in Engram topics `installer/*` (t4-*, t5a-*, t5b-*, t6-*, t7-*, t7a-*, t7b-*) and in git history.
@@ -88,7 +88,7 @@ Known upstream/environment facts: Gentle AI resolves the latest Engram through t
 
 Open debt: close/signals do not wait for the runner; deadlines kill only the direct child; real browsers/screen readers, macOS and Windows native acceptance, zsh/fish; nonblocking review advisories recorded per unit in Engram.
 
-### T7b PR feedback and CI fixes (uncommitted)
+### T7b PR feedback and CI fixes (committed `81b420c7`)
 - Mapping `mus5u9pr-e-ly36` against CI run 37109363955 and reviews by egdev6 and CodeRabbit.
 - Writer `mus61gr6-f-3emj`: macOS fixture canonicalization (RED reproduced with a symlinked TMPDIR), Windows probe chmod skip, native guard `exit 0` + stderr in the assertion, typecheck fixes (+2 hidden TS2345), empty Windows PATH entries skipped (P1), `pnpm setup` uses `deadlines.setup`, server resets `installing` in `.finally`, stale docs and recorded debt. 10 files, +108/-24.
 - Parent spot check: 249 tests/235 pass/0 fail/14 native skips; `pnpm run typecheck` no regressions (187 recorded); diff check clean; temp files removed. Windows native items need CI after push.

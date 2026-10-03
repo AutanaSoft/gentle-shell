@@ -13,6 +13,7 @@ import {
 	lookPath,
 	packageNativeGentleAi,
 	pnpmInvocation,
+	recoverableStackRoot,
 	spawnable,
 	succeeded,
 } from "./installer-runner.mjs";
@@ -195,11 +196,15 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 	const persistentOn = async (name) => (await lookPath(name, user, platform, fs)) !== null;
 
 	let listing;
-	/** pnpm-global packages by name from one `list -g` call; null entries are ambiguous. */
-	const globalPackages = () => (listing ??= (async () => {
+	/** Output of the single `list -g` call, or null when it is unavailable. */
+	const globalListing = () => (listing ??= (async () => {
 		const pnpm = globalBin ? await pnpmInvocation(env, platform, fs) : null;
 		if (!pnpm) return null;
-		const stdout = await output(pnpm.command, [...pnpm.prefix, "list", "-g", "--depth", "0", "--json"], child, deadlines.list);
+		return output(pnpm.command, [...pnpm.prefix, "list", "-g", "--depth", "0", "--json"], child, deadlines.list);
+	})());
+	/** pnpm-global packages by name from that listing; null entries are ambiguous. */
+	const globalPackages = async () => {
+		const stdout = await globalListing();
 		if (stdout === null) return null;
 		const projects = JSON.parse(stdout);
 		if (!Array.isArray(projects)) return null;
@@ -216,7 +221,7 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 			}
 		}
 		return packages;
-	})());
+	};
 	/** A package that is not pnpm-global but whose command resolves elsewhere is unknown, never absent. */
 	const globalPackage = async (name, command) => {
 		const packages = await globalPackages();
@@ -297,9 +302,14 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 			return { available: true, path: globalBin.path, writable, onPath: globalBin.onPath };
 		},
 		async setup() {
-			// Setup readiness of an existing Shell has no read-only evidence yet.
+			// Setup readiness of an existing Shell has no read-only evidence. Only the
+			// pinned stack this pnpm installed (an earlier run whose setup did not
+			// finish) is recoverable: its public `gentle-shell setup` may be rerun.
 			const shell = await globalPackage(SHELL_PACKAGE, "gentle-shell");
-			return shell.state === "absent" ? false : unknown();
+			if (shell.state === "absent") return false;
+			if (shell.state !== "present") return unknown();
+			const root = await recoverableStackRoot(await globalListing(), globalBin.pnpmHome, platform, fs);
+			return root === null ? unknown() : { available: true, recoverable: true };
 		},
 	};
 	return Object.fromEntries(Object.entries(probes).map(([name, probe]) => [name, async () => {

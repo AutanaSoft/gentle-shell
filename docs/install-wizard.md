@@ -109,6 +109,12 @@ A clean target receives these intents in dependency order:
 4. Run normal Shell setup and verify stack readiness. Verification is always
    included, even when all components can be reused.
 
+A recoverable setup (the pinned stack is installed, Gentle AI is verified and
+only setup did not finish) plans exactly `setup-global-bin` (only when the
+global bin is off PATH), `setup-shell` and `verify-readiness`: never an
+acquisition, persistence or installation intent. See
+[Setup recovery](#setup-recovery).
+
 Actions are structured `{ id, kind, target, version? }` descriptors, **not shell
 commands**. Later runners must re-inventory after changes, verify prerequisite
 versions and global-bin readiness before dependent steps, obtain explicit consent
@@ -180,7 +186,7 @@ the listing; truncated, nonzero, signalled or timed-out output is unknown.
 | `gentleAi` | Absent without gentle-pi or without its package-native binary. Otherwise compatible only for this package version, a listed path that resolves inside PNPM_HOME and `verifyGentleAi` (default `packageNativeGentleAi`) success; anything else is unknown. |
 | `go` | `go version` from the real PATH; `go1.22` normalizes to `1.22.0`; devel and release-candidate builds are unknown. |
 | `globalBin` | `pnpmGlobalBin` over the real PATH; `writable` is write access on the nearest existing ancestor of `$PNPM_HOME/bin` (itself included). A non-directory ancestor is not writable. |
-| `setup` | `false` when gentle-pi is absent; unknown otherwise, because an existing Shell's setup readiness has no read-only evidence yet. |
+| `setup` | `false` when gentle-pi is absent. `{ available: true, recoverable: true }` for the pinned stack this pnpm installed (see [Setup recovery](#setup-recovery)), using the runner's `recoverableStackRoot`. Unknown otherwise, because an existing Shell's setup readiness has no read-only evidence. |
 
 A failed, empty or unparseable listing makes Pi, Shell, Gentle AI and setup
 unknown, which blocks planning. A package listed in two projects is ambiguous
@@ -225,17 +231,20 @@ those changes before asking.
 No-process gates, all returning `blocked`:
 
 1. Valid request and explicit consent.
-2. Preflight blockers are absent. Only the clean-stack plan is supported: it
-   must contain `install-pi`, `install-shell`, `setup-shell` and
+2. Preflight blockers are absent. Two plans are supported. The clean-stack
+   plan must contain `install-pi`, `install-shell`, `setup-shell` and
    `verify-readiness`, plus optional `setup-global-bin` and at most one exact
    persistence variant: `persist-node` + `persist-package-managers` +
    `configure-npm-prefix`, or `persist-package-managers` alone, or
-   `persist-npm` alone, or `persist-pnpm` alone. Prerequisite acquisition
-   intents (Node, pnpm, Go), `provision-native`, any other persistence
-   combination, partial existing stacks and fully reused stacks are
-   `unsupported-plan`.
-3. On Windows, Go must be `reusable` in the plan because gentle-pi's postinstall
-   may build Gentle AI from source; T4 never acquires Go (`go-required`).
+   `persist-npm` alone, or `persist-pnpm` alone. The
+   [setup recovery](#setup-recovery) plan is exactly `setup-shell` and
+   `verify-readiness`, plus optional `setup-global-bin`, and nothing else.
+   Prerequisite acquisition intents (Node, pnpm, Go), `provision-native`, any
+   other persistence combination, other partial existing stacks and fully
+   reused stacks are `unsupported-plan`.
+3. On Windows, Go must be `reusable` in a clean-stack plan because gentle-pi's
+   postinstall may build Gentle AI from source; the runner never acquires Go
+   (`go-required`). A recovery runs no postinstall, so it needs no Go.
 4. `pnpmGlobalBin` resolves PNPM_HOME (`pnpm-home-unknown` otherwise) and
    `nodePath` is absolute.
 5. pnpm comes from the bootstrap handoff `GENTLE_INSTALL_PNPM_NODE` +
@@ -274,7 +283,8 @@ Pre-install checks, returning `blocked` on a false result or adapter error:
    dependencies, devDependencies or optionalDependencies of any listed project,
    the runner blocks as `existing-stack` and never overwrites it, whatever the
    caller's plan says. A failed, timed-out or unparseable listing, or an
-   unexpected JSON shape, blocks as `global-list-unavailable`.
+   unexpected JSON shape, blocks as `global-list-unavailable`. A recovery runs
+   `check-recoverable-stack` instead (see [Setup recovery](#setup-recovery)).
 
 Mutating and verification steps, returning `failed` with `failedStep` and the
 `completed` step list. When the plan contains a persistence variant, its
@@ -327,6 +337,38 @@ on the user's PATH. Skipped, unverified or failed mandatory steps never yield
 Deadlines are 30 seconds for probes and npm config commands, and 20 minutes
 each for the install, persistence and setup steps, including `pnpm setup`,
 which installs `@pnpm/exe` from the registry.
+
+### Setup recovery
+
+`gentle-shell setup` runs after `add -g`, so a setup that stops (for example on
+the [GitHub API limit](#github-api-limit-during-setup)) or a failed `pnpm setup`
+leaves Pi and gentle-pi installed. Rerunning the installer then completes that
+installation instead of blocking as an existing stack.
+
+Detection is the setup probe, with the same rule the runner applies
+(`recoverableStackRoot`): the global listing names Pi and gentle-pi exactly
+once each, both in the single project that owns gentle-pi, Pi at exactly
+1.0.0 and gentle-pi at exactly this package's version, and gentle-pi's path
+resolves (realpath) inside PNPM_HOME. Preflight also requires Pi, Shell and
+Gentle AI to be `reusable`. Anything else (another version, a second listing,
+a path outside PNPM_HOME, Pi missing) keeps the setup probe unknown, so a
+foreign or other-version stack stays blocked exactly as before.
+
+The recovery plan is all or nothing: `setup-shell`, `verify-readiness` and
+`setup-global-bin` only when the global bin is off PATH. The runner then runs
+`check-npm`, `check-global-bin` and `check-recoverable-stack`, which lists the
+global packages again and blocks as `existing-stack-unverified` when the stack
+no longer matches (or as `global-list-unavailable` when pnpm cannot list).
+It skips `install-global` (never `add -g`) and continues with the unchanged
+`verify-global-list`, `verify-shell-bin`, `verify-gentle-ai`, `shell-setup`
+and, when planned, `persist-path`, with the same outcomes. A recovery never
+persists the runtime: the earlier run persisted it before installing the
+stack, and `check-npm` still proves a genuine npm in the child environment.
+
+Rerunning `gentle-shell setup` is acceptable because it is the public,
+rerunnable command the clean installation already runs; the runner adds no
+setup logic of its own. The review screen says "Gentle Shell is already
+installed; this completes setup" and offers **Complete setup**.
 
 ### Runtime persistence
 
@@ -562,7 +604,7 @@ HTML).
 | Screen | What the user sees |
 | --- | --- |
 | Check | Shown while `GET /api/progress?after=0` and `GET /api/plan` run. A running installation resumes the Install screen; a finished one shows its outcome instead of a new plan. |
-| Review | Each fixed action with its description, the `profileChange` and `persistence` disclosures (state as text: "Will change", "No change"), one consent checkbox and **Install Gentle Shell**. Without the checkbox no request is sent; the error is announced and focus moves to the checkbox. Preflight blockers replace the plan with their guidance, **Check again** and **Close installer**. |
+| Review | Each fixed action with its description, the `profileChange` and `persistence` disclosures (state as text: "Will change", "No change"), one consent checkbox and **Install Gentle Shell** (for a setup recovery, "Finish setting up Gentle Shell" and **Complete setup**). Without the checkbox no request is sent; the error is announced and focus moves to the checkbox. Preflight blockers replace the plan with their guidance, **Check again** and **Close installer**. |
 | Install | Expected runner steps (`expectedSteps`) with a text status (Done, In progress, Pending, Failed, Blocked, Not run), a `<progress>` bar and a terminal-style log of `{ seq, step, status, reason }` entries. |
 | Done | `ready`: run `gentle-shell`. `terminal-action-required`: open a new terminal, then run `gentle-shell`. `blocked`/`failed`: the host's guidance, the reason or failed step, the steps that finished and the log. A failed `shell-setup` or `persist-path` with a detail also shows it under **Last error from gentle-shell setup** or **Last error from pnpm setup** as one plain text node (backticks stay literal). Every outcome offers **Close installer** (`POST /api/shutdown`). |
 
@@ -612,8 +654,9 @@ node scripts/install-wizard-preview.mjs --scenario=terminal --step-ms=600
 
 Scenarios: `ready`, `terminal` (`terminal-action-required` with runtime
 persistence), `blocked` (`existing-stack`), `failed` (`install-global`),
-`plan-changed` (the first plan goes stale, so the host answers 409) and
-`preflight` (blockers, no plan). It prints the one-time session URL; Ctrl+C
+`plan-changed` (the first plan goes stale, so the host answers 409),
+`recovery` (an installed stack whose setup did not finish; ends in
+`terminal-action-required`) and `preflight` (blockers, no plan). It prints the one-time session URL; Ctrl+C
 or **Close installer** stops it. The preview is a development tool: it is not
 listed in `installerPaths` (the entry never imports it), although it ships
 with the rest of `scripts/` in the package.
@@ -1019,7 +1062,8 @@ per public IP address, so machines sharing one address (offices, NAT, VPNs, CI
 runners, repeated test runs) can exhaust it; setup then fails with
 `GitHub API returned HTTP 403` and the wizard shows the rate-limit guidance and
 that error line. Waiting for the hourly reset is enough; nothing has to be
-uninstalled first.
+uninstalled first: rerunning the installer finds the installed stack and runs
+only its [setup recovery](#setup-recovery).
 
 A missing `git` only produces a warning during setup; it was not the cause.
 

@@ -76,6 +76,40 @@ test("missing Windows Go is acquired before reprovisioning an existing Shell", (
 	}
 });
 
+// A pinned stack this pnpm installed whose setup did not finish (setup probe: recoverable).
+const recoverable = { available: true, recoverable: true };
+function partial(change: object = {}) {
+	return { ...installed(), pi: tool("1.0.0"), shell: { ...tool(requirements.shell), global: true }, setup: recoverable, ...change };
+}
+
+test("a recoverable stack only reruns setup, with PATH setup when the global bin is off PATH", () => {
+	const offPath = { available: true, path: "/disposable/bin", writable: true, onPath: false };
+	const plan = planPreflight(partial());
+	assert.deepEqual(plan.blockers, []);
+	assert.equal(plan.tools.setup.status, "needs-setup");
+	assert.equal(plan.ready, false);
+	assert.deepEqual(ids(partial()), ["setup-shell", "verify-readiness"]);
+	assert.deepEqual(ids(partial({ globalBin: offPath })), ["setup-global-bin", "setup-shell", "verify-readiness"]);
+	// Never runtime persistence: the earlier run persisted it before installing the stack.
+	const bootstrapPnpm = { ...tool("11.1.1"), compatible: true, persistent: false };
+	for (const node of [{ ...tool("24.18.0"), persistent: false, npm: false }, { ...tool("24.18.0"), persistent: true, npm: false }]) {
+		assert.deepEqual(ids(partial({ node, pnpm: bootstrapPnpm, globalBin: offPath })), ["setup-global-bin", "setup-shell", "verify-readiness"]);
+	}
+});
+
+test("only an exact recoverable setup with a verified Gentle AI is a recovery", () => {
+	for (const setup of [{ available: null }, { available: true }, { available: true, recoverable: "yes" }, { available: false, recoverable: true }]) {
+		const plan = planPreflight(partial({ setup }));
+		assert.ok(plan.blockers.some((b: { tool: string; code: string }) => b.tool === "setup" && b.code === "unknown-tool"), JSON.stringify(setup));
+		assert.deepEqual(plan.actions, []);
+	}
+	// A missing native binary keeps its existing provisioning plan; the runner does not run it.
+	assert.deepEqual(ids(partial({ gentleAi: absent })), ["provision-native", "setup-shell", "verify-readiness"]);
+	for (const change of [{ gentleAi: { available: null } }, { pi: tool("0.99.0") }, { shell: { ...tool(requirements.shell), global: false } }]) {
+		assert.deepEqual(ids(partial(change)), []);
+	}
+});
+
 test("unknown probes and pnpm compatibility fail closed", () => {
 	for (const change of [{ node: undefined }, { pnpm: tool("11.1.1") }, { setup: undefined },
 		{ gentleAi: { ...tool("5.0.0"), compatible: false } }, { shell: { ...tool("4.0.0"), global: false } }]) {

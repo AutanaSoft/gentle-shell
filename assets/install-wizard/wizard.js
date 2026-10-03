@@ -15,6 +15,7 @@ export const stepLabels = Object.freeze({
 	"check-npm": "Check npm",
 	"check-global-bin": "Check the pnpm global bin directory",
 	"check-existing-stack": "Check for an existing installation",
+	"check-recoverable-stack": "Check the existing installation",
 	"persist-node": "Install Node.js under PNPM_HOME",
 	"persist-package-managers": "Install npm and pnpm under PNPM_HOME",
 	"persist-npm": "Install npm under PNPM_HOME",
@@ -79,6 +80,12 @@ export function expectedSteps(actionIds) {
 	const ids = new Set(list(actionIds));
 	const addNpm = ids.has("persist-package-managers") || ids.has("persist-npm");
 	const addPnpm = ids.has("persist-package-managers") || ids.has("persist-pnpm");
+	if (recoveryPlan(actionIds)) {
+		// Setup recovery re-verifies the installed stack and never reinstalls it.
+		const steps = ["check-npm", "check-global-bin", "check-recoverable-stack", "verify-global-list", "verify-shell-bin",
+			"verify-gentle-ai", "shell-setup"];
+		return ids.has("setup-global-bin") ? [...steps, "persist-path"] : steps;
+	}
 	// An npm that is about to be installed is checked after it is added.
 	const steps = [...(addNpm ? [] : ["check-npm"]), "check-global-bin", "check-existing-stack"];
 	if (ids.has("persist-node")) {
@@ -94,6 +101,13 @@ export function expectedSteps(actionIds) {
 	return steps;
 }
 
+/** The runner's fixed setup recovery: only setup, readiness and optionally PATH. */
+function recoveryPlan(actionIds) {
+	const ids = list(actionIds);
+	return ["setup-shell", "verify-readiness"].every((id) => ids.includes(id)) &&
+		ids.every((id) => ["setup-global-bin", "setup-shell", "verify-readiness"].includes(id));
+}
+
 /** Review screen model for a GET /api/plan view. */
 export function planModel(view) {
 	const actions = list(view?.actions).map((action) => ({ id: text(action?.id), description: text(action?.description) }));
@@ -106,6 +120,7 @@ export function planModel(view) {
 	let kind = "install";
 	if (blockers.length > 0) kind = "blocked";
 	else if (actions.every((action) => action.id === "verify-readiness")) kind = "nothing";
+	else if (recoveryPlan(actions.map((action) => action.id))) kind = "recovery";
 	const profile = view?.profileChange ?? {};
 	const persistence = view?.persistence ?? {};
 	const tools = list(persistence.tools).filter((tool) => typeof tool === "string");
@@ -342,20 +357,25 @@ export function renderPlan(doc, model, handlers) {
 		el(doc, "p", {}, rich(doc, "Run `gentle-shell` in a terminal. To upgrade, run `gentle-shell update`.")),
 		el(doc, "div", { class: "actions" }, close));
 	}
+	const recovery = model.kind === "recovery";
 	const checkbox = el(doc, "input", { type: "checkbox", id: "consent", class: "consent-input", "aria-describedby": "consent-hint" });
-	const install = actionButton(doc, "Install Gentle Shell", "primary", (button) =>
+	const install = actionButton(doc, recovery ? "Complete setup" : "Install Gentle Shell", "primary", (button) =>
 		handlers.install({ consent: checkbox.checked === true, checkbox, button }));
 	checkbox.addEventListener("change", () => {
 		if (checkbox.checked) checkbox.removeAttribute("aria-invalid");
 		handlers.consentChanged?.(checkbox.checked === true);
 	});
-	return panel(doc, { stage: "review", eyebrow: "Step 2 of 4 · Review", title: "Review the installation plan",
-		lead: "Nothing changes until you confirm. This is exactly what the installer will do on this computer." },
+	const heading = recovery
+		? { title: "Finish setting up Gentle Shell",
+			lead: "Gentle Shell is already installed; this completes setup. Nothing is reinstalled, and nothing changes until you confirm." }
+		: { title: "Review the installation plan",
+			lead: "Nothing changes until you confirm. This is exactly what the installer will do on this computer." };
+	return panel(doc, { stage: "review", eyebrow: "Step 2 of 4 · Review", ...heading },
 	el(doc, "section", { class: "block", "aria-labelledby": "changes-title" },
 		el(doc, "h2", { id: "changes-title", class: "section-title" }, "What changes on this computer"),
 		el(doc, "div", { class: "grid" }, model.disclosures.map((item) => disclosureCard(doc, item)))),
 	el(doc, "section", { class: "block", "aria-labelledby": "steps-title" },
-		el(doc, "h2", { id: "steps-title", class: "section-title" }, "Installation steps"),
+		el(doc, "h2", { id: "steps-title", class: "section-title" }, recovery ? "Setup steps" : "Installation steps"),
 		el(doc, "ol", { class: "plan-steps" }, model.actions.map((action) => el(doc, "li", {},
 			el(doc, "span", { class: "plan-step-text" }, rich(doc, action.description)))))),
 	el(doc, "div", { class: "consent" },
