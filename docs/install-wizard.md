@@ -965,6 +965,17 @@ for a `%TEMP%` exposed as `C:\Users\RUNNER~1\...`; tests compare it with
 `realpathSync.native`, not the JavaScript `realpathSync`, which keeps short
 names.
 
+The `home-owner` check requires `%LOCALAPPDATA%` to be owned by the invoking
+SID itself, not by a trusted group. A real `%LOCALAPPDATA%` created by the User
+Profile Service is owned by the user. Elevated processes on Windows Server, such
+as the GitHub Actions `windows-latest` runner, create new directories owned by
+BUILTIN\Administrators by default, so a fixture directory used as
+`LOCALAPPDATA` failed with `home-owner`. The native fixtures therefore set the
+invoking SID as owner of the fixture root and of every fixture directory used as
+`LOCALAPPDATA`, read the owner back, and fail loudly before any production stage
+runs. Production is unchanged: a real user whose `%LOCALAPPDATA%` is owned by
+Administrators fails closed with `home-owner` and no storage is claimed.
+
 ### Implemented fixtures versus missing execution evidence
 
 The native gates now contain runnable assertions, not empty or always-skipped

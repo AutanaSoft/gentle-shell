@@ -391,6 +391,12 @@ test("native fixture compositions retain exact production fragments and no trans
 	assert.ok(primitive.includes(original.slice(original.indexOf('  "$streams ='))));
 	assert.match(primitive, /\$child.Kill\(\)/);
 	assert.match(primitive, /WaitForExit\(1000\)/);
+	// The owner fixture only claims ownership for the invoking SID and proves it.
+	const owner = cmdComposition([fixtureOwnerSetup]);
+	assert.match(owner, /\$acl\.SetOwner\(\$me\)/);
+	assert.match(owner, /GetOwner\(\[Security\.Principal\.SecurityIdentifier\]\)\.Value -ne \$me\.Value\) \{ throw 'Fixture owner not established' \}/);
+	assert.match(owner, /'Not fixture-owned'/);
+	assert.doesNotMatch(owner, /HttpWebRequest|ExecutionPolicy|Invoke-Expression|\.ps1\b|AddAccessRule|SetAccessRule/);
 });
 
 interface NativeResult {
@@ -493,8 +499,32 @@ const fixtureAclSetup = `"%GENTLE_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteract
   "$rule = New-Object Security.AccessControl.FileSystemAccessRule($sid,$rights,'None','None','Allow'); $acl.SetAccessRule($rule); Set-Acl -LiteralPath $target -AclObject $acl;" ^
   "}"`;
 
-test("native Windows: production owned claim/check, ACL depth and collision preservation", { skip: nativeUnavailable }, async () => {
+// Elevated Windows Server runners create directories owned by BUILTIN\Administrators,
+// while the User Profile Service creates a real %LOCALAPPDATA% owned by the user.
+// Production's home-owner check stays strict, so a fixture directory used as
+// LOCALAPPDATA gets the invoking SID as owner and is read back before any stage.
+const fixtureOwnerSetup = `"%GENTLE_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
+  "& { $ErrorActionPreference = 'Stop';" ^
+  "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'Policy constrained' };" ^
+  "$root = [IO.Path]::GetFullPath($env:GENTLE_FIXTURE_ROOT); $target = [IO.Path]::GetFullPath($env:GENTLE_FIXTURE_OWNER_TARGET);" ^
+  "if (($target -ne $root -and -not $target.StartsWith($root + [IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)) -or (Get-Content -LiteralPath (Join-Path $root '.fixture-owned') -Raw) -ne 'gentle Windows acceptance fixture') { throw 'Not fixture-owned' };" ^
+  "$item = Get-Item -LiteralPath $target -Force; if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Unsafe fixture' };" ^
+  "$me = [Security.Principal.WindowsIdentity]::GetCurrent().User; $acl = Get-Acl -LiteralPath $target; $acl.SetOwner($me); Set-Acl -LiteralPath $target -AclObject $acl;" ^
+  "if ((Get-Acl -LiteralPath $target).GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $me.Value) { throw 'Fixture owner not established' };" ^
+  "}"`;
+async function ownFixtureDirectory(root: string, target: string) {
+	const result = await nativeCmd(root, [fixtureOwnerSetup], { ...nativeEnv(root), GENTLE_FIXTURE_OWNER_TARGET: target });
+	assert.equal(result.status, 0, `fixture could not own its LOCALAPPDATA directory; stderr: ${result.stderr.slice(0, 4000)}`);
+}
+async function ownedNativeFixture() {
 	const f = nativeFixture();
+	try { await ownFixtureDirectory(f.root, f.root); }
+	catch (error) { f.cleanup(); throw error; }
+	return f;
+}
+
+test("native Windows: production owned claim/check, ACL depth and collision preservation", { skip: nativeUnavailable }, async () => {
+	const f = await ownedNativeFixture();
 	try {
 		const env = nativeEnv(f.root);
 		assertNative(await nativeCmd(f.root, [cmdStage(stageMarkers.claim)], env), 0);
@@ -516,6 +546,8 @@ test("native Windows: production owned claim/check, ACL depth and collision pres
 				assert.throws(() => verifyWindowsStorage(ownedTarget, env));
 				assertNative(await nativeCmd(f.root, [fixtureAclSetup], { ...env, GENTLE_FIXTURE_ACL_TARGET: parent, GENTLE_FIXTURE_RIGHTS: "4" }), 0);
 				assert.throws(() => verifyWindowsStorage(target, env));
+				// Owned like a real LOCALAPPDATA, so only the parent's ACL can reject the claim.
+				await ownFixtureDirectory(f.root, parent);
 				const claimEnv = { ...env, LOCALAPPDATA: parent, GENTLE_BOOTSTRAP_TOOLS: join(parent, "new-claim") };
 				assertClaimRejected(await nativeCmd(f.root, [cmdStage(stageMarkers.claim)], claimEnv), "acl-mask");
 				assert.equal(existsSync(claimEnv.GENTLE_BOOTSTRAP_TOOLS), false);
@@ -525,12 +557,16 @@ test("native Windows: production owned claim/check, ACL depth and collision pres
 });
 
 test("native Windows: production checks reject an owned fixture junction without touching its target", { skip: nativeUnavailable }, async (t) => {
-	const f = nativeFixture();
+	const f = await ownedNativeFixture();
 	try {
 		const env = nativeEnv(f.root);
 		assertNative(await nativeCmd(f.root, [cmdStage(stageMarkers.claim)], env), 0);
 		const target = join(env.GENTLE_BOOTSTRAP_TOOLS, "junction-target"); mkdirSync(target);
 		writeFileSync(join(target, "unrelated"), "preserve");
+		const home = join(target, "home"); mkdirSync(home);
+		// Owned real directories: only the junction itself can be rejected.
+		await ownFixtureDirectory(f.root, target);
+		await ownFixtureDirectory(f.root, home);
 		const junction = join(env.GENTLE_BOOTSTRAP_TOOLS, "junction");
 		try { symlinkSync(target, junction, "junction"); }
 		catch (error) {
@@ -539,9 +575,17 @@ test("native Windows: production checks reject an owned fixture junction without
 			throw error;
 		}
 		assert.throws(() => verifyWindowsStorage(junction, env));
-		assertClaimRejected(await nativeCmd(f.root, [cmdStage(stageMarkers.claim)], { ...env, LOCALAPPDATA: junction, GENTLE_BOOTSTRAP_TOOLS: join(junction, "new-claim") }));
+		// Junction as an ancestor: home-owner reads the owned real directory through
+		// the junction, so the walk must stop at the reparse point itself.
+		assertClaimRejected(await nativeCmd(f.root, [cmdStage(stageMarkers.claim)], { ...env, LOCALAPPDATA: join(junction, "home"), GENTLE_BOOTSTRAP_TOOLS: join(junction, "home", "new-claim") }), "ancestor-reparse");
+		// Junction as LOCALAPPDATA: Get-Acl reads either the owned target or the
+		// junction object; both rejections name the junction, never another object.
+		const direct = await nativeCmd(f.root, [cmdStage(stageMarkers.claim)], { ...env, LOCALAPPDATA: junction, GENTLE_BOOTSTRAP_TOOLS: join(junction, "new-claim") });
+		assertClaimRejected(direct);
+		assert.ok(["ancestor-reparse", "home-owner"].some((reason) => direct.stderr.includes(`Reason: ${reason}`)), `stderr: ${direct.stderr.slice(0, 4000)}`);
 		assert.equal(readFileSync(join(target, "unrelated"), "utf8"), "preserve");
 		assert.equal(existsSync(join(target, "new-claim")), false);
+		assert.equal(existsSync(join(home, "new-claim")), false);
 	} finally { f.cleanup(); }
 });
 
@@ -600,7 +644,7 @@ function localZip(entries: ZipFixtureEntry[]) {
 }
 
 test("native Windows: actual PowerShell ZIP namespace validation precedes no-clobber publication", { skip: nativeUnavailable }, async () => {
-	const f = nativeFixture();
+	const f = await ownedNativeFixture();
 	try {
 		const stem = "node-v24.21.0-win-x64";
 		const nativeNode = readFileSync(process.execPath); // approved available Node, never run from the ZIP
@@ -644,7 +688,7 @@ test("native Windows: actual PowerShell ZIP namespace validation precedes no-clo
 const probeModes = ["valid", "nonzero", "stdout-limit", "stderr-limit", "quiet-hang", "stderr-hang", "valid-then-hang", "both-pipes-hang"] as const;
 for (const mode of probeModes) {
 	test(`native Windows: pre-Node production process primitive ${mode}`, { skip: nativeUnavailable }, async () => {
-		const f = nativeFixture();
+		const f = await ownedNativeFixture();
 		try {
 			const env = nativeEnv(f.root); mkdirSync(env.GENTLE_BOOTSTRAP_TOOLS);
 			const pidFile = join(f.root, "probe.pid"); const probe = join(f.root, "probe.mjs");
@@ -672,7 +716,7 @@ if (mode.endsWith('hang')) { process.on('SIGTERM', () => {}); setInterval(() => 
 }
 
 test("native Windows: complete local sentinel composes production entry and late blocks without network", { skip: nativeUnavailable }, async () => {
-	const f = nativeFixture();
+	const f = await ownedNativeFixture();
 	try {
 		assert.equal(compatibleEngine(windowsNodeFloor, process.versions.node), true, "fixture runner needs the supported Node floor");
 		const scripts = join(f.root, "scripts"); const bin = join(f.root, "bin"); const commands = join(f.root, "commands");
@@ -707,7 +751,7 @@ test("native Windows: complete local sentinel composes production entry and late
 });
 
 test("native Windows: success cleanup keeps unprovable roots, reports them and preserves siblings", { skip: nativeUnavailable }, async () => {
-	const f = nativeFixture();
+	const f = await ownedNativeFixture();
 	try {
 		const sibling = join(f.root, ".gentle-shell-bootstrap-tools.sibling");
 		mkdirSync(sibling); writeFileSync(join(sibling, ".bootstrap-owned"), "gentle-pi prerequisite tooling only");
