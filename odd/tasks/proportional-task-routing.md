@@ -51,14 +51,14 @@ S9. Measurement: bench baseline (origin/main cf3012f7) vs after, same scenarios:
 - [x] T2 (S7) inline · orchestrator-delegation.md split into tracking/verification/writer/prompts modules; union test helper; AC7 budget test · refactor under existing contract tests · 6f8a78b8
 - [x] T3 (S5, S6) inline · `escalate` input on gentle_review assess (raise-only, pi-side), HIGH_RISK_ITEMS, rule text in verification/tracking modules · RED→GREEN · 711ad9db
 - [x] T4 (S7) inline · edit-not-rewrite rule and codemode mirror refresh in orchestrator-memory.md; extension-side auto-mirror spike → F3 · RED→GREEN · f508715f
-- [ ] T5 (S9) partial · existing scenarios measured (L25); the #1494 fixture, risky-innocent-path, design-decision, and multi-session scenarios are not authored yet
+- [x] T5 (S9) inline · existing scenarios (L25) and new bench scenarios x1/x2/x4 measured (L31); design-decision scenario not measurable unattended
 - [x] G1 (S8) gentle-ai `fix/1494-task-size-canon` (worktree ~/work/gentle-ai-1494, on main 665a181a) · canon + 12 orchestrators + shared sections + docs · RED→GREEN · 66399a57
 - [x] G2 (S6) gentle-ai · `review assess --escalate-item/--escalate-reason` · RED→GREEN · 95ee74d0
 - [x] G3 (S6) filed as gentle-ai#5216 (follow-up, not implemented here)
 - [x] F1 filed as gentle-shell#1722 (~/AGENTS.md is 58,881 B with gentle-ai blocks)
 - [x] F3 filed as engram#1636 (gentle-engram lives in the engram repo, plugin/pi)
 - [x] F2 (S7) inline · skip the mirrored RDD review contract (8.5 KB) when RDD reads off; on/unknown keep it · RED→GREEN · 08fda673
-- [x] T6 (S2-S7) inline · RDD review follow-ups from the four slice reviews (L28) · RED→GREEN · this work unit
+- [x] T6 (S2-S7) inline · RDD review follow-ups from the four slice reviews (L28) · RED→GREEN · fe973987 (+ 6bc82417 regenerated runtime module)
 
 ## Log
 L1 2026-10-03 user (verbatim): > sin delegar y en nuevo worktree, vamos a analizar https://github.com/Gentleman-Programming/gentle-shell/issues/1494
@@ -133,3 +133,11 @@ L29 2026-10-03 T6 evidence (risk: medium; inline per L1): all eleven follow-ups 
    GREEN: real dependencies installed in the worktree (`CI=true pnpm install --frozen-lockfile`, replacing the node_modules symlink); `npm test` all stages passed (unit 4650 pass / 0 fail, provider-contract, runtime-harness), which now proves AC9 directly; typecheck no regressions.
    Changes: writer module points at orchestrator-prompts.md; Writer rule named instead of numbered; readme sizes by large/small; `agentEscalation.applied`; per-module placement test; exact Verification-rule regex; ratchet tripwire that fails once the canon gains Task Size (gentle-ai#5217); harness imports DELEGATION_MODULES; Judgment Day shape asserted against orchestrator-writer.md; memo cleanup in finally.
 L30 2026-10-03 delivery: user approved gentle-shell#1494 and gentle-ai#5217 (status:approved added, read back); PRs gentle-shell#1723 and gentle-ai#5218 opened with type:bug and size:exception (L14 "pr con size exception"); branches pushed.
+L31 2026-10-03 T5 new scenarios (local bench commit 3db290c; base main 7693fe49 vs after 08fda673; arm B gpt-6.1-sol low; n=1):
+   | task | baseline | after |
+   | x1-inventory (#1494 port, task list requested) | 430 s, 75 turns, $0.394; explore + verify + 3 workers + doc | 124 s, 24 turns, $0.099; inline with todo, 0 subagents, no doc |
+   | x2-ledger-import (persisted data, innocent file) | 394 s, 51 turns, $0.410; explore + verify + worker + doc | 149 s, 18 turns, $0.204; exactly one gentle-ai-verify, no doc |
+   | x4-ledger-split-deliveries (two deliveries, resumable) | 1144 s, 102 turns, $0.847; explore + 2 verify + 2 workers + doc + 2 commits; round 1 | 1533 s, 134 turns, $1.178; explore + 2 verify + 3 workers + doc + 2 commits; round 1 |
+   All accepted (x4 both after one feedback round). x1 and x2 show the intended routing (AC8 small and high-risk paths). x4 takes the large path in both arms as intended (doc, writers, per-delivery commits); the after run cost 39% more with one extra worker, which one run cannot separate from noise. The design-decision scenario (AC-E3) is not measurable with the unattended runner, which cannot answer a question; AC4 covers the re-evaluate rule by contract.
+   CI: gentle-shell#1723 failed `check:runtime-modules` (stale runtime/review-risk-assessment.mjs); regenerated in 6bc82417 (assess: medium, under_budget, not due); CI green. gentle-ai#5218 all checks green, including E2E.
+   Remaining advisory review notes (not fixed, separate later work): R3-applied-false-branch-unproved (no test for applied=false), R3-harness-ts-import-from-mjs (harness depends on Node type stripping, already required by test:harness).
