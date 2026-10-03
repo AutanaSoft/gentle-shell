@@ -84,7 +84,7 @@ and association tests rather than compressing two work units into the review bud
   presence, shipped subject instruction, and associated tests/docs; keep the
   previous sidecar, transport, and routing behaviors.
 
-## Unit 3: authoritative recorded repository scope (verified; parent commit pending)
+## Unit 3: authoritative recorded repository scope (complete, `922ee7336559892f8b5f8a4a3188ab723435021b`)
 
 Previous PR: #1715; current branch: `feat/1701-repository-scope`, based on `20d265aa`.
 Reuse canonical Git root/common-directory resolution for the host, launch-owned children and registered worktrees; correlate clone identity without parsing remote URLs. Keep non-Git/unresolvable facts unknown, bound projections and refresh on real lifecycle changes, not shell `cd`.
