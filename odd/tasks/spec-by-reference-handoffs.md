@@ -18,7 +18,7 @@ S8. Handoff friction never shrinks content (#1713 cause 5): writer-surface rejec
 
 ## Tasks
 - [x] T1 (S1-S7) inline · doc format + handoff/verify/reproduce contract in assets, agents, extension ODD step, contract tests · RED→GREEN · 9e890dba
-- [x] T2 (S8) inline · runtime friction in lib/bounded-writer-admission.ts and extensions/gentle-agents.ts + tests · RED→GREEN · commit: see L10
+- [x] T2 (S8) inline · runtime friction in lib/bounded-writer-admission.ts and extensions/gentle-agents.ts + tests · RED→GREEN · b160c3b8
 - [ ] T3 (S1-S6) pending user decision · port the doc format to the gentle-ai canon (`internal/components/agentguidance/routing.go`) and regenerate `fixtures/odd-routing-canonical.md`
 
 ## Log
@@ -41,3 +41,4 @@ L10 2026-10-03 T2 evidence (risk: HIGH, touches writer admission; independent ve
    GREEN: writer-edit-surface-scope 14/14, bounded-writer-admission 8/8, gentle-agents 190/190; `npm run typecheck` no regressions; `npm test` all stages passed.
    Decisions: inheritance only for generic writers (gentle-ai-worker, worker), never jd-fix-agent; only when the follow-up and its context carry no heading; inherited surfaces come from the original task prompt (surfaces passed only via `context` are not inherited and still reject). Rejection keeps the canonical text as prefix and appends the concrete problem plus "Resend the same task text unchanged...".
    Gap: continuation inheritance is unit-tested on the helper; the one-line wiring in subagent_continue has no end-to-end writer test.
+L11 2026-10-03 next: T3 needs a user decision (gentle-ai canon port lives in another repository); push/PR remain user decisions. Running authored delta: T1 64+/15-, T2 ~95 lines.
