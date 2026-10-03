@@ -38,8 +38,14 @@ function parseAllowedEditSurfaces(values: readonly unknown[]): { paths: string[]
 				const quoted = unlisted.match(/^`([^`]+)`$/);
 				const path = quoted?.[1] ?? unlisted;
 				if (/^(?:[-*+]|\d+[.)])$/.test(line) || (unlisted.includes("`") && !quoted) || /\p{Cc}|\p{Zl}|\p{Zp}/u.test(source) || !isTaskScopedRepositoryRelativePath(path, !!quoted)) {
-					const shown = source.trim().replace(/\p{Cc}|\p{Zl}|\p{Zp}/gu, " ");
-					return { problem: `Line "${shown.length > 120 ? `${shown.slice(0, 120)}...` : shown}" is not a valid surface entry; move prose under a following Markdown heading.` };
+					// Prose and a bad path need different repairs: moving a real surface
+					// out of the section would silently narrow the writer's scope.
+					const prose = /^(?:[-*+]|\d+[.)])$/.test(line) || (!quoted && /\p{White_Space}/u.test(unlisted));
+					const shown = (prose ? source.trim() : path).replace(/\p{Cc}|\p{Zl}|\p{Zp}/gu, " ");
+					const bounded = shown.length > 120 ? `${shown.slice(0, 120)}...` : shown;
+					return { problem: prose
+						? `Line "${bounded}" is not a valid surface entry; move prose under a following Markdown heading.`
+						: `Entry "${bounded}" is not a narrow repository-relative path; remove absolute paths, \`..\` segments, root globs, and stray backticks.` };
 				}
 				paths.push(path);
 			}
@@ -75,7 +81,9 @@ export function inheritAllowedEditSurfaces(agent: string, followUp: string, cont
 	if (!isGenericBoundedWriter(agent) || hasHeading(followUp) || hasHeading(context)) return followUp;
 	const inherited = allowedEditSurfaces(originalPrompt);
 	if (!inherited) return followUp;
-	return `${followUp}\n\n## Allowed edit surfaces\n${inherited.map(path => /\s/u.test(path) ? `\`${path}\`` : path).join("\n")}\n`;
+	// Every inherited entry is backticked: some entries are admitted only when
+	// quoted, and quoting never changes a valid path (review R3-002).
+	return `${followUp}\n\n## Allowed edit surfaces\n${inherited.map(path => `\`${path}\``).join("\n")}\n`;
 }
 
 export function isGenericBoundedWriter(name: string): boolean {

@@ -19,6 +19,7 @@ S8. Handoff friction never shrinks content (#1713 cause 5): writer-surface rejec
 ## Tasks
 - [x] T1 (S1-S7) inline · doc format + handoff/verify/reproduce contract in assets, agents, extension ODD step, contract tests · RED→GREEN · 9e890dba
 - [x] T2 (S8) inline · runtime friction in lib/bounded-writer-admission.ts and extensions/gentle-agents.ts + tests · RED→GREEN · b160c3b8
+- [x] T4 (S8) inline · review follow-ups R3-001/002/004/005: e2e continue test, always-backticked inherited surfaces, path-vs-prose rejection advice, exact rejection assertions · RED→GREEN · commit: this work unit (see git log)
 - [ ] T3 (S1-S6) pending user decision · port the doc format to the gentle-ai canon (`internal/components/agentguidance/routing.go`) and regenerate `fixtures/odd-routing-canonical.md`
 
 ## Log
@@ -44,3 +45,12 @@ L10 2026-10-03 T2 evidence (risk: HIGH, touches writer admission; independent ve
 L11 2026-10-03 next: T3 needs a user decision (gentle-ai canon port lives in another repository); push/PR remain user decisions. Running authored delta: T1 64+/15-, T2 ~95 lines.
 L12 2026-10-03 RDD: user granted review of 9e890dba..6c9ebdd7 (risk medium, 14 files, 231 lines) and allowed one reviewer subagent as the only exception to L2. Lineage review-7744719648a3cec2, lens review-reliability: approved; acknowledged (authority burned).
    Non-blocking follow-ups: R3-continue-wiring-unproved (WARNING, no end-to-end continue test); R3-inherit-reserialization (WARNING, inherited entries are backticked only for whitespace, so a quoted path such as one starting with a list marker could round-trip differently; fix: always backtick inherited entries); R3-heading-detection-divergence (SUGGESTION, reuse the canonical heading matcher); R3-rejection-problem-coverage (SUGGESTION, assert empty/repeated-section messages, truncation, status/result hints).
+L13 2026-10-03 RDD: doc-only L12 commit re-opened the whole branch range (target f913925b…); user granted review and re-confirmed the reviewer exception. Lineage review-52b799f6e8561bc4: approved; acknowledged. Findings R3-001 (WARNING, no e2e continue test), R3-002 (WARNING, always backtick inherited entries), R3-003 (SUGGESTION, reuse canonical heading matcher), R3-004 (SUGGESTION, rejection advice wrong for invalid paths), R3-005 (SUGGESTION, prefix-only rejection asserts; unasserted messages/truncation/hints).
+   Learned: RDD reviews the whole branch base-diff, so post-review doc commits re-open a full review; record outcomes in the next work unit.
+L14 2026-10-03 user (verbatim): > dale
+   (accepting: fix R3-001, R3-002, R3-004, R3-005 and record L13 as T4; R3-003 stays a follow-up.)
+L15 2026-10-03 T4 evidence (risk: HIGH, writer admission; reviewer exception only per L12/L13):
+   RED: e2e continue test failed only on unquoted `src/app.ts` (R3-002); quoted-only `-` round-trip failed; invalid paths reported as prose (R3-004). Status/result unknown-id hints already passed (coverage only).
+   Mutation: replacing the continue wiring with the raw prompt makes the e2e test fail with the exact rejection; restored, file unchanged vs HEAD.
+   GREEN: bounded-writer-admission 8/8, writer-edit-surface-scope 15/15, gentle-agents 191/191; `npm run typecheck` no regressions; `npm test` all stages passed.
+   Kept as follow-up: R3-003 (reuse canonical heading matcher).

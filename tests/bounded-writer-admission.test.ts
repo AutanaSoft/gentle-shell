@@ -109,4 +109,8 @@ test("writer continuations inherit the original surfaces only when they carry no
 	assert.equal(inheritAllowedEditSurfaces("gentle-ai-explore", "Continue.", undefined, original), "Continue.", "non-writers are untouched");
 	assert.equal(inheritAllowedEditSurfaces("jd-fix-agent", "Continue.", undefined, original), "Continue.", "Judgment Day fix batches keep their exact protocol");
 	assert.equal(inheritAllowedEditSurfaces("gentle-ai-worker", "Continue.", undefined, "No surfaces here."), "Continue.", "nothing to inherit stays rejectable");
+	// Review R3-002: an entry admitted only when quoted must round-trip quoted.
+	const quotedOnly = "## Allowed edit surfaces\n- `-`\n- src/model.ts";
+	assert.deepEqual(allowedEditSurfaces(quotedOnly), ["-", "src/model.ts"]);
+	assert.deepEqual(allowedEditSurfaces(inheritAllowedEditSurfaces("worker", "Continue.", undefined, quotedOnly)), ["-", "src/model.ts"]);
 });
