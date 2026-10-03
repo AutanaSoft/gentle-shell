@@ -6,7 +6,10 @@ import { resolveSessionWorktree, type WorktreeResolver } from "./session-worktre
 const WRITER_NAMES = ["gentle-ai-worker", "worker", "jd-fix-agent"];
 export const WRITER_EDIT_SURFACE_REJECTION =
 	"Writer tasks must include the exact Markdown heading `## Allowed edit surfaces` with narrow repository-relative paths or narrow globs, one per line. Every non-empty line belongs to the section until the next canonical Markdown heading and must be a valid surface entry. Paths containing whitespace require whole-entry backticks; begin explanatory prose under the next Markdown heading. The parent must derive or map that canonical block from the delegated task and relaunch the writer; do not accept aliases, and do not ask the human to author paths or globs.";
-const ALLOWED_EDIT_SURFACES_HEADING = /^## Allowed edit surfaces[ \t]*$/gim;
+// One heading matcher: the parser scans with the global form, and continuation
+// inheritance tests presence with the same source (review R3-003).
+const ALLOWED_EDIT_SURFACES_HEADING_LINE = /^## Allowed edit surfaces[ \t]*$/im;
+const ALLOWED_EDIT_SURFACES_HEADING = new RegExp(ALLOWED_EDIT_SURFACES_HEADING_LINE.source, "gim");
 const MARKDOWN_HEADING_LINE = /^ {0,3}#{1,6} /;
 const MARKDOWN_LIST_MARKER = /^(?:[-*+]|\d+[.)]) +/;
 
@@ -40,12 +43,17 @@ function parseAllowedEditSurfaces(values: readonly unknown[]): { paths: string[]
 				if (/^(?:[-*+]|\d+[.)])$/.test(line) || (unlisted.includes("`") && !quoted) || /\p{Cc}|\p{Zl}|\p{Zp}/u.test(source) || !isTaskScopedRepositoryRelativePath(path, !!quoted)) {
 					// Prose and a bad path need different repairs: moving a real surface
 					// out of the section would silently narrow the writer's scope.
+					// An unquoted entry with whitespace that would be valid when quoted is
+					// ambiguous: name both repairs instead of guessing prose.
 					const prose = /^(?:[-*+]|\d+[.)])$/.test(line) || (!quoted && /\p{White_Space}/u.test(unlisted));
+					const quotable = prose && !quoted && !unlisted.includes("`") && !/\p{Cc}|\p{Zl}|\p{Zp}/u.test(source) && isTaskScopedRepositoryRelativePath(unlisted, true);
 					const shown = (prose ? source.trim() : path).replace(/\p{Cc}|\p{Zl}|\p{Zp}/gu, " ");
 					const bounded = shown.length > 120 ? `${shown.slice(0, 120)}...` : shown;
-					return { problem: prose
-						? `Line "${bounded}" is not a valid surface entry; move prose under a following Markdown heading.`
-						: `Entry "${bounded}" is not a narrow repository-relative path; remove absolute paths, \`..\` segments, root globs, and stray backticks.` };
+					return { problem: quotable
+						? `Line "${bounded}" is not a valid surface entry; if it is a path, wrap the whole entry in backticks, otherwise move it under a following Markdown heading.`
+						: prose
+							? `Line "${bounded}" is not a valid surface entry; move prose under a following Markdown heading.`
+							: `Entry "${bounded}" is not a narrow repository-relative path; remove absolute paths, \`..\` segments, root globs, and stray backticks.` };
 				}
 				paths.push(path);
 			}
@@ -77,7 +85,7 @@ export function rejectUnscopedBoundedWriterDispatch(input: unknown): { block: tr
 // never merged, and nothing is inherited when the original had no valid section.
 // Judgment Day fix batches keep their own exact dispatch protocol.
 export function inheritAllowedEditSurfaces(agent: string, followUp: string, context: unknown, originalPrompt: string): string {
-	const hasHeading = (value: unknown) => typeof value === "string" && /^## Allowed edit surfaces[ \t]*$/im.test(value);
+	const hasHeading = (value: unknown) => typeof value === "string" && ALLOWED_EDIT_SURFACES_HEADING_LINE.test(value);
 	if (!isGenericBoundedWriter(agent) || hasHeading(followUp) || hasHeading(context)) return followUp;
 	const inherited = allowedEditSurfaces(originalPrompt);
 	if (!inherited) return followUp;

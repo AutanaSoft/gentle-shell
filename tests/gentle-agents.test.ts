@@ -3149,6 +3149,8 @@ test("background runs return at once; status, result, send_message, cancel, and 
 	assert.match((await tools.get("subagent_cancel")!.execute("c9", { task_id: id }, undefined, undefined, ctx)).content[0].text, /not running/);
 	assert.match((await tools.get("subagent_status")!.execute("c10", { task_id: "nope" }, undefined, undefined, ctx)).content[0].text, /Error: no task nope/);
 	// gentle-shell#1713: a guessed id ("1") must point back to real ids.
+	// Review follow-up: a call without a context still gets the structured error.
+	assert.match((await tools.get("subagent_status")!.execute("c10c", { task_id: "1" }, undefined, undefined, undefined as never)).content[0].text, /^Error: no task 1\./);
 	for (const name of ["subagent_status", "subagent_result"]) assert.match((await tools.get(name)!.execute("c10a", { task_id: "1" }, undefined, undefined, ctx)).content[0].text, new RegExp(`^Error: no task 1\\. Recent task ids: .*${id} \\(explore\\)`), name);
 	assert.match((await tools.get("subagent_continue")!.execute("c10b", { task_id: "1", prompt: "more" }, undefined, undefined, ctx)).content[0].text, new RegExp(`^Error: no task 1\\. Recent task ids: .*${id} \\(explore\\)`));
 	assert.match((await tools.get("subagent_run")!.execute("c11", { agent: "ghost", task: "x" }, undefined, undefined, ctx)).content[0].text, /no subagent named "ghost"\. Known: explore/);

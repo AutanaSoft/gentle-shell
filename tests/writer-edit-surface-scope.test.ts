@@ -66,7 +66,7 @@ async function assertAccepted(input: Record<string, unknown>, message: string) {
 }
 
 const RESEND = "Resend the same task text unchanged except for that section; never shorten or re-summarize it.";
-const PROBLEM = /^(?:No `## Allowed edit surfaces` heading was found\.|The section has no entries\.|Repeated sections list different surfaces\.|Line ".+" is not a valid surface entry; move prose under a following Markdown heading\.|Entry ".+" is not a narrow repository-relative path; remove absolute paths, `\.\.` segments, root globs, and stray backticks\.)$/;
+const PROBLEM = /^(?:No `## Allowed edit surfaces` heading was found\.|The section has no entries\.|Repeated sections list different surfaces\.|Line ".+" is not a valid surface entry; move prose under a following Markdown heading\.|Line ".+" is not a valid surface entry; if it is a path, wrap the whole entry in backticks, otherwise move it under a following Markdown heading\.|Entry ".+" is not a narrow repository-relative path; remove absolute paths, `\.\.` segments, root globs, and stray backticks\.)$/;
 
 // Every rejection is the canonical text, exactly one concrete problem, and the
 // resend instruction; nothing else (review R3-005).
@@ -115,7 +115,12 @@ test("each rejection names its concrete problem, and invalid paths are not calle
 		assert.equal(await problem({ task: `## Allowed edit surfaces\n- ${path}` }), `Entry "${path}" is not a narrow repository-relative path; remove absolute paths, \`..\` segments, root globs, and stray backticks.`, path);
 	}
 	const long = `Then ${"verify every requirement ".repeat(8)}carefully.`;
-	assert.equal(await problem({ task: `## Allowed edit surfaces\nsrc/a.ts\n${long}` }), `Line "${long.slice(0, 120)}..." is not a valid surface entry; move prose under a following Markdown heading.`);
+	const ambiguous = (shown: string) => `Line "${shown}" is not a valid surface entry; if it is a path, wrap the whole entry in backticks, otherwise move it under a following Markdown heading.`;
+	assert.equal(await problem({ task: `## Allowed edit surfaces\nsrc/a.ts\n${long}` }), ambiguous(`${long.slice(0, 120)}...`));
+	// A real path with a space must not be steered out of the section.
+	assert.equal(await problem({ task: "## Allowed edit surfaces\n- docs/with space.md" }), ambiguous("- docs/with space.md"));
+	// Whitespace that stays invalid even when quoted is plain prose.
+	assert.equal(await problem({ task: "## Allowed edit surfaces\n- ~ notes for later" }), `Line "- ~ notes for later" is not a valid surface entry; move prose under a following Markdown heading.`);
 	const control = await problem({ task: "## Allowed edit surfaces\nsrc/a\u0007.ts" });
 	assert.doesNotMatch(control, /\u0007/);
 	assert.match(control, /^Entry "src\/a \.ts" is not a narrow repository-relative path/);

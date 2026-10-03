@@ -19,7 +19,8 @@ S8. Handoff friction never shrinks content (#1713 cause 5): writer-surface rejec
 ## Tasks
 - [x] T1 (S1-S7) inline · doc format + handoff/verify/reproduce contract in assets, agents, extension ODD step, contract tests · RED→GREEN · 9e890dba
 - [x] T2 (S8) inline · runtime friction in lib/bounded-writer-admission.ts and extensions/gentle-agents.ts + tests · RED→GREEN · b160c3b8
-- [x] T4 (S8) inline · review follow-ups R3-001/002/004/005: e2e continue test, always-backticked inherited surfaces, path-vs-prose rejection advice, exact rejection assertions · RED→GREEN · commit: this work unit (see git log)
+- [x] T4 (S8) inline · review follow-ups R3-001/002/004/005: e2e continue test, always-backticked inherited surfaces, path-vs-prose rejection advice, exact rejection assertions · RED→GREEN · d9771820
+- [x] T5 (S8) inline · review follow-ups of lineage review-b5d3d60f29e54b69: ambiguous whitespace-entry advice, ctx-safe unknown-id error, one heading matcher (R3-003) · RED→GREEN · this work unit
 - [ ] T3 (S1-S6) pending user decision · port the doc format to the gentle-ai canon (`internal/components/agentguidance/routing.go`) and regenerate `fixtures/odd-routing-canonical.md`
 
 ## Log
@@ -54,3 +55,7 @@ L15 2026-10-03 T4 evidence (risk: HIGH, writer admission; reviewer exception onl
    Mutation: replacing the continue wiring with the raw prompt makes the e2e test fail with the exact rejection; restored, file unchanged vs HEAD.
    GREEN: bounded-writer-admission 8/8, writer-edit-surface-scope 15/15, gentle-agents 191/191; `npm run typecheck` no regressions; `npm test` all stages passed.
    Kept as follow-up: R3-003 (reuse canonical heading matcher).
+L16 2026-10-03 RDD: lineage review-b5d3d60f29e54b69 (target 53d44815…, through d9771820) approved; acknowledged. Findings: R3-001 (WARNING) a real unquoted path with a space got the prose advice; R3-002 (SUGGESTION) unknownTask dereferenced ctx unconditionally. R3-003 from the earlier review was still open.
+L17 2026-10-03 user (verbatim): > pr y merge
+L18 2026-10-03 user (verbatim): > no seria mejor arreglar los hallazgos ?
+   T5 evidence (risk: HIGH, writer admission; reviewers allowed per user): RED: ambiguous-entry test (writer-edit-surface-scope) and `TypeError ... reading 'sessionManager'` on a ctx-less subagent_status (gentle-agents). GREEN after fix. An unquoted whitespace entry that is valid when quoted now names both repairs (backticks or move prose); entries invalid even when quoted keep the prose advice. R3-003 is a pure refactor (one regex source), covered by existing inheritance tests.

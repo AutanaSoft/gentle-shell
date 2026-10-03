@@ -1119,8 +1119,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 
 	// A guessed id ("1") leads back to real ids instead of a dead end, so the
 	// parent retries the same call rather than re-summarizing it (gentle-shell#1713).
-	const unknownTask = (id: unknown, ctx: ExtensionContext) => {
-		const recent = [...store.list(ctx.sessionManager.getSessionId() ?? "")].sort((a, b) => b.createdAt - a.createdAt).slice(0, 5);
+	const unknownTask = (id: unknown, ctx: ExtensionContext | undefined) => {
+		const recent = [...store.list(ctx?.sessionManager?.getSessionId() ?? "")].sort((a, b) => b.createdAt - a.createdAt).slice(0, 5);
 		const hint = recent.length ? ` Recent task ids: ${recent.map((task) => `${task.id} (${task.agent})`).join(", ")}.` : "";
 		return text(`Error: no task ${String(id)}.${hint}`, { error: "unknown task" });
 	};
