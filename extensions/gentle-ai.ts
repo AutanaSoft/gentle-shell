@@ -100,6 +100,7 @@ import {
 	type ProfilePinSource,
 	type ProfilePinStatus,
 } from "../lib/agent-profile-pin.ts";
+import { bindSessionProfile, readSessionProfileBinding } from "../lib/session-profile-binding.ts";
 import {
 	applyOrchestratorSettings,
 	readOrchestratorSettings,
@@ -3564,6 +3565,7 @@ function updateCurrentProfileFromSavedRouting(ctx: ExtensionContext, pi: Extensi
 
 type ProfilesPanelResult =
 	| { type: "apply"; name: string }
+	| { type: "apply-global"; name: string }
 	| { type: "create" }
 	| { type: "update"; name: string }
 	| { type: "duplicate"; name: string }
@@ -3751,6 +3753,7 @@ class ProfilesPanel implements OverlayComponent {
 	private readonly orchestratorSettings: OrchestratorSettingsReadResult;
 	// Actions reopen the panel, refreshing this snapshot without disk reads during rendering.
 	private readonly pinStatus: ProfilePinStatus | undefined;
+	private readonly sessionBoundName: string | undefined;
 
 	constructor(
 		file: AgentProfilesFile,
@@ -3764,6 +3767,7 @@ class ProfilesPanel implements OverlayComponent {
 		saveSnapshot: ProfilesSnapshotHandler,
 		requestRender: () => void,
 		pinStatus: () => ProfilePinStatus | undefined,
+		sessionBound: () => string | undefined,
 		feedback?: string,
 	) {
 		this.file = file;
@@ -3776,7 +3780,8 @@ class ProfilesPanel implements OverlayComponent {
 		this.rows = rows;
 		this.orchestratorSettings = orchestratorSettings;
 		this.pinStatus = pinStatus();
-		const items = buildProfileListItems(file, evaluateProfilePin(this.pinStatus, file.profiles).winner?.profile);
+		this.sessionBoundName = sessionBound();
+		const items = buildProfileListItems(file, evaluateProfilePin(this.pinStatus, file.profiles).winner?.profile, this.sessionBoundName);
 		this.listItems = items;
 		this.list = new NativeChoiceList<ProfileListItem>(
 			items,
@@ -3839,6 +3844,7 @@ class ProfilesPanel implements OverlayComponent {
 			this.requestRender();
 			return;
 		}
+		if (data === "a") return this.finish({ type: "apply-global", name });
 		if (data === "d") return this.finish({ type: "duplicate", name });
 		if (data === "r") return this.finish({ type: "rename", name });
 		if (data === "x") return this.finish({ type: "delete", name });
@@ -3964,7 +3970,7 @@ class ProfilesPanel implements OverlayComponent {
 
 	private renderFooterRow(width: number): string {
 		const hints =
-			"enter apply · c create · s snapshot · d duplicate · r rename · x delete · e export · i import · p pin · P share · j/k line · ctrl+j/k page · esc close";
+			"enter use in this session · a set as global default · c create · s snapshot · d duplicate · r rename · x delete · e export · i import · p pin · P share · j/k line · ctrl+j/k page · esc close";
 		const text = this.feedback ?? hints;
 		return [
 			this.renderText("│", "border"),
@@ -4000,6 +4006,14 @@ class ProfilesPanel implements OverlayComponent {
 			// any invalid or stale layer, and the scope sentence all come from the shared
 			// precedence rule the launch resolver uses.
 			...profilePinDetailLines(this.pinStatus, this.file.profiles).map((line) => this.renderLine(line, width, "muted")),
+			// gentle-shell#1064 slice 1: the binding is stored for this session and
+			// outranks the pin in the panel list, so it is named right after the pin
+			// layers. Launch resolution ships with slice 2 (gentle-shell#1558); this
+			// slice stores the binding only, launch routing is unchanged, and nothing
+			// was written.
+			...(this.sessionBoundName === undefined
+				? []
+				: [this.renderLine(`session        ${sanitizeTerminalText(this.sessionBoundName)} (session) — stored for this session; launch routing is unchanged; nothing was written`, width, "muted")]),
 			"",
 			this.renderLine("Profile routing", width, "accent"),
 			...this.indentLines(this.routingLines(profileRows, widths), width),
@@ -4056,6 +4070,7 @@ class ProfilesPanel implements OverlayComponent {
 	}
 }
 
+/** The full-screen profile picker: one visit per action, so every reopen reads fresh store, pin, orchestrator, and session-binding state. */
 async function showProfilesPanel(
 	ctx: ExtensionContext,
 	file: AgentProfilesFile,
@@ -4063,6 +4078,7 @@ async function showProfilesPanel(
 	selectedName: string | undefined,
 	saveSnapshot: ProfilesSnapshotHandler,
 	status?: string,
+	sessionBoundName?: string,
 ): Promise<ProfilesPanelResult> {
 	// Both orchestrator and pin state are snapshots for this panel visit.
 	// Actions (including p/P) reopen the panel and read fresh state.
@@ -4081,6 +4097,7 @@ async function showProfilesPanel(
 				saveSnapshot,
 				() => tui.requestRender(),
 				() => readProfilePinStatus(ctx.cwd),
+				() => sessionBoundName,
 				status,
 			);
 			const container = createNativeFullscreenInteraction({
@@ -4178,6 +4195,7 @@ function profileSnapshotFrom(
 	return snapshot;
 }
 
+/** Runs one finished panel action against the store and the live session, returning the file the reopened panel should show. */
 async function runProfilesPanelAction(
 	ctx: ExtensionContext,
 	live: LiveSession,
@@ -4188,6 +4206,30 @@ async function runProfilesPanelAction(
 ): Promise<AgentProfilesFile> {
 	switch (result.type) {
 		case "apply": {
+			if (!hasOwnProfile(file.profiles, result.name)) return file;
+			// gentle-shell#1064 slice 1: Enter binds the selected profile to this
+			// parent session. The binding is in-process state keyed by the session
+			// id: it writes no store marker, no global routing, no materialized
+			// stores, no agent frontmatter, no Pi settings, and no pin or declaration
+			// layer, pin or not. This slice stores the binding only: launch routing
+			// is unchanged until slice 2 (gentle-shell#1558) resolves the binding
+			// at launch. Refreshing the binding means selecting again.
+			const sessionId = ctx.sessionManager?.getSessionId?.();
+			if (typeof sessionId !== "string" || sessionId.length === 0) {
+				ctx.ui.notify(
+					`el Gentleman cannot bind profile "${result.name}" to this session: no parent session id is available here. Set it as the global default with a instead.`,
+					"warning",
+				);
+				return file;
+			}
+			bindSessionProfile(sessionId, result.name, normalizeModelConfig(file.profiles[result.name]) ?? {});
+			ctx.ui.notify(
+				`el Gentleman bound profile "${result.name}" to this session — shown as "${result.name} (session)". The binding is stored for this session; launch routing is unchanged. Nothing was written: the global routing, pins, and materialized stores are untouched. Set as global default with a.`,
+				"info",
+			);
+			return file;
+		}
+		case "apply-global": {
 			if (!hasOwnProfile(file.profiles, result.name)) return file;
 			// A pinned repository resolves its subagent routing from the profile at launch,
 			// so a global apply would move global state this repository never reads. When a
@@ -4688,6 +4730,7 @@ async function runProfilesPanelAction(
 	}
 }
 
+/** `/gentle:profiles`: seed or open the store, then loop the panel over one action at a time until it closes. */
 async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): Promise<void> {
 	const path = profilesFilePath(gentleAiConfigHome());
 	const read = readProfilesFileResult(path);
@@ -4729,12 +4772,15 @@ async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): 
 		return next;
 	};
 	let selectedName: string | undefined;
+	const sessionBoundName = () => readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.name;
 	let result = await showProfilesPanel(
 		ctx,
 		file,
 		await readEffectiveModelConfigAsync(ctx.cwd),
 		selectedName,
 		saveSnapshot,
+		undefined,
+		sessionBoundName(),
 	);
 	while (result.type !== "close") {
 		const report: ProfilesPanelReport = {};
@@ -4747,6 +4793,7 @@ async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): 
 			selectedName,
 			saveSnapshot,
 			report.status,
+			sessionBoundName(),
 		);
 	}
 }
@@ -6308,6 +6355,11 @@ const processRetainedNativeStatusSelections = new Map<PendingReviewConsentSessio
 // named-agent start increments the depth, a matching end decrements it,
 // and a fresh primary-loop start resets it to 0.
 const processAgentEndSubagentDepth = new Map<PendingReviewConsentSessionKey, number>();
+
+// gentle-shell#1064 slice 1: the parent-session profile binding store lives in
+// lib/session-profile-binding.ts (in-process, keyed by parent session id). The
+// panel binds on Enter; the launch resolver, the shell status reader, and the
+// usage provider scope read the same store through the lib.
 
 // gentle-pi#677: gentle-ai#4309 owns anonymous usage telemetry end to end;
 // Pi only nudges it once per process. This is a plain process-lifetime
@@ -9149,6 +9201,7 @@ export const __testing = {
 	parseReviewControllerParameters,
 	parseReviewCaptureParameters,
 	parseReviewCaptureGroupParameters,
+	runProfilesPanelAction,
 	resolveReviewModeGate,
 	readEffectiveModelConfig,
 	readEffectiveModelConfigAsync,
