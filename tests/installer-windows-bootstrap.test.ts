@@ -328,6 +328,28 @@ test("success removes only the exact claimed marked root and never fails the ins
 	assert.doesNotMatch(stage, /Remove-Item/, "Windows PowerShell 5.1 Remove-Item may follow links");
 	assert.match(stage, /could not be removed: ' \+ \$env:GENTLE_BOOTSTRAP_TOOLS/);
 });
+
+// Fixed, non-sensitive claim diagnostics: a code names the failed check, never a
+// path, SID or exception text. Unlisted exceptions report the active step.
+const claimReasons = ["policy", "path-mismatch", "home-owner", "ancestor-walk", "ancestor-reparse", "ancestor-owner", "acl-mask",
+	"create", "set-acl", "protected-dacl", "private-owner", "private-ace", "marker"];
+const claimMessage = "Bootstrap: private storage ACL/reparse/ownership claim failed or policy denied it.";
+test("claim reports one fixed non-sensitive reason code per check beside the unchanged message", () => {
+	const stage = cmdStage(stageMarkers.claim);
+	const thrown = [...stage.matchAll(/throw '([^']*)'/g)].map((match) => match[1]);
+	const steps = [...stage.matchAll(/\$step = '([^']*)'/g)].map((match) => match[1]);
+	for (const code of [...thrown, ...steps]) assert.ok(claimReasons.includes(code), `unlisted claim reason: ${code}`);
+	assert.deepEqual([...new Set([...thrown, ...steps])].sort(), [...claimReasons].sort(), "every reason is reachable");
+	assert.ok(stage.indexOf("$step = 'policy'") < stage.indexOf("try {"), "the step exists before any check can fail");
+	const allowlist = stage.match(/\$_\.Exception\.Message -cmatch '\^\(([a-z|-]+)\)\$'\) \{ \$reason = \$_\.Exception\.Message \}/);
+	assert.ok(allowlist, "only allowlisted codes are copied from an exception");
+	assert.deepEqual(allowlist[1].split("|").sort(), [...claimReasons].sort());
+	assert.match(stage, /\$reason = \$step;/);
+	assert.ok(stage.includes(`[Console]::Error.WriteLine('${claimMessage} Reason: ' + $reason)`), "user-facing message is unchanged; the code is appended");
+	// Check order is part of the contract: the owner/ACL walk precedes the claim.
+	const order = ["path-mismatch", "home-owner", "ancestor-walk", "create", "set-acl", "marker"].map((code) => stage.indexOf(`'${code}'`));
+	assert.deepEqual(order, [...order].sort((left, right) => left - right));
+});
 const psRecordLine = '  "$record = [Diagnostics.Process]::GetCurrentProcess(); [IO.File]::AppendAllText($env:GENTLE_FIXTURE_RECORDS,([string]$record.Id + [char]124 + [string]$record.StartTime.ToUniversalTime().Ticks + [Environment]::NewLine));" ^';
 function observeStage(stage: string) {
 	const lines = stage.split("\n");
@@ -444,10 +466,18 @@ async function nativeCmd(root: string, stages: string[], env: NodeJS.ProcessEnv 
 	return result;
 }
 function assertNative(result: NativeResult, status: number) {
-	assert.equal(result.guardKilled, false, "production fragment must return before the independent outer guard");
-	assert.equal(result.status, status, result.stderr);
-	if (status === 0) assert.match(result.stdout, /fixture-sentinel/);
-	else assert.doesNotMatch(result.stdout, /fixture-sentinel/);
+	const evidence = `stderr: ${result.stderr.slice(0, 4000)}`;
+	assert.equal(result.guardKilled, false, `production fragment must return before the independent outer guard; ${evidence}`);
+	assert.equal(result.status, status, evidence);
+	if (status === 0) assert.match(result.stdout, /fixture-sentinel/, evidence);
+	else assert.doesNotMatch(result.stdout, /fixture-sentinel/, evidence);
+}
+// A rejected claim must fail for the intended check, not an earlier unrelated one.
+function assertClaimRejected(result: NativeResult, reason?: string) {
+	assertNative(result, 1);
+	const reported = result.stderr.match(/claim failed or policy denied it\. Reason: ([a-z-]+)/)?.[1];
+	assert.ok(reported && claimReasons.includes(reported), `fixed claim reason expected; stderr: ${result.stderr.slice(0, 4000)}`);
+	if (reason) assert.equal(reported, reason, `stderr: ${result.stderr.slice(0, 4000)}`);
 }
 
 // Fixture ACL mutations are restricted to NEW owned descendants, never operator
@@ -470,7 +500,7 @@ test("native Windows: production owned claim/check, ACL depth and collision pres
 		assertNative(await nativeCmd(f.root, [cmdStage(stageMarkers.claim)], env), 0);
 		verifyWindowsStorage(env.GENTLE_BOOTSTRAP_TOOLS, env);
 		writeFileSync(join(env.GENTLE_BOOTSTRAP_TOOLS, "unrelated"), "preserve");
-		assertNative(await nativeCmd(f.root, [cmdStage(stageMarkers.claim)], env), 1);
+		assertClaimRejected(await nativeCmd(f.root, [cmdStage(stageMarkers.claim)], env), "create");
 		assert.equal(readFileSync(join(env.GENTLE_BOOTSTRAP_TOOLS, "unrelated"), "utf8"), "preserve");
 		for (const rights of [4, 2, 16, 256, 64, 65536, 262144, 524288]) {
 			const ancestor = join(env.GENTLE_BOOTSTRAP_TOOLS, `ancestor-${rights}`);
@@ -487,7 +517,7 @@ test("native Windows: production owned claim/check, ACL depth and collision pres
 				assertNative(await nativeCmd(f.root, [fixtureAclSetup], { ...env, GENTLE_FIXTURE_ACL_TARGET: parent, GENTLE_FIXTURE_RIGHTS: "4" }), 0);
 				assert.throws(() => verifyWindowsStorage(target, env));
 				const claimEnv = { ...env, LOCALAPPDATA: parent, GENTLE_BOOTSTRAP_TOOLS: join(parent, "new-claim") };
-				assertNative(await nativeCmd(f.root, [cmdStage(stageMarkers.claim)], claimEnv), 1);
+				assertClaimRejected(await nativeCmd(f.root, [cmdStage(stageMarkers.claim)], claimEnv), "acl-mask");
 				assert.equal(existsSync(claimEnv.GENTLE_BOOTSTRAP_TOOLS), false);
 			}
 		}
@@ -509,7 +539,7 @@ test("native Windows: production checks reject an owned fixture junction without
 			throw error;
 		}
 		assert.throws(() => verifyWindowsStorage(junction, env));
-		assertNative(await nativeCmd(f.root, [cmdStage(stageMarkers.claim)], { ...env, LOCALAPPDATA: junction, GENTLE_BOOTSTRAP_TOOLS: join(junction, "new-claim") }), 1);
+		assertClaimRejected(await nativeCmd(f.root, [cmdStage(stageMarkers.claim)], { ...env, LOCALAPPDATA: junction, GENTLE_BOOTSTRAP_TOOLS: join(junction, "new-claim") }));
 		assert.equal(readFileSync(join(target, "unrelated"), "utf8"), "preserve");
 		assert.equal(existsSync(join(target, "new-claim")), false);
 	} finally { f.cleanup(); }

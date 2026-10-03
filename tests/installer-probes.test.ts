@@ -358,7 +358,9 @@ test("host fs adapter is read-only and bounded", async () => {
 		assert.equal(await fs.writable(dir), true);
 		// chmod 0o500 does not make a Windows directory read-only; root bypasses mode bits.
 		if (process.platform !== "win32" && process.getuid?.() !== 0) assert.equal(await fs.writable(join(dir, "locked")), false);
-		assert.equal(await fs.realpath(join(dir, ".", "small.txt")), realpathSync(file));
+		// The adapter uses the native realpath: Windows runners may expose %TEMP% as an
+		// 8.3 short path (RUNNER~1) that only the native call expands to its long form.
+		assert.equal(await fs.realpath(join(dir, ".", "small.txt")), realpathSync.native(file));
 	} finally {
 		chmodSync(join(dir, "locked"), 0o700);
 		rmSync(dir, { recursive: true, force: true });

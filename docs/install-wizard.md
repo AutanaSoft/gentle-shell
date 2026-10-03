@@ -933,6 +933,38 @@ reject managed/nonstandard layouts rather than relax security. They do not
 claim protection from a malicious process running as the same principal or an
 administrator, nor eliminate same-principal time-of-check/time-of-use races.
 
+### Claim reason codes and 8.3 short paths
+
+A rejected storage claim keeps its user-facing message and appends one fixed
+code naming the failed check, for example `... policy denied it. Reason: home-owner`.
+The code never contains a path, SID or exception text. An exception that does
+not carry a listed code reports the step that was running.
+
+| Code | Failed check |
+|------|--------------|
+| `policy` | PowerShell is not in FullLanguage mode, or the current identity is unavailable. |
+| `path-mismatch` | `%LOCALAPPDATA%` is not rooted, the target is UNC, or the target's parent is not exactly `%LOCALAPPDATA%`. |
+| `home-owner` | `%LOCALAPPDATA%` is not owned by the invoking SID, or its ACL is unreadable. |
+| `ancestor-walk` | An ancestor could not be read during the walk. |
+| `ancestor-reparse` | An ancestor is not a directory or is a reparse point. |
+| `ancestor-owner` | An ancestor owner is not the invoking SID, SYSTEM, Administrators or TrustedInstaller. |
+| `acl-mask` | An untrusted effective allow ACE exceeds the depth's allowed rights mask. |
+| `create` | The new directory could not be created, including an existing destination. |
+| `set-acl` | The private DACL could not be written or read back. |
+| `protected-dacl` | The readback DACL is not protected from inheritance. |
+| `private-owner` | The readback owner is not the invoking SID. |
+| `private-ace` | The readback holds a deny ACE or a SID other than the invoking SID, SYSTEM or Administrators. |
+| `marker` | The ownership marker could not be written. |
+
+The path comparison is insensitive to 8.3 short names by construction: both
+sides derive from the same `%LOCALAPPDATA%` string and pass through
+`[IO.Path]::GetFullPath`, so a short `%LOCALAPPDATA%` or `%TEMP%` is never
+compared with a long canonical form. The host probe adapter's `realpath` is the
+native call and returns the long form, for example `C:\Users\runneradmin\...`
+for a `%TEMP%` exposed as `C:\Users\RUNNER~1\...`; tests compare it with
+`realpathSync.native`, not the JavaScript `realpathSync`, which keeps short
+names.
+
 ### Implemented fixtures versus missing execution evidence
 
 The native gates now contain runnable assertions, not empty or always-skipped

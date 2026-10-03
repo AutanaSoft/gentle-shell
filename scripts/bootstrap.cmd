@@ -28,33 +28,36 @@ rem No security changes outside this new prerequisite directory.
 rem Strict target/parent rights: ReadAndExecute + Synchronize (0x1200a9).
 rem Distant existing ancestors additionally permit sibling CreateDirectories (4).
 rem WriteData/reparse-affecting writes, deletion and ACL/owner changes still fail.
+rem Failures append one fixed reason code (the failed check), never path/SID/error text.
 "%GENTLE_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
-  "& { $claimed = $false; try { $ErrorActionPreference = 'Stop';" ^
-  "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'Managed policy constraint' };" ^
+  "& { $claimed = $false; $step = 'policy'; try { $ErrorActionPreference = 'Stop';" ^
+  "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'policy' };" ^
   "$me = [Security.Principal.WindowsIdentity]::GetCurrent().User;" ^
   "$trusted = @($me.Value,'S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464');" ^
-  "$tools = [IO.Path]::GetFullPath($env:GENTLE_BOOTSTRAP_TOOLS); $path = [IO.Directory]::GetParent($tools).FullName;" ^
-  "if (-not [IO.Path]::IsPathRooted($env:LOCALAPPDATA) -or $tools.StartsWith('\\') -or $path -ne [IO.Path]::GetFullPath($env:LOCALAPPDATA)) { throw 'Unsafe storage path' };" ^
+  "$step = 'path-mismatch'; $tools = [IO.Path]::GetFullPath($env:GENTLE_BOOTSTRAP_TOOLS); $path = [IO.Directory]::GetParent($tools).FullName;" ^
+  "if (-not [IO.Path]::IsPathRooted($env:LOCALAPPDATA) -or $tools.StartsWith('\\') -or $path -ne [IO.Path]::GetFullPath($env:LOCALAPPDATA)) { throw 'path-mismatch' };" ^
   "$depth = 1;" ^
-  "$homeAcl = Get-Acl -LiteralPath $path; if ($homeAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $me.Value) { throw 'Unknown per-user owner' };" ^
-  "while ($path) {" ^
-  "  $item = Get-Item -LiteralPath $path -Force; if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Unsafe ancestor' };" ^
-  "  $acl = Get-Acl -LiteralPath $path; if ($trusted -notcontains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value) { throw 'Unknown ancestor owner' };" ^
+  "$step = 'home-owner'; $homeAcl = Get-Acl -LiteralPath $path; if ($homeAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $me.Value) { throw 'home-owner' };" ^
+  "$step = 'ancestor-walk'; while ($path) {" ^
+  "  $item = Get-Item -LiteralPath $path -Force; if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'ancestor-reparse' };" ^
+  "  $acl = Get-Acl -LiteralPath $path; if ($trusted -notcontains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value) { throw 'ancestor-owner' };" ^
   "  $allowedRights = 0x1200a9; if ($depth -ge 2) { $allowedRights = 0x1200ad };" ^
   "  foreach ($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) {" ^
-  "    if ($rule.AccessControlType -eq 'Allow' -and -not ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and ([long]$rule.FileSystemRights -band (-bnot [long]$allowedRights)) -and $trusted -notcontains $rule.IdentityReference.Value) { throw 'Unsafe ancestor ACL' };" ^
+  "    if ($rule.AccessControlType -eq 'Allow' -and -not ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and ([long]$rule.FileSystemRights -band (-bnot [long]$allowedRights)) -and $trusted -notcontains $rule.IdentityReference.Value) { throw 'acl-mask' };" ^
   "  }; $parent = [IO.Directory]::GetParent($path); if ($null -eq $parent) { break }; $path = $parent.FullName; $depth++;" ^
   "};" ^
-  "$null = New-Item -ItemType Directory -Path $tools; $claimed = $true;" ^
-  "$acl = New-Object Security.AccessControl.DirectorySecurity; $acl.SetOwner($me); $acl.SetAccessRuleProtection($true,$false);" ^
+  "$step = 'create'; $null = New-Item -ItemType Directory -Path $tools; $claimed = $true;" ^
+  "$step = 'set-acl'; $acl = New-Object Security.AccessControl.DirectorySecurity; $acl.SetOwner($me); $acl.SetAccessRuleProtection($true,$false);" ^
   "foreach ($sid in @($me.Value,'S-1-5-18','S-1-5-32-544')) {" ^
   "  $identity = New-Object Security.Principal.SecurityIdentifier($sid);" ^
   "  $rule = New-Object Security.AccessControl.FileSystemAccessRule($identity,'FullControl','ContainerInherit,ObjectInherit','None','Allow'); $acl.AddAccessRule($rule);" ^
   "}; Set-Acl -LiteralPath $tools -AclObject $acl;" ^
-  "$verified = Get-Acl -LiteralPath $tools; if (-not $verified.AreAccessRulesProtected -or $verified.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $me.Value) { throw 'Private ACL rejected' };" ^
-  "foreach ($rule in $verified.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) { if ($rule.AccessControlType -ne 'Allow' -or @($me.Value,'S-1-5-18','S-1-5-32-544') -notcontains $rule.IdentityReference.Value) { throw 'Private ACL readback rejected' } };" ^
-  "$null = New-Item -ItemType File -Path (Join-Path $tools '.bootstrap-owned') -Value 'gentle-pi prerequisite tooling only';" ^
-  "} catch { if ($claimed) { Remove-Item -LiteralPath $env:GENTLE_BOOTSTRAP_TOOLS -Recurse -Force -ErrorAction SilentlyContinue }; [Console]::Error.WriteLine('Bootstrap: private storage ACL/reparse/ownership claim failed or policy denied it.'); exit 1 } }"
+  "$verified = Get-Acl -LiteralPath $tools; if (-not $verified.AreAccessRulesProtected) { throw 'protected-dacl' };" ^
+  "if ($verified.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $me.Value) { throw 'private-owner' };" ^
+  "foreach ($rule in $verified.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) { if ($rule.AccessControlType -ne 'Allow' -or @($me.Value,'S-1-5-18','S-1-5-32-544') -notcontains $rule.IdentityReference.Value) { throw 'private-ace' } };" ^
+  "$step = 'marker'; $null = New-Item -ItemType File -Path (Join-Path $tools '.bootstrap-owned') -Value 'gentle-pi prerequisite tooling only';" ^
+  "} catch { $reason = $step; if ($_.Exception.Message -cmatch '^(policy|path-mismatch|home-owner|ancestor-walk|ancestor-reparse|ancestor-owner|acl-mask|create|set-acl|protected-dacl|private-owner|private-ace|marker)$') { $reason = $_.Exception.Message };" ^
+  "if ($claimed) { Remove-Item -LiteralPath $env:GENTLE_BOOTSTRAP_TOOLS -Recurse -Force -ErrorAction SilentlyContinue }; [Console]::Error.WriteLine('Bootstrap: private storage ACL/reparse/ownership claim failed or policy denied it. Reason: ' + $reason); exit 1 } }"
 if errorlevel 1 goto failed
 set "GENTLE_BOOTSTRAP_OWNED=1"
 
