@@ -361,7 +361,7 @@ test("claim reports one fixed non-sensitive reason code per check beside the unc
 // component role (target, immediate parent or distant ancestor), never the path.
 const probeRoles = ["target", "parent", "ancestor"];
 const probeWalkChecks = ["reparse", "owner", "acl-mask"];
-const probeRejections = ["policy", "unsafe-target", "unsafe-path", ...probeRoles.flatMap((role) => probeWalkChecks.map((check) => `${role}-${check}`)),
+const probeRejections = ["policy", "missing-target", "unsafe-target", "unsafe-path", ...probeRoles.flatMap((role) => probeWalkChecks.map((check) => `${role}-${check}`)),
 	"no-start", "deadline", "output-limit", "exit-code", "version-format", "engine", "acquired-version"];
 const probeSteps = ["policy", "target", "acl-walk", "start", "drain", "version"];
 const probeMessage = "Bootstrap: Node version, execution, deadline, output bound or policy check failed; refusing replacement.";
@@ -396,6 +396,24 @@ test("Node probe reports one fixed non-sensitive reason code per check beside th
 // Started from PowerShell 7, the inherited path finds a Core-only copy and every
 // cmdlet of that module fails, so ACL work uses .NET Framework APIs directly.
 const securityModuleCmdlets = /\b(?:Get-Acl|Set-Acl|Get-AuthenticodeSignature|Set-AuthenticodeSignature|ConvertTo-SecureString|ConvertFrom-SecureString|Get-ExecutionPolicy|Set-ExecutionPolicy|Get-PfxCertificate|Get-CmsMessage|Protect-CmsMessage|Unprotect-CmsMessage|New-FileCatalog|Test-FileCatalog|Get-Credential)\b/i;
+// The Node target record carries a path that may hold non-ASCII text (a user
+// profile, the Unicode fixture root). Windows PowerShell 5.1 writes New-Item -Value
+// as BOM-less UTF-8 but reads Get-Content as the ANSI code page, so the record is
+// written and read only through .NET with explicit UTF-8, never through cmdlets.
+test("Node target record round-trips as explicit UTF-8 and an absent or empty record is a coded rejection", () => {
+	const batch = readFileSync(new URL("../scripts/bootstrap.cmd", import.meta.url), "utf8");
+	assert.doesNotMatch(batch, /New-Item[^;"]*'\.node-target'/, "no cmdlet-encoded record write");
+	assert.doesNotMatch(batch, /Get-Content[^;"]*'\.node-target'/, "no ANSI-default record read");
+	const write = /\$bytes = \(New-Object Text\.UTF8Encoding\(\$false\)\)\.GetBytes\(\$[a-zA-Z.]+\); \$record = \[IO\.File\]::Open\(\(Join-Path \$[a-zA-Z_:]+ '\.node-target'\),\[IO\.FileMode\]::CreateNew,\[IO\.FileAccess\]::Write,\[IO\.FileShare\]::None\); try \{ \$record\.Write\(\$bytes,0,\$bytes\.Length\) \} finally \{ \$record\.Dispose\(\) \}/;
+	for (const marker of [stageMarkers.resolve, stageMarkers.zip]) assert.match(cmdStage(marker), write, marker);
+	const read = /\[IO\.File\]::ReadAllText\(\$record,\[Text\.Encoding\]::UTF8\)\.TrimEnd\(\[char\]13,\[char\]10\)/;
+	for (const marker of [stageMarkers.probe, stageMarkers.launch]) assert.match(cmdStage(marker), read, marker);
+	const probe = cmdStage(stageMarkers.probe);
+	assert.match(probe, /\$step = 'target'; [^"]*if \(-not \[IO\.File\]::Exists\(\$record\)\) \{ throw 'missing-target' \};/, "an absent record is an intentional rejection");
+	assert.match(probe, /if \(-not \$node\) \{ throw 'missing-target' \};/, "an empty record is an intentional rejection, not a null-method exception");
+	assert.ok(probe.indexOf("throw 'missing-target' };") < probe.indexOf("$item = Get-Item -LiteralPath $node"), "the record is proven before the target is inspected");
+});
+
 test("production and fixture PowerShell never depend on autoloading Microsoft.PowerShell.Security", () => {
 	const batch = readFileSync(new URL("../scripts/bootstrap.cmd", import.meta.url), "utf8");
 	const sources = { batch, aclCheck: productionAclSources()[2], fixtureAclSetup, fixtureOwnerSetup, guardCommand, processPrimitive: processPrimitive() };
@@ -782,6 +800,8 @@ test("native Windows: complete local sentinel composes production entry and late
 	const f = await ownedNativeFixture();
 	try {
 		assert.equal(compatibleEngine(windowsNodeFloor, process.versions.node), true, "fixture runner needs the supported Node floor");
+		// The non-ASCII root makes the .node-target record round-trip a real encoding check.
+		assert.match(f.root, /[^\x00-\x7f]/);
 		const scripts = join(f.root, "scripts"); const bin = join(f.root, "bin"); const commands = join(f.root, "commands");
 		const nodeDir = join(f.root, "fixture-node"); const fixtureNode = join(nodeDir, "node.exe");
 		mkdirSync(scripts); mkdirSync(bin); mkdirSync(commands); mkdirSync(nodeDir);

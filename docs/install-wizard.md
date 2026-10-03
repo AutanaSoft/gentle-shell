@@ -976,6 +976,7 @@ never the path.
 | Code | Rejected check |
 |------|----------------|
 | `policy` | PowerShell is not in FullLanguage mode. |
+| `missing-target` | The `.node-target` record is absent, not a file, or empty. |
 | `unsafe-target` | The recorded Node target is a directory or a reparse point. |
 | `unsafe-path` | The recorded Node target is not rooted, or is UNC. |
 | `<role>-reparse` | A walked component is a reparse point. |
@@ -996,6 +997,17 @@ application-control denial while starting the process), `unexpected-drain`
 (reading the pipes) or `unexpected-version` (reading the repository metadata).
 A child that cannot be confirmed terminated keeps its separate
 `direct-child termination could not be confirmed` message.
+
+The `.node-target` record holds a full path, which may contain non-ASCII text,
+for example a user profile such as `C:\Users\José` or the Unicode native
+fixture root. Windows PowerShell 5.1 writes `New-Item -Value` content as
+BOM-less UTF-8 but reads `Get-Content` without a BOM as the ANSI code page, so
+such a path came back corrupted and the probe failed with `unexpected-target`.
+The record is now created no-clobber with `[IO.File]::Open(..., CreateNew)` and
+explicit BOM-less UTF-8 bytes, and the probe and launch stages read it with
+`[IO.File]::ReadAllText(path, [Text.Encoding]::UTF8)`. The other bootstrap
+records (`.bootstrap-owned`, `.node-stem`) hold fixed ASCII text and keep their
+cmdlets.
 
 ACLs are read and written with .NET Framework APIs
 (`[IO.Directory]::GetAccessControl`, `[IO.File]::GetAccessControl`,

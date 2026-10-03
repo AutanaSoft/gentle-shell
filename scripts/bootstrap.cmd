@@ -69,7 +69,7 @@ rem Absence alone authorizes pinned acquisition; incompatibility never replaces.
   "& { try { $ErrorActionPreference = 'Stop';" ^
   "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'Managed policy constraint' };" ^
   "$command = $null; try { $command = Get-Command node.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1 } catch [Management.Automation.CommandNotFoundException] { $command = $null };" ^
-  "if ($null -ne $command) { $null = New-Item -ItemType File -Path (Join-Path $env:GENTLE_BOOTSTRAP_TOOLS '.node-target') -Value $command.Source };" ^
+  "if ($null -ne $command) { $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes($command.Source); $record = [IO.File]::Open((Join-Path $env:GENTLE_BOOTSTRAP_TOOLS '.node-target'),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None); try { $record.Write($bytes,0,$bytes.Length) } finally { $record.Dispose() } };" ^
   "} catch { [Console]::Error.WriteLine('Bootstrap: existing Node resolution failed or policy denied it.'); exit 1 } }"
 if errorlevel 1 goto failed
 
@@ -128,7 +128,7 @@ rem Reject links, Windows device/ADS names, traversal and case aliases.
   "  $destination = Join-Path $tools 'node'; $null = New-Item -ItemType Directory -Path $destination;" ^
   "  $target = Join-Path $destination 'node.exe'; $output = [IO.File]::Open($target,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None); $input = $selected.Open();" ^
   "  try { $input.CopyTo($output) } finally { $input.Dispose(); $output.Dispose() };" ^
-  "  $null = New-Item -ItemType File -Path (Join-Path $tools '.node-target') -Value $target;" ^
+  "  $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes($target); $record = [IO.File]::Open((Join-Path $tools '.node-target'),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None); try { $record.Write($bytes,0,$bytes.Length) } finally { $record.Dispose() };" ^
   "} finally { $zip.Dispose() };" ^
   "} catch { [Console]::Error.WriteLine('Bootstrap: Node ZIP namespace, extraction or policy check failed.'); exit 1 } }"
 if errorlevel 1 goto failed
@@ -136,10 +136,12 @@ if errorlevel 1 goto failed
 rem Production direct non-forking Node probe: 10s deadline and combined 1-MiB cap.
 rem Drain both pipes asynchronously; valid output followed by a hang still fails.
 rem Failures append one fixed reason code; walk codes name the component role only.
+rem .node-target holds a possibly non-ASCII path: written and read as explicit UTF-8.
 "%GENTLE_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
   "& { $child = $null; $started = $false; $step = 'policy'; try { $ErrorActionPreference = 'Stop';" ^
   "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'policy' };" ^
-  "$step = 'target'; $tools = $env:GENTLE_BOOTSTRAP_TOOLS; $node = (Get-Content -LiteralPath (Join-Path $tools '.node-target') -Raw).TrimEnd([char]13,[char]10);" ^
+  "$step = 'target'; $tools = $env:GENTLE_BOOTSTRAP_TOOLS; $record = Join-Path $tools '.node-target'; if (-not [IO.File]::Exists($record)) { throw 'missing-target' };" ^
+  "$node = [IO.File]::ReadAllText($record,[Text.Encoding]::UTF8).TrimEnd([char]13,[char]10); if (-not $node) { throw 'missing-target' };" ^
   "$item = Get-Item -LiteralPath $node -Force; if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'unsafe-target' };" ^
   "if (-not [IO.Path]::IsPathRooted($node) -or $node.StartsWith('\\')) { throw 'unsafe-path' };" ^
   "$me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $trusted = @($me,'S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'); $path = $node;" ^
@@ -171,7 +173,7 @@ rem Failures append one fixed reason code; walk codes name the component role on
   "$actual = [Version]$version.Substring(1); $metadata = Get-Content -LiteralPath (Join-Path $env:GENTLE_BOOTSTRAP_BUNDLE 'package.json') -Raw | ConvertFrom-Json;" ^
   "if ($actual -lt [Version]'24.3.0' -or $actual -lt [Version]$metadata.engines.node.Substring(2)) { throw 'engine' };" ^
   "if ((Test-Path -LiteralPath (Join-Path $tools '.node-stem')) -and $version -ne 'v24.21.0') { throw 'acquired-version' };" ^
-  "} catch { $reason = 'unexpected-' + $step; if ($_.Exception.Message -cmatch '^(policy|unsafe-target|unsafe-path|(target|parent|ancestor)-(reparse|owner|acl-mask)|no-start|deadline|output-limit|exit-code|version-format|engine|acquired-version)$') { $reason = $_.Exception.Message };" ^
+  "} catch { $reason = 'unexpected-' + $step; if ($_.Exception.Message -cmatch '^(policy|missing-target|unsafe-target|unsafe-path|(target|parent|ancestor)-(reparse|owner|acl-mask)|no-start|deadline|output-limit|exit-code|version-format|engine|acquired-version)$') { $reason = $_.Exception.Message };" ^
   "[Console]::Error.WriteLine('Bootstrap: Node version, execution, deadline, output bound or policy check failed; refusing replacement. Reason: ' + $reason); exit 1 }" ^
   "finally { try { if ($child) { if ($started -and -not $child.HasExited) { $child.Kill(); if (-not $child.WaitForExit(1000)) { throw 'Child termination unconfirmed' } }; $child.Dispose() } } catch { [Console]::Error.WriteLine('Bootstrap: direct-child termination could not be confirmed.'); exit 1 } } }"
 if errorlevel 1 goto failed
@@ -181,7 +183,7 @@ rem Interactive wizard duration is intentionally unbounded. Only child PATH chan
 "%GENTLE_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
   "& { try { $ErrorActionPreference = 'Stop';" ^
   "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'Managed policy constraint' };" ^
-  "$tools = $env:GENTLE_BOOTSTRAP_TOOLS; $node = (Get-Content -LiteralPath (Join-Path $tools '.node-target') -Raw).TrimEnd([char]13,[char]10);" ^
+  "$tools = $env:GENTLE_BOOTSTRAP_TOOLS; $record = Join-Path $tools '.node-target'; $node = [IO.File]::ReadAllText($record,[Text.Encoding]::UTF8).TrimEnd([char]13,[char]10);" ^
   "$env:PATH = [IO.Path]::GetDirectoryName($node) + ';' + $env:PATH;" ^
   "$helper = Join-Path $env:GENTLE_BOOTSTRAP_BUNDLE 'scripts/installer-downloads.mjs';" ^
   "if (Test-Path -LiteralPath (Join-Path $tools 'node.zip')) { Remove-Item -LiteralPath (Join-Path $tools 'node.zip') };" ^
