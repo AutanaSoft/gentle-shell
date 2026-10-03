@@ -219,7 +219,7 @@ In the isolated Gentle Shell home, `settings.json` does not declare gentle-pi; t
 
 - Children skip parent-only startup work: package asset install, model configuration, the skill registry, and history capture.
 - A guardrails command classed `confirm` becomes a child question like any other above: a task-mode child asks the parent user and waits for the answer; a background child's question is dismissed.
-- A tool the agent requests in `--tools` that does not exist in the child adds a task note, for example `gentle-agents: requested tools missing in child: codegraph`. MCP tools (`mcp__*`) are not checked because they register later.
+- A tool the agent requests in `--tools` that does not exist in the child when its first prompt starts adds a task note, for example `gentle-agents: requested tools missing in child: codegraph`. MCP tools (`mcp__*`) are not checked because they register later.
 - Without the signal, for example after a manual `pi -e <package>` launch, children fall back to `extensions/child-context.ts` and `extensions/child-safety.ts` only, with no missing-tool note. That fallback list is frozen; new child behavior ships in the package.
 
 - `subagent_list_agents`, `subagent_run` (`agent`, `task`, `label?`, `context?`, `workspace_root?` or `repository_root?`, `mode?` task or background), `subagent_status`, `subagent_result`, `subagent_list_tasks`, `subagent_reply` (one current-session reply to a live child query), `subagent_cancel`, `subagent_send_message` (steer a running child), `subagent_continue` (resume a finished task in its own session).
