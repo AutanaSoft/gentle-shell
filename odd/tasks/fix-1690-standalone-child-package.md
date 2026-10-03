@@ -37,6 +37,7 @@ barbatdev on #1690 (2026-10-03 04:19Z):
 
 - [x] T1 Hook audit: classify every gentle-pi package hook that would newly run in a child (session_start, before_agent_start, tool_call, timers, UI, registrations) as must-run, must-skip or harmless. Record the table in this document. Route: delegated read-only (`gentle-ai-explore`, task mus95p0g-1-r2m0); the parent spot-checked `hasUI` in the Pi rpc loader. See "Child hook audit". Commit `5848fb80`.
 - [x] T2 Child guards for the must-skip items in "Child hook audit" (gentle-ai session_start writes, skill-registry, history, pi-pretty fallback, optional startup-banner), with tests. Route: delegated writer (musez9uu-2-2u6i), verified by `gentle-ai-verify` (musfh6tb-3-entu). The child also skips the review-permission revoke/refresh: the grant is host-only (`lib/review-session-standing-permission.ts:162`) and the child relay is created at load. Commit: see Evidence.
+- [ ] T2b Review follow-ups from the T2 RDD review (non-blocking): (a) WARNING `tests/gentle-ai-child-guards.test.ts:83-93`: the "keeps local resets" test does not assert that the child-local resets still run; add a real assertion. (b) SUGGESTION `extensions/gentle-ai.ts:9681-9686`: the early return skips any session state initialized further down; wrap only the parent steps in the guard, or assert the child state explicitly. Route: small writer task.
 - [ ] T3 Launcher injection signal: `buildPiInvocation` exports the injected extension set (and the takeover flag) to the parent env for the three cases, with tests. Route: per the ladder.
 - [ ] T4 Runner forwarding: gentle-agents builds the child extension args from that signal (takeover set with `--no-extensions`; nothing when declared) and drops the curated entries when the package is forwarded, with tests. Route: per the ladder.
 - [ ] T5 Move the `child-context.ts`/`child-safety.ts` behavior into the loaded package, gated on `GENTLE_PI_AGENTS_CHILD`, with no double registration, with tests. Route: per the ladder.
@@ -75,6 +76,19 @@ The gentle-ai `tool_call` guardrails, review relay handshake and review tools; g
 
 gentle-shell UI/timers, the gentle-agents host, gentle-todo, runtime-metrics, gentle-stats, resume-hint, ask-user-*, quiet-tools, and the gentle-ai `before_agent_start`/`agent_end` (child-guarded).
 
+## Working layout
+
+- T1-T2 live on `fix/1690-standalone-child-package` (worktree `gentle-shell-worktrees/fix-1690-standalone-child-package`). Its RDD review of `a67bb7f5` runs from a separate native Claude Code session, and nothing else writes in that worktree while the review is open.
+- T3 onward continue on `fix/1690-child-package-forwarding` (worktree `gentle-shell-worktrees/fix-1690-child-package-forwarding`), stacked on `a67bb7f5`. If the review adds a correction commit, rebase this branch onto it before delivery.
+
+## Pending follow-ups
+
+- [ ] **Report upstream: `gentle_review` unreachable from Pi over pi-claude-bridge.** Target: pi-claude-bridge (elidickinson) or gentle-shell; decide after confirming the cause.
+  - Symptom (2026-10-03, Gentle Shell standalone, Pi 1.0.0, pi-claude-bridge 0.9.0, model Opus 5.5): the gentle-pi tool `gentle_review` (registered unconditionally, `extensions/gentle-ai.ts:9526`) never reaches the model. `gentle_review_capture`, `gentle_review_capture_group` and `gentle_review_scope` do. The model's own instructions say some tools are deferred, and a SessionStart hook asks it to run `ToolSearch`, which it does not have.
+  - Hypothesis (not verified): the bridge provider path starts Claude Code with `tools: []` (`pi-claude-bridge/src/index.ts:1960`, comments at :136 and :918), so the built-in `ToolSearch` is unavailable, while Claude Code still defers part of the MCP tool set. Deferred tools then become unreachable. `ToolSearch` is also always blocked in AskClaude mode (`src/index.ts:168`).
+  - Impact: RDD inspect/START cannot run from a Pi session on this provider. Workaround in use: run the reviews from a native Claude Code session.
+  - To confirm before filing: restart with `ENABLE_TOOL_SEARCH=false` (all tools sent upfront) and check that `gentle_review` appears; check whether the deferral depends on tool count or schema size; search existing bridge issues (related: #153, Pi 1.0 mcp_servers).
+
 ## Acceptance criteria
 
 - An isolated standalone child exposes the same package commands and tools as a regular gentle-pi child.
@@ -85,4 +99,5 @@ gentle-shell UI/timers, the gentle-agents host, gentle-todo, runtime-metrics, ge
 ## Evidence
 
 - T1: commit `5848fb80` (static audit; the loader facts were re-confirmed on Pi 1.0.0 during T2 verification).
+- T2 RDD review (native Claude Code session): `approved`, medium risk, one lens (review-reliability), candidate `a67bb7f5` against base `5848fb80`, no correction; authority burned (lineage `review-71c63d42e08bde90`). Two non-blocking findings were tracked as T2b.
 - T2: RED→GREEN per guard (writer). Verification on a real `pnpm install --frozen-lockfile` with pi-coding-agent 1.0.0: focused tests 55/55; wider set 517/518, the one failure being `tests/history-session-scan-extract.test.ts:197` (mtime vs `Date.now()`, untouched code), which then passed 14/14 three times in isolation, so treated as a timing flake; `node scripts/check-types.mjs` gives the same result on the branch and on origin/main (186 recorded, no regressions). Loader facts on 1.0.0: rpc `hasUI` is true (`rpc-mode.js:230-232`, `runner.js:404-405`); `mergePaths` dedupes by realpath with the CLI paths first (`resource-loader.js:403-405,781-792`). Commit: the T2 commit carrying this line.
