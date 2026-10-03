@@ -35,8 +35,8 @@ barbatdev on #1690 (2026-10-03 04:19Z):
 
 ## Tasks
 
-- [x] T1 Hook audit: classify every gentle-pi package hook that would newly run in a child (session_start, before_agent_start, tool_call, timers, UI, registrations) as must-run, must-skip or harmless. Record the table in this document. Route: delegated read-only (`gentle-ai-explore`, task mus95p0g-1-r2m0); the parent spot-checked `hasUI` in the Pi rpc loader. See "Child hook audit".
-- [ ] T2 Child guards for the must-skip items in "Child hook audit" (gentle-ai session_start writes, skill-registry, history, pi-pretty fallback, optional startup-banner), with tests. Route: per the ladder after T1.
+- [x] T1 Hook audit: classify every gentle-pi package hook that would newly run in a child (session_start, before_agent_start, tool_call, timers, UI, registrations) as must-run, must-skip or harmless. Record the table in this document. Route: delegated read-only (`gentle-ai-explore`, task mus95p0g-1-r2m0); the parent spot-checked `hasUI` in the Pi rpc loader. See "Child hook audit". Commit `5848fb80`.
+- [x] T2 Child guards for the must-skip items in "Child hook audit" (gentle-ai session_start writes, skill-registry, history, pi-pretty fallback, optional startup-banner), with tests. Route: delegated writer (musez9uu-2-2u6i), verified by `gentle-ai-verify` (musfh6tb-3-entu). The child also skips the review-permission revoke/refresh: the grant is host-only (`lib/review-session-standing-permission.ts:162`) and the child relay is created at load. Commit: see Evidence.
 - [ ] T3 Launcher injection signal: `buildPiInvocation` exports the injected extension set (and the takeover flag) to the parent env for the three cases, with tests. Route: per the ladder.
 - [ ] T4 Runner forwarding: gentle-agents builds the child extension args from that signal (takeover set with `--no-extensions`; nothing when declared) and drops the curated entries when the package is forwarded, with tests. Route: per the ladder.
 - [ ] T5 Move the `child-context.ts`/`child-safety.ts` behavior into the loaded package, gated on `GENTLE_PI_AGENTS_CHILD`, with no double registration, with tests. Route: per the ladder.
@@ -64,7 +64,8 @@ Audited statically on ac671593 against Pi 1.0.0 `@earendil-works/pi-coding-agent
 **Uncertain, decide in T2**
 
 - `gentle-ai.ts:9683-9696,9744-9747` session_start repository-preparation binding and review-status negotiation (spawns the native CLI per child); `tool_result` `recordReviewMutation`/`prepareBoundSessionRepository` (`:9854-9866`).
-- Guardrails `confirmCommand` (`gentle-ai.ts:1822-1828`): its headless block is skipped because `hasUI` is true, so commands classed "confirm" in a child would ASK the parent user and the task would wait. Today they run unprompted. This is a behavior decision.
+- Guardrails `confirmCommand` (`gentle-ai.ts:1822-1828`): its headless block is skipped because `hasUI` is true, so commands classed "confirm" in a child would ASK the parent user and the task would wait. Today they run unprompted. **Decided by the user (2026-10-03): the child asks the parent for confirmation.** Keep the ASK path, no child bypass; cover it with a test.
+- Parent decision for T2: the repository-preparation binding, startup review negotiation and `prepareBoundSessionRepository` belong to the parent session (the child already runs in the parent's resolved worktree), so skip them in children. Keep the child-local resets and `recordReviewMutation` (child session only). The writer verifies whether review-permission revoke/refresh must stay for the child relay.
 
 **Must-run (gained by forwarding)**
 
@@ -83,4 +84,5 @@ gentle-shell UI/timers, the gentle-agents host, gentle-todo, runtime-metrics, ge
 
 ## Evidence
 
-(Filled per task: commits, test runs, probe output.)
+- T1: commit `5848fb80` (static audit; the loader facts were re-confirmed on Pi 1.0.0 during T2 verification).
+- T2: RED→GREEN per guard (writer). Verification on a real `pnpm install --frozen-lockfile` with pi-coding-agent 1.0.0: focused tests 55/55; wider set 517/518, the one failure being `tests/history-session-scan-extract.test.ts:197` (mtime vs `Date.now()`, untouched code), which then passed 14/14 three times in isolation, so treated as a timing flake; `node scripts/check-types.mjs` gives the same result on the branch and on origin/main (186 recorded, no regressions). Loader facts on 1.0.0: rpc `hasUI` is true (`rpc-mode.js:230-232`, `runner.js:404-405`); `mergePaths` dedupes by realpath with the CLI paths first (`resource-loader.js:403-405,781-792`). Commit: the T2 commit carrying this line.

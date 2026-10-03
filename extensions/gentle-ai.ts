@@ -9796,6 +9796,12 @@ function createGentleAiExtensionForTesting(
 		reminderEpoch += 1;
 		unbindPreparation?.();
 		reminderManager = ctx.sessionManager;
+		// gentle-shell#1690: a delegated child runs in the parent's resolved
+		// worktree. Repository preparation, review negotiation, asset install and
+		// model config belong to the parent session and write shared state. The
+		// standing review grant is host-only (a child never captures an identity),
+		// so revoke/refresh have nothing to act on; the child relay is load-time.
+		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1") return;
 		const epoch = reminderEpoch;
 		const manager = ctx.sessionManager;
 		const originalCwd = manager?.getCwd?.() ?? ctx.cwd;
@@ -9984,7 +9990,7 @@ function createGentleAiExtensionForTesting(
 			// Persist the observed own write before any await. Preparation is not
 			// mutation evidence, and cannot invent a pre-write Changes baseline.
 			if (root) recordReviewMutation(pi, ctx.sessionManager, root, { source: "direct", toolName: event.toolName, toolCallId: event.toolCallId, ...directWriterProfile(pi, ctx) });
-			if (prospectiveRoot && !resolveSessionWorktree(ctx.cwd, ctx.cwd)) await prepareBoundSessionRepository(ctx.sessionManager, ctx.sessionManager.getCwd?.() ?? ctx.cwd, ctx.signal);
+			if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1" && prospectiveRoot && !resolveSessionWorktree(ctx.cwd, ctx.cwd)) await prepareBoundSessionRepository(ctx.sessionManager, ctx.sessionManager.getCwd?.() ?? ctx.cwd, ctx.signal);
 		} catch { /* Preparation and receipt persistence cannot change a successful tool result. */ }
 	});
 
