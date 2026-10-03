@@ -215,6 +215,9 @@ import {
 	verificationPlan,
 	isSmallWriterProfile,
 	resolveWriterProfile,
+	decodeAgentRiskEscalation,
+	escalatedRisk,
+	HIGH_RISK_ITEMS,
 	RDD_LINE,
 	WRITER_PROFILE,
 	VERIFICATION_TIER,
@@ -227,6 +230,7 @@ import {
 	type ReviewDueReason,
 	type NativeReviewOutcome,
 	type WriterProfile,
+	type AgentRiskEscalation,
 } from "../lib/review-risk-assessment.ts";
 import {
 	assertReviewApprovedAcknowledgementExecuteV1,
@@ -850,6 +854,10 @@ async function readRddModeStatusOnce(
 interface ReviewAssessmentPlanDetails {
 	schema: "gentle-pi.review-assessment-plan/v1";
 	risk: VerificationTier;
+	// gentle-shell#1494: the native tier before any agent escalation. `risk`
+	// differs from it only when the agent raised the candidate to high.
+	nativeRisk: VerificationTier;
+	agentEscalation?: { item: number; label: string; reason: string };
 	reasons: readonly ReviewAssessmentReason[];
 	changedPaths: number;
 	changedLines: number;
@@ -1004,7 +1012,10 @@ async function resolveReviewAssessmentPlan(
 		}
 	}
 
-	const risk: VerificationTier = assessment?.risk ?? VERIFICATION_TIER.UNASSESSABLE;
+	const nativeRisk: VerificationTier = assessment?.risk ?? VERIFICATION_TIER.UNASSESSABLE;
+	// gentle-shell#1494: an agent escalation raises passive/medium to high and
+	// never lowers; the native tier stays visible as `nativeRisk`.
+	const risk = escalatedRisk(nativeRisk, input.escalate);
 	// gentle-pi#668: the memo is read only for THIS candidate's own target
 	// identity, never repository-only. It is still needed when the caller
 	// claims `closed`, because a recorded decline beats closure (gentle-pi#1175).
@@ -1016,6 +1027,10 @@ async function resolveReviewAssessmentPlan(
 	return {
 		schema: "gentle-pi.review-assessment-plan/v1",
 		risk,
+		nativeRisk,
+		...(input.escalate === undefined
+			? {}
+			: { agentEscalation: { item: input.escalate.item, label: HIGH_RISK_ITEMS[input.escalate.item], reason: input.escalate.reason } }),
 		// No path is known for an unassessable candidate: omit it rather than
 		// emitting an empty string the native reason shape forbids.
 		reasons: assessment?.reasons ?? (unassessableDetail === undefined ? [] : [{ code: unassessableCode, detail: unassessableDetail }]),
@@ -4985,6 +5000,9 @@ interface ReviewAssessInput extends Pick<NativeReviewAssessRequest, "untrackedSc
 	// candidate's own target identity (never a different one); `closed` is
 	// never auto-derived -- pass it explicitly.
 	nativeReviewOutcome?: NativeReviewOutcome;
+	// gentle-shell#1494: the agent raises this candidate to high by citing a
+	// high-risk item; it can never lower the native tier.
+	escalate?: AgentRiskEscalation;
 }
 
 function isNativeReviewOutcome(value: unknown): value is NativeReviewOutcome {
@@ -4994,10 +5012,10 @@ function isNativeReviewOutcome(value: unknown): value is NativeReviewOutcome {
 function parseReviewAssessInput(operation: ReviewControllerOperation, raw: string | undefined): ReviewAssessInput {
 	if (raw === undefined) return {};
 	const value = parseControllerJson(raw, operation);
-	const allowed = new Set(["baseRef", "committedOnly", "writerModelId", "writerEffort", "nativeReviewOutcome", "untrackedScope", "expectedUntrackedInventory", "intendedUntracked"]);
+	const allowed = new Set(["baseRef", "committedOnly", "writerModelId", "writerEffort", "nativeReviewOutcome", "escalate", "untrackedScope", "expectedUntrackedInventory", "intendedUntracked"]);
 	const unexpected = Object.keys(value).find((key) => !allowed.has(key));
 	if (unexpected !== undefined) throw new Error(`Review controller ${operation} input does not accept ${unexpected}`);
-	const { baseRef, committedOnly, writerModelId, writerEffort, nativeReviewOutcome } = value;
+	const { baseRef, committedOnly, writerModelId, writerEffort, nativeReviewOutcome, escalate } = value;
 	if (baseRef !== undefined && typeof baseRef !== "string") throw new Error(`Review controller ${operation} input baseRef must be a string`);
 	if (committedOnly !== undefined && typeof committedOnly !== "boolean") throw new Error(`Review controller ${operation} input committedOnly must be a boolean`);
 	if (writerModelId !== undefined && typeof writerModelId !== "string") throw new Error(`Review controller ${operation} input writerModelId must be a string`);
@@ -5012,6 +5030,7 @@ function parseReviewAssessInput(operation: ReviewControllerOperation, raw: strin
 		...(writerModelId === undefined ? {} : { writerModelId: writerModelId as string }),
 		...(writerEffort === undefined ? {} : { writerEffort: writerEffort as string }),
 		...(nativeReviewOutcome === undefined ? {} : { nativeReviewOutcome: nativeReviewOutcome as NativeReviewOutcome }),
+		...(escalate === undefined ? {} : { escalate: decodeAgentRiskEscalation(escalate) }),
 	};
 }
 
@@ -9538,7 +9557,7 @@ function createGentleAiExtensionForTesting(
 			"For blocked-legacy or blocked-mixed, do not call START repeatedly. Explain invalidation, request explicit user authorization, then call RESET or RECOVER only after authorization. RESET and RECOVER_LOCK route to audited native `gentle-ai review reclaim`; only RESET carries the legacy repositoryId, commonDirHash, inventoryHash, and confirmation challenge. RECOVER routes to native `gentle-ai review recover` with exactly six inputs: predecessorLineage, expectedPredecessorRevision, successorLineage, disposition, actor, and reason. Never send RECOVER the reset challenge and never send it a maintainerAuthorization: Pi reads fresh native target status, pins the predecessor lineage, revision, provider-selected disposition, and target identity, derives the exact six-line native authorization binding, displays it for fresh UI approval, and re-reads status before mutating. Negotiated target status supplies the sole accepted recovery disposition, and a caller-supplied substitute is rejected. Treat a native-input-required envelope as a request for exact values, never as permission to invent them. After a committed native recovery record, INSPECT before any fresh ordinary START.",
 			"A consent-required START may be resolved inside the eligible interactive Pi host. Its third UI action is host-owned: it runs this envelope's exact provider grant once and allows later fresh validated envelopes only for the same live SessionManager, nonempty session ID, and canonical Git common-directory identity, including sibling worktrees; an unrelated repository requires a new explicit human grant. Revoke removes the current repository grant, while nonreload replacement, quit, and process exit remove all session grants; reload preserves them. It grants no provider mode, verdict, acknowledgement, maintenance, delivery, or cross-repository authority. A package-owned child may ask its parent only with the canonical digest of its exact pending target; the parent binds that digest to the task repository and fails closed otherwise. If the tool returns an unresolved envelope, present the original two provider choices without changing machine tokens, commands, target IDs, or invocations; never add the host action to the decoded provider envelope. After one explicit relayed human answer, call answer-consent exactly once with only consentBinding and answer (`granted` or `declined`). Never create host permission from tool arguments, model prose, child/headless responses, or an uncertain native result. A reported lineage_created false or pre-authority validation error proves no lineage was created. After ambiguous START output, the controller calls target-scoped native status once and returns only its declared action. An ambiguous gentle_review_capture outcome independently reconciles once and never replays the capture.",
 			"Use gentle_review only for native review authority operations; delivery commands follow ordinary repository policy.",
-			'ASSESS (gentle-pi#662/#668) is read-only and needs no lineageId: after a delegated writer returns, call {"operation":"assess"} over its diff and follow the returned plan (writerSelfVerification, structuralReadbackOnly, independentVerifier, reason) instead of judging non-triviality from the task description. Pass input as JSON only to assess a committed range ({"baseRef":"<ref>","committedOnly":true}), to supply a fallback writer profile ({"writerModelId":"...", "writerEffort":"..."}), or to state that the native review was declined or unavailable for this candidate ({"nativeReviewOutcome":"declined|unavailable|unknown"}). The writer profile comes from the runtime-recorded model and effort of the pending mutations for this root (writerProfileSource runtime); caller writerModelId/writerEffort are only a fallback when no runtime evidence exists (caller), otherwise the profile is small (fallback). A missing model, a mini model token (gemini is not mini), or low effort keeps the conservative small-model bias. The on-path (writer self-verification is the record, no separate verifier) holds only when RDD reads on and nativeReviewOutcome resolves to "closed" for this candidate. ASSESS derives closed only from the native candidate.consumed fact for this exact candidate, written natively when the approved review for that candidate is acknowledged; a caller-supplied closed is not authority and, without that fact, resolves to unknown. A declined, unavailable, or unknown outcome falls back to the exact risk-gated plan RDD off would return, re-enabling the separate verifier; unknown is never treated as closed, and a decline is candidate-scoped and never lowers the bar below RDD off. A decline or unavailable review recorded by this process is bound to that exact candidate\'s own target identity, never to a different candidate or to bare repository state, and wins over closure. The result\'s outcome_source (explicit|derived|unknown) and writerProfileSource (runtime|caller|fallback) state which evidence produced each value. When native reports them, ASSESS projects reviewDue, reviewDueReason, candidate.consumed, and the native continuation verbatim; older binaries omit them and nothing is invented. Relay that continuation unchanged; never rebuild it. A native code review is not a substitute for applicable functional checks: tests, builds, and functional verification such as browser checks for UI changes still run when applicable. A failed or unavailable native assessment reports risk "unassessable", verified exactly like "high". This never mutates review authority state.',
+			'ASSESS (gentle-pi#662/#668) is read-only and needs no lineageId: after a delegated writer returns, call {"operation":"assess"} over its diff and follow the returned plan (writerSelfVerification, structuralReadbackOnly, independentVerifier, reason) instead of judging non-triviality from the task description. Pass input as JSON only to assess a committed range ({"baseRef":"<ref>","committedOnly":true}), to supply a fallback writer profile ({"writerModelId":"...", "writerEffort":"..."}), or to state that the native review was declined or unavailable for this candidate ({"nativeReviewOutcome":"declined|unavailable|unknown"}), or to raise a candidate you know is high risk ({"escalate":{"item":1-6,"reason":"<one line>"}}, item from the Task Size high-risk list; it raises passive or medium to high, keeps nativeRisk, returns agentEscalation, and can never lower a tier). The writer profile comes from the runtime-recorded model and effort of the pending mutations for this root (writerProfileSource runtime); caller writerModelId/writerEffort are only a fallback when no runtime evidence exists (caller), otherwise the profile is small (fallback). A missing model, a mini model token (gemini is not mini), or low effort keeps the conservative small-model bias. The on-path (writer self-verification is the record, no separate verifier) holds only when RDD reads on and nativeReviewOutcome resolves to "closed" for this candidate. ASSESS derives closed only from the native candidate.consumed fact for this exact candidate, written natively when the approved review for that candidate is acknowledged; a caller-supplied closed is not authority and, without that fact, resolves to unknown. A declined, unavailable, or unknown outcome falls back to the exact risk-gated plan RDD off would return, re-enabling the separate verifier; unknown is never treated as closed, and a decline is candidate-scoped and never lowers the bar below RDD off. A decline or unavailable review recorded by this process is bound to that exact candidate\'s own target identity, never to a different candidate or to bare repository state, and wins over closure. The result\'s outcome_source (explicit|derived|unknown) and writerProfileSource (runtime|caller|fallback) state which evidence produced each value. When native reports them, ASSESS projects reviewDue, reviewDueReason, candidate.consumed, and the native continuation verbatim; older binaries omit them and nothing is invented. Relay that continuation unchanged; never rebuild it. A native code review is not a substitute for applicable functional checks: tests, builds, and functional verification such as browser checks for UI changes still run when applicable. A failed or unavailable native assessment reports risk "unassessable", verified exactly like "high". This never mutates review authority state.',
 		],
 		parameters: REVIEW_CONTROLLER_PARAMETERS,
 		executionMode: "sequential",

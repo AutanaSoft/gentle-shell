@@ -126,7 +126,7 @@ test("AC5: the high-risk list lives once in the core, native tier wins, unclear 
 const MODULE_BUDGETS: Record<string, number> = {
 	"orchestrator-delegation.md": 20_000,
 	"orchestrator-tracking.md": 12_500,
-	"orchestrator-verification.md": 5_000,
+	"orchestrator-verification.md": 5_500,
 	"orchestrator-writer.md": 4_500,
 	"orchestrator-prompts.md": 13_000,
 };

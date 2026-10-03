@@ -48,8 +48,8 @@ S9. Measurement: bench baseline (origin/main cf3012f7) vs after, same scenarios:
 ## Tasks
 - [ ] T0 (S9) in progress · baseline bench re-run at main cd4ba5a7 (L17), arm B on s1-tasklog, s2-ledger, l1-tasklog; new scenarios pending
 - [x] T1 (S1-S5, S7) inline · always-on Task Size + Mechanisms in assets/orchestrator.md; harness Classify/steps 5-6; delegation, skill, readme aligned; contract tests · RED→GREEN · 3e5c8012 (rebased from 6f882b6b)
-- [x] T2 (S7) inline · orchestrator-delegation.md split into tracking/verification/writer/prompts modules; union test helper; AC7 budget test · refactor under existing contract tests · this work unit
-- [ ] T3 (S5, S6) inline · high-risk list in the verification module; `escalate` field in the gentle_review assess facade
+- [x] T2 (S7) inline · orchestrator-delegation.md split into tracking/verification/writer/prompts modules; union test helper; AC7 budget test · refactor under existing contract tests · 6f8a78b8
+- [x] T3 (S5, S6) inline · `escalate` input on gentle_review assess (raise-only, pi-side), HIGH_RISK_ITEMS, rule text in verification/tracking modules · RED→GREEN · this work unit
 - [ ] T4 (S7) inline · output reduction: edit-not-rewrite rule; spike mechanical Engram mirror of `odd/tasks/*.md`
 - [ ] T5 (S9) inline · bench after; AC8 verdicts
 - [ ] G1 (S8) other repo · port the kernel to the gentle-ai canon with parity
@@ -91,3 +91,9 @@ L18 2026-10-03 T2 evidence (risk: medium, prompt asset move; inline per L1): use
    Split: orchestrator-delegation.md 51,4xx → 19,078 B; new orchestrator-tracking.md 11,989 B, orchestrator-verification.md 4,590 B, orchestrator-writer.md 4,014 B, orchestrator-prompts.md 12,705 B. Small path loads none; each mechanism points at its module from the core. Core render 8,084 B (budget 8,192): dropped the Mental Model section (folded into Task Size) and shortened pointers.
    Test-first exception: a pure text move has no meaningful RED; the 16 test files that read the delegation detail now read the union (tests/support/orchestrator-modules.ts) so every moved clause stays pinned; new AC7 test (budgets, pointers, small path) written with the move.
    Checks: all unit tests 4624 pass / 0 fail; provider-contract pass; runtime-harness pass (union read); verify-package-files pass; typecheck no regressions.
+L19 2026-10-03 user (verbatim): > Sigue todos termina
+L20 2026-10-03 T3 evidence (risk: HIGH, changes the gentle_review assess input contract, S5 item 3; independent verifier not run because the user forbade delegation (L1), self-verified):
+   RED: tests/agent-risk-escalation.test.ts failed to load (no HIGH_RISK_ITEMS export).
+   GREEN: agent-risk-escalation 8/8; all unit tests 4632 pass / 0 fail; provider-contract pass; runtime-harness pass; typecheck no regressions.
+   Design: lib/review-risk-assessment.ts adds HIGH_RISK_ITEMS, decodeAgentRiskEscalation (item integer 1-6, reason 1-500 chars, no extra keys) and escalatedRisk (passive/medium -> high, never lowers); the assess facade accepts `escalate`, returns `nativeRisk` and `agentEscalation`, and plans verification on the raised tier. The raise is pi-side only until gentle-ai assess accepts it (G2) and the package pin moves; the native review tier is unchanged until then.
+   Budget: orchestrator-verification.md budget 5,000 -> 5,500 B for the escalation section (now 5,113 B).
