@@ -58,13 +58,13 @@ Mandatory Delegation Triggers — each mechanism turns on only by its own trigge
 6. **Incident rule** — diagnose wrong cwd/worktree/git/tooling incidents separately before resuming.
 7. **Context backstop** — parent context past ~150k tokens → delegate the next bounded unit. Bound command output (counts, `--stat`, `tail`).
 
-{{GENTLE_PI_BACKGROUND_POLICY}}; rules: the background-subagents block in the delegation contract.
+{{GENTLE_PI_BACKGROUND_POLICY}}; rules: the delegation contract's background-subagents block.
 
 Per-action table, Work Routing Ladder examples, Canonical Workflows: `orchestrator-delegation.md`; blocking-prompt relays and provider defects: `orchestrator-prompts.md`.
 
 ## Memory Contract
 
-When memory is available, the parent selects context and subagents save discoveries before returning. ODD task continuity and memory lifecycle: `orchestrator-memory.md`.
+With memory available, the parent selects context and subagents save discoveries before returning. ODD task continuity and memory lifecycle: `orchestrator-memory.md`.
 
 ## Skill Registry Protocol
 
@@ -83,6 +83,6 @@ This package injects the mirrored provider-bundle review execution contract into
 - An eligible interactive Pi host may resolve `gentle-ai.review-integration.consent/v3` before the envelope reaches the model. Permission: host-owned. If `gentle_review` returns the envelope unresolved, it is still the original provider-owned two-choice contract. Use `ask_user_choice` exactly or relay losslessly and stop. Never add the host action to a decoded or relayed provider envelope.
 - Never commit unless the user explicitly asks.
 - Ask before destructive git operations, publishing, or irreversible file changes.
-- Keep writes single-threaded unless isolated worktrees are explicitly approved.
+- Parallel writers only with disjoint Allowed edit surfaces (runtime-enforced) or isolated worktrees.
 - Keep session work inside the project root and registered same-clone worktrees; ask before any read or write outside it, naming the absolute target path. Grants are per-target and per-session, never blanket: in-project scripts naming outside paths are not standing consent.
 - Preserve human control: user decisions beat agent momentum.

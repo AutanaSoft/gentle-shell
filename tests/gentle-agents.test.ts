@@ -4889,3 +4889,94 @@ test("a writer continuation without its own section inherits the admitted surfac
 	await h.fire("session_shutdown", ctx);
 	rmSync(profile, { recursive: true, force: true });
 });
+
+// gentle-shell#1731 T4 (S2, AC6): subagent_run and subagent_continue admit a
+// writer only while no live writer in the same worktree claims an overlapping
+// `## Allowed edit surfaces` entry; read-only agents are never registered.
+test("parallel writers are admitted only with disjoint Allowed edit surfaces end to end", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	const profile = mkdtempSync(join(tmpdir(), "gentle-agents-parallel-writers-"));
+	mkdirSync(join(profile, "agents"), { recursive: true });
+	writeFileSync(join(profile, "agents", "gentle-ai-worker.md"), readFileSync(new URL("../assets/agents/gentle-ai-worker.md", import.meta.url)));
+	writeFileSync(join(profile, "agents", "explore.md"), "---\ndescription: maps things\ntools: [read, grep]\n---\nYou map things.");
+	writeFileSync(join(profile, "subagents.json"), JSON.stringify({ max_concurrency: 5, model_profiles: { "gentle-ai-worker": { model: "openai/gpt-4o", effort: "high" } } }));
+	const env: NodeJS.ProcessEnv = {};
+	gentleAgents(h.pi, env, { ...runtime.deps, env, agentHome: profile });
+	const { ctx } = fakeContext();
+	await h.fire("session_start", ctx);
+	const scoped = (surface: string) => `Write it.\n\n## Allowed edit surfaces\n${surface}\n\n## Return\nReport`;
+	const run = (agent: string, task: string) => h.tools.get("subagent_run")!.execute("run", { agent, task, mode: "background" }, undefined, undefined, ctx);
+	const taskId = (result: { details: Record<string, unknown> }) => (result.details.gentleAgents as { taskId: string }).taskId;
+	const finish = async (child: FakeChild, id: string) => {
+		child.emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] });
+		child.emit({ type: "agent_settled" });
+		for (let attempt = 0; attempt < 40; attempt++) {
+			const status = await h.tools.get("subagent_status")!.execute("status", { task_id: id }, undefined, undefined, ctx);
+			if ((status.details.gentleAgents as { status?: string } | undefined)?.status === TASK_STATUS.COMPLETED) return;
+			await tick();
+		}
+		assert.fail(`task ${id} never completed`);
+	};
+	try {
+		const app = taskId(await run("gentle-ai-worker", scoped("src/app.ts")));
+		const other = taskId(await run("gentle-ai-worker", scoped("`src/other.ts`")));
+		await tick();
+		assert.equal(runtime.children.length, 2, "disjoint writers run concurrently");
+		await assert.rejects(run("gentle-ai-worker", scoped("src/*.ts")), (error: Error) => {
+			assert.match(error.message, new RegExp(`task ${app}`));
+			assert.match(error.message, new RegExp(`task ${other}`));
+			assert.match(error.message, /`src\/\*\.ts` overlaps `src\/app\.ts`/);
+			return true;
+		});
+		await run("explore", "Map src/app.ts and src/other.ts");
+		await tick();
+		assert.equal(runtime.children.length, 3, "read-only agents are never blocked by live writers");
+		await finish(runtime.children[0], app);
+		// The continuation inherits src/app.ts and is admitted again only while no
+		// live writer claims an overlapping entry.
+		await assert.rejects(run("gentle-ai-worker", scoped("src/**")), new RegExp(`task ${other}`), "src/** still overlaps the live src/other.ts writer");
+		const blocking = taskId(await run("gentle-ai-worker", scoped("src/app.ts")));
+		await assert.rejects(h.tools.get("subagent_continue")!.execute("follow", { task_id: app, prompt: "Continue.", mode: "background" }, undefined, undefined, ctx), new RegExp(`task ${blocking}`));
+		await finish(runtime.children[3], blocking);
+		await h.tools.get("subagent_continue")!.execute("follow", { task_id: app, prompt: "Continue.", mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		assert.equal(runtime.children.length, 5, "the continuation is admitted once its surfaces are free");
+	} finally {
+		await h.fire("session_shutdown", ctx);
+		rmSync(profile, { recursive: true, force: true });
+	}
+});
+
+// Second verify A1: writers claim surfaces under the canonical worktree root,
+// so a writer spawned in the session's subdirectory cwd and one sent to the
+// worktree root through workspace_root are compared.
+test("a subdirectory session cwd and workspace_root of the same worktree share one writer key", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	const profile = mkdtempSync(join(tmpdir(), "gentle-agents-writer-root-"));
+	mkdirSync(join(profile, "agents"), { recursive: true });
+	writeFileSync(join(profile, "agents", "gentle-ai-worker.md"), readFileSync(new URL("../assets/agents/gentle-ai-worker.md", import.meta.url)));
+	writeFileSync(join(profile, "subagents.json"), JSON.stringify({ max_concurrency: 5, model_profiles: { "gentle-ai-worker": { model: "openai/gpt-4o", effort: "high" } } }));
+	const sub = join(cwd, "sub");
+	mkdirSync(sub, { recursive: true });
+	// Git semantics: any path inside the project resolves to the project root.
+	const resolveWorktree = (path: string, base: string) => {
+		const target = resolve(base, path);
+		return { root: target === cwd || target.startsWith(`${cwd}${sep}`) ? cwd : target, commonDir: "/fixture/common" };
+	};
+	const env: NodeJS.ProcessEnv = {};
+	gentleAgents(h.pi, env, { ...runtime.deps, resolveWorktree, env, agentHome: profile });
+	const { ctx } = fakeContext();
+	Object.assign(ctx, { cwd: sub, sessionManager: { getSessionId: () => "s1", getCwd: () => sub, getEntries: () => [] } });
+	await h.fire("session_start", ctx);
+	const task = "Write it.\n\n## Allowed edit surfaces\nsrc/app.ts\n\n## Return\nReport";
+	try {
+		const first = await h.tools.get("subagent_run")!.execute("run", { agent: "gentle-ai-worker", task, mode: "background" }, undefined, undefined, ctx);
+		const firstId = (first.details.gentleAgents as { taskId: string }).taskId;
+		await assert.rejects(h.tools.get("subagent_run")!.execute("run", { agent: "gentle-ai-worker", task, workspace_root: cwd, mode: "background" }, undefined, undefined, ctx), new RegExp(`task ${firstId}`));
+	} finally {
+		await h.fire("session_shutdown", ctx);
+		rmSync(profile, { recursive: true, force: true });
+	}
+});

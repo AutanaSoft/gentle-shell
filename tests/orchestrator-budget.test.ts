@@ -302,6 +302,9 @@ const SUPERSEDED_LIFECYCLE_REVIEW_LINES = new Set([
 	154,
 	160,
 	166,
+	// 282: gentle-shell#1731 T4 relaxed the single-writer Safety line to disjoint
+	// Allowed edit surfaces (runtime-enforced) or isolated worktrees.
+	282,
 ]);
 
 for (const range of DISPOSITION_MAP) {

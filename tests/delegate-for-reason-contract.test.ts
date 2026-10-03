@@ -176,3 +176,19 @@ test("S1: the small path stays inline and no lazy surface keeps the size-based w
 	assert.ok(delegation.includes("| Write a large task with no Writer rule reason | ✅ following the logbook | — |"), "delegation table must route a reasonless large task inline");
 	assert.ok(!delegation.includes("implementing a large tracked task (writer)"), "Simple Delegation keeps the size-based writer route");
 });
+
+// T4 (S2, AC6): the runtime rejects an overlapping live writer at admission,
+// so the single-writer wording relaxes to disjoint surfaces or isolated worktrees.
+test("AC6: parallel writers need disjoint Allowed edit surfaces (runtime-enforced) or isolated worktrees", () => {
+	const rule = "arallel writers only with disjoint Allowed edit surfaces (runtime-enforced) or isolated worktrees";
+	const harness = read("extensions/gentle-ai.ts");
+	const docs = read("docs/readme-reference.md");
+	assert.ok(core.includes(`- P${rule}.`), "core Safety must carry the relaxed writer rule");
+	assert.ok(harness.includes(`- P${rule}.`), "harness principles must carry the relaxed writer rule");
+	for (const [path, text] of Object.entries({ core, delegation, harness, skill, docs })) {
+		assert.ok(text.includes(rule), `${path} is missing the relaxed writer rule`);
+		for (const retired of ["single-threaded", "Never run parallel writers in one worktree", "do not run parallel writers unless isolated worktrees", "preserves a single writer thread", "one writer per task"]) {
+			assert.ok(!text.includes(retired), `${path} keeps the single-writer wording: ${retired}`);
+		}
+	}
+});

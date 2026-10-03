@@ -37,8 +37,18 @@ S8. Bench: "corras los bench utilizando estas configuraciones para ver cómo fun
   Writer musuzf0z-5-058m + continuation musv39ow-6-rqa4: RED 4 -> GREEN 51/51 focused; typecheck no regressions; npm test 4728/4728
   (env -u GENTLE_PI_AGENTS_CHILD). Parent spot check below. verification.md 5,950/6,000 B (budget raised, L9), writer.md 4,360/4,500 B,
   normative Verification rule SHA-pinned. Risk medium; RDD off.
-- [ ] T4 (S2, AC6) delegated writer, HIGH risk (concurrency) + independent verify · disjoint-surface writer admission; relax single-writer text
-- [ ] T5 (S8, AC8) delegated writer in bench repo · scenarios x5 (two independent features) and expensive-orchestrator profile; pin before/after products
+- [x] T4 (S2, AC6) delegated writer (reason: context backstop), HIGH risk (concurrency) + independent verify · disjoint-surface writer admission; relax single-writer text.
+  Writer musv5rk5-7-xwwv (RED 6 -> GREEN 379/379). Verify musvls9n-8-ktiv FAIL (B1 brace across `/`, M1 classes, m1 quarantine, m2 wording) ->
+  correction musvrbk8-9-bri1 -> re-verify musvvm91-a-8x0b PASS WITH ADVISORIES (A1 root key) -> user-authorized 2nd correction musw1j00-b-0xj9
+  (canonical realpath git-root claim key, `\`/non-ASCII-wildcard fail-safe, NFC, docs caveats) -> re-verify musw7tvc-c-274m PASS WITH ADVISORIES
+  (no blocker). Final: focused 351/351, typecheck exit 0, npm test 4761/4761 (env -u GENTLE_PI_AGENTS_CHILD). Core 8,188/8,192 B, delegation 19,997/20,000 B.
+- [ ] T4b follow-up (advisories, not blockers): fail-safe for `**` inside braces (V1, real but contrived false disjoint), leading `@` and NBSP
+  normalization (V2), `!` negation entries (V3); qualify "(runtime-enforced)" outside the README when bytes allow.
+- [x] T5 (S8, AC8) delegated writer in bench repo (reason: parallelism, disjoint repo) · scenarios x5 (two independent features) and expensive-orchestrator profile.
+  Writer musun6eb-3-z9cp: x5-ledger-two-features (budget --year in src/budget.ts; import dedupe/--all/--dry-run in src/importexport.ts; disjoint),
+  validate: base FAIL 17/22, ref PASS 22/22, naive FAIL 9/22; configs bench.1731-{base,after}.json arms A/B/R. Bench npm test 194/194 (parent rerun).
+  Bench commit bc3a2c7. Base pin built: /var/tmp/gentle-shell-bench/product/base-5d75a2ab (npm gentle-pi@4.0.0 + git archive 5d75a2ab overlay;
+  deps unchanged since v4.0.0; no deleted files vs 7693fe49; extensions/gentle-ai.ts byte-identical). After pin built once T4 lands.
 - [ ] T6 (S8, AC8) runs · bench before/after and report (stage cap reuses user's USD 60 approval)
 - [ ] G1 other repo, needs user OK · port kernel wording to gentle-ai canon (`routing.go`) with parity
 - [ ] G2 other repo, needs user OK · gentle-ai `review start` accepts escalate (RDD alignment)
@@ -54,3 +64,6 @@ L7 2026-10-03 user (answer): delivery > Un PR con size exception (single-pr, wor
 L8 2026-10-03 user (verbatim): > Acordate que después, cuando vayamos a hacer esta paridad para Chatly AI, vamos a tener un problema, porque damos soporte a muchísimos agentes. ¿Y cómo hacemos para que esos agentes puedan menevalor el coste de los subagentes? ¿Se entiende lo que te quiero decir? No todos creo que lo dan eso, eh? No es el momento para hacer un control agente por agente de todo esto.
    decision (constraint for T2/G1): the cost rule is fact-gated with a safe default. Canon wording: delegate implementation only when the runtime REPORTS a price ratio >= ~3x; when no ratio is reported, the cost reason does not fire and #1494 behavior holds. Parallelism, context and risk reasons need no prices and work in every agent. Parity = copy text verbatim, no per-agent work. Optional later: gentle-ai computes the ratio at sync from the role models it configures and stamps it as a static fact.
 L9 2026-10-03 parent decision (T3): orchestrator-verification.md lazy budget 5,500 -> 6,000 B to fit the parallel review protocol (~840 B; base measured 5,113 B, not ~4,590). Alternatives rejected: condensing the normative Verification rule (breaks AC4) or splitting the protocol across modules. Core budget unchanged.
+L10 2026-10-03 T4 independent verify (musvls9n-8-ktiv): FAIL. B1 blocker false disjoint for brace groups spanning `/` (`lib/{foo.ts,bar/baz.ts}` vs `lib/bar/baz.ts`); M1 lowercasing breaks negated/POSIX classes (`[^a]` vs `A.ts`); m1 quarantine releases the claim before exit; m2 "runtime-enforced" is admission-time only (no write guard, per Pi process). Passed: atomic check+claim in run(), release on all terminal paths, git root realpath canonicalization, scope, wording/budgets. One scoped correction sent to the T4 writer (continuation), then re-verify.
+L11 2026-10-03 T4 targeted re-verify (musvvm91-a-8x0b): PASS WITH ADVISORIES. B1/M1/m1 fixed; new A1 root-level false disjoint (session cwd subdirectory vs workspace_root git root compared with resolve only); advisories: `\` escapes, NFC/NFD, emoji with `?`, quarantine leak if group empties after exit event, "(runtime-enforced)" unqualified.
+L12 2026-10-03 user (answer): > Autorizar una segunda corrección acotada (recomendado)  -> A1 canonical git-root claim key (realpath), `\` and non-ASCII-glob fail-safe, NFC normalization, docs caveats; then targeted re-verify before commit.
