@@ -51,9 +51,9 @@ S9. Measurement: bench baseline (origin/main cf3012f7) vs after, same scenarios:
 - [x] T2 (S7) inline · orchestrator-delegation.md split into tracking/verification/writer/prompts modules; union test helper; AC7 budget test · refactor under existing contract tests · 6f8a78b8
 - [x] T3 (S5, S6) inline · `escalate` input on gentle_review assess (raise-only, pi-side), HIGH_RISK_ITEMS, rule text in verification/tracking modules · RED→GREEN · 711ad9db
 - [x] T4 (S7) inline · edit-not-rewrite rule and codemode mirror refresh in orchestrator-memory.md; extension-side auto-mirror spike → F3 · RED→GREEN · f508715f
-- [ ] T5 (S9) in progress · bench after (after1494a, product 6f8a78b8): s1 done, s2/l1 running; new scenarios not authored yet
-- [x] G1 (S8) gentle-ai `fix/1494-task-size-canon` (worktree ~/work/gentle-ai-1494, stacked on fix/odd-spec-by-reference) · canon + 12 orchestrators + shared sections + docs · RED→GREEN · 2d6cea5f
-- [x] G2 (S6) gentle-ai · `review assess --escalate-item/--escalate-reason` · RED→GREEN · a0f8584c
+- [ ] T5 (S9) partial · existing scenarios measured (L25); the #1494 fixture, risky-innocent-path, design-decision, and multi-session scenarios are not authored yet
+- [x] G1 (S8) gentle-ai `fix/1494-task-size-canon` (worktree ~/work/gentle-ai-1494, on main 665a181a) · canon + 12 orchestrators + shared sections + docs · RED→GREEN · 66399a57
+- [x] G2 (S6) gentle-ai · `review assess --escalate-item/--escalate-reason` · RED→GREEN · 95ee74d0
 - [x] G3 (S6) filed as gentle-ai#5216 (follow-up, not implemented here)
 - [x] F1 filed as gentle-shell#1722 (~/AGENTS.md is 58,881 B with gentle-ai blocks)
 - [x] F3 filed as engram#1636 (gentle-engram lives in the engram repo, plugin/pi)
@@ -108,3 +108,10 @@ L23 2026-10-03 T5 partial: baseline (main cd4ba5a7, base1494b) vs after (6f8a78b
    s2-ledger base 479 s, 43 turns, $0.361 · after pending. l1-tasklog base 559 s, 48 turns, $0.403, accepted at round 1 · after pending.
 L24 2026-10-03 user (verbatim): > Hacelos
    Created and read back (body match, labels from each form): gentle-ai#5216 (G3), gentle-shell#1722 (F1), engram#1636 (F3). Duplicate search found no equivalent; related: gentle-ai#4815, engram#1449.
+L25 2026-10-03 T5 results, arm B gpt-6.1-sol low, one run per cell (n=1), baseline main cd4ba5a7 vs after 6f8a78b8; every after cell accepted at round 0:
+   | task | baseline | after | delegation after |
+   | s1-tasklog (3-line bug) | 335 s, 56 turns, $0.339, odd doc | 77 s, 10 turns, $0.105, no doc | none |
+   | s2-ledger (shared root cause) | 479 s, 43 turns, $0.361, odd doc | 276 s, 27 turns, $0.207, no doc | 1 gentle-ai-explore |
+   | l1-tasklog (data migration) | 559 s, 48 turns, $0.403, odd doc, accepted at round 1 | 539 s, 72 turns, $0.555, no doc | 1 gentle-ai-verify |
+   Reading: s1 is the #1494 case and now runs fully inline. s2 needed one explore (understanding beyond the batch), as S4 intends. l1 is high risk (S5 item 1: data migration with backup), so it got exactly the independent verifier; it is single-session and resumable from the diff, so by S2/S3 it is not large and creates no doc. It cost more ($0.555 vs $0.403) but passed acceptance without the feedback round the baseline needed.
+   AC8 correction: "known-large task still creates the doc and delegates" assumed l1 is large; under the accepted definition it is high-risk, not large. A genuinely large scenario (multi-session or separate deliverables) still has to be authored to check the tracking path.
