@@ -114,7 +114,7 @@ test("AC5: the high-risk list lives once in the core, native tier wins, unclear 
 		"(5) delivery or environment",
 		"(6) no test would catch a regression",
 		"only when a bounded look cannot tell whether (1)-(5) apply",
-		"native assess returns a tier, that tier wins",
+		"When RDD is on and native assess returns a tier, that tier wins",
 	]) {
 		assert.ok(size.includes(clause), `high-risk definition is missing: ${clause}`);
 	}

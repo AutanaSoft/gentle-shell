@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { __testing } from "../extensions/gentle-ai.ts";
 import { readDelegationDetail } from "./support/orchestrator-modules.ts";
 
 // gentle-shell#1731: the delegated writer fires on named reasons (parallelism,
@@ -175,6 +176,60 @@ test("S1: the small path stays inline and no lazy surface keeps the size-based w
 	assert.ok(!delegation.includes("| Write a large (tracked) task | — | ✅ one writer per task |"), "delegation table keeps the size-based writer row");
 	assert.ok(delegation.includes("| Write a large task with no Writer rule reason | ✅ following the logbook | — |"), "delegation table must route a reasonless large task inline");
 	assert.ok(!delegation.includes("implementing a large tracked task (writer)"), "Simple Delegation keeps the size-based writer route");
+});
+
+// T7-T9 (L14): the bench showed the rules decide WHETHER to delegate but not
+// HOW. T7 forces a risk declaration on every code change, small path included,
+// so it lives in the always-on core. T8 and T9 bind how the cost and
+// parallelism reasons launch writers, so they live in the lazy writer module.
+const taskSize = sectionFrom(core, "## Task Size");
+
+test("T7/AC4: every code change closes with a forced risk line that routes any listed item to independent verify", () => {
+	const rule = lineStarting(taskSize, "**Risk line**");
+	for (const clause of [
+		"close every code change, small path or delegated",
+		"`Risk: item N (reason)`",
+		"`Risk: none`",
+		"per the list",
+		"any item → Verification rule",
+	]) {
+		assert.ok(rule.includes(clause), `risk line rule is missing: ${clause}`);
+	}
+	const highRisk = taskSize.indexOf("**High risk**");
+	assert.ok(highRisk >= 0 && taskSize.indexOf("**Risk line**") > highRisk, "the risk line must follow the high-risk list it is checked against");
+	// The small path loads no lazy module, so the rule must render in the always-on prompt.
+	assert.ok(__testing.getOrchestratorPrompt().includes(rule), "the risk line must reach the always-on prompt");
+	for (const [path, text] of Object.entries({ delegation, writer, verification })) {
+		assert.ok(!text.includes("`Risk: item N (reason)`"), `${path} restates the core risk line`);
+	}
+});
+
+test("T8/AC3: the cost reason never fires on the small path and delegates the whole implementation in one handoff", () => {
+	assert.ok(
+		coreWriter.includes("a reported Model routing ratio ~3x+ (unknown: no), beyond one trivial edit, never on the small path"),
+		"core Writer rule must exclude the cost reason on the small path",
+	);
+	const routing = lineStarting(writer, "- **Model routing**");
+	for (const clause of ["never on the small path", "the whole implementation in one handoff", "every unit and fix", "never serial piecemeal handoffs"]) {
+		assert.ok(routing.includes(clause), `writer model-routing launch rule is missing: ${clause}`);
+	}
+});
+
+test("T9/AC2: the parallelism reason launches every unit together in background and waits for all", () => {
+	const parallel = lineStarting(writer, "- **Parallelism**");
+	for (const clause of [
+		"every disjoint unit in the same turn",
+		'`subagent_run` with `mode: "background"`',
+		"wait for all completions",
+		"serial launches void the reason",
+		"work inline",
+		"Seam check",
+	]) {
+		assert.ok(parallel.includes(clause), `writer parallelism launch rule is missing: ${clause}`);
+	}
+	for (const [label, text] of Object.entries({ parallel, routing: lineStarting(writer, "- **Model routing**") })) {
+		assert.ok(!/high risk|high-risk|verify/i.test(text), `${label} mixes risk or verification into the writer reasons`);
+	}
 });
 
 // T4 (S2, AC6): the runtime rejects an overlapping live writer at admission,
