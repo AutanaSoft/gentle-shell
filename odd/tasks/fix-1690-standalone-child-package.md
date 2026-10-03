@@ -47,6 +47,21 @@ barbatdev on #1690 (2026-10-03 04:19Z):
   - `agents-protocol` turns only that marked notify into a task NOTE (transcript); every other notify stays dropped.
   
   IPC was rejected (it would reach the parent model as a message), and so was a parent-side static check (fragile). The T4 review suggestion (`noExtensions` with empty paths) is pinned by a test. Evidence: RED 8 (plus a real RED for the early NOTE with the mapping disabled), GREEN; agents/child/gentle-agents suites 504/504; check-types shows no regressions; runtime `--check` is clean. Known limits: no check in curated-fallback mode (gentle-agents is not loaded in the child); one check per child process; an early NOTE sets `sawRunEvent`, which only drops the "no first run event" suffix from a stall-timeout message (`agents-runner.ts:623`), the same as existing extension_error NOTEs. Commit: the T6 commit carrying this line.
+- T7 live probe (verifier musixf7x-a-nqas, Pi 1.0.0 `dist/bundle/cli.js`, children spawned like the runner with temp homes, only `get_commands` sent, no model call):
+
+  | Scenario | /gentle:* | Duplicate names | Missing-tools notify | child-context / child-safety loaded | Median startup |
+  |---|---|---|---|---|---|
+  | A curated fallback, no packages | 0 | none | none (gentle-agents not loaded) | 1 / 1 | 279 ms |
+  | B `--extension <package root>` (#1690, no declaration) | 18 | none | yes | 1 / 1 | 548 ms |
+  | C′ takeover shape (`--no-extensions`, dummy package with an extension, package root) | 18 | none | yes | 1 / 1 | 481 ms |
+  | D gentle-pi declared + curated `--extension` (regular gentle-pi baseline) | 18 | none | yes | 1 / 1 (deduped under the package) | 516 ms |
+
+  - Target met: B == C′ == D == 18 and A == 0, with no duplicate command names.
+  - Notify text: `gentle-agents: requested tools missing in child: subagent_parent_message, definitely_missing_tool`. `codegraph` is present; `subagent_parent_message` shows only because the probe had no owned IPC.
+  - child-context/child-safety loading was confirmed through Pi's `DefaultResourceLoader` (each exactly once). The probe's own delegated shell also had an `rm -rf` blocked by child-safety.
+  - No gentle-pi shared-state writes: Pi core creates `{}` `auth.json`/`models-store.json` in every home, scenario A included; git status was unchanged.
+  - Cost: about +270 ms startup over the curated fallback, on par with regular gentle-pi.
+  - Takeover with an extension-less package (only `package.json`) crashes the child at startup ("Failed to load extension"). The launcher's `otherPackageInjections` does not filter such packages either, so a takeover parent would hit the same failure first; the child only mirrors a set the parent already started with. Tracked as a pre-existing follow-up.
 - [ ] T7 Acceptance probe: spawn like the runner (`--mode rpc --session-dir <tmp>`, `GENTLE_PI_AGENTS_CHILD=1`, isolated home) and compare RPC `get_commands` with a regular gentle-pi child (baseline 18 `/gentle:*` vs 0); measure startup cost; update docs. Route: `gentle-ai-verify`.
 
 ## Child hook audit (T1)
@@ -90,7 +105,7 @@ gentle-shell UI/timers, the gentle-agents host, gentle-todo, runtime-metrics, ge
 
 As of `f384d2a1`, the branch carries 322 changed lines against origin/main in code and tests (T2), plus about 100 in this ODD document, roughly 420 in total. The forecast for T2b-T7 is about 600-800 more lines, so a single PR would exceed the 400-line budget several times over. Proposed: stacked PRs to main, each landable on its own:
 
-**Re-sliced on 2026-10-03 (user-approved) into four stacked PRs:** PR1 = T1+T2+T2b (`fix/1690-standalone-child-package` @`54effec6`), PR2 = T3 (`fix/1690-launcher-injection-signal` @`a72978e3`; T3 alone is 380 changed lines), PR3 = T4+T5 (`fix/1690-child-package-forwarding`), PR4 = T6+T7. Original proposal:
+**Re-sliced on 2026-10-03 (user-approved) into four stacked PRs:** PR1 = T1+T2+T2b (`fix/1690-standalone-child-package` @`54effec6`), PR2 = T3 (`fix/1690-launcher-injection-signal` @`a72978e3`; T3 alone is 380 changed lines), PR3 = T4+T5+T6 (`fix/1690-child-package-forwarding`; about 239 code+test lines; re-sliced again on 2026-10-03 with user approval, and T4 must ship with T5), PR4 = T7. Original proposal:
 
 1. PR1, child guards: T1 + T2 + T2b. On its own it changes nothing for isolated children, and it hardens regular gentle-pi children, which already load the package. About 460 lines including this document; slightly over budget because of the tests and the doc.
 2. PR2, package forwarding: T3 + T4 + T5.
@@ -105,6 +120,8 @@ As of `f384d2a1`, the branch carries 322 changed lines against origin/main in co
 Every PR carries the chain context and a dependency diagram (chained-pr skill). No PR before barbatdev answers on `status:approved`.
 
 ## Pending follow-ups
+
+- [ ] Pre-existing: a takeover `-e` of a settings package without extensions (only `package.json`, skills-only) makes pi exit with "Failed to load extension" (seen in the T7 probe for a child; `otherPackageInjections` in `lib/gentle-shell-launcher.ts:707` does not filter such packages for the parent either). Confirm on the parent, then file it or fix it separately.
 
 - [ ] Agent frontmatter `"*": false` (`assets/agents/review-reliability.md:5`) is passed verbatim to `--tools` by `parseTools` (`lib/agents-config.ts:173-177`) and dropped by Pi. It predates #1690 and is ignored by the T6 check; decide whether the parser should drop it.
 - [ ] Optional: exclude task NOTEs from `sawRunEvent` (`lib/agents-runner.ts:785,798`) so stall timeouts keep the "no first run event" hint; affects extension_error/auto_retry NOTEs too.
@@ -131,6 +148,7 @@ Every PR carries the chain context and a dependency diagram (chained-pr skill). 
 - T1: commit `5848fb80` (static audit; the loader facts were re-confirmed on Pi 1.0.0 during T2 verification).
 - T2 RDD review (native Claude Code session): `approved`, medium risk, one lens (review-reliability), candidate `a67bb7f5` against base `5848fb80`, no correction; authority burned (lineage `review-71c63d42e08bde90`). Two non-blocking findings were tracked as T2b.
 - T2b RDD review (native Claude Code session): `approved`, medium risk, one lens (review-reliability), candidate `54effec6` against base `f384d2a1`, no correction; authority burned (lineage `review-8c111c00f615d9c9`). Both T2 findings confirmed resolved. Two new non-blocking suggestions were tracked in "Pending follow-ups".
+- T5 RDD review (native Claude Code session): `approved`, medium risk (classified from the .ts files although the change is comment-only), one lens, candidate `b54a2897` against base `78391611` on `review/1690-t5`, no correction; authority burned (lineage `review-b6e97876ce384292`). The reviewer confirmed that no executable line changed and that the comments match T4; claim (1), that child-context/child-safety are package entrypoints, was checked against `package.json`. Suggestions: (a) a test pinning `childContextExtensionPaths` to exactly the two current entries, so the frozen list is enforced (do it in T7); (b) the T7 live probe must show no duplicate commands in the declared and takeover cases (added to the running probe).
 - T4 RDD review (native Claude Code session): `approved`, medium risk, one lens, candidate `78391611` against base `a72978e3` on `review/1690-t4`, no correction; authority burned (lineage `review-abb3acfc02a43af1`). WARNING (non-blocking): with the signal, the curated entries are dropped, so the reviewer asked that T4 not ship without T5. Parent assessment: T4 and T5 ship together in PR3 anyway, and the forwarded package root already contains `child-context.ts`/`child-safety.ts` as entrypoints (T1 loader facts), so children keep both. T7's live probe must confirm it. SUGGESTION: add a test for `noExtensions: true` with an empty `extensionPaths` (`lib/agents-runner.ts:264`); the T3 parser rejects that shape, but no test inside T4 proves it.
 - T3 RDD review (native Claude Code session): `approved`, medium risk, one lens, candidate `a72978e3` against base `54effec6` on `fix/1690-launcher-injection-signal`, no correction; authority burned (lineage `review-3327730cc6f0c700`). Two non-blocking suggestions were tracked in "Pending follow-ups".
 - T2: RED→GREEN per guard (writer). Verification on a real `pnpm install --frozen-lockfile` with pi-coding-agent 1.0.0: focused tests 55/55; wider set 517/518, the one failure being `tests/history-session-scan-extract.test.ts:197` (mtime vs `Date.now()`, untouched code), which then passed 14/14 three times in isolation, so treated as a timing flake; `node scripts/check-types.mjs` gives the same result on the branch and on origin/main (186 recorded, no regressions). Loader facts on 1.0.0: rpc `hasUI` is true (`rpc-mode.js:230-232`, `runner.js:404-405`); `mergePaths` dedupes by realpath with the CLI paths first (`resource-loader.js:403-405,781-792`). Commit: the T2 commit carrying this line.
