@@ -123,10 +123,12 @@ export interface AgentsDeps extends RunnerDeps {
 	childExtensionPaths?: string[];
 }
 
-// gentle-shell#1587: children do not load the gentle-pi package in the
-// isolated Gentle Shell home, so context filtering and destructive-command
-// safety are passed to every child explicitly. Missing files are omitted;
-// installations must include both entries to provide the delegated boundary.
+// gentle-shell#1587: fallback for a parent without the launcher's package
+// injection signal (#1690), e.g. a manual `pi -e <package>` launch. Children
+// then get at least context filtering and destructive-command safety. When the
+// signal is present, children load the whole package instead. This list is
+// frozen: new child-facing behavior ships inside the package, never here.
+// Missing files are omitted; both entries form the delegated boundary.
 export function childContextExtensionPaths(exists: (path: string) => boolean = existsSync): string[] {
 	try {
 		return ["./child-context.ts", "./child-safety.ts"]

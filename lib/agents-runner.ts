@@ -127,10 +127,10 @@ export interface TaskRequest {
 	sessionDir: string;
 	resumeSessionPath: string | undefined;
 	env: NodeJS.ProcessEnv;
-	// Untrusted narrowing intent; paths come only from matching host provenance.
+	// Host-provided only: the launcher's package injection signal (#1690) or
+	// the curated fallback. Never derived from tool input or agent definitions.
 	extensionPaths?: string[];
-	// Same provenance as extensionPaths: set only from the host's launcher
-	// injection signal (#1690), never from tool input or agent definitions.
+	// Same host-only provenance as extensionPaths (#1690).
 	noExtensions?: boolean;
 	// Synchronous admission recheck at dequeue, before any OS spawn. Throws fail
 	// only this task; unlike onLaunch, it must never persist Changes evidence.
