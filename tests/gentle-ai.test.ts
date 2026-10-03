@@ -17,7 +17,7 @@ import type {
 import { __testing, applyModelConfig, applyModelConfigAsync, createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { PROFILES_KIND, PROFILES_VERSION } from "../lib/agent-profiles.ts";
 import type { AgentRoutingEntry } from "../lib/model-routing-authority.ts";
-type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel">;
+type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel" | "getThinkingLevel">;
 import { PROFILE_PIN_KIND, PROFILE_PIN_VERSION, setProfilePinWorktreeResolverForTesting, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
 import { NATIVE_REVIEW_ERROR_CODE, NativeReviewCliError, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { CandidateViewError, type CandidateViewRegistry } from "../lib/review-candidate-view.ts";
@@ -2368,8 +2368,10 @@ test("applying a populated profile whose routes already match skips the confirma
 test("applying a populated profile whose routes match and whose orchestrator is already set skips the confirmation", async (t) => {
 	const { fixture, storePath, writeStore, writeSettings } = profilesStoreFixture(t);
 	// writeSettings defaults to nan/deepseek-v4-flash · high; the profile's
-	// orchestrator entry says the same, so nothing changes there either.
+	// orchestrator entry says the same, and the live session still runs on it,
+	// so nothing changes anywhere.
 	writeSettings();
+	fixture.setLiveModel("nan", "deepseek-v4-flash", "high");
 	mkdirSync(fixture.configHome, { recursive: true });
 	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
 	writeStore({ team: { orchestrator: { model: "nan/deepseek-v4-flash", thinking: "high" }, worker: { model: "openai/alpha" } } });
@@ -2380,6 +2382,27 @@ test("applying a populated profile whose routes match and whose orchestrator is 
 	assert.equal(fixture.confirmCalls.length, 0, "an already-active profile must not ask for confirmation");
 	assert.deepEqual(fixture.liveSwitches, [], "the no-op apply performs no live switch: the orchestrator is already there");
 	assert.equal(JSON.parse(readFileSync(storePath, "utf8")).active, "team");
+});
+
+test("applying a populated profile keeps the confirmation when the live session runs a different model", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings } = profilesStoreFixture(t);
+	// settings.json and the profile agree on openai/alpha · high, but the live
+	// session was switched to openai/beta mid-session: applying would move the
+	// live session, so the no-op skip must not fire and the dialog must stay.
+	writeSettings({ defaultProvider: "openai", defaultModel: "alpha", defaultThinkingLevel: "high" });
+	fixture.setLiveModel("openai", "beta", "high");
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	writeStore({ team: { orchestrator: { model: "openai/alpha", thinking: "high" }, worker: { model: "openai/alpha" } } });
+
+	fixture.onConfirm(async () => false);
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 1, "a live-session orchestrator move is a real change and must confirm");
+	assert.deepEqual(fixture.liveSwitches, [], "declining must not switch the live session");
+	assert.notEqual(JSON.parse(readFileSync(storePath, "utf8")).active, "team");
 });
 
 test("applying a populated profile keeps the confirmation when settings.json holds an invalid thinking level", async (t) => {
