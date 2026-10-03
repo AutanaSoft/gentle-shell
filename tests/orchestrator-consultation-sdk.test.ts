@@ -181,12 +181,28 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 				assert.equal(failed, false, JSON.stringify(result));
 				return result;
 			}
-			// Transport startup is asynchronous. Poll public metadata readiness,
-			// never wait a whole heartbeat or invoke a private runner method.
+			// Logical identity is not transport liveness. This only checks metadata
+			// readiness; actual asynchronous socket publication is awaited below.
 			for (let i = 0; i < 100; i++) {
 				const result = await tool("orchestrator_session_id");
 				if (result.details?.gentleAgents?.senderSessionId) break;
-				assert.ok(i < 99, "transport ready within bounded poll");
+				assert.ok(i < 99, "session metadata ready within bounded poll");
+				await new Promise(resolve => setTimeout(resolve, 10));
+			}
+			const transportPresence = join(profile, "gentle-agents", "transport", "presence");
+			const deadline = Date.now() + 5000;
+			for (;;) {
+				const names = absent(transportPresence) ? [] : readdirSync(transportPresence).filter(name => name.endsWith(".json"));
+				const published = names.map(name => JSON.parse(readFileSync(join(transportPresence, name), "utf8")))
+					.find(record => record.sessionId === manager.getSessionId());
+				if (published) {
+					validateLeaf();
+					assert.equal(dirname(published.endpoint), socketLeaf);
+					assert.equal(dirname(realpathSync(published.endpoint)), socketLeaf);
+					assert.ok(lstatSync(published.endpoint).isSocket());
+					break;
+				}
+				assert.ok(Date.now() < deadline, "own transport presence/socket published within deadline");
 				await new Promise(resolve => setTimeout(resolve, 10));
 			}
 			return { session, manager, tool, close, calls: () => calls };
@@ -195,9 +211,17 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 		const caller = await host(roots[1]);
 		validateLeaf();
 		const transportPresence = join(profile, "gentle-agents", "transport", "presence");
-		const records = readdirSync(transportPresence).map(name => JSON.parse(readFileSync(join(transportPresence, name), "utf8")));
+		const records = readdirSync(transportPresence).filter(name => name.endsWith(".json")).map(name => {
+			const path = join(transportPresence, name), stat = lstatSync(path);
+			assert.ok(stat.isFile() && !stat.isSymbolicLink());
+			assert.equal(stat.uid, process.getuid!()); assert.equal(stat.mode & 0o777, 0o600);
+			return JSON.parse(readFileSync(path, "utf8"));
+		});
 		assert.equal(records.length, 2);
+		assert.deepEqual(records.map(record => record.sessionId).sort(), [owner.manager.getSessionId(), caller.manager.getSessionId()].sort());
 		for (const record of records) {
+			assert.deepEqual(Object.keys(record).sort(), ["createdAt", "endpoint", "sessionId", "version"]);
+			assert.equal(record.version, 1); assert.ok(Number.isSafeInteger(record.createdAt) && record.createdAt >= 0);
 			assert.equal(dirname(record.endpoint), socketLeaf);
 			assert.equal(dirname(realpathSync(record.endpoint)), socketLeaf);
 			assert.ok(lstatSync(record.endpoint).isSocket());
