@@ -35,15 +35,29 @@ function packageEntrypointProblems(manifest: { pi?: { extensions?: unknown } }, 
 
 test("the curated child fallback is frozen by #1690 to child-context and child-safety; new child behavior ships in the package", () => {
 	assertFrozenFallback(childContextExtensionPaths());
+});
+
+test("forwarding the package root gives children child-context and child-safety as top-level package entrypoints", () => {
+	// This mirrors Pi's discovery rules by hand (package-manager.js
+	// resolveExtensionEntries/collectAutoExtensionEntries). The end-to-end proof
+	// is the live probe recorded in odd/tasks/fix-1690-standalone-child-package.md.
+	const manifest = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
+	const entries = readdirSync(extensionsDir);
+	assert.deepEqual(packageEntrypointProblems(manifest, entries), []);
+});
+
+// Helper self-checks: these exercise the test helpers above, not product code,
+// and do not count as product coverage.
+
+test("helper self-check: assertFrozenFallback rejects a third entry and a reordered list", () => {
 	assert.throws(() => assertFrozenFallback([...frozenFallback, join(extensionsDir, "gentle-ai.ts")]), "a third entry must fail");
 	assert.throws(() => assertFrozenFallback([...frozenFallback].reverse()), "the order is part of the contract");
 });
 
-test("forwarding the package root gives children child-context and child-safety as top-level package entrypoints", () => {
-	const manifest = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
-	const entries = readdirSync(extensionsDir);
+test("helper self-check: packageEntrypointProblems flags each rule that narrows Pi's discovery", () => {
+	const manifest = { pi: { extensions: ["./extensions"] } };
+	const entries = ["child-context.ts", "child-safety.ts", "gentle-ai.ts"];
 	assert.deepEqual(packageEntrypointProblems(manifest, entries), []);
-
 	assert.deepEqual(packageEntrypointProblems(manifest, [...entries, "index.ts"]), ["extensions/index.ts narrows Pi's top-level discovery"]);
 	assert.deepEqual(packageEntrypointProblems(manifest, [...entries, "package.json"]), ["extensions/package.json narrows Pi's top-level discovery"]);
 	assert.deepEqual(packageEntrypointProblems(manifest, entries.filter((name) => name !== "child-safety.ts")), ["extensions/child-safety.ts is not a top-level entrypoint"]);
