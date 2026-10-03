@@ -49,6 +49,12 @@ S8. Bench: "corras los bench utilizando estas configuraciones para ver cómo fun
   validate: base FAIL 17/22, ref PASS 22/22, naive FAIL 9/22; configs bench.1731-{base,after}.json arms A/B/R. Bench npm test 194/194 (parent rerun).
   Bench commit bc3a2c7. Base pin built: /var/tmp/gentle-shell-bench/product/base-5d75a2ab (npm gentle-pi@4.0.0 + git archive 5d75a2ab overlay;
   deps unchanged since v4.0.0; no deleted files vs 7693fe49; extensions/gentle-ai.ts byte-identical). After pin built once T4 lands.
+- [ ] T7 (S4, AC4b) delegated writer · forced risk declaration: before closing any code change (inline or delegated) the orchestrator states one line
+  `Risk: item N (reason)` or `Risk: none`, checked against the core high-risk list; any item -> independent verify. Evidence L14 (x2 after-B skipped risk).
+- [ ] T8 (S3, AC3b) delegated writer · cost reason must pay for itself: never on the small path; when it fires, delegate the whole implementation in ONE
+  handoff (all units/fixes), never serial piecemeal. Evidence L14 (x1 after-R: "Implement ONLY the total-stock task first", 0.101 -> 0.464).
+- [ ] T9 (S2, AC2b) delegated writer · parallelism must actually run in parallel: launch every disjoint unit in the same turn in background mode,
+  then wait for all; serial launches void the reason (fall back to inline). Evidence L14 (x5 after-B: units ran serially, 0.158 -> 0.528).
 - [ ] T6 (S8, AC8) runs · bench before/after and report (stage cap reuses user's USD 60 approval)
 - [ ] G1 other repo, needs user OK · port kernel wording to gentle-ai canon (`routing.go`) with parity
 - [ ] G2 other repo, needs user OK · gentle-ai `review start` accepts escalate (RDD alignment)
@@ -68,3 +74,5 @@ L10 2026-10-03 T4 independent verify (musvls9n-8-ktiv): FAIL. B1 blocker false d
 L11 2026-10-03 T4 targeted re-verify (musvvm91-a-8x0b): PASS WITH ADVISORIES. B1/M1/m1 fixed; new A1 root-level false disjoint (session cwd subdirectory vs workspace_root git root compared with resolve only); advisories: `\` escapes, NFC/NFD, emoji with `?`, quarantine leak if group empties after exit event, "(runtime-enforced)" unqualified.
 L12 2026-10-03 user (answer): > Autorizar una segunda corrección acotada (recomendado)  -> A1 canonical git-root claim key (realpath), `\` and non-ASCII-glob fail-safe, NFC normalization, docs caveats; then targeted re-verify before commit.
 L13 2026-10-03 T4 committed 696dcee2. After pin built: /var/tmp/gentle-shell-bench/product/after-1731 (gentle-pi@4.0.0 + git archive 696dcee2; cmp verified). T6 launched via nohup /var/tmp/gentle-shell-bench/run-1731.sh (status run-1731.status): run ids x1731base/x1731after, tasks x1, x2, x5, x4; arms B and R before/after interleaved, A once (base) as reference; 20 cells; forecast USD 10-15, stage cap USD 20; stops on cap, modelMismatch, authRefreshed.
+L14 2026-10-04 T6 interim (15/20 cells, USD 3.47, all accepted except after-R x5 at round 1): three systemic failures share one shape - the rule decides WHETHER to delegate but nothing forces HOW: (a) x2 after-B never classified risk (core diff touches no risk/verify text; risk check is unforced and RDD off means no native assess); (b) x1 after-R cost reason delegated piecemeal serially on a small task; (c) x5 after-B split the disjoint units but launched them serially. Also after-R x5: luna worker missed a whole feature at round 0, verify did not catch it.
+L15 2026-10-04 user (verbatim): > Dale  (start fixes T7-T9 now while x4 cells finish; then rebuild the after pin and re-run affected cells)
