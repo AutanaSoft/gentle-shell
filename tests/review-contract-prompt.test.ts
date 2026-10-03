@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test, { after, before } from "node:test";
 import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createGentleAiExtension, __testing } from "../extensions/gentle-ai.ts";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 
 // gentle-pi#560 / gentle-ai#4056, #4057: since 2026-08-01 Gentle AI stopped
@@ -228,3 +228,29 @@ test("rejects a tampered mirror, accepts a matching one, and warns once", async 
 		rmSync(matching, { recursive: true, force: true });
 	}
 });
+
+// gentle-shell#1494 F2: when receipt-driven development is off, the review
+// execution contract is irrelevant to the session, so it is not loaded. On and
+// unknown keep it (unknown fails safe toward the reviewed path).
+function rddCli(effective: "on" | "off" | "throws"): NativeReviewCli {
+	return {
+		reviewMode: async () => {
+			if (effective === "throws") throw new Error("native review mode is unavailable");
+			return { operation: "status", scope: "clone", status: { global: effective, cloneLocal: "", effective, source: "global" } };
+		},
+	} as unknown as NativeReviewCli;
+}
+
+for (const [effective, injected] of [["off", false], ["on", true], ["throws", true]] as const) {
+	test(`before_agent_start ${injected ? "injects" : "skips"} the review execution contract when RDD is ${effective === "throws" ? "unknown" : effective}`, async () => {
+		__testing.clearRddStatusMemoForTesting();
+		const { beforeAgentStart } = harness(rddCli(effective));
+		const event = primaryEvent();
+		await beforeAgentStart(event, ctx());
+		const appended = event.systemPromptOptions.appendSystemPrompt;
+		assert.match(appended, /# el Gentleman Orchestrator/, "the harness itself is always injected");
+		if (injected) assert.match(appended, /Gentle AI review execution contract/);
+		else assert.doesNotMatch(appended, /Gentle AI review execution contract/);
+		__testing.clearRddStatusMemoForTesting();
+	});
+}

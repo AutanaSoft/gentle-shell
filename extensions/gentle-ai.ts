@@ -1092,6 +1092,11 @@ async function resolveRddModeStatus(
 	return status;
 }
 
+/** True only for a validated `off` line; `unknown` and `on` are never off. */
+function isRddStatusLineOff(line: string | undefined): boolean {
+	return line !== undefined && line.startsWith("Receipt-driven development: off ");
+}
+
 /** Resolves and renders the RDD status line for a production call site in one call. */
 async function resolveRddStatusLine(
 	nativeReviewCli: Pick<NativeReviewCli, "reviewMode"> | null | undefined,
@@ -9804,19 +9809,24 @@ function createGentleAiExtensionForTesting(
 		// resolveRddStatusLine never throws and never hangs past
 		// RDD_STATUS_TIMEOUT_MS: an absent/timed-out/aborted/failing native
 		// binary renders the fail-closed "unknown" line instead.
-		const gentlePrompt = !isPrimarySession
+		const rddStatusLine = !isPrimarySession
+			? undefined
+			: await resolveRddStatusLine(nativeReviewCli, ctx.cwd, AbortSignal.timeout(RDD_STATUS_TIMEOUT_MS), undefined, ctx);
+		const gentlePrompt = rddStatusLine === undefined
 			? ""
 			: `\n\n${buildGentlePrompt(
 					readPersonaMode(ctx.cwd),
 					ctx.cwd,
 					readActiveToolNames(pi),
-					await resolveRddStatusLine(nativeReviewCli, ctx.cwd, AbortSignal.timeout(RDD_STATUS_TIMEOUT_MS), undefined, ctx),
+					rddStatusLine,
 				)}`;
 		// gentle-pi#560 / gentle-ai#4056, #4057: inject the mirrored provider
 		// contract bundle's review execution contract for the primary session
 		// only, and only when a native review CLI is actually present.
+		// gentle-shell#1494: skip it while RDD reads off, since no review can
+		// start; on and unknown keep it so the reviewed path never loses it.
 		const reviewContractPrompt =
-			isPrimarySession && nativeReviewCli !== null
+			isPrimarySession && nativeReviewCli !== null && !isRddStatusLineOff(rddStatusLine)
 				? (() => {
 					const fragment = loadReviewContractPromptFragment(ctx);
 					return fragment === null ? "" : `\n\n${fragment}`;

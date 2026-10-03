@@ -57,7 +57,7 @@ S9. Measurement: bench baseline (origin/main cf3012f7) vs after, same scenarios:
 - [x] G3 (S6) filed as gentle-ai#5216 (follow-up, not implemented here)
 - [x] F1 filed as gentle-shell#1722 (~/AGENTS.md is 58,881 B with gentle-ai blocks)
 - [x] F3 filed as engram#1636 (gentle-engram lives in the engram repo, plugin/pi)
-- [ ] F2 follow-up, needs user OK (touches cause 5 loading only) · skip the RDD contract mirror when RDD is off
+- [x] F2 (S7) inline · skip the mirrored RDD review contract (8.5 KB) when RDD reads off; on/unknown keep it · RED→GREEN · this work unit
 
 ## Log
 L1 2026-10-03 user (verbatim): > sin delegar y en nuevo worktree, vamos a analizar https://github.com/Gentleman-Programming/gentle-shell/issues/1494
@@ -115,3 +115,10 @@ L25 2026-10-03 T5 results, arm B gpt-6.1-sol low, one run per cell (n=1), baseli
    | l1-tasklog (data migration) | 559 s, 48 turns, $0.403, odd doc, accepted at round 1 | 539 s, 72 turns, $0.555, no doc | 1 gentle-ai-verify |
    Reading: s1 is the #1494 case and now runs fully inline. s2 needed one explore (understanding beyond the batch), as S4 intends. l1 is high risk (S5 item 1: data migration with backup), so it got exactly the independent verifier; it is single-session and resumable from the diff, so by S2/S3 it is not large and creates no doc. It cost more ($0.555 vs $0.403) but passed acceptance without the feedback round the baseline needed.
    AC8 correction: "known-large task still creates the doc and delegates" assumed l1 is large; under the accepted definition it is high-risk, not large. A genuinely large scenario (multi-session or separate deliverables) still has to be authored to check the tracking path.
+L26 2026-10-03 user (verbatim): > Vamos con todas
+   (accepting F2, the new bench scenarios, and push/PR delivery.)
+   Rebase: gentle-pi #1721 (canon parity of #1713) merged; branch rebased onto origin/main 7693fe49 (one conflict in harness steps 4-6, re-applied); all unit tests 4633/0, core 8,084 B.
+L27 2026-10-03 F2 evidence (risk: medium; RDD loading only, RDD behavior unchanged):
+   RED: review-contract-prompt "skips the review execution contract when RDD is off" failed (contract still appended).
+   GREEN: review-contract-prompt 12/12; all unit tests 4636/0; provider-contract pass; runtime-harness pass; typecheck no regressions.
+   Rule: the contract is appended only when the primary session's RDD line is not a validated `off`; `unknown` keeps it (fails safe). Re-evaluated on every agent start through the existing 30 s status memo, so enabling RDD restores it on the next turn.
