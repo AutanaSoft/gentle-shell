@@ -39,6 +39,8 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Key, Text, isKeyRelease, matchesKey, truncateToWidth, type KeybindingsManager, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { resolveGentlePiAgentHome, gentlePiConfigHome } from "../lib/agent-home.ts";
+import { resolveAgentHomeDirectory, resolveEffectiveAgentModel } from "../lib/agent-model-resolution.ts";
+import { modelRoutingLine, renderModelRoutingLine } from "../lib/model-price-ratio.ts";
 import {
 	BACKGROUND_SUBAGENTS_FILE,
 	BACKGROUND_SUBAGENTS_SCHEMA,
@@ -1242,11 +1244,36 @@ const NEUTRAL_PERSONA_PROMPT = `Persona:
 - Push back when the user asks for code without enough context or understanding.
 - Correct errors directly, explain why, and show the better path.`;
 
+// gentle-shell#1731 S3: the orchestrator/worker price ratio is a runtime fact.
+// The effective gentle-ai-worker model is resolved through the same agent home,
+// discovery, and profile pin a launch uses; an unrouted worker inherits the
+// session model. Never throws: any failure renders the unknown line.
+function resolveModelRoutingLine(ctx: ExtensionContext, env: NodeJS.ProcessEnv): string {
+	try {
+		const home = homedir();
+		const orchestrator = ctx.model;
+		const worker = resolveEffectiveAgentModel("gentle-ai-worker", {
+			roots: { cwd: ctx.cwd, home, agentHome: resolveAgentHomeDirectory({ env, home }) },
+			pinCwd: ctx.cwd,
+			configHome: gentlePiConfigHome(env),
+			resolveWorktree: resolveSessionWorktree,
+			fallback: orchestrator,
+		});
+		if (!worker) return renderModelRoutingLine({ kind: "unknown", reason: "gentle-ai-worker agent not found" });
+		const registry = ctx.modelRegistry;
+		return modelRoutingLine(orchestrator, worker.model, (model) =>
+			(model.provider ? registry?.find(model.provider, model.id) : registry?.getAll().find((candidate) => candidate.id === model.id))?.cost);
+	} catch {
+		return renderModelRoutingLine({ kind: "unknown", reason: "model routing unavailable" });
+	}
+}
+
 function buildGentlePrompt(
 	persona: PersonaMode,
 	cwd: string = process.cwd(),
 	activeTools?: readonly string[],
 	rddStatusLine: string = renderRddStatusLine(undefined),
+	modelRoutingFact?: string,
 ): string {
 	const personaPrompt =
 		persona === "neutral" ? NEUTRAL_PERSONA_PROMPT : GENTLEMAN_PERSONA_PROMPT;
@@ -1292,7 +1319,7 @@ Harness principles:
 - For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observe RED, GREEN, then refactor with focused checks. Test presence alone does not establish applicability; no chat or TUI toggle activates it. For passive documentation, non-testable changes, an unavailable runner, or no meaningful RED, explain why and run proportionate ordinary functional or structural verification. Never invent lifecycle evidence or skip checks. Follow orchestrator-delegation.md for ODD forwarding and evidence.
 - Protect the human reviewer: avoid oversized changes, surface review workload risk, and ask before turning one task into a large multi-area change.
 - Never claim persistent memory is available because of this package. Memory is provided by separate packages or MCP tools when installed and callable.
-
+${modelRoutingFact === undefined ? "" : `\n${modelRoutingFact}\n`}
 ${getOrchestratorPrompt(cwd, activeTools, rddStatusLine)}`;
 }
 
@@ -9866,6 +9893,8 @@ function createGentleAiExtensionForTesting(
 		const rddStatusLine = !isPrimarySession
 			? undefined
 			: await resolveRddStatusLine(nativeReviewCli, ctx.cwd, AbortSignal.timeout(RDD_STATUS_TIMEOUT_MS), undefined, ctx);
+		// gentle-shell#1731: the model routing fact rides in the harness section,
+		// outside the memoized orchestrator core, for the primary session only.
 		const gentlePrompt = rddStatusLine === undefined
 			? ""
 			: `\n\n${buildGentlePrompt(
@@ -9873,6 +9902,7 @@ function createGentleAiExtensionForTesting(
 					ctx.cwd,
 					readActiveToolNames(pi),
 					rddStatusLine,
+					resolveModelRoutingLine(ctx, permissionEnvironment),
 				)}`;
 		// gentle-pi#560 / gentle-ai#4056, #4057: inject the mirrored provider
 		// contract bundle's review execution contract for the primary session

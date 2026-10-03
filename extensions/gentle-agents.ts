@@ -40,8 +40,9 @@ import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-inte
 import { AGENTS_GLYPH, renderAgentsCard, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
 import { CARD_TONE, renderCard } from "../lib/shell-card.ts";
 import { openInExternalEditor } from "./gentle-shell.ts";
-import { resolveGentlePiAgentHome, gentlePiConfigHome } from "../lib/agent-home.ts";
-import { resolveProfilePin, resolveUnversionedProjectProfile } from "../lib/agent-profile-pin.ts";
+import { gentlePiConfigHome } from "../lib/agent-home.ts";
+import { resolveAgentHomeDirectory, resolvePinnedAgentProfile } from "../lib/agent-model-resolution.ts";
+import { resolveUnversionedProjectProfile } from "../lib/agent-profile-pin.ts";
 import { allowedEditSurfaces, inheritAllowedEditSurfaces, isDevelopmentSurface, isGenericBoundedWriter, prepareBoundSessionRepository, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sessionRepositoryAuthority } from "../lib/bounded-writer-admission.ts";
 import { CHILD_METRICS_EVENT, CHILD_METRICS_REVOKED, childEvent, launchSelection, type LaunchSelection } from "../lib/runtime-metrics-children.ts";
 import { runtimeMetricsEnvAllows, type RuntimeMetricsPolicyDeps } from "../lib/runtime-metrics-policy.ts";
@@ -357,13 +358,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	const deps: AgentsDeps = { ...defaultDeps(env), ...overrides };
 	// An explicitly injected pi command wins over the default per-spawn resolver.
 	if (overrides?.pi && !overrides.resolvePi) delete deps.resolvePi;
-	const selectedHome = overrides.agentHome ?? (overrides.home === undefined ? resolveGentlePiAgentHome(deps.env) : join(deps.home, ".pi", "agent"));
-	// Expand environment tildes like Pi, but leave explicit path APIs literal.
-	const environmentHome = overrides.agentHome === undefined && overrides.home === undefined;
-	const expandedHome = environmentHome && selectedHome === "~" ? deps.home
-		: environmentHome && (selectedHome.startsWith("~/") || (process.platform === "win32" && selectedHome.startsWith("~\\"))) ? join(deps.home, selectedHome.slice(2)) : selectedHome;
 	// Freeze the host's root before a child uses a different session cwd.
-	const agentHome = resolve(expandedHome);
+	const agentHome = resolveAgentHomeDirectory({ env: deps.env, home: deps.home, agentHome: overrides.agentHome, homeOverridden: overrides.home !== undefined });
 	const sessionTransport = deps.sessionTransport ?? createDefaultSessionTransport();
 	if (legacySubagentsInstalledAt(agentHome)) {
 		pi.on("session_start", (_event, ctx) => {
@@ -1323,15 +1319,12 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const pinIdentity: WorktreeResolver = foreign ? resolveSessionWorktree : target !== undefined && parentIdentity !== undefined && target === parentIdentity.root
 			? () => parentIdentity
 			: deps.resolveWorktree;
-		const config = withPinnedModelProfiles(
-			loadAgentsConfig(roots(ctx)),
-			resolveProfilePin({
-				cwd: target ?? parentCwd,
-				configHome: gentlePiConfigHome(deps.env),
-				resolveWorktree: pinIdentity,
-			})?.modelProfiles,
-		);
-		const profile = resolveAgentProfile(agent, config);
+		const profile = resolvePinnedAgentProfile(agent, {
+			roots: roots(ctx),
+			pinCwd: target ?? parentCwd,
+			configHome: gentlePiConfigHome(deps.env),
+			resolveWorktree: pinIdentity,
+		});
 		if (admittedModel !== undefined) {
 			const model = profile.model ?? ctx.model;
 			const catalogModel = model?.provider ? ctx.modelRegistry?.find(model.provider, model.id) : ctx.modelRegistry?.getAll().find(candidate => candidate.id === model?.id);
