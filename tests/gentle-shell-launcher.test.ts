@@ -1135,6 +1135,7 @@ test("package injection relies on Pi's -e resource discovery in isolated and tak
 			passthrough: [],
 			baseEnv: {},
 			homedir: "/home/u",
+			cwd: "/work",
 		});
 		assert.deepEqual(built.args, takeOver ? ["--no-extensions", "-e", "/pkg"] : ["-e", "/pkg"]);
 	}
@@ -1154,6 +1155,7 @@ test("buildPiInvocation injects the launcher env into baseEnv", () => {
 		passthrough: [],
 		baseEnv: { PATH: "/usr/bin" },
 		homedir: "/home/u",
+		cwd: "/work",
 	});
 	assert.deepEqual(built.env, { PATH: "/usr/bin", PI_CODING_AGENT_DIR: "/pi/agent", GENTLE_PI_AGENT_HOME: "/pi/agent", GENTLE_SHELL_USER_PI_HOME: join("/home/u", ".pi", "agent") });
 });
@@ -1169,6 +1171,7 @@ test("buildPiInvocation skips injection when there is a declaration and no takeo
 		passthrough: ["--mode", "rpc"],
 		baseEnv: {},
 		homedir: "/home/u",
+		cwd: "/work",
 	});
 	assert.deepEqual(built.command, "/usr/bin/pi");
 	assert.deepEqual(built.args, ["--mode", "rpc"]);
@@ -1185,6 +1188,7 @@ test("buildPiInvocation adds the gentle-pi injection flags when there is no decl
 		passthrough: ["--mode", "rpc"],
 		baseEnv: {},
 		homedir: "/home/u",
+		cwd: "/work",
 	});
 	assert.deepEqual(built.args, [
 		"-e",
@@ -1206,6 +1210,7 @@ test("buildPiInvocation emits only runtime args and passthrough when a pi subcom
 		piSubcommand: "install",
 		baseEnv: {},
 		homedir: "/home/u",
+		cwd: "/work",
 	});
 	assert.deepEqual(built.args, ["install", "npm:x"]);
 	assert.equal(built.command, "/usr/bin/pi");
@@ -1223,6 +1228,7 @@ test("buildPiInvocation still injects the launcher env for a pi subcommand", () 
 		piSubcommand: "list",
 		baseEnv: { PATH: "/usr/bin" },
 		homedir: "/home/u",
+		cwd: "/work",
 	});
 	assert.deepEqual(built.env, {
 		PATH: "/usr/bin",
@@ -1244,6 +1250,7 @@ test("buildPiInvocation in link mode with a pi subcommand is exactly pi <subcomm
 		piSubcommand: "auth",
 		baseEnv: { PI_CODING_AGENT_DIR: "/pi/agent" },
 		homedir: "/home/u",
+		cwd: "/work",
 	});
 	assert.equal(built.command, "/usr/bin/pi");
 	assert.deepEqual(built.args, ["auth", "status"]);
@@ -1264,6 +1271,7 @@ test("buildPiInvocation carries the user's original Pi home without weakening is
 		passthrough: [],
 		baseEnv,
 		homedir: "/home/u",
+		cwd: "/work",
 	}).env;
 	const conventional = build({});
 	assert.equal(conventional.PI_CODING_AGENT_DIR, "/gentle-shell/agent");
@@ -1298,6 +1306,7 @@ test("buildPiInvocation keeps the runtime's own args ahead of the injection and 
 		passthrough: [],
 		baseEnv: {},
 		homedir: "/home/u",
+		cwd: "/work",
 	});
 	assert.equal(built.args[0], "/bundled/cli.js");
 	assert.equal(built.command, "/usr/bin/node");
@@ -1314,6 +1323,7 @@ test("buildPiInvocation takes over a conflicting path declaration: --no-extensio
 		passthrough: ["--mode", "rpc"],
 		baseEnv: {},
 		homedir: "/home/u",
+		cwd: "/work",
 	});
 	assert.deepEqual(built.args, [
 		"--no-extensions",
@@ -1337,6 +1347,7 @@ test("buildPiInvocation takes over with --package-root even for a matching npm d
 		passthrough: [],
 		baseEnv: {},
 		homedir: "/home/u",
+		cwd: "/work",
 	});
 	assert.deepEqual(built.args, [
 		"--no-extensions",
@@ -1356,6 +1367,7 @@ test("buildPiInvocation takes over with --package-root even when there is no dec
 		passthrough: [],
 		baseEnv: {},
 		homedir: "/home/u",
+		cwd: "/work",
 	});
 	assert.deepEqual(built.args, [
 		"--no-extensions",
@@ -1378,6 +1390,7 @@ test("buildPiInvocation injects loose extension entries during a takeover, after
 		passthrough: ["--mode", "rpc"],
 		baseEnv: {},
 		homedir: "/home/u",
+		cwd: "/work",
 	});
 	assert.deepEqual(built.args, [
 		"--no-extensions",
@@ -1405,6 +1418,7 @@ test("buildPiInvocation omits loose extension entry flags when the list is empty
 		passthrough: [],
 		baseEnv: {},
 		homedir: "/home/u",
+		cwd: "/work",
 	});
 	assert.deepEqual(withoutField.args, ["--no-extensions", "-e", "/pkg"]);
 
@@ -1419,6 +1433,7 @@ test("buildPiInvocation omits loose extension entry flags when the list is empty
 		passthrough: [],
 		baseEnv: {},
 		homedir: "/home/u",
+		cwd: "/work",
 	});
 	assert.deepEqual(withEmptyField.args, withoutField.args);
 });
@@ -1440,6 +1455,7 @@ test("buildPiInvocation dedupes loose extension entries against other-package pa
 		passthrough: [],
 		baseEnv: {},
 		homedir: "/home/u",
+		cwd: "/work",
 	});
 	assert.deepEqual(built.args, [
 		"--no-extensions",
@@ -1469,6 +1485,7 @@ test("buildPiInvocation dedupes the launcher's own package root against an other
 		passthrough: [],
 		baseEnv: {},
 		homedir: "/home/u",
+		cwd: "/work",
 	});
 	const eFlags = built.args.filter((arg, index) => built.args[index - 1] === "-e");
 	assert.deepEqual(eFlags, [join("/agent", "npm", "node_modules", "some-other"), "/pkg"]);
@@ -1494,6 +1511,7 @@ const injectionInput = {
 	otherPackagePaths: [],
 	passthrough: ["-e", "/user/ext.ts", "--mode", "rpc"],
 	homedir: "/home/u",
+	cwd: "/work",
 };
 
 test("buildPiInvocation signals the packageRoot injection when there is no declaration", () => {
@@ -1521,9 +1539,12 @@ test("buildPiInvocation signals the exact deduped takeover -e set in order, with
 	assert.deepEqual(signal?.extensionPaths, launcherPaths);
 });
 
-test("buildPiInvocation signals absolute paths even when a takeover receives a relative loose entry", () => {
+test("buildPiInvocation signals absolute paths resolved against the given cwd when a takeover receives a relative loose entry", () => {
+	const cwd = resolve("/elsewhere", "launch-dir");
+	assert.notEqual(cwd, process.cwd());
 	const built = buildPiInvocation({
 		...injectionInput,
+		cwd,
 		home: linkHome,
 		declaration: { kind: "npm" },
 		takeOver: true,
@@ -1531,7 +1552,42 @@ test("buildPiInvocation signals absolute paths even when a takeover receives a r
 		baseEnv: {},
 	});
 	assert.ok(built.args.includes(join("relative-home", "extensions", "a.ts")), "the -e argv itself is unchanged");
-	assert.deepEqual(parseChildPackageInjection(built.env)?.extensionPaths, [resolve("relative-home", "extensions", "a.ts"), "/pkg"]);
+	assert.deepEqual(parseChildPackageInjection(built.env)?.extensionPaths, [resolve(cwd, "relative-home", "extensions", "a.ts"), "/pkg"]);
+});
+
+test("buildPiInvocation signals one entry for a file spelled both relative and absolute, while argv keeps both spellings", () => {
+	const cwd = resolve("/elsewhere", "launch-dir");
+	const relative = join("relative-home", "extensions", "a.ts");
+	const absolute = resolve(cwd, relative);
+	const built = buildPiInvocation({
+		...injectionInput,
+		cwd,
+		home: linkHome,
+		declaration: { kind: "npm" },
+		takeOver: true,
+		otherPackagePaths: ["/agent/npm/node_modules/some-other", absolute],
+		looseExtensionEntries: [relative, "/agent/extensions/b.ts"],
+		baseEnv: {},
+	});
+	assert.deepEqual(built.args.slice(0, built.args.indexOf("--mode") - 2), [
+		"--no-extensions",
+		"-e",
+		"/agent/npm/node_modules/some-other",
+		"-e",
+		absolute,
+		"-e",
+		relative,
+		"-e",
+		"/agent/extensions/b.ts",
+		"-e",
+		"/pkg",
+	]);
+	assert.deepEqual(parseChildPackageInjection(built.env)?.extensionPaths, [
+		"/agent/npm/node_modules/some-other",
+		absolute,
+		"/agent/extensions/b.ts",
+		"/pkg",
+	]);
 });
 
 test("buildPiInvocation does not signal when settings already declare gentle-pi, and drops an inherited signal", () => {

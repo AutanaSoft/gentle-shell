@@ -889,6 +889,10 @@ export function discoverLooseExtensionEntries(dir        , fs                  )
 
 
 
+
+
+
+
 // Four cases, checked in this order — `piSubcommand` first, then `takeOver`:
 //   - piSubcommand: pi dispatches install/remove/uninstall/update/list/
 //     config/auth on argv[0] before it even parses flags, so any injected
@@ -954,10 +958,14 @@ export function buildPiInvocation(input                        )               {
 			injected.add(input.packageRoot);
 			args.push("-e", input.packageRoot);
 		}
-		childInjection = { noExtensions: true, extensionPaths: [...injected].map(absoluteExtensionPath) };
+		// The argv dedupe above compares raw strings; the signal dedupes again
+		// after absolutizing, so a relative and an absolute spelling of the same
+		// file appear once, in first-occurrence order.
+		const signalPaths = new Set([...injected].map((path) => absoluteExtensionPath(path, input.cwd)));
+		childInjection = { noExtensions: true, extensionPaths: [...signalPaths] };
 	} else if (input.declaration === undefined) {
 		args.push("-e", input.packageRoot);
-		childInjection = { noExtensions: false, extensionPaths: [absoluteExtensionPath(input.packageRoot)] };
+		childInjection = { noExtensions: false, extensionPaths: [absoluteExtensionPath(input.packageRoot, input.cwd)] };
 	}
 
 	args.push(...input.passthrough);
@@ -974,12 +982,12 @@ export function buildPiInvocation(input                        )               {
 	return { command: input.runtime.command, args, env };
 }
 
-// pi resolves a relative -e path against its cwd, which is the launcher's own
-// (the spawn sets no cwd). Children may run elsewhere, so the signal carries
-// the same file as an absolute path. Loose entries can be relative when the
-// isolated or linked home comes from a relative env value.
-function absoluteExtensionPath(path        )         {
-	return isAbsolute(path) ? path : resolvePath(path);
+// pi resolves a relative -e path against its spawn cwd. Children may run
+// elsewhere, so the signal carries the same file as an absolute path. Loose
+// entries can be relative when the isolated or linked home comes from a
+// relative env value.
+function absoluteExtensionPath(path        , cwd        )         {
+	return isAbsolute(path) ? path : resolvePath(cwd, path);
 }
 
 // --- spawn planning ------------------------------------------------------------
