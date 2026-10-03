@@ -119,7 +119,9 @@ Reuse canonical Git root/common-directory resolution for the host, launch-owned 
 
 Context decision accepted: initial consultations use published status and curated summaries only. Automatic conversation/system-prompt/file sharing is not authorized; any future expansion needs explicit user enablement. No auxiliary may forge an owner decision. Metadata-only queries, reasoning and decision handling remain pending.
 
-## Unit 4: bounded metadata continuation (implementation verified; parent review pending)
+## Unit 4: bounded metadata continuation (native review approved; SDK acceptance pending)
+
+Parent: behavior commit `8a9ccc66` passed native `review-reliability` (`review-657ff6e298bd22b3`), approved and acknowledged/burned. Its non-blocking catalog-write-isolation advisory belongs to later work; the approved review is not reopened. Actual SDK continuation remains unverified (missing adapter), unlike Unit 3's prior SDK proof.
 
 Previous PR: #1720; branch `feat/1701-scope-continuation`, base `9acd5a81`. Continue owned task and recorded registered-workspace metadata past the first eight facts through private, activation/snapshot-bound pages. Reuse existing sources; no transcript/thread reads, extra model calls, receiver wakeups or extra Git probes per heartbeat. Preserve bounded omissions and unknown Git facts for unvisited roots.
 
