@@ -3,10 +3,12 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { bindSessionRepositoryPreparation } from "../lib/bounded-writer-admission.ts";
 import { GENTLE_AI_TIMING_ENTRY } from "../lib/gentle-ai-elapsed-store.ts";
+import { REVIEW_SIDEBAR_EVENT } from "../lib/review-sidebar-state.ts";
+import { YOLO_STATUS_KEY } from "../lib/yolo-session-policy.ts";
 
 // gentle-shell#1690: the package is forwarded to delegated rpc children
 // (GENTLE_PI_AGENTS_CHILD=1, where ctx.hasUI is true). Parent-owned startup
@@ -40,12 +42,16 @@ function harness(child: boolean, cwd: string) {
 	const nativeAccesses: string[] = [];
 	const sweeps: string[] = [];
 	const prompts: string[] = [];
+	const statuses: Array<[string, string | undefined]> = [];
+	const emitted: Array<{ name: string; payload: unknown }> = [];
+	const tools = new Map<string, ToolDefinition>();
 	const pi = {
 		on: (name: string, handler: Handler) => { handlers.set(name, handler); },
-		events: { on() {}, emit() {} },
+		events: { on() {}, emit: (name: string, payload: unknown) => { emitted.push({ name, payload }); } },
 		appendEntry: (customType: string, data: unknown) => { entries.push({ type: "custom", customType, data }); },
 		getThinkingLevel: () => "medium",
-		registerTool() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {},
+		registerTool: (tool: ToolDefinition) => { tools.set(tool.name, tool); },
+		registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {},
 	} as unknown as ExtensionAPI;
 	// Any read of the native CLI means the session reached review negotiation
 	// or repository preparation.
@@ -66,12 +72,13 @@ function harness(child: boolean, cwd: string) {
 		hasUI: true,
 		sessionManager,
 		ui: {
-			notify() {}, setStatus() {},
+			notify() {},
+			setStatus: (key: string, text?: string) => { statuses.push([key, text]); },
 			confirm: async (title: string) => { prompts.push(`confirm:${title}`); return false; },
 			select: async (title: string) => { prompts.push(`select:${title}`); return undefined; },
 		},
 	} as unknown as ExtensionContext;
-	return { handlers, entries, nativeAccesses, sweeps, prompts, ctx, sessionManager };
+	return { handlers, entries, nativeAccesses, sweeps, prompts, statuses, emitted, tools, ctx, sessionManager };
 }
 
 function legacySettings(cwd: string): string {
@@ -87,10 +94,10 @@ test("child session_start keeps local resets but skips parent-owned startup work
 	const before = readFileSync(settingsPath, "utf8");
 	const h = harness(true, cwd);
 	const timings = () => h.entries.filter((entry) => entry.customType === GENTLE_AI_TIMING_ENTRY);
-	h.handlers.get("tool_execution_start")!({ toolName: "gentle_review", toolCallId: "before" }, h.ctx);
+	await h.handlers.get("tool_execution_start")!({ toolName: "gentle_review", toolCallId: "before" }, h.ctx);
 	assert.equal(timings().length, 0, "no elapsed-timing ledger exists before session_start");
 	await h.handlers.get("session_start")!({ reason: "startup" }, h.ctx);
-	h.handlers.get("tool_execution_start")!({ toolName: "gentle_review", toolCallId: "after" }, h.ctx);
+	await h.handlers.get("tool_execution_start")!({ toolName: "gentle_review", toolCallId: "after" }, h.ctx);
 	assert.equal(timings().length, 1, "the child still creates its elapsed-timing ledger");
 	assert.deepEqual(readdirSync(agentHome), [], "a child must not install package assets");
 	assert.equal(readFileSync(settingsPath, "utf8"), before, "a child must not migrate project model overrides");
@@ -128,6 +135,33 @@ test("child session_start re-arms the reminder session for its own session manag
 	assert.equal(mutations().length, 0, "the reminder manager moved to the new session");
 	await write(nextCtx, "current-manager");
 	assert.equal(mutations().length, 1, "the restarted child records its own mutation");
+});
+
+test("child session_start re-arms YOLO and the review sidebar for its own session", async (t) => {
+	const { cwd } = isolate(t);
+	const h = harness(true, cwd);
+	const next = { ...h.sessionManager, getSessionId: () => "session-child-next" };
+	const nextCtx = { ...h.ctx, sessionManager: next } as unknown as ExtensionContext;
+	const yoloClears = () => h.statuses.filter(([key, text]) => key === YOLO_STATUS_KEY && text === undefined).length;
+	const sidebarSessions = () => h.emitted.filter((event) => event.name === REVIEW_SIDEBAR_EVENT)
+		.map((event) => (event.payload as { sessionId: string }).sessionId);
+	// Any non-assess call passes through the sidebar wrapper, which publishes
+	// before running; the native outcome itself is irrelevant here.
+	const capture = async (ctx: ExtensionContext, toolCallId: string) => {
+		try { await h.tools.get("gentle_review_capture")!.execute(toolCallId, {}, undefined, undefined, ctx as never); } catch { /* outcome irrelevant */ }
+	};
+	await h.handlers.get("session_start")!({ reason: "startup" }, h.ctx);
+	await h.handlers.get("session_shutdown")!({ reason: "new" }, h.ctx);
+	await capture(h.ctx, "after-shutdown");
+	assert.deepEqual(sidebarSessions(), [], "a shut-down sidebar publishes nothing");
+	const clearsBeforeRestart = yoloClears();
+	await h.handlers.get("session_start")!({ reason: "new" }, nextCtx);
+	assert.equal(yoloClears(), clearsBeforeRestart + 1, "the child session_start resets YOLO and clears its indicator");
+	await capture(h.ctx, "stale-session");
+	assert.deepEqual(sidebarSessions(), [], "the sidebar moved to the new session");
+	await capture(nextCtx, "current-session");
+	assert.ok(sidebarSessions().length > 0, "the restarted child sidebar publishes again");
+	assert.ok(sidebarSessions().every((id) => id === "session-child-next"), JSON.stringify(sidebarSessions()));
 });
 
 async function writeToolResult(child: boolean, t: TestContext) {
