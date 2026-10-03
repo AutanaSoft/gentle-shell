@@ -151,3 +151,18 @@ test("AC7: each delegation module stays under its byte budget and is loaded by i
 		assert.ok(line.includes(`\`${file}\``), `${label} must load ${file}`);
 	}
 });
+
+// S7 axis 2 (more input than output): tracking writes are mechanical; the
+// model edits instead of rewriting and never re-emits the whole document just
+// to mirror it.
+test("T4: tracking updates edit in place and mirror without re-emitting the document", () => {
+	const memory = read("assets/orchestrator-memory.md");
+	for (const clause of [
+		"Update the feature document with targeted edits; never rewrite the whole file to change a task line or append a log entry.",
+		"When a code-execution tool such as `codemode` is available, refresh the Engram mirror inside one script that reads the file and saves its content, so the document is never re-emitted as output tokens.",
+		"projection for large ODD,",
+	]) {
+		assert.ok(memory.includes(clause), `orchestrator-memory.md is missing: ${clause}`);
+	}
+	assert.ok(!memory.includes("For substantial authorized organic implementation"), "memory detail must size by Task Size, not 'substantial'");
+});

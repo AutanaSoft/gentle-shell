@@ -49,13 +49,14 @@ S9. Measurement: bench baseline (origin/main cf3012f7) vs after, same scenarios:
 - [ ] T0 (S9) in progress · baseline bench re-run at main cd4ba5a7 (L17), arm B on s1-tasklog, s2-ledger, l1-tasklog; new scenarios pending
 - [x] T1 (S1-S5, S7) inline · always-on Task Size + Mechanisms in assets/orchestrator.md; harness Classify/steps 5-6; delegation, skill, readme aligned; contract tests · RED→GREEN · 3e5c8012 (rebased from 6f882b6b)
 - [x] T2 (S7) inline · orchestrator-delegation.md split into tracking/verification/writer/prompts modules; union test helper; AC7 budget test · refactor under existing contract tests · 6f8a78b8
-- [x] T3 (S5, S6) inline · `escalate` input on gentle_review assess (raise-only, pi-side), HIGH_RISK_ITEMS, rule text in verification/tracking modules · RED→GREEN · this work unit
-- [ ] T4 (S7) inline · output reduction: edit-not-rewrite rule; spike mechanical Engram mirror of `odd/tasks/*.md`
+- [x] T3 (S5, S6) inline · `escalate` input on gentle_review assess (raise-only, pi-side), HIGH_RISK_ITEMS, rule text in verification/tracking modules · RED→GREEN · 711ad9db
+- [x] T4 (S7) inline · edit-not-rewrite rule and codemode mirror refresh in orchestrator-memory.md; extension-side auto-mirror spike → F3 · RED→GREEN · this work unit
 - [ ] T5 (S9) inline · bench after; AC8 verdicts
 - [ ] G1 (S8) other repo · port the kernel to the gentle-ai canon with parity
 - [ ] G2 (S6) other repo · gentle-ai assess accepts escalate-only agent raise
 - [ ] G3 (S6) other repo · deterministic lowering accuracy using the Laya/Kev corpus (40 RDD candidates + 113 ODD commits)
 - [ ] F1 follow-up issue · Pi loads the canon twice (`~/AGENTS.md` + gentle-pi injection)
+- [ ] F3 follow-up issue (gentle-engram) · mirror `odd/tasks/*.md` to Engram automatically on write, with zero model output
 - [ ] F2 follow-up, needs user OK (touches cause 5 loading only) · skip the RDD contract mirror when RDD is off
 
 ## Log
@@ -97,3 +98,7 @@ L20 2026-10-03 T3 evidence (risk: HIGH, changes the gentle_review assess input c
    GREEN: agent-risk-escalation 8/8; all unit tests 4632 pass / 0 fail; provider-contract pass; runtime-harness pass; typecheck no regressions.
    Design: lib/review-risk-assessment.ts adds HIGH_RISK_ITEMS, decodeAgentRiskEscalation (item integer 1-6, reason 1-500 chars, no extra keys) and escalatedRisk (passive/medium -> high, never lowers); the assess facade accepts `escalate`, returns `nativeRisk` and `agentEscalation`, and plans verification on the raised tier. The raise is pi-side only until gentle-ai assess accepts it (G2) and the package pin moves; the native review tier is unchanged until then.
    Budget: orchestrator-verification.md budget 5,000 -> 5,500 B for the escalation section (now 5,113 B).
+L21 2026-10-03 T4 evidence (risk: medium, prompt text; inline per L1):
+   RED: task-size-routing-contract "T4: tracking updates edit in place..." failed on the missing clauses.
+   GREEN: all unit tests 4633 pass / 0 fail.
+   Spike: gentle-pi cannot mirror to Engram without the model today; memory tools belong to the separate gentle-engram package (engram CLI `save` has no topic-key upsert in its help). The zero-output path available now is a codemode script that reads the file and calls mem_save (used throughout this feature). Automatic mirroring on write belongs in gentle-engram → F3.
