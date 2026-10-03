@@ -24,10 +24,6 @@ Public/contextual comments and replies are different from technical artifacts. W
 
 Subagent-facing English delegation and quote/UI exceptions: `orchestrator-delegation.md`.
 
-## Mental Model
-
-Get out of the way: small tasks run inline; large tasks get ODD tracking and workers.
-
 ## Task Size
 
 A task is **small** when all three hold:
@@ -36,7 +32,7 @@ A task is **small** when all three hold:
 2. **Contained risk** — no high-risk item below.
 3. **Resumable from the diff** — resume test: if the session stopped now, someone could finish from the original request and `git diff` alone.
 
-The number of files, commands or tests, fixes, or a requested `todo` list never decides size. A task is **large** only when the resume test fails (several sessions, external waits, separate deliverables, or requirements compaction could lose).
+The number of files, commands or tests, fixes, or a requested `todo` list never decides size. A task is **large** only when the resume test fails (several sessions, external waits, separate deliverables, or requirements compaction could lose); large tasks get ODD tracking and workers.
 
 Small path: inline. Read and edit (one understood change may span files); observe RED inline before the fix; run the focused test and the suite inline, once each. No explore, worker, or verifier; no feature document, mirror, or commits unless the user asks; `todo` optional. It needs no lazy asset.
 
@@ -56,15 +52,15 @@ Mandatory Delegation Triggers — each mechanism turns on only by its own trigge
 
 1. **Ask** — open product or design decision → one focused question; stop and wait.
 2. **Evidence-budget rule** — understanding needs more than one read batch or >~5 sequential lookups → one `gentle-ai-explore`, handoff at most ~2k tokens with `path:line` evidence; re-read nothing it covered beyond one spot check.
-3. **Verification rule** — high risk → independent `gentle-ai-verify` after the change's own checks; otherwise checks run inline.
-4. **Track** — large task → feature document, Engram mirror, `todo`, work-unit commits (`orchestrator-memory.md`).
-5. **Writer rule** — large task → one bounded `gentle-ai-worker` per task; never by file count.
+3. **Verification rule** — high risk → independent `gentle-ai-verify` after the change's own checks (`orchestrator-verification.md`); otherwise checks run inline.
+4. **Track** — large task → feature document, Engram mirror, `todo`, work-unit commits (`orchestrator-tracking.md`, `orchestrator-memory.md`).
+5. **Writer rule** — large task → one bounded `gentle-ai-worker` per task (`orchestrator-writer.md`); never by file count.
 6. **Incident rule** — diagnose wrong cwd/worktree/git/tooling incidents separately before resuming.
-7. **Context backstop** — parent context past ~150k tokens → delegate the next bounded unit. Keep command output bounded (counts, `--stat`, `tail`).
+7. **Context backstop** — parent context past ~150k tokens → delegate the next bounded unit. Bound command output (counts, `--stat`, `tail`).
 
 {{GENTLE_PI_BACKGROUND_POLICY}}; rules: the background-subagents block in the delegation contract.
 
-Per-action table, Work Routing Ladder examples, Canonical Workflows, and the mirrored gentle-ai canon (blocking-prompt relays, language, delegation): `orchestrator-delegation.md`.
+Per-action table, Work Routing Ladder examples, Canonical Workflows, mirrored canon (language, delegation): `orchestrator-delegation.md`; blocking-prompt relays and provider defects: `orchestrator-prompts.md`.
 
 ## Memory Contract
 

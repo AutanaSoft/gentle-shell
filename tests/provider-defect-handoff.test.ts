@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { readDelegationDetail } from "./support/orchestrator-modules.ts";
 
 // ---------------------------------------------------------------------------
 // Provider Defect Handoff — structural readback tests (issue #256, track 5)
@@ -17,7 +18,7 @@ import test from "node:test";
 
 const REPO_ROOT = join(import.meta.dirname, "..");
 const DELEGATION_PATH = join(REPO_ROOT, "assets", "orchestrator-delegation.md");
-const DELEGATION = readFileSync(DELEGATION_PATH, "utf8");
+const DELEGATION = readDelegationDetail();
 
 const CHOICE_TOKENS = ["report_and_continue", "continue_without_reporting", "stop_here"] as const;
 

@@ -448,8 +448,13 @@ test("every compressed lazy-file pointer in the core still names the material it
 	const namedPointers: ReadonlyArray<{ file: string; mustName: readonly string[] }> = [
 		{
 			file: "orchestrator-delegation.md",
-			mustName: ["Per-action table", "Work Routing Ladder", "Canonical Workflows", "blocking-prompt relays"],
+			mustName: ["Per-action table", "Work Routing Ladder", "Canonical Workflows"],
 		},
+		// gentle-shell#1494 per-mechanism modules.
+		{ file: "orchestrator-prompts.md", mustName: ["blocking-prompt relays", "provider defects"] },
+		{ file: "orchestrator-tracking.md", mustName: ["Track", "feature document"] },
+		{ file: "orchestrator-verification.md", mustName: ["Verification rule", "high risk"] },
+		{ file: "orchestrator-writer.md", mustName: ["Writer rule", "large task"] },
 		{
 			file: "orchestrator-memory.md",
 			mustName: ["ODD task continuity", "memory lifecycle"],

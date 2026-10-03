@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { __testing } from "../extensions/gentle-ai.ts";
+import { readDelegationDetail } from "./support/orchestrator-modules.ts";
 
 // gentle-shell#1494: task size is decided by understanding, risk, and whether
 // the work can be resumed from the diff, never by counting files, commands,
@@ -13,7 +14,7 @@ const REPO_ROOT = join(import.meta.dirname, "..");
 const read = (relative: string): string => readFileSync(join(REPO_ROOT, relative), "utf8");
 
 const core = read("assets/orchestrator.md");
-const delegation = read("assets/orchestrator-delegation.md");
+const delegation = readDelegationDetail();
 const skill = read("skills/gentle-ai/SKILL.md");
 const extension = read("extensions/gentle-ai.ts");
 
@@ -117,5 +118,36 @@ test("AC5: the high-risk list lives once in the core, native tier wins, unclear 
 	}
 	for (const [path, text] of Object.entries({ delegation, skill })) {
 		assert.ok(!text.includes("(1) data or irreversible effects"), `${path} restates the high-risk list`);
+	}
+});
+
+// AC7 (S7): the small path reads no lazy rule file, and each lazy module stays
+// small enough that one mechanism costs one bounded read instead of 49 KB.
+const MODULE_BUDGETS: Record<string, number> = {
+	"orchestrator-delegation.md": 20_000,
+	"orchestrator-tracking.md": 12_500,
+	"orchestrator-verification.md": 5_000,
+	"orchestrator-writer.md": 4_500,
+	"orchestrator-prompts.md": 13_000,
+};
+
+test("AC7: each delegation module stays under its byte budget and is loaded by its mechanism only", () => {
+	for (const [file, budget] of Object.entries(MODULE_BUDGETS)) {
+		const bytes = Buffer.byteLength(read(`assets/${file}`), "utf8");
+		assert.ok(bytes <= budget, `${file} is ${bytes} B, over its ${budget} B budget`);
+		assert.ok(core.includes(`\`${file}\``), `the always-on core must point at ${file}`);
+		assert.ok(read("scripts/verify-package-files.mjs").includes(`assets/${file}`), `${file} must be a required package file`);
+	}
+	const smallPath = sectionOf(core, "## Task Size").split("\n").find((line) => line.startsWith("Small path:")) ?? "";
+	assert.ok(smallPath.includes("It needs no lazy asset"), "the small path must say it needs no lazy asset");
+	assert.doesNotMatch(smallPath, /`orchestrator-[a-z]+\.md`/, "the small path must not point at any lazy module");
+	const mechanisms = sectionOf(core, "## Mechanisms");
+	for (const [label, file] of [
+		["3. **Verification rule**", "orchestrator-verification.md"],
+		["4. **Track**", "orchestrator-tracking.md"],
+		["5. **Writer rule**", "orchestrator-writer.md"],
+	] as const) {
+		const line = mechanisms.split("\n").find((entry) => entry.startsWith(label)) ?? "";
+		assert.ok(line.includes(`\`${file}\``), `${label} must load ${file}`);
 	}
 });

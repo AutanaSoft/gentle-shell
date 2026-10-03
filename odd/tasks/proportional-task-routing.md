@@ -46,9 +46,9 @@ S9. Measurement: bench baseline (origin/main cf3012f7) vs after, same scenarios:
 - AC9 [all] `npm test` and `npm run typecheck` pass; tests pinning old wording change in the same commit.
 
 ## Tasks
-- [ ] T0 (S9) in progress · baseline bench in `~/work/gentle-shell-bench`, arm B on s1-tasklog, s2-ledger, l1-tasklog (L16); new scenarios pending
-- [x] T1 (S1-S5, S7) inline · always-on Task Size + Mechanisms in assets/orchestrator.md; harness Classify/steps 5-6; delegation, skill, readme aligned; contract tests · RED→GREEN · this work unit
-- [ ] T2 (S7) inline · split orchestrator-delegation.md into per-mechanism lazy modules with byte-budget tests
+- [ ] T0 (S9) in progress · baseline bench re-run at main cd4ba5a7 (L17), arm B on s1-tasklog, s2-ledger, l1-tasklog; new scenarios pending
+- [x] T1 (S1-S5, S7) inline · always-on Task Size + Mechanisms in assets/orchestrator.md; harness Classify/steps 5-6; delegation, skill, readme aligned; contract tests · RED→GREEN · 3e5c8012 (rebased from 6f882b6b)
+- [x] T2 (S7) inline · orchestrator-delegation.md split into tracking/verification/writer/prompts modules; union test helper; AC7 budget test · refactor under existing contract tests · this work unit
 - [ ] T3 (S5, S6) inline · high-risk list in the verification module; `escalate` field in the gentle_review assess facade
 - [ ] T4 (S7) inline · output reduction: edit-not-rewrite rule; spike mechanical Engram mirror of `odd/tasks/*.md`
 - [ ] T5 (S9) inline · bench after; AC8 verdicts
@@ -86,3 +86,8 @@ L15 2026-10-03 T1 evidence (risk: medium, prompt-contract change; route inline p
    Decisions: the canon fixture and ratchet canonical anchors stay (they mirror gentle-ai); the ratchet marks writer/mapping as "Gentle Shell leads the canon (gentle-shell#1494)" until G1. Trigger list renumbered 1 Ask, 2 Evidence-budget, 3 Verification, 4 Track, 5 Writer, 6 Incident, 7 Context backstop; step 6 commits apply to tracked tasks only.
    Conflict ahead: gentle-shell#1713 (fix/1713-spec-by-reference) also edits harness steps 5-6; rebase after it merges.
 L16 2026-10-03 T0 baseline (product copy of 4.0.0 with gentle-pi replaced by `npm pack` of cf3012f7 at /var/tmp/gentle-shell-bench/product/base-cf3012f7; config bench.1494-base.json; run id base1494): B s1-tasklog accepted at round 0, 315 s, 45 turns, $0.279 (vanilla A from pilot-s1: 56 s, 6 turns, $0.062).
+L17 2026-10-03 rebase: gentle-shell#1713 merged (PR #1718, main cd4ba5a7); T1 rebased onto it (conflicts in harness steps 4-6 and orchestrator-delegation.md resolved by re-applying T1 on top of #1713's text) → 3e5c8012; all unit tests 4623/0. Baseline moved to main cd4ba5a7 so before/after differ only by #1494 (product base-cd4ba5a7, config bench.1494-base2.json, run id base1494b). Earlier cf3012f7 runs kept as extra data: s2-ledger 470 s, 58 turns, $0.422; l1-tasklog aborted (SIGINT) when the baseline moved.
+L18 2026-10-03 T2 evidence (risk: medium, prompt asset move; inline per L1): user (verbatim): > si  (accepting the module split).
+   Split: orchestrator-delegation.md 51,4xx → 19,078 B; new orchestrator-tracking.md 11,989 B, orchestrator-verification.md 4,590 B, orchestrator-writer.md 4,014 B, orchestrator-prompts.md 12,705 B. Small path loads none; each mechanism points at its module from the core. Core render 8,084 B (budget 8,192): dropped the Mental Model section (folded into Task Size) and shortened pointers.
+   Test-first exception: a pure text move has no meaningful RED; the 16 test files that read the delegation detail now read the union (tests/support/orchestrator-modules.ts) so every moved clause stays pinned; new AC7 test (budgets, pointers, small path) written with the move.
+   Checks: all unit tests 4624 pass / 0 fail; provider-contract pass; runtime-harness pass (union read); verify-package-files pass; typecheck no regressions.

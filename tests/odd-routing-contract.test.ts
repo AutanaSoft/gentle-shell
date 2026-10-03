@@ -3,11 +3,12 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { __testing } from "../extensions/gentle-ai.ts";
+import { readDelegationDetail } from "./support/orchestrator-modules.ts";
 
 // These are instruction-delivery contracts, not proof of autonomous model adherence.
 const read = (path: string) => readFileSync(join(import.meta.dirname, "..", path), "utf8");
 const core = read("assets/orchestrator.md");
-const delegation = read("assets/orchestrator-delegation.md");
+const delegation = readDelegationDetail();
 const memory = read("assets/orchestrator-memory.md");
 const wrapper = read("extensions/gentle-ai.ts");
 
