@@ -54,9 +54,9 @@ S9. Measurement: bench baseline (origin/main cf3012f7) vs after, same scenarios:
 - [ ] T5 (S9) in progress · bench after (after1494a, product 6f8a78b8): s1 done, s2/l1 running; new scenarios not authored yet
 - [x] G1 (S8) gentle-ai `fix/1494-task-size-canon` (worktree ~/work/gentle-ai-1494, stacked on fix/odd-spec-by-reference) · canon + 12 orchestrators + shared sections + docs · RED→GREEN · 2d6cea5f
 - [x] G2 (S6) gentle-ai · `review assess --escalate-item/--escalate-reason` · RED→GREEN · a0f8584c
-- [ ] G3 (S6) other repo · deterministic lowering accuracy using the Laya/Kev corpus (40 RDD candidates + 113 ODD commits)
-- [ ] F1 follow-up issue · Pi loads the canon twice (`~/AGENTS.md` + gentle-pi injection)
-- [ ] F3 follow-up issue (gentle-engram) · mirror `odd/tasks/*.md` to Engram automatically on write, with zero model output
+- [x] G3 (S6) filed as gentle-ai#5216 (follow-up, not implemented here)
+- [x] F1 filed as gentle-shell#1722 (~/AGENTS.md is 58,881 B with gentle-ai blocks)
+- [x] F3 filed as engram#1636 (gentle-engram lives in the engram repo, plugin/pi)
 - [ ] F2 follow-up, needs user OK (touches cause 5 loading only) · skip the RDD contract mirror when RDD is off
 
 ## Log
@@ -106,3 +106,5 @@ L22 2026-10-03 G1/G2 in gentle-ai (outside this repo, authorized by L19): worktr
 L23 2026-10-03 T5 partial: baseline (main cd4ba5a7, base1494b) vs after (6f8a78b8, after1494a), arm B gpt-6.1-sol low:
    s1-tasklog base 335 s, 56 turns, $0.339, input 108k + 503k cache, output 7.2k, subagents (verify/worker), odd doc created · after 77 s, 10 turns, $0.105, input 40k + 148k cache, output 1.1k, 0 subagents, 0 odd files, accepted at round 0. Vanilla A: 56 s, 6 turns, $0.062.
    s2-ledger base 479 s, 43 turns, $0.361 · after pending. l1-tasklog base 559 s, 48 turns, $0.403, accepted at round 1 · after pending.
+L24 2026-10-03 user (verbatim): > Hacelos
+   Created and read back (body match, labels from each form): gentle-ai#5216 (G3), gentle-shell#1722 (F1), engram#1636 (F3). Duplicate search found no equivalent; related: gentle-ai#4815, engram#1449.
