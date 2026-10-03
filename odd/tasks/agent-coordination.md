@@ -371,3 +371,8 @@ it is not a second authority registry and never starts a run just to grant.
   validated. `git diff --check` passed. Existing non-Git fixture warnings remain.
   No installs, dependency/profile/source mutation outside authorized fixtures,
   staging, commits, pushes, PRs, spawning/delegation or merge operations.
+### CI fixture readiness correction (local verification; remote recovery pending)
+- Historical CI RED supplied by parent: run `37156574198`, job `111301069665`, SDK line 199 expected two records but observed one; 4,637 passed / one failed / 34 skipped. Logical sender ID exists before asynchronous socket publication and is not transport readiness. No new production RED or delayed-start reproduction claimed; strict TDD not active.
+- Each actual SDK host now awaits its own SessionManager ID in private transport presence with an actual socket under the exact guarded leaf, a five-second deadline and short I/O yields. The exact two-record assertion remains, strengthened with owner/caller IDs, schema and private file UID/mode checks; no extra model turns or production changes. Replacement uses the same guard; 30-second test cap and owned-output cleanup remain unchanged.
+- Focused SDK command above passed three consecutive runs (one test each); the same authorized ten-file suite passed 254/254. Type check: 186 baseline diagnostics, no regressions; runtime check: eight modules match; diff whitespace check passed. Existing fixture Git warnings remain.
+- Read-only CodeGraph exploration preceded narrow inspection in this indexed worktree. Parent must propagate the fix through feature branches and obtain fresh remote checks; neither PR's CI recovery nor full-repository validation is claimed. Both issues remain OPEN.
