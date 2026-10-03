@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Duplex, Readable, Writable } from "node:stream";
 import { stripVTControlCharacters } from "node:util";
 import { withoutInteractiveHost } from "./rpc-host.ts";
+import { childPackageExtensionArgs } from "./child-package-injection.ts";
 import { AGENT_MODE, formatModelRef, type AgentDefinition, type AgentMode, type ModelRef } from "./agents-config.ts";
 import { CHILD_QUERY_MAX_INFLIGHT, CHILD_QUERY_TIMEOUT_MS, parseChildFrame, validChildMessage, validChildQueryId } from "./agents-messaging.ts";
 import { ParentStandingReviewPermissionBroker } from "./review-session-standing-permission-ipc.ts";
@@ -128,6 +129,9 @@ export interface TaskRequest {
 	env: NodeJS.ProcessEnv;
 	// Untrusted narrowing intent; paths come only from matching host provenance.
 	extensionPaths?: string[];
+	// Same provenance as extensionPaths: set only from the host's launcher
+	// injection signal (#1690), never from tool input or agent definitions.
+	noExtensions?: boolean;
 	// Synchronous admission recheck at dequeue, before any OS spawn. Throws fail
 	// only this task; unlike onLaunch, it must never persist Changes evidence.
 	beforeSpawn?: () => void;
@@ -257,7 +261,7 @@ const hostProcess: ProcessControl = { platform: process.platform, kill: (pid, si
 
 export function childArguments(request: TaskRequest, instructionsPath?: string): string[] {
 	const args = ["--mode", "rpc", "--session-dir", request.sessionDir];
-	for (const path of request.extensionPaths ?? []) args.push("--extension", path);
+	args.push(...childPackageExtensionArgs({ noExtensions: request.noExtensions === true, extensionPaths: request.extensionPaths ?? [] }));
 	if (request.resumeSessionPath) args.push("--session", request.resumeSessionPath);
 	if (request.model) args.push("--model", request.thinking ? `${formatModelRef(request.model)}:${request.thinking}` : formatModelRef(request.model));
 	else if (request.thinking) args.push("--thinking", request.thinking);

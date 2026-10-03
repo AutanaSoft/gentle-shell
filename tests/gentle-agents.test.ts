@@ -15,6 +15,7 @@ import { generateUnifiedPatch, type ExtensionAPI, type ExtensionContext } from "
 import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
 import { visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { sidebarState } from "../lib/shell-sidebar.ts";
+import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection } from "../lib/child-package-injection.ts";
 import gentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceRegistry } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener } from "../lib/windows-session-transport.ts";
@@ -5206,4 +5207,39 @@ test("a writer continuation without its own section inherits the admitted surfac
 	await continued;
 	await h.fire("session_shutdown", ctx);
 	rmSync(profile, { recursive: true, force: true });
+});
+
+// #1690: the launcher's injection signal in the host env replaces the curated
+// child entries; without a valid signal children keep the curated entries.
+test("children receive the launcher's package injection instead of the curated entries", async () => {
+	const curated = ["/curated/child-context.ts", "/curated/child-safety.ts"];
+	const takeover = ["/agent/npm/node_modules/other", "/agent/extensions/a b.ts", "/pkg"];
+	const scenarios: Array<{ name: string; value: string | undefined; expected: string[] }> = [
+		{ name: "takeover", value: encodeChildPackageInjection({ noExtensions: true, extensionPaths: takeover }), expected: ["--no-extensions", ...takeover.flatMap((path) => ["--extension", path])] },
+		{ name: "package-root", value: encodeChildPackageInjection({ noExtensions: false, extensionPaths: ["/pkg"] }), expected: ["--extension", "/pkg"] },
+		{ name: "absent", value: undefined, expected: curated.flatMap((path) => ["--extension", path]) },
+		{ name: "malformed", value: JSON.stringify({ version: 1, noExtensions: true, extensionPaths: ["relative/pkg"] }), expected: curated.flatMap((path) => ["--extension", path]) },
+	];
+	for (const scenario of scenarios) {
+		const h = fakePi();
+		const runtime = deps();
+		runtime.deps.childExtensionPaths = curated;
+		runtime.deps.env = { PATH: "/bin", ...(scenario.value === undefined ? {} : { [CHILD_PACKAGE_INJECTION_ENV]: scenario.value }) };
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx } = fakeContext();
+		await h.fire("session_start", ctx);
+		try {
+			await h.tools.get("subagent_run")!.execute(`injection-${scenario.name}`, { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
+			await tick();
+			assert.equal(runtime.spawned.length, 1, scenario.name);
+			const argv = runtime.spawned[0]!;
+			const start = argv.indexOf("--session-dir") + 2;
+			assert.deepEqual(argv.slice(start, start + scenario.expected.length), scenario.expected, scenario.name);
+			assert.equal(argv[start + scenario.expected.length], "--model", `${scenario.name}: no other extension arguments`);
+			assert.equal(argv[argv.indexOf("--tools") + 1], "read,grep,subagent_parent_message", scenario.name);
+		} finally {
+			await h.fire("session_shutdown", ctx);
+			await tick();
+		}
+	}
 });

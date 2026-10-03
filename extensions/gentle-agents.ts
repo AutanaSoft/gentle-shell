@@ -24,6 +24,7 @@ import { resolveBackgroundSubagentsPolicy } from "../lib/background-subagents-po
 import { installBackgroundCacheWarming } from "../lib/background-cache-warming.ts";
 import { isFinished, TASK_EVENT, TASK_STATUS, TaskStore, type AskRequest, type TaskRecord } from "../lib/agents-protocol.ts";
 import { AgentRunner, piCommand, abortReasonText, type AskAnswer, type RunnerDeps, type TaskRequest } from "../lib/agents-runner.ts";
+import { parseChildPackageInjection } from "../lib/child-package-injection.ts";
 import { ChildMessenger, type IpcEndpoint } from "../lib/agents-messaging.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceRegistry, type PresenceRecord, type ReceivedNotification, type SentNotification, type SessionPresenceCandidate } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener, WindowsSessionPresenceRegistry, type WindowsSessionRegistryPhaseObserver } from "../lib/windows-session-transport.ts";
@@ -134,6 +135,16 @@ export function childContextExtensionPaths(exists: (path: string) => boolean = e
 	} catch {
 		return [];
 	}
+}
+
+// #1690: when the gentle-shell launcher injected the package with -e, the
+// host env carries that exact set and every child loads it too, which already
+// includes the curated entries. Without a valid signal (declared package,
+// regular gentle-pi, malformed value) children keep the curated entries.
+function childExtensionRequest(env: NodeJS.ProcessEnv, curated: string[] | undefined): Pick<TaskRequest, "extensionPaths" | "noExtensions"> {
+	const injection = parseChildPackageInjection(env);
+	if (injection) return { extensionPaths: [...injection.extensionPaths], ...(injection.noExtensions ? { noExtensions: true } : {}) };
+	return curated && curated.length > 0 ? { extensionPaths: [...curated] } : {};
 }
 
 export function agentRuntimePaths(home: string, agentHome = join(home, ".pi", "agent")): { sessions: string; transcripts: string } {
@@ -1420,7 +1431,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			thinking: profile.thinking,
 			sessionDir,
 			resumeSessionPath: resume,
-			...(deps.childExtensionPaths && deps.childExtensionPaths.length > 0 ? { extensionPaths: [...deps.childExtensionPaths] } : {}),
+			...childExtensionRequest(deps.env, deps.childExtensionPaths),
 			env: childEnv,
 			...(foreign || parentRepositoryIdentity === undefined ? {} : {
 				authorizeParentStandingReviewPermission: (repositoryIdentity: string) => {

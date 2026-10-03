@@ -712,6 +712,25 @@ test("childArguments grants every child the notification-only parent message too
 	assert.equal(args[args.indexOf("--tools") + 1], "read,grep,subagent_parent_message");
 });
 
+// #1690: a forwarded launcher takeover keeps --no-extensions ahead of every
+// --extension and leaves the rest of the launch unchanged.
+test("childArguments forwards a takeover set with --no-extensions first", async () => {
+	const extensionPaths = ["/agent/npm/node_modules/other", "/agent/extensions/a b.ts", "/pkg"];
+	const expected = ["--mode", "rpc", "--session-dir", "/sessions", "--no-extensions", "--extension", extensionPaths[0], "--extension", extensionPaths[1], "--extension", extensionPaths[2], "--model", "openai-codex/gpt-5.6-terra:high", "--tools", "read,grep,subagent_parent_message", "--append-system-prompt", "You map things."];
+	assert.deepEqual(childArguments(request({ noExtensions: true, extensionPaths })), expected);
+	const h = harness();
+	const task = h.runner.run(request({ noExtensions: true, extensionPaths }));
+	await tick();
+	assert.deepEqual(h.spawnOptions.at(-1)!.args.slice(-expected.length), expected, "the spawned child receives the same argv");
+	h.runner.cancel(task.id);
+});
+
+test("childArguments forwards a plain package root without --no-extensions", () => {
+	assert.deepEqual(childArguments(request({ noExtensions: false, extensionPaths: ["/pkg"] })), ["--mode", "rpc", "--session-dir", "/sessions", "--extension", "/pkg", "--model", "openai-codex/gpt-5.6-terra:high", "--tools", "read,grep,subagent_parent_message", "--append-system-prompt", "You map things."]);
+	const args = childArguments(request({ extensionPaths: ["/pkg/extensions/child-context.ts"] }));
+	assert.ok(!args.includes("--no-extensions"), "an absent flag never disables discovery");
+});
+
 test("AgentRunner admits strict live notifications once and closes IPC before Stop", async () => {
 	const notifications: string[] = [];
 	const { runner, children, spawnOptions } = harness({ onNotification: (task, message) => task.parentSessionId === "s1" && (notifications.push(message), true) });
