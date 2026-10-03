@@ -937,24 +937,51 @@ administrator, nor eliminate same-principal time-of-check/time-of-use races.
 
 A rejected storage claim keeps its user-facing message and appends one fixed
 code naming the failed check, for example `... policy denied it. Reason: home-owner`.
-The code never contains a path, SID or exception text. An exception that does
-not carry a listed code reports the step that was running.
+The code never contains a path, SID or exception text. Intentional rejections
+report their own code:
 
-| Code | Failed check |
-|------|--------------|
-| `policy` | PowerShell is not in FullLanguage mode, or the current identity is unavailable. |
+| Code | Rejected check |
+|------|----------------|
+| `policy` | PowerShell is not in FullLanguage mode. |
 | `path-mismatch` | `%LOCALAPPDATA%` is not rooted, the target is UNC, or the target's parent is not exactly `%LOCALAPPDATA%`. |
-| `home-owner` | `%LOCALAPPDATA%` is not owned by the invoking SID, or its ACL is unreadable. |
-| `ancestor-walk` | An ancestor could not be read during the walk. |
+| `home-owner` | `%LOCALAPPDATA%` is not owned by the invoking SID. |
 | `ancestor-reparse` | An ancestor is not a directory or is a reparse point. |
 | `ancestor-owner` | An ancestor owner is not the invoking SID, SYSTEM, Administrators or TrustedInstaller. |
 | `acl-mask` | An untrusted effective allow ACE exceeds the depth's allowed rights mask. |
-| `create` | The new directory could not be created, including an existing destination. |
-| `set-acl` | The private DACL could not be written or read back. |
+| `collision` | The random destination already exists; it is never reused or changed. |
 | `protected-dacl` | The readback DACL is not protected from inheritance. |
 | `private-owner` | The readback owner is not the invoking SID. |
 | `private-ace` | The readback holds a deny ACE or a SID other than the invoking SID, SYSTEM or Administrators. |
-| `marker` | The ownership marker could not be written. |
+
+Any other exception, such as an unreadable ACL, a denied write or a failed
+cmdlet, reports `unexpected-<step>` for the step that was running, so it can
+never pose as an intentional rejection:
+
+| Step | Work in progress |
+|------|------------------|
+| `unexpected-policy` | Language mode and identity lookup. |
+| `unexpected-path-mismatch` | Path normalization. |
+| `unexpected-home-owner` | Reading the `%LOCALAPPDATA%` owner. |
+| `unexpected-ancestor-walk` | Reading an ancestor's attributes or ACL. |
+| `unexpected-create` | Creating the new directory, including a destination that appeared after the collision check. |
+| `unexpected-private-acl` | Writing or reading back the private DACL. |
+| `unexpected-marker` | Writing the ownership marker. |
+
+ACLs are read and written with .NET Framework APIs
+(`[IO.Directory]::GetAccessControl`, `[IO.File]::GetAccessControl`,
+`[IO.Directory]::SetAccessControl`) instead of `Get-Acl`/`Set-Acl`. Those
+cmdlets live in Microsoft.PowerShell.Security, which Windows PowerShell 5.1
+autoloads from `PSModulePath`. Started from a PowerShell 7 terminal (or the
+GitHub Actions `pwsh` step shell), the inherited `PSModulePath` lists
+PowerShell 7's Core-only copy first, and 5.1 fails with
+`CouldNotAutoloadMatchingModule`. The checks themselves are unchanged: the
+same owner, mask, protected-DACL, readback and reparse predicates in the same
+order. The bootstrap still uses cmdlets from Microsoft.PowerShell.Management
+(`Get-Item`, `Get-Content`, `New-Item`, `Remove-Item`, `Test-Path`,
+`Join-Path`) and Microsoft.PowerShell.Utility (`New-Object`, `ConvertFrom-Json`,
+`Get-FileHash`, `Add-Type`, `Select-Object`, `Start-Sleep`). The native fixtures
+observed both modules loading under the same `pwsh` parent, and a module loads
+as a unit. `Get-Command` is built into the engine.
 
 The path comparison is insensitive to 8.3 short names by construction: both
 sides derive from the same `%LOCALAPPDATA%` string and pass through
@@ -965,16 +992,18 @@ for a `%TEMP%` exposed as `C:\Users\RUNNER~1\...`; tests compare it with
 `realpathSync.native`, not the JavaScript `realpathSync`, which keeps short
 names.
 
-The `home-owner` check requires `%LOCALAPPDATA%` to be owned by the invoking
-SID itself, not by a trusted group. A real `%LOCALAPPDATA%` created by the User
-Profile Service is owned by the user. Elevated processes on Windows Server, such
-as the GitHub Actions `windows-latest` runner, create new directories owned by
-BUILTIN\Administrators by default, so a fixture directory used as
-`LOCALAPPDATA` failed with `home-owner`. The native fixtures therefore set the
-invoking SID as owner of the fixture root and of every fixture directory used as
-`LOCALAPPDATA`, read the owner back, and fail loudly before any production stage
-runs. Production is unchanged: a real user whose `%LOCALAPPDATA%` is owned by
-Administrators fails closed with `home-owner` and no storage is claimed.
+An earlier CI run reported `home-owner` for every native claim. The actual
+cause was this module-load failure, reported as the step that was running;
+`unexpected-<step>` now separates the two. The `home-owner` check requires
+`%LOCALAPPDATA%` to be owned by the invoking SID itself, not by a trusted
+group. A real `%LOCALAPPDATA%` created by the User Profile Service is owned by
+the user. Elevated members of Administrators on Windows Server may create new
+directories owned by BUILTIN\Administrators, depending on the default-owner
+policy. The native fixtures therefore set the invoking SID as owner of the
+fixture root and of every fixture directory used as `LOCALAPPDATA`, read the
+owner back, and fail loudly before any production stage runs. Production is
+unchanged: a real user whose `%LOCALAPPDATA%` is owned by Administrators fails
+closed with `home-owner` and no storage is claimed.
 
 ### Implemented fixtures versus missing execution evidence
 

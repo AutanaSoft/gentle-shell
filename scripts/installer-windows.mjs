@@ -95,6 +95,8 @@ export function windowsAclRuleUnsafe({ rights, depth, allow = true, inheritOnly 
 
 // Fixed stock PowerShell intrinsics, not a loaded/evaluated PS script. Paths
 // travel only as environment data. Managed constraints/denials fail closed.
+// ACLs are read through .NET, never Get-Acl: a PowerShell 7 parent's PSModulePath
+// makes Windows PowerShell 5.1 fail to autoload Microsoft.PowerShell.Security.
 const aclCheck = String.raw`
 $ErrorActionPreference = 'Stop';
 if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'Policy constrained' };
@@ -105,7 +107,7 @@ $depth = 0;
 while ($path) {
   $item = Get-Item -LiteralPath $path -Force;
   if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Reparse path' };
-  $acl = Get-Acl -LiteralPath $path;
+  if ($item.PSIsContainer) { $acl = [IO.Directory]::GetAccessControl($path) } else { $acl = [IO.File]::GetAccessControl($path) };
   if ($trusted -notcontains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value) { throw 'Unknown owner' };
   $allowedRights = 0x1200a9; if ($depth -ge 2) { $allowedRights = 0x1200ad };
   foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {

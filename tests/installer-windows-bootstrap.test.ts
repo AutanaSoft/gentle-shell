@@ -52,7 +52,7 @@ test("CMD entry contains fixed commands, data-only paths, early bundle checks an
 	assert.doesNotMatch(source, /ExecutionPolicy|Unblock-File|EncodedCommand|Invoke-Expression|\biex\b|\.ps1\b|SkipCertificateCheck|RunAs/i);
 	assert.match(source, /LanguageMode/);
 	assert.match(source, /ReparsePoint/);
-	assert.match(source, /Get-Acl/);
+	assert.match(source, /\[IO\.Directory\]::GetAccessControl\(/);
 	assert.match(source, /AllowAutoRedirect\s*=\s*\$false/);
 	assert.match(source, /Get-FileHash/);
 });
@@ -330,25 +330,49 @@ test("success removes only the exact claimed marked root and never fails the ins
 });
 
 // Fixed, non-sensitive claim diagnostics: a code names the failed check, never a
-// path, SID or exception text. Unlisted exceptions report the active step.
-const claimReasons = ["policy", "path-mismatch", "home-owner", "ancestor-walk", "ancestor-reparse", "ancestor-owner", "acl-mask",
-	"create", "set-acl", "protected-dacl", "private-owner", "private-ace", "marker"];
+// path, SID or exception text. An intentional rejection reports its own code; any
+// other exception reports `unexpected-<step>` so it cannot pose as a rejection.
+const claimRejections = ["policy", "path-mismatch", "home-owner", "ancestor-reparse", "ancestor-owner", "acl-mask",
+	"collision", "protected-dacl", "private-owner", "private-ace"];
+const claimSteps = ["policy", "path-mismatch", "home-owner", "ancestor-walk", "create", "private-acl", "marker"];
+const claimReasons = [...claimRejections, ...claimSteps.map((step) => `unexpected-${step}`)];
 const claimMessage = "Bootstrap: private storage ACL/reparse/ownership claim failed or policy denied it.";
 test("claim reports one fixed non-sensitive reason code per check beside the unchanged message", () => {
 	const stage = cmdStage(stageMarkers.claim);
 	const thrown = [...stage.matchAll(/throw '([^']*)'/g)].map((match) => match[1]);
 	const steps = [...stage.matchAll(/\$step = '([^']*)'/g)].map((match) => match[1]);
-	for (const code of [...thrown, ...steps]) assert.ok(claimReasons.includes(code), `unlisted claim reason: ${code}`);
-	assert.deepEqual([...new Set([...thrown, ...steps])].sort(), [...claimReasons].sort(), "every reason is reachable");
+	for (const code of thrown) assert.ok(claimRejections.includes(code), `unlisted claim rejection: ${code}`);
+	for (const step of steps) assert.ok(claimSteps.includes(step), `unlisted claim step: ${step}`);
+	assert.deepEqual([...new Set(thrown)].sort(), [...claimRejections].sort(), "every rejection is reachable");
+	assert.deepEqual([...new Set(steps)].sort(), [...claimSteps].sort(), "every step is reachable");
 	assert.ok(stage.indexOf("$step = 'policy'") < stage.indexOf("try {"), "the step exists before any check can fail");
 	const allowlist = stage.match(/\$_\.Exception\.Message -cmatch '\^\(([a-z|-]+)\)\$'\) \{ \$reason = \$_\.Exception\.Message \}/);
-	assert.ok(allowlist, "only allowlisted codes are copied from an exception");
-	assert.deepEqual(allowlist[1].split("|").sort(), [...claimReasons].sort());
-	assert.match(stage, /\$reason = \$step;/);
+	assert.ok(allowlist, "only allowlisted rejection codes are copied from an exception");
+	assert.deepEqual(allowlist[1].split("|").sort(), [...claimRejections].sort(), "steps that never reject are not allowlisted");
+	assert.match(stage, /\$reason = 'unexpected-' \+ \$step;/, "unexpected exceptions never pose as an intentional rejection");
+	assert.doesNotMatch(stage, /\$reason = \$step;/);
 	assert.ok(stage.includes(`[Console]::Error.WriteLine('${claimMessage} Reason: ' + $reason)`), "user-facing message is unchanged; the code is appended");
 	// Check order is part of the contract: the owner/ACL walk precedes the claim.
-	const order = ["path-mismatch", "home-owner", "ancestor-walk", "create", "set-acl", "marker"].map((code) => stage.indexOf(`'${code}'`));
+	const order = ["path-mismatch", "home-owner", "ancestor-walk", "create", "collision", "private-acl", "marker"].map((code) => stage.indexOf(`'${code}'`));
 	assert.deepEqual(order, [...order].sort((left, right) => left - right));
+});
+
+// Windows PowerShell 5.1 autoloads Microsoft.PowerShell.Security from PSModulePath.
+// Started from PowerShell 7, the inherited path finds a Core-only copy and every
+// cmdlet of that module fails, so ACL work uses .NET Framework APIs directly.
+const securityModuleCmdlets = /\b(?:Get-Acl|Set-Acl|Get-AuthenticodeSignature|Set-AuthenticodeSignature|ConvertTo-SecureString|ConvertFrom-SecureString|Get-ExecutionPolicy|Set-ExecutionPolicy|Get-PfxCertificate|Get-CmsMessage|Protect-CmsMessage|Unprotect-CmsMessage|New-FileCatalog|Test-FileCatalog|Get-Credential)\b/i;
+test("production and fixture PowerShell never depend on autoloading Microsoft.PowerShell.Security", () => {
+	const batch = readFileSync(new URL("../scripts/bootstrap.cmd", import.meta.url), "utf8");
+	const sources = { batch, aclCheck: productionAclSources()[2], fixtureAclSetup, fixtureOwnerSetup, guardCommand, processPrimitive: processPrimitive() };
+	for (const [name, source] of Object.entries(sources)) assert.doesNotMatch(source, securityModuleCmdlets, name);
+	for (const source of [cmdStage(stageMarkers.claim), fixtureAclSetup, fixtureOwnerSetup]) {
+		assert.match(source, /\[IO\.Directory\]::GetAccessControl\(/);
+		assert.match(source, /\[IO\.Directory\]::SetAccessControl\(/);
+	}
+	// Walks that may reach a file read it as a file, never through a directory API.
+	for (const source of [productionAclSources()[1], productionAclSources()[2]]) {
+		assert.match(source, /if \(\$item\.PSIsContainer\) \{ \$acl = \[IO\.Directory\]::GetAccessControl\(\$path\) \} else \{ \$acl = \[IO\.File\]::GetAccessControl\(\$path\) \}/);
+	}
 });
 const psRecordLine = '  "$record = [Diagnostics.Process]::GetCurrentProcess(); [IO.File]::AppendAllText($env:GENTLE_FIXTURE_RECORDS,([string]$record.Id + [char]124 + [string]$record.StartTime.ToUniversalTime().Ticks + [Environment]::NewLine));" ^';
 function observeStage(stage: string) {
@@ -478,11 +502,12 @@ function assertNative(result: NativeResult, status: number) {
 	if (status === 0) assert.match(result.stdout, /fixture-sentinel/, evidence);
 	else assert.doesNotMatch(result.stdout, /fixture-sentinel/, evidence);
 }
-// A rejected claim must fail for the intended check, not an earlier unrelated one.
+// A rejected claim must fail for the intended check, not an earlier unrelated one,
+// and never through an unexpected exception such as a module-load failure.
 function assertClaimRejected(result: NativeResult, reason?: string) {
 	assertNative(result, 1);
 	const reported = result.stderr.match(/claim failed or policy denied it\. Reason: ([a-z-]+)/)?.[1];
-	assert.ok(reported && claimReasons.includes(reported), `fixed claim reason expected; stderr: ${result.stderr.slice(0, 4000)}`);
+	assert.ok(reported && claimRejections.includes(reported), `intentional claim rejection expected; stderr: ${result.stderr.slice(0, 4000)}`);
 	if (reason) assert.equal(reported, reason, `stderr: ${result.stderr.slice(0, 4000)}`);
 }
 
@@ -495,8 +520,8 @@ const fixtureAclSetup = `"%GENTLE_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteract
   "if (-not $target.StartsWith($root + [IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase) -or (Get-Content -LiteralPath (Join-Path $root '.fixture-owned') -Raw) -ne 'gentle Windows acceptance fixture') { throw 'Not fixture-owned' };" ^
   "$item = Get-Item -LiteralPath $target -Force; if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Unsafe fixture' };" ^
   "$rights = [int]$env:GENTLE_FIXTURE_RIGHTS; if (@(4,2,16,256,64,65536,262144,524288) -notcontains $rights) { throw 'Unknown fixture right' };" ^
-  "$acl = Get-Acl -LiteralPath $target; $sid = New-Object Security.Principal.SecurityIdentifier('S-1-1-0');" ^
-  "$rule = New-Object Security.AccessControl.FileSystemAccessRule($sid,$rights,'None','None','Allow'); $acl.SetAccessRule($rule); Set-Acl -LiteralPath $target -AclObject $acl;" ^
+  "$acl = [IO.Directory]::GetAccessControl($target); $sid = New-Object Security.Principal.SecurityIdentifier('S-1-1-0');" ^
+  "$rule = New-Object Security.AccessControl.FileSystemAccessRule($sid,$rights,'None','None','Allow'); $acl.SetAccessRule($rule); [IO.Directory]::SetAccessControl($target,$acl);" ^
   "}"`;
 
 // Elevated Windows Server runners create directories owned by BUILTIN\Administrators,
@@ -509,8 +534,8 @@ const fixtureOwnerSetup = `"%GENTLE_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonIntera
   "$root = [IO.Path]::GetFullPath($env:GENTLE_FIXTURE_ROOT); $target = [IO.Path]::GetFullPath($env:GENTLE_FIXTURE_OWNER_TARGET);" ^
   "if (($target -ne $root -and -not $target.StartsWith($root + [IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)) -or (Get-Content -LiteralPath (Join-Path $root '.fixture-owned') -Raw) -ne 'gentle Windows acceptance fixture') { throw 'Not fixture-owned' };" ^
   "$item = Get-Item -LiteralPath $target -Force; if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Unsafe fixture' };" ^
-  "$me = [Security.Principal.WindowsIdentity]::GetCurrent().User; $acl = Get-Acl -LiteralPath $target; $acl.SetOwner($me); Set-Acl -LiteralPath $target -AclObject $acl;" ^
-  "if ((Get-Acl -LiteralPath $target).GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $me.Value) { throw 'Fixture owner not established' };" ^
+  "$me = [Security.Principal.WindowsIdentity]::GetCurrent().User; $acl = [IO.Directory]::GetAccessControl($target); $acl.SetOwner($me); [IO.Directory]::SetAccessControl($target,$acl);" ^
+  "if (([IO.Directory]::GetAccessControl($target)).GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $me.Value) { throw 'Fixture owner not established' };" ^
   "}"`;
 async function ownFixtureDirectory(root: string, target: string) {
 	const result = await nativeCmd(root, [fixtureOwnerSetup], { ...nativeEnv(root), GENTLE_FIXTURE_OWNER_TARGET: target });
@@ -530,7 +555,7 @@ test("native Windows: production owned claim/check, ACL depth and collision pres
 		assertNative(await nativeCmd(f.root, [cmdStage(stageMarkers.claim)], env), 0);
 		verifyWindowsStorage(env.GENTLE_BOOTSTRAP_TOOLS, env);
 		writeFileSync(join(env.GENTLE_BOOTSTRAP_TOOLS, "unrelated"), "preserve");
-		assertClaimRejected(await nativeCmd(f.root, [cmdStage(stageMarkers.claim)], env), "create");
+		assertClaimRejected(await nativeCmd(f.root, [cmdStage(stageMarkers.claim)], env), "collision");
 		assert.equal(readFileSync(join(env.GENTLE_BOOTSTRAP_TOOLS, "unrelated"), "utf8"), "preserve");
 		for (const rights of [4, 2, 16, 256, 64, 65536, 262144, 524288]) {
 			const ancestor = join(env.GENTLE_BOOTSTRAP_TOOLS, `ancestor-${rights}`);
@@ -578,7 +603,7 @@ test("native Windows: production checks reject an owned fixture junction without
 		// Junction as an ancestor: home-owner reads the owned real directory through
 		// the junction, so the walk must stop at the reparse point itself.
 		assertClaimRejected(await nativeCmd(f.root, [cmdStage(stageMarkers.claim)], { ...env, LOCALAPPDATA: join(junction, "home"), GENTLE_BOOTSTRAP_TOOLS: join(junction, "home", "new-claim") }), "ancestor-reparse");
-		// Junction as LOCALAPPDATA: Get-Acl reads either the owned target or the
+		// Junction as LOCALAPPDATA: the ACL read sees either the owned target or the
 		// junction object; both rejections name the junction, never another object.
 		const direct = await nativeCmd(f.root, [cmdStage(stageMarkers.claim)], { ...env, LOCALAPPDATA: junction, GENTLE_BOOTSTRAP_TOOLS: join(junction, "new-claim") });
 		assertClaimRejected(direct);
