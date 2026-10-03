@@ -1,18 +1,24 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync, readdirSync, rmSync, lstatSync, unlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync, readdirSync, rmSync, lstatSync, unlinkSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
-import test from "node:test";
-import { artifactFor, verifiedDownload, compatibleEngine, ensurePnpm, launchWizard } from "../scripts/installer-downloads.mjs";
+import test, { type TestContext } from "node:test";
+import { artifactFor, verifiedDownload, compatibleEngine, ensurePnpm, launchWizard, bootstrap, removeOwnedTools } from "../scripts/installer-downloads.mjs";
 
 const script = resolve("scripts/bootstrap.sh");
 const helper = resolve("scripts/installer-downloads.mjs");
 const node = process.execPath;
+// Shell and private-tools fixtures need POSIX sh, stock utilities and uids.
+const posixHost = process.platform === "win32" ? "POSIX shell bootstrap fixtures need a POSIX host" : false;
+const posixTest = (name: string, fn: (t: TestContext) => unknown) => test(name, { skip: posixHost }, fn);
+// macOS keeps several stock utilities only in /bin.
+const systemUtility = (name: string) => ["/usr/bin", "/bin"].map((dir) => join(dir, name)).find((path) => existsSync(path)) ?? `/usr/bin/${name}`;
 function fixture() {
-	const root = mkdtempSync(join(tmpdir(), "bootstrap space ü-"));
+	// The bootstrap refuses symlinked HOME ancestors, such as macOS /var -> /private/var.
+	const root = mkdtempSync(join(realpathSync(tmpdir()), "bootstrap space ü-"));
 	const bin = join(root, "utilities");
 	const home = join(root, "home ü");
 	const bundle = join(root, "bundle ü");
@@ -21,7 +27,7 @@ function fixture() {
 	writeFileSync(join(bundle, "scripts/installer-downloads.mjs"), readFileSync(helper));
 	writeFileSync(join(bundle, "package.json"), JSON.stringify({ engines: { node: ">=22.19.0" }, packageManager: "pnpm@11.1.1" }));
 	for (const name of ["dirname", "pwd", "awk", "mkdir", "mktemp", "chmod", "mv", "rm", "sleep", "wc", "cat", "id", "ls"])
-		symlinkSync(`/usr/bin/${name}`, join(bin, name));
+		symlinkSync(systemUtility(name), join(bin, name));
 	const executable = (name: string, body: string) => {
 		const path = join(bin, name);
 		if (existsSync(path) && lstatSync(path).isSymbolicLink()) unlinkSync(path);
@@ -42,10 +48,15 @@ function fixture() {
 		symlinkSync(join(pkg, "bin/pnpm.mjs"), join(bin, "pnpm"));
 	};
 	const wizard = () => writeFileSync(join(bundle, "bin/gentle-shell-install.mjs"), "console.log('wizard-child:' + process.env.PATH);\n");
+	// A wizard that tampers with the ownership marker of the tools it runs from.
+	const markerRemovingWizard = () => writeFileSync(join(bundle, "bin/gentle-shell-install.mjs"), [
+		"import { unlinkSync } from 'node:fs'; import { resolve, join } from 'node:path';",
+		"const bin = process.env.PATH.split(':').find((entry) => entry.includes('.gentle-shell-bootstrap-tools.'));",
+		"unlinkSync(join(resolve(bin, '../..'), '.bootstrap-owned'));", ""].join("\n"));
 	const run = (extra: Record<string, string> = {}) => spawnSync("/bin/sh", [join(bundle, "scripts/bootstrap.sh")], {
 		env: { PATH: bin, HOME: home, ...extra }, encoding: "utf8", timeout: 15000,
 	});
-	return { root, bin, home, bundle, executable, addNode, addPnpm, wizard, run, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+	return { root, bin, home, bundle, executable, addNode, addPnpm, wizard, markerRemovingWizard, run, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
 
 for (const [os, arch, target] of [["darwin", "x64", "darwin-x64"], ["darwin", "arm64", "darwin-arm64"], ["linux", "x64", "linux-x64"], ["linux", "arm64", "linux-arm64"]]) {
@@ -95,7 +106,7 @@ test("download helper validates bytes before returning them", async () => {
 	assert.notEqual(createHash("sha512").update(bytes).digest("base64"), artifactFor("pnpm").integrity.slice(7));
 });
 
-test("compatible existing tools are reused with whitespace and Unicode paths", () => {
+posixTest("compatible existing tools are reused with whitespace and Unicode paths", () => {
 	const f = fixture();
 	try {
 		f.addNode(); f.addPnpm("12.0.0"); f.wizard();
@@ -105,7 +116,7 @@ test("compatible existing tools are reused with whitespace and Unicode paths", (
 		assert.deepEqual(readdirSync(f.home), []);
 	} finally { f.cleanup(); }
 });
-test("missing wizard fails explicitly without acquiring or claiming installation", () => {
+posixTest("missing wizard fails explicitly without acquiring or claiming installation", () => {
 	const f = fixture();
 	try {
 		const result = f.run();
@@ -114,18 +125,55 @@ test("missing wizard fails explicitly without acquiring or claiming installation
 		assert.deepEqual(readdirSync(f.home), []);
 	} finally { f.cleanup(); }
 });
-test("no initial Node acquires verified native binary and refreshes child PATH", () => {
+posixTest("no initial Node acquires verified native binary and refreshes child PATH", () => {
 	const f = fixture();
 	try {
 		f.addPnpm(); f.wizard();
 		const result = f.run();
 		assert.equal(result.status, 0, result.stderr);
 		assert.match(result.stdout, /wizard-child:.*bootstrap-tools.*node\/bin/);
+		assert.deepEqual(readdirSync(f.home), [], "successful wizard exit removes the owned tools");
+	} finally { f.cleanup(); }
+});
+posixTest("successful exit removes only the owned tools directory", () => {
+	const f = fixture();
+	try {
+		f.addPnpm(); f.wizard();
+		mkdirSync(join(f.home, ".gentle-shell-bootstrap-tools.unrelated"));
+		writeFileSync(join(f.home, ".gentle-shell-bootstrap-tools.unrelated/keep"), "preserve");
+		writeFileSync(join(f.home, "unrelated.txt"), "preserve");
+		const result = f.run();
+		assert.equal(result.status, 0, result.stderr);
+		assert.equal(result.stderr, "");
+		assert.deepEqual(readdirSync(f.home).sort(), [".gentle-shell-bootstrap-tools.unrelated", "unrelated.txt"]);
+		assert.equal(readFileSync(join(f.home, ".gentle-shell-bootstrap-tools.unrelated/keep"), "utf8"), "preserve");
+	} finally { f.cleanup(); }
+});
+posixTest("tools removal failure after success keeps exit 0 and names the path", () => {
+	const f = fixture();
+	try {
+		f.addPnpm(); f.wizard();
+		// Only removal of the tools root itself fails; staging/archive removal still works.
+		f.executable("rm", `case "$2" in */.gentle-shell-bootstrap-tools.*/*) ;; */.gentle-shell-bootstrap-tools.*) exit 1;; esac\nexec ${systemUtility("rm")} "$@"`);
+		const result = f.run();
+		assert.equal(result.status, 0, result.stderr);
+		const [tools] = readdirSync(f.home);
+		assert.match(tools, /^\.gentle-shell-bootstrap-tools\./);
+		assert.ok(result.stderr.includes(`temporary tools could not be removed: ${join(f.home, tools)}`), result.stderr);
+	} finally { f.cleanup(); }
+});
+posixTest("tools whose ownership marker vanished are kept after success with a notice", () => {
+	const f = fixture();
+	try {
+		f.addPnpm(); f.markerRemovingWizard();
+		const result = f.run();
+		assert.equal(result.status, 0, result.stderr);
+		assert.match(result.stderr, /temporary tools could not be removed: .*\.gentle-shell-bootstrap-tools\./);
 		assert.equal(readdirSync(f.home).length, 1);
 	} finally { f.cleanup(); }
 });
 for (const extra of [{ FAKE_HASH: "0".repeat(64) }, { DOWNLOAD_STATUS: "18" }, { NODE_VERSION: "v21.0.0" }, { NODE_VERSION: "unknown" }, { FAKE_LIBC: "musl" }]) {
-	test(`acquisition fails closed: ${JSON.stringify(extra)}`, () => {
+	posixTest(`acquisition fails closed: ${JSON.stringify(extra)}`, () => {
 		const f = fixture();
 		try {
 			f.addPnpm(); f.wizard();
@@ -137,7 +185,7 @@ for (const extra of [{ FAKE_HASH: "0".repeat(64) }, { DOWNLOAD_STATUS: "18" }, {
 	});
 }
 for (const version of ["v22.18.0", "v24.1.0-rc.1", "v25.00.1", "banana"]) {
-	test(`existing Node ${version} is rejected without replacement`, () => {
+	posixTest(`existing Node ${version} is rejected without replacement`, () => {
 		const f = fixture();
 		try {
 			f.addNode(); f.addPnpm(); f.wizard();
@@ -148,7 +196,7 @@ for (const version of ["v22.18.0", "v24.1.0-rc.1", "v25.00.1", "banana"]) {
 		} finally { f.cleanup(); }
 	});
 }
-test("existing pnpm with unknown engine blocks instead of acquisition", () => {
+posixTest("existing pnpm with unknown engine blocks instead of acquisition", () => {
 	const f = fixture();
 	try {
 		f.addNode(); f.addPnpm("12.0.0", "*"); f.wizard();
@@ -158,7 +206,7 @@ test("existing pnpm with unknown engine blocks instead of acquisition", () => {
 		assert.deepEqual(readdirSync(f.home), []);
 	} finally { f.cleanup(); }
 });
-test("missing required shell utility is named", () => {
+posixTest("missing required shell utility is named", () => {
 	const f = fixture();
 	try {
 		f.wizard();
@@ -168,7 +216,7 @@ test("missing required shell utility is named", () => {
 		assert.match(result.stderr, /Required utility missing: curl/);
 	} finally { f.cleanup(); }
 });
-test("symlink HOME and conflicting staging are refused without touching targets", () => {
+posixTest("symlink HOME and conflicting staging are refused without touching targets", () => {
 	const f = fixture();
 	try {
 		f.addPnpm(); f.wizard();
@@ -180,7 +228,7 @@ test("symlink HOME and conflicting staging are refused without touching targets"
 		assert.ok(existsSync(join(f.bin, "pnpm")));
 	} finally { f.cleanup(); }
 });
-test("pnpm acquisition refuses conflicting and symlink destinations before download", async () => {
+posixTest("pnpm acquisition refuses conflicting and symlink destinations before download", async () => {
 	const f = fixture();
 	try {
 		mkdirSync(join(f.home, "pnpm"));
@@ -191,7 +239,7 @@ test("pnpm acquisition refuses conflicting and symlink destinations before downl
 		assert.equal(downloads, 0);
 	} finally { f.cleanup(); }
 });
-test("wizard child failure is propagated and missing entry is explicit", async () => {
+posixTest("wizard child failure is propagated and missing entry is explicit", async () => {
 	await assert.rejects(launchWizard({ bundle: "/missing-bundle", env: {} }), /wizard entry.*missing/i);
 	const f = fixture();
 	try {
@@ -204,7 +252,7 @@ test("wizard child failure is propagated and missing entry is explicit", async (
 });
 
 for (const [os, arch, platform, architecture] of [["Darwin", "arm64", "darwin", "arm64"], ["Darwin", "x86_64", "darwin", "x64"], ["Linux", "aarch64", "linux", "arm64"]]) {
-	test(`shell artifact selection ${os}/${arch} (simulated, not native proof)`, () => {
+	posixTest(`shell artifact selection ${os}/${arch} (simulated, not native proof)`, () => {
 		const f = fixture();
 		try {
 			f.addPnpm(); f.wizard();
@@ -214,7 +262,7 @@ for (const [os, arch, platform, architecture] of [["Darwin", "arm64", "darwin", 
 	});
 }
 for (const extra of [{ FAKE_ARCH: "riscv64" }, { FAKE_OS: "FreeBSD" }, { FAKE_LIBC: "glibc 2.27" }]) {
-	test(`unsupported acquisition blocks before download: ${JSON.stringify(extra)}`, () => {
+	posixTest(`unsupported acquisition blocks before download: ${JSON.stringify(extra)}`, () => {
 		const f = fixture();
 		try {
 			f.wizard();
@@ -229,7 +277,7 @@ for (const [utility, body, message] of [
 	["tar", "exit 2", /archive is invalid/],
 	["tar", "echo 'lrwxrwxrwx malicious-link'", /not a regular file/],
 ]) {
-	test(`native acquisition process rejection: ${utility}/${message}`, () => {
+	posixTest(`native acquisition process rejection: ${utility}/${message}`, () => {
 		const f = fixture();
 		try {
 			f.addPnpm(); f.wizard(); f.executable(utility, body);
@@ -272,7 +320,7 @@ function acquisitionAdapters(options: AcquisitionOptions = {}) {
 		},
 	};
 }
-test("verified pnpm with literal upstream >=22.13 engine publishes its owned wrapper", async () => {
+posixTest("verified pnpm with literal upstream >=22.13 engine publishes its owned wrapper", async () => {
 	const f = fixture();
 	try {
 		const adapters = acquisitionAdapters();
@@ -286,7 +334,7 @@ test("verified pnpm with literal upstream >=22.13 engine publishes its owned wra
 	} finally { f.cleanup(); }
 });
 for (const options of [{ names: "package/../escape" }, { names: "/absolute/path" }, { types: "lrwxrwxrwx package/link" }, { types: "hrw------- package/hardlink" }, { version: "11.1.0" }, { help: "--global-bin-dir" }, { failProcess: true }]) {
-	test(`pnpm extraction/validation fails without publication: ${JSON.stringify(options)}`, async () => {
+	posixTest(`pnpm extraction/validation fails without publication: ${JSON.stringify(options)}`, async () => {
 		const f = fixture();
 		try {
 			await assert.rejects(ensurePnpm({ tools: f.home, env: { PATH: f.bin }, nodeVersion: "24.21.0", adapters: acquisitionAdapters(options) }), /acquisition failed/);
@@ -294,7 +342,66 @@ for (const options of [{ names: "package/../escape" }, { names: "/absolute/path"
 		} finally { f.cleanup(); }
 	});
 }
-test("pnpm symlink conflict does not touch its target", async () => {
+function silentWizard(bundle: string, body = "") {
+	writeFileSync(join(bundle, "bin/gentle-shell-install.mjs"), body);
+}
+posixTest("helper-created pnpm tools are removed after a successful wizard exit", async (t) => {
+	const f = fixture();
+	try {
+		silentWizard(f.bundle);
+		writeFileSync(join(f.home, "unrelated.txt"), "preserve");
+		const notices = t.mock.method(console, "error", () => {});
+		await bootstrap(f.bundle, "", { env: { PATH: f.bin, HOME: f.home }, adapters: acquisitionAdapters() });
+		assert.equal(notices.mock.callCount(), 0);
+		assert.deepEqual(readdirSync(f.home), ["unrelated.txt"]);
+	} finally { f.cleanup(); }
+});
+posixTest("helper-created tools are removed after wizard failure and kept with a notice when unprovable", async (t) => {
+	const f = fixture();
+	try {
+		silentWizard(f.bundle, "process.exit(3);\n");
+		await assert.rejects(bootstrap(f.bundle, "", { env: { PATH: f.bin, HOME: f.home }, adapters: acquisitionAdapters() }), /Wizard child failed/);
+		assert.deepEqual(readdirSync(f.home), []);
+		f.markerRemovingWizard();
+		const notices = t.mock.method(console, "error", () => {});
+		await bootstrap(f.bundle, "", { env: { PATH: f.bin, HOME: f.home }, adapters: acquisitionAdapters() });
+		const [tools] = readdirSync(f.home);
+		assert.match(tools, /^\.gentle-shell-bootstrap-tools\./);
+		assert.equal(notices.mock.callCount(), 1);
+		assert.ok(String(notices.mock.calls[0].arguments[0]).includes(`temporary tools could not be removed: ${join(f.home, tools)}`));
+	} finally { f.cleanup(); }
+});
+posixTest("owned tools removal refuses anything but the exact marked private directory", () => {
+	const f = fixture();
+	try {
+		const marked = (name: string, marker = "gentle-pi prerequisite tooling only\n") => {
+			const path = join(f.home, name);
+			mkdirSync(path, { mode: 0o700 });
+			writeFileSync(join(path, "keep"), "preserve");
+			if (marker) writeFileSync(join(path, ".bootstrap-owned"), marker);
+			return path;
+		};
+		const target = marked("target");
+		const link = join(f.home, ".gentle-shell-bootstrap-tools.link");
+		symlinkSync(target, link);
+		const outside = join(f.root, ".gentle-shell-bootstrap-tools.outside");
+		mkdirSync(outside); writeFileSync(join(outside, ".bootstrap-owned"), "gentle-pi prerequisite tooling only\n");
+		const nested = join(marked(".gentle-shell-bootstrap-tools.parent"), ".gentle-shell-bootstrap-tools.child");
+		mkdirSync(nested); writeFileSync(join(nested, ".bootstrap-owned"), "gentle-pi prerequisite tooling only\n");
+		const markerLink = marked(".gentle-shell-bootstrap-tools.markerlink", "");
+		symlinkSync(join(target, ".bootstrap-owned"), join(markerLink, ".bootstrap-owned"));
+		const refused = [link, outside, nested, marked("other-name"), marked(".gentle-shell-bootstrap-tools.nomarker", ""),
+			marked(".gentle-shell-bootstrap-tools.wrongmarker", "something else\n"), markerLink, `${f.home}/./.gentle-shell-bootstrap-tools.parent`, "", undefined];
+		for (const path of refused) assert.equal(removeOwnedTools(path, f.home), false, String(path));
+		assert.equal(readFileSync(join(target, "keep"), "utf8"), "preserve");
+		assert.ok(existsSync(outside) && existsSync(nested));
+		const owned = marked(".gentle-shell-bootstrap-tools.owned");
+		assert.equal(removeOwnedTools(owned, f.home), true);
+		assert.equal(existsSync(owned), false);
+		assert.equal(removeOwnedTools(owned, f.home), false, "already removed");
+	} finally { f.cleanup(); }
+});
+posixTest("pnpm symlink conflict does not touch its target", async () => {
 	const f = fixture();
 	try {
 		symlinkSync(f.bin, join(f.home, "pnpm"));
@@ -302,12 +409,12 @@ test("pnpm symlink conflict does not touch its target", async () => {
 		assert.ok(existsSync(join(f.bin, "curl")));
 	} finally { f.cleanup(); }
 });
-test("native Node destination symlink is refused without following its target", () => {
+posixTest("native Node destination symlink is refused without following its target", () => {
 	const f = fixture();
 	try {
 		f.addPnpm(); f.wizard();
 		const tar = readFileSync(join(f.bin, "tar"), "utf8");
-		f.executable("tar", tar.replace('mkdir -p "$target/', `/usr/bin/ln -s '${f.bin}' "$target/../node"\nmkdir -p "$target/`));
+		f.executable("tar", tar.replace('mkdir -p "$target/', `${systemUtility("ln")} -s '${f.bin}' "$target/../node"\nmkdir -p "$target/`));
 		const result = f.run();
 		assert.notEqual(result.status, 0);
 		assert.match(result.stderr, /Conflicting Node destination/);
@@ -315,7 +422,7 @@ test("native Node destination symlink is refused without following its target", 
 		assert.deepEqual(readdirSync(f.home), []);
 	} finally { f.cleanup(); }
 });
-test("existing Node failed probe is not repaired", () => {
+posixTest("existing Node failed probe is not repaired", () => {
 	const f = fixture();
 	try {
 		f.addNode(); f.wizard(); f.executable("node", "exit 4");
@@ -323,7 +430,7 @@ test("existing Node failed probe is not repaired", () => {
 		assert.deepEqual(readdirSync(f.home), []);
 	} finally { f.cleanup(); }
 });
-test("pnpm without required global capabilities is not replaced", () => {
+posixTest("pnpm without required global capabilities is not replaced", () => {
 	const f = fixture();
 	try {
 		f.addNode(); f.addPnpm(); f.wizard();
@@ -332,7 +439,7 @@ test("pnpm without required global capabilities is not replaced", () => {
 		assert.deepEqual(readdirSync(f.home), []);
 	} finally { f.cleanup(); }
 });
-test("missing tar blocks pnpm before any download", async () => {
+posixTest("missing tar blocks pnpm before any download", async () => {
 	const f = fixture();
 	try {
 		unlinkSync(join(f.bin, "tar"));
@@ -400,7 +507,7 @@ function assertProbeReaped(path: string) {
 	assert.throws(() => process.kill(pid, 0), { code: "ESRCH" }, "owned probe must be reaped before the parent returns");
 }
 
-test("production shell deadline rejects TERM-ignored acquired Node and cleans owned tooling", async () => {
+posixTest("production shell deadline rejects TERM-ignored acquired Node and cleans owned tooling", async () => {
 	const f = fixture();
 	try {
 		f.addPnpm(); f.wizard();
@@ -426,7 +533,7 @@ function productionPnpmRunner(root: string, home: string, bin: string) {
 	writeFileSync(runner, `import { artifactFor, ensurePnpm } from ${JSON.stringify(pathToFileURL(helper).href)};\ntry {\nawait ensurePnpm({ tools: ${JSON.stringify(home)}, env: { PATH: ${JSON.stringify(bin)}, PROBE_PID: process.env.PROBE_PID }, nodeVersion: '24.21.0', adapters: {\ndownload: async () => Buffer.from('verified fixture'),\ndigest: () => Buffer.from(artifactFor('pnpm').integrity.slice(7), 'base64'),\n} });\nconsole.log('unexpected acquisition success');\n} catch { console.error('acquisition rejected'); process.exitCode = 1; }\n`);
 	return runner;
 }
-test("production Node process deadline rejects TERM-ignored tar and cleans owned staging", async () => {
+posixTest("production Node process deadline rejects TERM-ignored tar and cleans owned staging", async () => {
 	const f = fixture();
 	try {
 		writeFileSync(join(f.home, "unrelated.txt"), "preserve");
@@ -443,7 +550,7 @@ test("production Node process deadline rejects TERM-ignored tar and cleans owned
 		assert.equal(readFileSync(join(f.home, "unrelated.txt"), "utf8"), "preserve");
 	} finally { f.cleanup(); }
 });
-test("production Node process adapter propagates ordinary nonzero tar exit with cleanup", async () => {
+posixTest("production Node process adapter propagates ordinary nonzero tar exit with cleanup", async () => {
 	const f = fixture();
 	try {
 		writeFileSync(join(f.home, "unrelated.txt"), "preserve");
@@ -456,7 +563,7 @@ test("production Node process adapter propagates ordinary nonzero tar exit with 
 	} finally { f.cleanup(); }
 });
 
-test("failed pnpm download never reaches archive/process adapters", async () => {
+posixTest("failed pnpm download never reaches archive/process adapters", async () => {
 	const f = fixture();
 	try {
 		let processes = 0;

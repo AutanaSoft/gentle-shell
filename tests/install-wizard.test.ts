@@ -455,6 +455,48 @@ test("outcomeModel covers every runner outcome, blocked reason and failed step w
 	assert.equal(unknown.failedStep, null);
 });
 
+test("a failed setup shows its last error as labelled plain text", () => {
+	const document = new FakeDocument();
+	const hostile = "Error: `rm -rf` <img src=x onerror=alert(1)> GitHub API returned HTTP 403";
+	const model = wizard.outcomeModel({ outcome: "failed", failedStep: "shell-setup", completed: [], guidance: guidance.setupRateLimit, detail: hostile });
+	assert.equal(model.detail, hostile);
+	assert.equal(model.guidance, guidance.setupRateLimit);
+	const node = wizard.renderOutcome(document, model, { close() {} });
+	const section = all(node, "section").find((element) => element.textContent.startsWith("Last error from gentle-shell setup"));
+	assert.ok(section, "labelled detail section");
+	const label = all(section, "h2")[0];
+	assert.equal(label.textContent, "Last error from gentle-shell setup");
+	assert.equal(section.getAttribute("aria-labelledby"), label.getAttribute("id"));
+	// Backticks stay literal: the detail is one text node, never `rich` code spans or markup.
+	const codes = all(section, "code");
+	assert.equal(codes.length, 1);
+	assert.equal(codes[0].textContent, hostile);
+	assert.equal(all(node, "img").length, 0);
+	// pnpm setup's detail is labelled with its own fixed command name.
+	const pnpmDetail = "[ERR_PNPM_UNKNOWN_SHELL] Could not infer shell type.";
+	const persist = wizard.outcomeModel({ outcome: "failed", failedStep: "persist-path", completed: [], guidance: guidance.persistPathShell, detail: pnpmDetail });
+	assert.equal(persist.detail, pnpmDetail);
+	assert.equal(persist.detailCommand, "pnpm setup");
+	const persistNode = wizard.renderOutcome(document, persist, { close() {} });
+	const persistSection = all(persistNode, "section").find((element) => element.textContent.startsWith("Last error from pnpm setup"));
+	assert.ok(persistSection, "pnpm setup detail section");
+	assert.equal(all(persistSection, "code")[0].textContent, pnpmDetail);
+	assert.doesNotMatch(persistNode.textContent, /Last error from gentle-shell setup/);
+	// The detail is shown only for a failed setup step with a string value, bounded to 300 characters.
+	const long = wizard.outcomeModel({ outcome: "failed", failedStep: "shell-setup", completed: [], guidance: "g", detail: "y".repeat(400) });
+	assert.equal(long.detail.length, 300);
+	for (const outcome of [
+		{ outcome: "failed", failedStep: "install-global", completed: [], guidance: "g", detail: hostile },
+		{ outcome: "failed", failedStep: "shell-setup", completed: [], guidance: "g", detail: 42 },
+		{ outcome: "failed", failedStep: "shell-setup", completed: [], guidance: "g", detail: "" },
+		{ outcome: "ready", completed: [], guidance: "g", detail: hostile },
+	]) {
+		const other = wizard.outcomeModel(outcome);
+		assert.equal(other.detail, null, JSON.stringify(outcome));
+		assert.doesNotMatch(wizard.renderOutcome(document, other, { close() {} }).textContent, /Last error from gentle-shell setup/);
+	}
+});
+
 test("renderOutcome renders every outcome with text nodes only, so server strings stay inert", () => {
 	const document = new FakeDocument();
 	const hostile = "<img src=x onerror=alert(1)>";

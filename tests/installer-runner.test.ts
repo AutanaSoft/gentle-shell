@@ -11,6 +11,7 @@ import {
 	failedSteps,
 	packageNativeGentleAi,
 	runStandardInstall as runUnobserved,
+	setupErrorDetail,
 } from "../scripts/installer-runner.mjs";
 
 // Every scenario below runs through this wrapper, which records the blocked
@@ -70,8 +71,8 @@ const W_STORE_PATH = `${W_STORE}\\v11`;
 const W_STORE_PREFIX = `${W_STORE_PATH}\\links\\node\\24.21.0\\hash`;
 const WINDOWS_SHIM = `@IF EXIST "%~dp0\\node.exe" (\r\n  "%~dp0\\node.exe"  "%~dp0\\..\\global\\v11\\abc\\node_modules\\npm\\bin\\npm-cli.js" %*\r\n) ELSE (\r\n  node  "%~dp0\\..\\global\\v11\\abc\\node_modules\\npm\\bin\\npm-cli.js" %*\r\n)\r\n`;
 
-type Call = { command: string; args: string[]; env: Record<string, string>; deadlineMs: number };
-type Result = { code: number | null; signal?: string | null; timedOut?: boolean; stdout?: string };
+type Call = { command: string; args: string[]; env: Record<string, string>; deadlineMs: number; stderrTail?: number };
+type Result = { code: number | null; signal?: string | null; timedOut?: boolean; stdout?: string; stderrTail?: string };
 type Layout = { platform: string; node: string; entry: string; npmCli: string; shellEntry: string; bin: string;
 	root: string; env: Record<string, string>; files: string[]; realpaths: Record<string, string>; texts: Record<string, string>;
 	persistentNode: string; pmNpmCli: string; pmPnpmEntry: string; pmHome: string; storePath: string; storePrefix: string;
@@ -175,8 +176,9 @@ function harness({ env = {}, results = {}, files = [] as string[], integrity = {
 		platform: layout.platform,
 		nodePath: layout.node,
 		env: { ...layout.env, ...env } as Record<string, string>,
-		run: async (command: string, args: string[], options: { env: Record<string, string>; deadlineMs: number }) => {
-			calls.push({ command, args, env: options.env, deadlineMs: options.deadlineMs });
+		run: async (command: string, args: string[], options: { env: Record<string, string>; deadlineMs: number; stderrTail?: number }) => {
+			calls.push({ command, args, env: options.env, deadlineMs: options.deadlineMs,
+				...(options.stderrTail === undefined ? {} : { stderrTail: options.stderrTail }) });
 			const k = key(command, args);
 			const entry = responses[k];
 			assert.ok(entry, `unexpected command ${command} ${args.join(" ")}`);
@@ -463,6 +465,63 @@ test("gentle-shell setup nonzero, signal or deadline fails", async () => {
 		assert.equal(result.failedStep, "shell-setup");
 		assert.ok(result.completed.includes("verify-gentle-ai"));
 	}
+});
+
+test("a failed gentle-shell setup reports its last error line as a sanitized detail", async () => {
+	const stderrTail = `fetching engram\n\u001b[31mError: execute install pipeline: download engram binary: fetch latest engram version: GitHub API returned HTTP 403\u001b[0m (${HOME}/.gentle-shell/agent)\ninstalled via go install\n`;
+	const h = harness({ results: { "gentle-shell setup": { code: 1, stderrTail } } });
+	const result = await runStandardInstall({ plan: plan(), consent: true }, h.adapters);
+	assert.equal(result.outcome, "failed");
+	assert.equal(result.failedStep, "shell-setup");
+	assert.equal(result.detail, "Error: execute install pipeline: download engram binary: fetch latest engram version: GitHub API returned HTTP 403 (~/.gentle-shell/agent)");
+	// Only the setup child gets its stderr tail captured; every other command keeps stderr discarded.
+	assert.deepEqual(h.calls.filter((call) => call.stderrTail !== undefined).map((call) => [call.args, call.stderrTail]), [[[SHELL_ENTRY, "setup"], 4096]]);
+	for (const setup of [{ code: 2 }, { code: 2, stderrTail: " \n\t\n" }]) {
+		const silent = await runStandardInstall({ plan: plan(), consent: true }, harness({ results: { "gentle-shell setup": setup } }).adapters);
+		assert.equal(silent.failedStep, "shell-setup");
+		assert.equal("detail" in silent, false);
+	}
+	const succeeded = await runStandardInstall({ plan: plan(), consent: true }, harness({ results: { "gentle-shell setup": { code: 0, stderrTail: "Error: ignored" } } }).adapters);
+	assert.equal(succeeded.outcome, "ready");
+	assert.equal("detail" in succeeded, false);
+	// Only shell-setup carries a detail, never an earlier failed step.
+	const early = await runStandardInstall({ plan: plan(), consent: true }, harness({ results: { add: { code: 1, stderrTail: "Error: x" } } }).adapters);
+	assert.equal(early.failedStep, "install-global");
+	assert.equal("detail" in early, false);
+});
+
+// Observed with pnpm 11.1.1 and no SHELL: the error goes to stdout after the global CLI install output.
+const PNPM_SETUP_NO_SHELL = `Installing pnpm CLI globally from /usr/bin\nProgress: resolved 1, reused 1, downloaded 0, added 1, done\n[WARN] Failed to create bin at ${HOME}/.local/share/pnpm/bin/pnpm.\n\nDone in 393ms using pnpm v11.1.1\n[ERR_PNPM_UNKNOWN_SHELL] Could not infer shell type.\n\nSet the SHELL environment variable to your active shell.\nSupported shell languages are bash, zsh, fish, ksh, dash, sh, and nushell.\n`;
+
+test("a failed pnpm setup reports its error line from stderr, else from stdout", async () => {
+	const noPath = { PATH: "/opt/node/bin:/usr/bin" };
+	const h = harness({ env: noPath, results: { "pnpm setup": { code: 1, stdout: PNPM_SETUP_NO_SHELL, stderrTail: "" } } });
+	const result = await runStandardInstall({ plan: plan(), consent: true }, h.adapters);
+	assert.equal(result.failedStep, "persist-path");
+	assert.equal(result.detail, "[ERR_PNPM_UNKNOWN_SHELL] Could not infer shell type.");
+	// Both fixed setup commands, and only they, request the same bounded stderr tail.
+	assert.deepEqual(h.calls.filter((call) => call.stderrTail !== undefined).map((call) => [call.args.at(-1), call.stderrTail]), [["setup", 4096], ["setup", 4096]]);
+	const stderr = await runStandardInstall({ plan: plan(), consent: true }, harness({ env: noPath,
+		results: { "pnpm setup": { code: 1, stdout: PNPM_SETUP_NO_SHELL, stderrTail: "Error: EACCES: permission denied, open '/home/u/.bashrc'\n" } } }).adapters);
+	assert.equal(stderr.detail, "Error: EACCES: permission denied, open '~/.bashrc'");
+	const silent = await runStandardInstall({ plan: plan(), consent: true }, harness({ env: noPath, results: { "pnpm setup": { code: 1 } } }).adapters);
+	assert.equal(silent.failedStep, "persist-path");
+	assert.equal("detail" in silent, false);
+	const passed = await runStandardInstall({ plan: plan(), consent: true }, harness({ env: noPath, results: { "pnpm setup": { code: 0, stdout: PNPM_SETUP_NO_SHELL } } }).adapters);
+	assert.equal(passed.outcome, "terminal-action-required");
+	assert.equal("detail" in passed, false);
+});
+
+test("setup error detail picks the last Error line, else the last line, bounded and without control characters", () => {
+	assert.equal(setupErrorDetail(PNPM_SETUP_NO_SHELL, HOME, "linux"), "[ERR_PNPM_UNKNOWN_SHELL] Could not infer shell type.", "pnpm error codes count as error lines");
+	assert.equal(setupErrorDetail("Error: first\nmore\nError: second\ntrailer\n", HOME, "linux"), "Error: second");
+	assert.equal(setupErrorDetail("one\r\ntwo\r\n\r\n", HOME, "linux"), "two");
+	assert.equal(setupErrorDetail(`bad\u0000\u0007 \u009b31mtext\u001b]0;title\u0007 at ${HOME}/x and ${HOME}`, HOME, "linux"), "bad text at ~/x and ~");
+	assert.equal(setupErrorDetail("x".repeat(500), HOME, "linux")?.length, 300);
+	assert.equal(setupErrorDetail("C:\\USERS\\U\\.gentle-shell failed", "C:\\Users\\u", "win32"), "~\\.gentle-shell failed");
+	assert.equal(setupErrorDetail("/home/user/x", "/home/u", "linux"), "/home/user/x", "only the exact HOME path is replaced");
+	for (const empty of ["", "\n \n", "\u001b[0m", undefined, null, 42]) assert.equal(setupErrorDetail(empty, HOME, "linux"), null);
+	assert.equal(setupErrorDetail("Error: plain", undefined, "linux"), "Error: plain");
 });
 
 test("$PNPM_HOME/bin absent from the user PATH runs pnpm setup and requires a new terminal", async () => {

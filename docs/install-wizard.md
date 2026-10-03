@@ -6,9 +6,10 @@ persistence), the secure local wizard host with its packaged entry and the
 interactive browser wizard UI are implemented. Windows native validation
 remains unavailable locally.
 **This is not a supported installation path yet:** published bootstrap
-artifacts, real browsers and native clean-machine runs are still unverified
-(T7). For ordinary installation and terminal use, follow the
-[README](../README.md).
+artifacts, real browsers and native macOS/Windows clean-machine runs are still
+unverified (T7); one Linux clean-container run passed (see
+[Clean-machine acceptance](#clean-machine-acceptance-t7)). For ordinary
+installation and terminal use, follow the [README](../README.md).
 
 ## What is available
 
@@ -153,7 +154,10 @@ Adapters:
 - `run(command, argv, { env, deadlineMs })` is the runner's process contract:
   argv arrays with `shell:false`, SIGKILL at the deadline and stdout bounded
   to `maxOutputBytes` (default 1 MiB, reported as `truncated: true`). stderr
-  is discarded because it can hold private paths. A spawn failure returns
+  is discarded because it can hold private paths, unless the caller passes
+  `stderrTail: <bytes>` (a positive integer, clamped to 4 KiB): then stderr is
+  piped and only its last bytes are kept and returned as `stderrTail`, also on a
+  deadline. Only the runner's `shell-setup` and `persist-path` steps ask for it. A spawn failure returns
   `code: null`. The deadline signals the direct child only, not descendants;
   it then destroys the child's pipes and settles as timed out (`code: null`,
   `signal: "SIGKILL"`) without waiting for `close`, which a descendant holding
@@ -295,11 +299,26 @@ Mutating and verification steps, returning `failed` with `failedStep` and the
    setup`, with the child environment minus every `GENTLE_BOOTSTRAP_*` and
    `GENTLE_INSTALL_*` key (case-insensitive on Windows); pnpm commands keep the
    handoff. Nonzero, signal or deadline fails. The runner neither duplicates
-   setup logic nor writes the automatic provisioning marker.
+   setup logic nor writes the automatic provisioning marker. It requests the
+   last 4 KiB of setup's stderr, where `gentle-shell setup` reports errors, and
+   a failure carries `detail`: the last error line (containing `Error:` or a
+   pnpm `ERR_` code), else the last non-empty line, without terminal escapes,
+   control or bidi characters, with the user's home replaced by `~` and at most
+   300 characters (`setupErrorDetail`). The raw output is not kept; only this
+   step and `persist-path` have a detail.
 6. `persist-path`, only when `$PNPM_HOME/bin` was not on the user's own PATH:
    `pnpm setup`, then the outcome is `terminal-action-required` with
    `action: "open-new-terminal"`. A child environment never proves that a fresh
-   terminal resolves `gentle-shell`.
+   terminal resolves `gentle-shell`. On POSIX, `pnpm setup` picks the profile
+   to edit from the inherited `SHELL` variable (bash, zsh, fish, ksh, dash, sh
+   or nushell); without it pnpm 11.1.1 fails with `ERR_PNPM_UNKNOWN_SHELL`,
+   with another shell `ERR_PNPM_UNSUPPORTED_SHELL`. A terminal session always
+   exports `SHELL`; a launcher that does not (for example `docker exec`, some
+   service managers or IDE tasks) makes this step fail. pnpm prints these
+   errors on stdout, so a failure takes `detail` from the same 4-KiB stderr
+   tail or, when that has no line, from stdout. Before checking the shell, the
+   observed pnpm 11.1.1 also installs the latest `@pnpm/exe` globally ("Installing
+   pnpm CLI globally"), which is upstream behavior the runner does not control.
 
 `ready` requires every step above to complete and the global bin to already be
 on the user's PATH. Skipped, unverified or failed mandatory steps never yield
@@ -440,7 +459,7 @@ command; it ships inside the package's `bin/` directory and is listed in
 
 | Exit code | When |
 | --- | --- |
-| 0 | The last installation outcome was `ready` or `terminal-action-required`. The bootstrap keeps its tools. |
+| 0 | The last installation outcome was `ready` or `terminal-action-required`. Node, npm and pnpm now persist under `$PNPM_HOME` or were already the user's, so the bootstrap removes the tools directory it created. |
 | 1 | `blocked`, `failed`, a shutdown or idle close without a completed installation, a signal, or a host start failure. The bootstrap removes its tools. |
 
 SIGINT and SIGTERM close the server and exit with the code above. An
@@ -511,7 +530,16 @@ simply unknown paths.
 `guidance` (exported) holds fixed English text for every runner blocked
 reason, every failed step, every preflight blocker code and both successful
 outcomes, plus a generic fallback; a runner exception becomes a `failed`
-outcome with the fallback. `scripts/installer-runner.mjs` exports the frozen
+outcome with the fallback. A failed `shell-setup` or `persist-path` outcome also passes the
+runner's `detail` through, bounded again (string only, control and bidi
+characters removed, at most 300 characters); the host drops it for any other
+step. When that detail names GitHub's rate limit (`rate limit`, or `GitHub API`
+together with `403`), the guidance becomes `guidance.setupRateLimit`: GitHub's
+anonymous API limit was reached on this network, wait up to an hour and run the
+installer again. No token or credential is ever requested. For `persist-path`,
+a detail with `ERR_PNPM_UNKNOWN_SHELL` or `ERR_PNPM_UNSUPPORTED_SHELL` selects
+`guidance.persistPathShell`: open a regular terminal and run the installer
+again, or add `$PNPM_HOME/bin` to PATH manually. `scripts/installer-runner.mjs` exports the frozen
 arrays `blockedReasons` and `failedSteps`; a test requires guidance for exactly
 those entries, and the runner tests check that every reason and step their
 scenarios observe is listed.
@@ -529,7 +557,7 @@ HTML).
 | Check | Shown while `GET /api/progress?after=0` and `GET /api/plan` run. A running installation resumes the Install screen; a finished one shows its outcome instead of a new plan. |
 | Review | Each fixed action with its description, the `profileChange` and `persistence` disclosures (state as text: "Will change", "No change"), one consent checkbox and **Install Gentle Shell**. Without the checkbox no request is sent; the error is announced and focus moves to the checkbox. Preflight blockers replace the plan with their guidance, **Check again** and **Close installer**. |
 | Install | Expected runner steps (`expectedSteps`) with a text status (Done, In progress, Pending, Failed, Blocked, Not run), a `<progress>` bar and a terminal-style log of `{ seq, step, status, reason }` entries. |
-| Done | `ready`: run `gentle-shell`. `terminal-action-required`: open a new terminal, then run `gentle-shell`. `blocked`/`failed`: the host's guidance, the reason or failed step, the steps that finished and the log. Every outcome offers **Close installer** (`POST /api/shutdown`). |
+| Done | `ready`: run `gentle-shell`. `terminal-action-required`: open a new terminal, then run `gentle-shell`. `blocked`/`failed`: the host's guidance, the reason or failed step, the steps that finished and the log. A failed `shell-setup` or `persist-path` with a detail also shows it under **Last error from gentle-shell setup** or **Last error from pnpm setup** as one plain text node (backticks stay literal). Every outcome offers **Close installer** (`POST /api/shutdown`). |
 
 Behavior worth knowing:
 
@@ -597,8 +625,9 @@ with the rest of `scripts/` in the package.
   carries the `SameSite=Strict` cookie in each browser; browsers honouring
   `SameSite=Strict` and the cookie on `127.0.0.1`; DNS-rebinding and
   cross-site request rejection in real browsers; the bootstrap's handling of
-  exit 0 and 1 end to end; SIGTERM during a running installation; Windows
-  `rundll32` behavior; real probe and runner execution through the host.
+  exit 1 end to end, and exit 0 outside Linux; SIGTERM during a running
+  installation; Windows `rundll32` behavior; real probe and runner execution
+  through the host outside Linux.
 
 ## POSIX bootstrap: bundle-local tooling only
 
@@ -636,7 +665,15 @@ free of symlink ancestors. Staging and destinations reject conflicts and
 symlinks. Unrelated similarly named directories are not scanned, reused or
 removed. Failed attempts clean only their own private directories; successful
 acquisition removes its temporary archives/staging and retains verified tools
-so child processes can continue using them.
+while the wizard runs. After the wizard exits 0, the script removes the tools
+directory it claimed, and the Node helper removes the one it created when only
+pnpm was missing. Both removals require the exact
+`$HOME/.gentle-shell-bootstrap-tools.*` name, a real directory (not a symlink)
+and the `.bootstrap-owned` marker with its exact content; `rm -rf` and
+`rmSync` remove links inside without following them. When removal is refused or
+fails, the bootstrap still exits 0 and prints
+`Bootstrap: installation finished, but temporary tools could not be removed:
+<path>` on stderr.
 A new attempt reuses tools only if already visible and proven on its PATH; it
 does not discover or garbage-collect previous private attempts.
 
@@ -832,8 +869,14 @@ The portable fixture model checks parity with all three fixed production
 predicates; it does not execute Windows ACL APIs or claim prevalence on Windows.
 
 Failure cleanup targets only the directory claimed by the actual attempt;
-collisions and unrelated storage are not removed. Successful prerequisite tools
-remain available to children. ACL/ancestor checks are conservative and may
+collisions and unrelated storage are not removed. Prerequisite tools remain
+available to children while the wizard runs. After the helper exits 0, a final
+stage removes the claimed root only when its full path is a direct child of
+`%LOCALAPPDATA%` named `.gentle-shell-bootstrap-tools.*`, neither it nor its
+`.bootstrap-owned` marker is a reparse point, and the marker holds the exact
+text. It uses `[IO.Directory]::Delete(path, true)`, which does not recurse
+through reparse points, instead of Windows PowerShell 5.1 `Remove-Item`. A
+refusal or failure prints the same notice with the path and still exits 0. ACL/ancestor checks are conservative and may
 reject managed/nonstandard layouts rather than relax security. They do not
 claim protection from a malicious process running as the same principal or an
 administrator, nor eliminate same-principal time-of-check/time-of-use races.
@@ -887,3 +930,141 @@ item. No live artifact was downloaded/executed, operator-home installation
 performed, operator/global ACL or policy changed, or Windows OS minimum/support
 claimed. No same-principal-adversary or forked-descendant guarantee is made.
 T7 must establish those facts before advertising clean-machine support.
+
+## Clean-machine acceptance (T7)
+
+### Linux clean container
+
+A disposable `debian:bookworm-slim` container without Node, npm, pnpm, Pi or
+Gentle Shell, driven as a non-root user, passed end to end:
+`sh scripts/bootstrap.sh` exited 0 and the wizard, driven over HTTP exactly as
+the page does, reached `terminal-action-required` with all 13 runner steps
+`done` in about 27 seconds. A fresh `bash -ic` resolved `node` v24.21.0, `npm`
+11.19.0 and `pnpm` 11.1.1 from `$PNPM_HOME/bin`, and `gentle-shell --version`
+reported 4.0.0 with Pi 1.0.0 and the isolated home `~/.gentle-shell/agent`.
+That run predates the removal of bootstrap tools after success.
+
+The first run of `scripts/test-installer-acceptance.sh --worktree` (with the
+tools removal, not yet committed) did **not** pass: the bootstrap acquired its
+tools and printed the session URL after 113 seconds, the plan had no blockers,
+and 11 runner steps finished `done` before `shell-setup` (`gentle-shell setup`)
+failed; the outcome was `failed`, the bootstrap exited 1 and removed its tools
+through the failure path, after 146 seconds in total. A separate diagnostic
+container proved the cause: `gentle-shell setup` failed with `Error: execute
+install pipeline: download engram binary: fetch latest engram version: GitHub
+API returned HTTP 403` because the anonymous GitHub API quota of this network
+was exhausted. After the quota reset, setup in the same container exited 0
+without installing any extra package. It was not caused by the tools removal,
+which only runs after the wizard exits. See
+[GitHub API limit during setup](#github-api-limit-during-setup).
+
+The second run (with the quota precheck: 43 anonymous requests left) got past
+that: `shell-setup` finished `done`, then the last step, `persist-path`
+(`pnpm setup`), failed. The installation part took about 34 seconds, so it was
+not its 30-second deadline alone. The outcome was `failed`, the bootstrap exited
+1 and removed its tools through the failure path; 147 seconds in total. Cause:
+the script started the bootstrap with `docker exec ... sh -c`, which exports no
+`SHELL`, while the passing lab run had `SHELL=/bin/bash`; `pnpm setup` then
+cannot pick a profile (see `persist-path` above). A real terminal exports
+`SHELL`, so the script now passes `SHELL=/bin/bash` to the bootstrap, and a
+failed `persist-path` now reports pnpm's error line and SHELL guidance.
+
+The third run, with `SHELL=/bin/bash`, **passed**: 23 anonymous GitHub
+requests left before it, session URL after 113 seconds, all 13 runner steps
+`done` including `shell-setup` and `persist-path`, outcome
+`terminal-action-required`, bootstrap exit 0; 142 seconds for bootstrap and
+wizard, 147 in total. A fresh `bash -ic` resolved `node` v24.21.0, `npm`
+11.19.0, `pnpm` 11.1.1 and `gentle-shell` from `~/.local/share/pnpm/bin`;
+`gentle-shell --version` reported 4.0.0, Pi 1.0.0 and the isolated home
+`~/.gentle-shell/agent`; no `~/.gentle-shell-bootstrap-tools.*` directory
+remained, so the success-path tools removal is proven in a clean container.
+`bash -lc` did not resolve `gentle-shell`, as documented below.
+
+To reproduce it, run `sh scripts/test-installer-acceptance.sh` from the
+repository. It refuses to start without a working Docker daemon and never runs
+the installer on the host or touches the host HOME. It starts a container
+(`--pull missing`), installs only `ca-certificates` and `curl`, creates the
+user `tester`, then queries `https://api.github.com/rate_limit` from inside the
+container (this endpoint does not consume quota) and stops before the
+bootstrap, printing the reset time, when fewer than 5 anonymous core requests
+remain. It then copies the bundle to `/opt/bundle` (`git archive HEAD`, or the
+tracked working-tree files including uncommitted changes with `--worktree`) and
+runs the bootstrap. A headless driver inside the container redeems
+`/session?code=` with a cookie jar, sends `X-Gentle-Install: 1` on every
+`/api/*` request and the same Origin plus `Content-Type: application/json` on
+every POST, then requests the plan, consents, polls progress and shuts the host
+down. It then checks, in a fresh `bash -ic`, that `node`, `npm`, `pnpm` and
+`gentle-shell --version` resolve and that no `~/.gentle-shell-bootstrap-tools.*`
+directory remains, and reports whether `bash -lc` resolves `gentle-shell`. The
+container is removed on every exit unless `GENTLE_ACCEPTANCE_KEEP=1` keeps a
+failed one for inspection; the pulled image stays cached. Network
+access happens only inside the container. The installation is bounded by
+`GENTLE_ACCEPTANCE_INSTALL_SECONDS` (default 1500). CI does not run it.
+
+### GitHub API limit during setup
+
+`gentle-shell setup` runs upstream Gentle AI's install pipeline, which looks up
+the latest Engram version through the GitHub REST API without authentication:
+2 anonymous requests per setup. GitHub allows 60 anonymous requests per hour
+per public IP address, so machines sharing one address (offices, NAT, VPNs, CI
+runners, repeated test runs) can exhaust it; setup then fails with
+`GitHub API returned HTTP 403` and the wizard shows the rate-limit guidance and
+that error line. Waiting for the hourly reset is enough; nothing has to be
+uninstalled first.
+
+A missing `git` only produces a warning during setup; it was not the cause.
+
+Upstream advisory for Gentle AI (not changed here): pin the Engram version or
+fall back to it when the lookup fails, accept an optional `GITHUB_TOKEN` for
+the lookup, and replace the misleading "installed via go install" message that
+accompanies this failure.
+
+### Shell profiles after `pnpm setup`
+
+`pnpm setup` writes `PNPM_HOME` and its PATH entry into the interactive shell's
+profile only: `~/.bashrc` for bash on Debian. Debian's `~/.bashrc` returns
+early for non-interactive shells, and login shells read `~/.profile`, so these
+do not find `gentle-shell`, `node`, `npm` or `pnpm`:
+
+- non-interactive login shells such as `bash -lc '...'`, and tools or IDE tasks
+  that start one;
+- `ssh host command`: bash reads `~/.bashrc` but stops at its non-interactive
+  guard, so the lines must sit above that guard (or the command must use an
+  absolute path);
+- cron jobs, which read neither file: set PATH in the crontab or use absolute
+  paths.
+
+For login shells, add the same lines to `~/.profile` manually (the wizard does
+not edit it), using the `PNPM_HOME` that `pnpm setup` wrote, for example:
+
+```sh
+export PNPM_HOME="$HOME/.local/share/pnpm"
+case ":$PATH:" in *":$PNPM_HOME/bin:"*) ;; *) export PATH="$PNPM_HOME/bin:$PATH" ;; esac
+```
+
+### Upstream `~/.pi/gentle-ai`
+
+Gentle AI's setup creates an empty `~/.pi/gentle-ai` directory outside the
+isolated Gentle Shell home `~/.gentle-shell/agent`. This is upstream behavior;
+the installer neither relies on nor removes it.
+
+### CI matrix
+
+The `installer` job in `.github/workflows/ci.yml` runs the installer suites with
+Node 24 on `ubuntu-latest`, `macos-latest` and `windows-latest`. The native
+Windows tests in `tests/installer-windows-bootstrap.test.ts` are gated on
+`process.platform === "win32"`, so they run on the Windows runner and skip
+elsewhere; the POSIX shell fixtures in `tests/installer-posix-bootstrap.test.ts`
+skip on Windows. CI only runs after a push, which remains a user decision.
+
+### Remaining T7 checks
+
+- real browsers and screen readers (only headless Chromium was used);
+- native macOS and Windows clean machines, including the Windows bootstrap
+  end to end and its tools removal;
+- `pnpm setup` and fresh-terminal resolution in zsh and fish;
+- SIGTERM during a running installation;
+- reinstalling over an existing stack;
+- download-time integrity of the Node runtime and the npm and pnpm packages
+  fetched during persistence;
+- the earlier T4/T5/T6 items listed above that the Linux run does not cover.

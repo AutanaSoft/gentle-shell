@@ -279,16 +279,35 @@ function cmdStage(marker: string) {
 	const markerAt = source.indexOf(marker);
 	assert.ok(markerAt >= 0, marker);
 	const start = source.indexOf('"%GENTLE_BOOTSTRAP_PS%" -NoLogo', markerAt);
-	const end = source.indexOf("\nif errorlevel 1 goto failed", start);
-	const cleanupEnd = source.indexOf("\n:finishfailure", start);
-	assert.ok(start >= 0 && (end >= 0 || cleanupEnd >= 0));
-	return source.slice(start, end >= 0 ? end : cleanupEnd);
+	assert.ok(start >= 0);
+	const ends = ["\nif errorlevel 1 goto failed", "\nendlocal & exit /b 0", "\n:finishfailure"]
+		.map((terminator) => source.indexOf(terminator, start)).filter((index) => index >= 0);
+	assert.ok(ends.length > 0);
+	return source.slice(start, Math.min(...ends)).replace(/\r$/, "");
 }
 const stageMarkers = {
 	bundle: "rem Bundle/dependency", claim: "rem Claim", resolve: "rem Select",
 	zip: "rem Inspect the entire ZIP", probe: "rem Production direct",
-	launch: "rem Launch the existing", cleanup: "rem Never scan/reuse/clean",
+	launch: "rem Launch the existing", success: "rem Success:", cleanup: "rem Never scan/reuse/clean",
 } as const;
+
+test("success removes only the exact claimed marked root and never fails the installation", () => {
+	const source = readFileSync(new URL("../scripts/bootstrap.cmd", import.meta.url), "utf8").replaceAll("\r\n", "\n");
+	const launch = source.indexOf(stageMarkers.launch);
+	const success = source.indexOf(stageMarkers.success);
+	const exit = source.indexOf("\nendlocal & exit /b 0");
+	assert.ok(launch >= 0 && success > source.indexOf("if errorlevel 1 goto failed", launch) && success < exit, "cleanup runs only after the wizard succeeded");
+	const stage = cmdStage(stageMarkers.success).replaceAll("\r\n", "\n");
+	assert.equal(source.slice(source.indexOf(stage) + stage.length, exit), "", "no errorlevel turns a removal problem into failure");
+	assert.match(stage, /GetFullPath\(\$env:LOCALAPPDATA\)/);
+	assert.match(stage, /StartsWith\('\.gentle-shell-bootstrap-tools\.',\[StringComparison\]::Ordinal\)/);
+	assert.match(stage, /ReparsePoint/);
+	assert.match(stage, /'\.bootstrap-owned'/);
+	assert.match(stage, /-ne 'gentle-pi prerequisite tooling only'/);
+	assert.match(stage, /\[IO\.Directory\]::Delete\(\$tools, \$true\)/);
+	assert.doesNotMatch(stage, /Remove-Item/, "Windows PowerShell 5.1 Remove-Item may follow links");
+	assert.match(stage, /could not be removed: ' \+ \$env:GENTLE_BOOTSTRAP_TOOLS/);
+});
 const psRecordLine = '  "$record = [Diagnostics.Process]::GetCurrentProcess(); [IO.File]::AppendAllText($env:GENTLE_FIXTURE_RECORDS,([string]$record.Id + [char]124 + [string]$record.StartTime.ToUniversalTime().Ticks + [Environment]::NewLine));" ^';
 function observeStage(stage: string) {
 	const lines = stage.split("\n");
@@ -620,15 +639,39 @@ test("native Windows: complete local sentinel composes production entry and late
 		writeFileSync(join(packageDir, "bin/pnpm.mjs"), "console.log(process.argv[2] === '--version' ? '11.1.1' : '--global');\n");
 		writeFileSync(join(commands, "pnpm.cmd"), wrapper("node_modules\\pnpm\\bin\\pnpm.mjs"));
 		writeFileSync(join(bin, "gentle-shell-install.mjs"), "import { writeFileSync } from 'node:fs'; writeFileSync(process.env.GENTLE_FIXTURE_REPORT, JSON.stringify({ node: process.env.GENTLE_INSTALL_PNPM_NODE, entry: process.env.GENTLE_INSTALL_PNPM_ENTRY, path: process.env.PATH })); console.log('wizard-sentinel');\n");
-		const env = { ...nativeEnv(f.root), PATH: [dirname(fixtureNode), commands, join(process.env.SystemRoot!, "System32")].join(";"), PATHEXT: ".EXE;.CMD", GENTLE_FIXTURE_REPORT: join(f.root, "handoff.json") };
-		const stages = [stageMarkers.bundle, stageMarkers.claim, stageMarkers.resolve, stageMarkers.probe, stageMarkers.launch, stageMarkers.cleanup].map(cmdStage);
+		const tools = join(f.root, ".gentle-shell-bootstrap-tools.fixture");
+		const env = { ...nativeEnv(f.root, tools), PATH: [dirname(fixtureNode), commands, join(process.env.SystemRoot!, "System32")].join(";"), PATHEXT: ".EXE;.CMD", GENTLE_FIXTURE_REPORT: join(f.root, "handoff.json") };
+		const stages = [stageMarkers.bundle, stageMarkers.claim, stageMarkers.resolve, stageMarkers.probe, stageMarkers.launch, stageMarkers.success].map(cmdStage);
 		const result = await nativeCmd(f.root, stages, env, 45000);
 		assertNative(result, 0); assert.match(result.stdout, /wizard-sentinel/);
 		const report = JSON.parse(readFileSync(env.GENTLE_FIXTURE_REPORT, "utf8")) as Record<string, string>;
 		assert.equal(report.node.toLowerCase(), fixtureNode.toLowerCase());
 		assert.deepEqual(readFileSync(fixtureNode), readFileSync(process.execPath));
 		assert.equal(report.entry, join(packageDir, "bin/pnpm.mjs"));
-		assert.equal(existsSync(env.GENTLE_BOOTSTRAP_TOOLS), false, "exact production cleanup block removes only its claimed fixture tools");
+		assert.equal(existsSync(env.GENTLE_BOOTSTRAP_TOOLS), false, "exact production success block removes only its claimed fixture tools");
 		assert.equal(existsSync(join(commands, "pnpm.cmd")), true);
+	} finally { f.cleanup(); }
+});
+
+test("native Windows: success cleanup keeps unprovable roots, reports them and preserves siblings", { skip: nativeUnavailable }, async () => {
+	const f = nativeFixture();
+	try {
+		const sibling = join(f.root, ".gentle-shell-bootstrap-tools.sibling");
+		mkdirSync(sibling); writeFileSync(join(sibling, ".bootstrap-owned"), "gentle-pi prerequisite tooling only");
+		const stages = [cmdStage(stageMarkers.claim), cmdStage(stageMarkers.success)];
+		const owned = nativeEnv(f.root, join(f.root, ".gentle-shell-bootstrap-tools.owned"));
+		assertNative(await nativeCmd(f.root, stages, owned), 0);
+		assert.equal(existsSync(owned.GENTLE_BOOTSTRAP_TOOLS), false);
+		const unmarked = nativeEnv(f.root, join(f.root, ".gentle-shell-bootstrap-tools.unmarked"));
+		assertNative(await nativeCmd(f.root, [cmdStage(stageMarkers.claim)], unmarked), 0);
+		rmSync(join(unmarked.GENTLE_BOOTSTRAP_TOOLS, ".bootstrap-owned"));
+		const missing = await nativeCmd(f.root, [cmdStage(stageMarkers.success)], unmarked);
+		assertNative(missing, 1);
+		assert.ok(missing.stderr.includes(`could not be removed: ${unmarked.GENTLE_BOOTSTRAP_TOOLS}`), missing.stderr);
+		assert.equal(existsSync(unmarked.GENTLE_BOOTSTRAP_TOOLS), true);
+		const misnamed = nativeEnv(f.root, join(f.root, "tools"));
+		assertNative(await nativeCmd(f.root, stages, misnamed), 1);
+		assert.equal(existsSync(join(misnamed.GENTLE_BOOTSTRAP_TOOLS, ".bootstrap-owned")), true);
+		assert.equal(existsSync(join(sibling, ".bootstrap-owned")), true);
 	} finally { f.cleanup(); }
 });

@@ -120,8 +120,26 @@ export const guidance = Object.freeze({
 		ready: "Gentle Shell is installed. Run `gentle-shell` in a terminal.",
 		"terminal-action-required": "Gentle Shell is installed. Open a new terminal so it picks up the updated PATH, then run `gentle-shell`.",
 	}),
+	// A failed shell-setup whose detail shows GitHub's anonymous API limit.
+	setupRateLimit: "`gentle-shell setup` could not finish because GitHub's limit for anonymous API requests was reached on this network. Wait up to an hour, then run the installer again.",
+	// A failed persist-path whose detail shows pnpm could not tell the shell (POSIX SHELL missing or unsupported).
+	persistPathShell: "`pnpm setup` could not tell which shell profile to edit because the SHELL environment variable is missing or names an unsupported shell. Open a regular terminal and run the installer again, or add `$PNPM_HOME/bin` to your PATH yourself.",
 	fallback: "The installation stopped for an unexpected reason. Nothing else will run; check the terminal and run the installer again.",
 });
+
+/** The runner's setup detail, bounded again: text only, no control characters,
+ * at most 300 characters. Null when nothing remains.
+ */
+function setupDetail(value) {
+	if (typeof value !== "string") return null;
+	const text = Array.from(value.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g, "").trim()).slice(0, 300).join("");
+	return text.length > 0 ? text : null;
+}
+const rateLimited = (detail) => /rate limit/i.test(detail) || (/GitHub API/i.test(detail) && /\b403\b/.test(detail));
+const unknownShell = (detail) => /ERR_PNPM_(?:UNKNOWN|UNSUPPORTED)_SHELL/.test(detail);
+// Fixed setup commands whose sanitized last error line may reach the browser.
+const detailSteps = Object.freeze({ "shell-setup": rateLimited, "persist-path": unknownShell });
+const detailGuidance = Object.freeze({ "shell-setup": "setupRateLimit", "persist-path": "persistPathShell" });
 
 const ID = /^[a-z][a-z0-9-]{0,63}$/;
 function identifier(value, fallback = "unknown") {
@@ -199,6 +217,12 @@ function outcomeView(result) {
 	} else if (result.outcome === "failed") {
 		view.failedStep = identifier(result.failedStep);
 		view.guidance = guidance.failed[result.failedStep] ?? guidance.fallback;
+		const step = Object.hasOwn(detailSteps, result.failedStep) ? result.failedStep : null;
+		const detail = step ? setupDetail(result.detail) : null;
+		if (detail) {
+			view.detail = detail;
+			if (detailSteps[step](detail)) view.guidance = guidance[detailGuidance[step]];
+		}
 	} else {
 		view.guidance = guidance.outcomes[result.outcome];
 		if (result.action === "open-new-terminal") view.action = "open-new-terminal";

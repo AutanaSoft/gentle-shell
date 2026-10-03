@@ -99,21 +99,27 @@ export function userEnvironment({ platform, env }) {
 
 /** Real adapters: argv spawn without a shell, SIGKILL at the deadline, bounded
  * stdout (stderr discarded: it can hold private paths) and read-only fs checks.
+ * Only a caller that passes `stderrTail: <bytes>` (a positive integer, clamped
+ * to 4 KiB) gets stderr piped; the result then carries just its last bytes as
+ * `stderrTail`. Callers must sanitize that text before showing it anywhere.
  * The deadline signals the direct child only, not its descendants, and settles
  * the result as timed out without waiting for the child's pipes to close.
  * `spawn` is injectable only for trusted tests.
  */
 export function hostAdapters({ maxOutputBytes = 1024 * 1024, maxTextBytes = 1024 * 1024, spawn = spawnProcess } = {}) {
-	const run = (command, argv, { env, deadlineMs }) => new Promise((resolve) => {
+	const run = (command, argv, { env, deadlineMs, stderrTail }) => new Promise((resolve) => {
 		let size = 0;
 		let truncated = false;
 		let timedOut = false;
 		const chunks = [];
+		const tailBytes = Number.isSafeInteger(stderrTail) && stderrTail > 0 ? Math.min(stderrTail, 4096) : 0;
+		let tail = Buffer.alloc(0);
+		const withTail = (result) => (tailBytes > 0 ? { ...result, stderrTail: tail.toString("utf8") } : result);
 		let child;
 		try {
-			child = spawn(command, argv, { env, shell: false, stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+			child = spawn(command, argv, { env, shell: false, stdio: ["ignore", "pipe", tailBytes > 0 ? "pipe" : "ignore"], windowsHide: true });
 		} catch {
-			resolve({ code: null, signal: null, timedOut: false, truncated: false, stdout: "" });
+			resolve(withTail({ code: null, signal: null, timedOut: false, truncated: false, stdout: "" }));
 			return;
 		}
 		let settled = false;
@@ -121,8 +127,13 @@ export function hostAdapters({ maxOutputBytes = 1024 * 1024, maxTextBytes = 1024
 			if (settled) return;
 			settled = true;
 			clearTimeout(timer);
-			resolve({ code, signal, timedOut, truncated, stdout: Buffer.concat(chunks).toString("utf8") });
+			resolve(withTail({ code, signal, timedOut, truncated, stdout: Buffer.concat(chunks).toString("utf8") }));
 		};
+		// Keep only the last bytes: a long setup log never accumulates in memory.
+		if (tailBytes > 0) child.stderr?.on("data", (chunk) => {
+			const joined = Buffer.concat([tail, chunk]);
+			tail = joined.subarray(Math.max(0, joined.length - tailBytes));
+		});
 		// A descendant can keep stdout open after the kill, so `close` may never come:
 		// settle at the deadline and release the pipes instead of waiting for it.
 		const timer = setTimeout(() => {

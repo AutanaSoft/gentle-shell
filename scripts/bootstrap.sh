@@ -59,8 +59,14 @@ bounded() {
 }
 tools=
 owned=0
+# Only the exact directory this attempt claimed; rm -rf never follows links in it.
+owned_tools() {
+    [ "$owned" = 1 ] && [ -n "$tools" ] || return 1
+    case "$tools" in "$HOME"/.gentle-shell-bootstrap-tools.*/*) return 1;; "$HOME"/.gentle-shell-bootstrap-tools.*) ;; *) return 1;; esac
+    [ -d "$tools" ] && [ ! -L "$tools" ] && [ -d "$tools/.claim" ] && [ ! -L "$tools/.claim" ]
+}
 cleanup() {
-    if [ "$owned" = 1 ] && [ -n "$tools" ] && [ ! -L "$tools" ] && [ -d "$tools/.claim" ] && [ ! -L "$tools/.claim" ]; then
+    if owned_tools; then
         rm -rf "$tools"
     fi
 }
@@ -143,4 +149,13 @@ fi
 # The helper creates an equally private tooling directory only if pnpm is absent.
 # Do not exec: retain ownership cleanup on any helper/child failure.
 "$node" "$bundle/scripts/installer-downloads.mjs" --bootstrap "$bundle" "$tools" || fail 'Prerequisite acquisition or wizard child failed'
+# Exit 0 means node/npm/pnpm now persist under $PNPM_HOME or were already the
+# user's. A removal problem never turns the completed installation into failure.
+if [ "$owned" = 1 ]; then
+    mark=
+    if owned_tools && [ -f "$tools/.bootstrap-owned" ] && [ ! -L "$tools/.bootstrap-owned" ] &&
+        { IFS= read -r mark < "$tools/.bootstrap-owned"; } 2>/dev/null && [ "$mark" = 'gentle-pi prerequisite tooling only' ] &&
+        rm -rf "$tools" 2>/dev/null; then :
+    else printf '%s\n' "Bootstrap: installation finished, but temporary tools could not be removed: $tools" >&2; fi
+fi
 owned=0

@@ -283,6 +283,30 @@ test("host adapters: argv without a shell, exit codes, deadlines and bounded out
 	assert.equal(missing.timedOut, false);
 });
 
+test("host run discards stderr unless a bounded stderr tail is requested", async () => {
+	const { run } = hostAdapters();
+	const env = { PATH: process.env.PATH ?? "" };
+	const noisy = "process.stderr.write('head-'.repeat(2000) + 'Error: tail line'); process.stdout.write('out'); process.exit(1)";
+	const discarded = await run(process.execPath, ["-e", noisy], { env, deadlineMs: 10_000 });
+	assert.deepEqual(discarded, { code: 1, signal: null, timedOut: false, truncated: false, stdout: "out" });
+	const tailed = await run(process.execPath, ["-e", noisy], { env, deadlineMs: 10_000, stderrTail: 32 });
+	assert.equal(tailed.code, 1);
+	assert.equal(tailed.stdout, "out");
+	assert.equal(tailed.stderrTail, `${"head-".repeat(2000)}Error: tail line`.slice(-32));
+	const quiet = await run(process.execPath, ["-e", "process.exit(0)"], { env, deadlineMs: 10_000, stderrTail: 32 });
+	assert.equal(quiet.stderrTail, "");
+	// Larger requests are clamped to the 4-KiB ceiling; invalid ones keep stderr discarded.
+	const clamped = await run(process.execPath, ["-e", noisy], { env, deadlineMs: 10_000, stderrTail: 1_000_000 });
+	assert.equal(Buffer.byteLength(clamped.stderrTail), 4096);
+	for (const stderrTail of [0, -1, 1.5, "32", null]) {
+		assert.equal("stderrTail" in await run(process.execPath, ["-e", noisy], { env, deadlineMs: 10_000, stderrTail }), false, String(stderrTail));
+	}
+	const slow = await run(process.execPath, ["-e", "process.stderr.write('before kill'); setTimeout(() => {}, 30000)"], { env, deadlineMs: 500, stderrTail: 64 });
+	assert.equal(slow.timedOut, true);
+	assert.equal(slow.signal, "SIGKILL");
+	assert.equal(slow.stderrTail, "before kill");
+});
+
 test("host fs adapter is read-only and bounded", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "gentle-probes-fs-"));
 	try {

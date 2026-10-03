@@ -179,6 +179,21 @@ rem Interactive wizard duration is intentionally unbounded. Only child PATH chan
   "& $node $helper '--bootstrap-windows' $env:GENTLE_BOOTSTRAP_BUNDLE $tools; if ($LASTEXITCODE -ne 0) { throw 'Helper failed' };" ^
   "} catch { [Console]::Error.WriteLine('Bootstrap: prerequisite helper/wizard failed or managed policy denied execution.'); exit 1 } }"
 if errorlevel 1 goto failed
+
+rem Success: node/npm/pnpm now persist under PNPM_HOME or were already the user's.
+rem Remove only our exact claimed, marked root; Directory.Delete does not recurse
+rem through reparse points. A removal problem never fails the installation.
+"%GENTLE_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
+  "& { try { $ErrorActionPreference = 'Stop';" ^
+  "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'Managed policy constraint' };" ^
+  "$tools = [IO.Path]::GetFullPath($env:GENTLE_BOOTSTRAP_TOOLS); $parent = [IO.Directory]::GetParent($tools).FullName;" ^
+  "if ($tools.StartsWith('\\') -or $parent -ne [IO.Path]::GetFullPath($env:LOCALAPPDATA) -or -not [IO.Path]::GetFileName($tools).StartsWith('.gentle-shell-bootstrap-tools.',[StringComparison]::Ordinal)) { throw 'Cleanup target rejected' };" ^
+  "$item = Get-Item -LiteralPath $tools -Force;" ^
+  "if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Cleanup target rejected' };" ^
+  "$marker = Get-Item -LiteralPath (Join-Path $tools '.bootstrap-owned') -Force;" ^
+  "if ($marker.PSIsContainer -or ($marker.Attributes -band [IO.FileAttributes]::ReparsePoint) -or (Get-Content -LiteralPath $marker.FullName -Raw) -ne 'gentle-pi prerequisite tooling only') { throw 'Cleanup marker rejected' };" ^
+  "[IO.Directory]::Delete($tools, $true);" ^
+  "} catch { [Console]::Error.WriteLine('Bootstrap: installation finished, but temporary tools could not be removed: ' + $env:GENTLE_BOOTSTRAP_TOOLS); exit 1 } }"
 endlocal & exit /b 0
 
 :unavailable

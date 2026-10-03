@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync, mkdirSync, mkdtempSync, writeFileSync, renameSync, rmSync } from "node:fs";
-import { dirname, join, resolve, delimiter } from "node:path";
+import { basename, dirname, join, resolve, delimiter } from "node:path";
 import { spawnSync, spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
@@ -165,6 +165,25 @@ function privateTools(home) {
 	}
 }
 
+/** Remove only the exact private `$HOME/.gentle-shell-bootstrap-tools.*` directory
+ * carrying this module's marker. rmSync never follows links inside it.
+ * Returns false instead of throwing so success never turns into failure.
+ */
+export function removeOwnedTools(tools, home) {
+	try {
+		if (typeof tools !== "string" || typeof home !== "string" || !home.startsWith("/") || resolve(tools) !== tools) return false;
+		if (dirname(tools) !== resolve(home) || !basename(tools).startsWith(".gentle-shell-bootstrap-tools.")) return false;
+		const info = lstatSync(tools);
+		if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid()) return false;
+		const marker = join(tools, ".bootstrap-owned");
+		if (!regular(marker) || readFileSync(marker, "utf8") !== "gentle-pi prerequisite tooling only\n") return false;
+		rmSync(tools, { recursive: true });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 /** Reuse only proven engines/capabilities; missing pnpm gets verified registry bytes.
  * Local test adapters cover transport/hash/process. There is no remote command API.
  * `tools` must be a private directory owned by the invoking bootstrap/controller.
@@ -229,7 +248,8 @@ export async function launchWizard({ bundle, env }) {
 	});
 }
 
-async function bootstrap(bundle, suppliedTools) {
+/** `env` and transport/process adapters are injectable for local fixtures only. */
+export async function bootstrap(bundle, suppliedTools, { env = process.env, adapters = {} } = {}) {
 	const entry = join(bundle, "bin/gentle-shell-install.mjs");
 	if (!regular(entry)) throw new Error("Future wizard entry is missing");
 	const metadata = JSON.parse(readFileSync(join(bundle, "package.json"), "utf8"));
@@ -238,12 +258,16 @@ async function bootstrap(bundle, suppliedTools) {
 	let tools = suppliedTools;
 	let created = false;
 	try {
-		if (!findExecutable("pnpm", process.env) && !tools) { tools = privateTools(process.env.HOME); created = true; }
-		const result = await ensurePnpm({ tools, env: process.env, nodeVersion: process.versions.node });
+		if (!findExecutable("pnpm", env) && !tools) { tools = privateTools(env.HOME); created = true; }
+		const result = await ensurePnpm({ tools, env, nodeVersion: process.versions.node, adapters });
 		await launchWizard({ bundle, env: result.env });
 	} catch (error) {
 		if (created) rmSync(tools, { recursive: true, force: true });
 		throw error;
+	}
+	// Exit 0 means pnpm now persists under $PNPM_HOME or was already the user's.
+	if (created && !removeOwnedTools(tools, env.HOME)) {
+		console.error(`Bootstrap: installation finished, but temporary tools could not be removed: ${tools}`);
 	}
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

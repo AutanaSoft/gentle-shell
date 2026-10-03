@@ -169,6 +169,8 @@ export function progressModel(steps, entries, { running = false, outcome = null 
 	};
 }
 
+const detailCommands = new Map([["shell-setup", "gentle-shell setup"], ["persist-path", "pnpm setup"]]);
+
 /** Final screen model for every runner outcome. Guidance always comes from the host. */
 export function outcomeModel(outcome) {
 	const completed = list(outcome?.completed).map((id) => ({ id: text(id), label: stepLabel(text(id)) }));
@@ -176,7 +178,7 @@ export function outcomeModel(outcome) {
 	const notes = [];
 	if (outcome?.npmPrefix === "configured") notes.push("npm's user-level global prefix now points at PNPM_HOME.");
 	if (outcome?.npmPrefix === "unchanged") notes.push("npm's global prefix was already correct and was left unchanged.");
-	const base = { outcome: outcome?.outcome, guidance, completed, notes, reason: null, failedStep: null, command: null };
+	const base = { outcome: outcome?.outcome, guidance, completed, notes, reason: null, failedStep: null, command: null, detail: null, detailCommand: null };
 	if (outcome?.outcome === "ready") {
 		return { ...base, tone: "success", badge: "Installed", title: "Gentle Shell is ready",
 			lead: "Everything is installed and verified on this computer.", command: "gentle-shell",
@@ -193,7 +195,11 @@ export function outcomeModel(outcome) {
 			next: ["Follow the guidance above.", "Run the installer again from your terminal."] };
 	}
 	const id = text(outcome?.failedStep);
+	// The host sends a detail only for these fixed setup commands; bound it again here.
+	const detailCommand = detailCommands.get(id) ?? null;
+	const detail = detailCommand ? Array.from(text(outcome?.detail)).slice(0, 300).join("") : "";
 	return { ...base, outcome: "failed", tone: "error", badge: "Failed", title: "Installation failed",
+		detail: detail || null, detailCommand: detail ? detailCommand : null,
 		lead: id && id !== "unknown"
 			? `The step “${stepLabel(id)}” failed. Steps that finished before it were kept; nothing was rolled back.`
 			: "The installation stopped unexpectedly. Steps that finished were kept; nothing was rolled back.",
@@ -449,6 +455,12 @@ export function renderOutcome(doc, model, handlers, entries = []) {
 	if (model.failedStep) facts.push(el(doc, "li", {}, "Failed step: ", el(doc, "code", {}, model.failedStep.id)));
 	if (model.reason) facts.push(el(doc, "li", {}, "Reason: ", el(doc, "code", {}, model.reason)));
 	if (facts.length > 0) children.push(el(doc, "ul", { class: "facts" }, facts));
+	// Untrusted process output: one plain text node, never `rich` code spans.
+	if (model.detail) {
+		children.push(el(doc, "section", { class: "block", "aria-labelledby": "setup-detail-title" },
+			el(doc, "h2", { id: "setup-detail-title", class: "section-title" }, `Last error from ${model.detailCommand}`),
+			el(doc, "p", { class: "detail" }, el(doc, "code", {}, model.detail))));
+	}
 	if (model.completed.length > 0) {
 		children.push(el(doc, "details", { class: "completed" },
 			// A blocked run only passed read-only checks before it stopped.

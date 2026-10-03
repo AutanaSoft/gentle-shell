@@ -446,6 +446,76 @@ test("a throwing runner becomes a failed outcome with generic guidance", async (
 	}
 });
 
+test("a failed setup passes only its bounded detail through, with rate-limit guidance when it matches", async () => {
+	const rateLimited = "Error: execute install pipeline: download engram binary: fetch latest engram version: GitHub API returned HTTP 403";
+	const cases = [
+		{ detail: rateLimited, guidance: guidance.setupRateLimit, shown: rateLimited },
+		{ detail: "Error: API rate limit exceeded for 203.0.113.7", guidance: guidance.setupRateLimit, shown: "Error: API rate limit exceeded for 203.0.113.7" },
+		{ detail: "Error: disk full", guidance: guidance.failed["shell-setup"], shown: "Error: disk full" },
+		// GitHub alone or 403 alone is not a rate limit.
+		{ detail: "Error: GitHub API returned HTTP 500", guidance: guidance.failed["shell-setup"], shown: "Error: GitHub API returned HTTP 500" },
+		// The host bounds the text again: control characters out, at most 300 characters.
+		{ detail: `bad\u0000\u001b[31m${"x".repeat(400)}`, guidance: guidance.failed["shell-setup"], shown: `bad[31m${"x".repeat(293)}` },
+		{ detail: "  \n ", guidance: guidance.failed["shell-setup"], shown: undefined },
+		{ detail: 42, guidance: guidance.failed["shell-setup"], shown: undefined },
+	];
+	for (const item of cases) {
+		const { host, port, login } = await start({ runInstall: async () => ({ outcome: "failed", failedStep: "shell-setup", completed: [], detail: item.detail, stderrTail: "secret raw output" }) });
+		try {
+			const cookie = await login();
+			const { planId } = await plan(port, cookie);
+			assert.equal((await post(port, "/api/install", cookie, { planId, consent: true })).status, 202);
+			await waitFor(() => host.outcome() !== null);
+			const progress = JSON.parse((await send(port, { path: "/api/progress", headers: { cookie, ...API } })).body);
+			assert.equal(progress.outcome.failedStep, "shell-setup");
+			assert.equal(progress.outcome.guidance, item.guidance, String(item.detail));
+			assert.equal(progress.outcome.detail, item.shown);
+			assert.doesNotMatch(JSON.stringify(progress), /secret raw output/);
+		} finally {
+			await host.close("test");
+		}
+	}
+	// A detail on any other step never reaches the browser.
+	const { host, port, login } = await start({ runInstall: async () => ({ outcome: "failed", failedStep: "install-global", completed: [], detail: rateLimited }) });
+	try {
+		const cookie = await login();
+		const { planId } = await plan(port, cookie);
+		await post(port, "/api/install", cookie, { planId, consent: true });
+		await waitFor(() => host.outcome() !== null);
+		const progress = JSON.parse((await send(port, { path: "/api/progress", headers: { cookie, ...API } })).body);
+		assert.equal("detail" in progress.outcome, false);
+		assert.equal(progress.outcome.guidance, guidance.failed["install-global"]);
+	} finally {
+		await host.close("test");
+	}
+	// pnpm setup's detail passes through too; an unknown or unsupported SHELL gets its own guidance.
+	for (const [detail, expected] of [
+		["[ERR_PNPM_UNKNOWN_SHELL] Could not infer shell type.", guidance.persistPathShell],
+		['[ERR_PNPM_UNSUPPORTED_SHELL] Can\'t setup configuration for "tcsh" shell', guidance.persistPathShell],
+		["Error: EACCES: permission denied, open '~/.bashrc'", guidance.failed["persist-path"]],
+		[rateLimited, guidance.failed["persist-path"]],
+	]) {
+		const run = await start({ runInstall: async () => ({ outcome: "failed", failedStep: "persist-path", completed: [], detail }) });
+		try {
+			const cookie = await run.login();
+			const { planId } = await plan(run.port, cookie);
+			await post(run.port, "/api/install", cookie, { planId, consent: true });
+			await waitFor(() => run.host.outcome() !== null);
+			const progress = JSON.parse((await send(run.port, { path: "/api/progress", headers: { cookie, ...API } })).body);
+			assert.equal(progress.outcome.detail, detail);
+			assert.equal(progress.outcome.guidance, expected, detail);
+		} finally {
+			await run.host.close("test");
+		}
+	}
+	assert.match(guidance.persistPathShell, /SHELL/);
+	assert.match(guidance.persistPathShell, /regular terminal/);
+	assert.match(guidance.persistPathShell, /\$PNPM_HOME\/bin/);
+	assert.match(guidance.setupRateLimit, /GitHub/);
+	assert.match(guidance.setupRateLimit, /hour/);
+	assert.doesNotMatch(guidance.setupRateLimit, /token|credential|password|log in|sign in/i);
+});
+
 test("only the fixed allowlist is routed: traversal and unknown paths 404, wrong methods 405", async () => {
 	const { host, port, login } = await start();
 	try {

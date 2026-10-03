@@ -424,14 +424,41 @@ export async function packageNativeGentleAi({ packageRoot, platform, env, home }
 	return { ok: false, reason: "package-native-unverified" };
 }
 
+/** One displayable line from the bounded output of a failed `gentle-shell
+ * setup` or `pnpm setup`: the last error line (`Error:` or a pnpm `ERR_` code),
+ * else the last non-empty line.
+ * Terminal escapes, control and bidi characters are removed, the user's home
+ * becomes `~`, and the result has at most 300 characters. Null when nothing
+ * remains. Untrusted output: the host still shows it only as text.
+ */
+export function setupErrorDetail(text, home, platform) {
+	if (typeof text !== "string") return null;
+	const lines = text.split(/\r\n|\r|\n/).map((line) => line
+		.replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)?/g, "")
+		.replace(/(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]/g, "")
+		.replace(/\t/g, " ")
+		.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g, "")
+		.trim()).filter((line) => line.length > 0);
+	let line = lines.findLast((candidate) => /Error:|\bERR_[A-Z0-9_]+/.test(candidate)) ?? lines.at(-1);
+	if (line === undefined) return null;
+	const path = platform === "win32" ? win32 : posix;
+	const root = typeof home === "string" && path.isAbsolute(home) ? home.replace(/[\\/]+$/, "") : "";
+	if (root.length > 1) {
+		// Only the whole home path, not a longer sibling such as /home/user for /home/u.
+		line = line.replace(new RegExp(`${escapeRegExp(root)}(?=$|[\\\\/\\s"'():,;\\]])`, platform === "win32" ? "gi" : "g"), "~");
+	}
+	return Array.from(line).slice(0, 300).join("");
+}
+
 /**
  * runStandardInstall({ plan, consent }, adapters) -> { outcome, ... }
  * Outcomes: blocked (nothing installed), failed (stopped after `completed`),
  * terminal-action-required (installed; user PATH persisted, open a new
- * terminal) or ready. When the plan persists the Node runtime, successful
+ * terminal) or ready. A failed `shell-setup` or `persist-path` may add `detail`,
+ * one sanitized output line (setupErrorDetail); no other output is kept. When the plan persists the Node runtime, successful
  * outcomes also report npmPrefix: "configured" or "unchanged". Adapters: platform, nodePath, env (user env), home?,
- * run(command, argv, { env, deadlineMs }) with shell:false semantics returning
- * { code, signal, timedOut, stdout }, fs { isFile, realpath, readText },
+ * run(command, argv, { env, deadlineMs, stderrTail? }) with shell:false semantics returning
+ * { code, signal, timedOut, stdout, stderrTail? }, fs { isFile, realpath, readText },
  * verifyGentleAi({ packageRoot, platform, env, home }) and log({ step, status }).
  * Nothing is ever deleted; no provisioning marker is written.
  */
@@ -496,6 +523,7 @@ export async function runStandardInstall(request, adapters) {
 
 	// Mutating and post-install steps: a false result or exception is a failure.
 	let packageRoot = null;
+	let setupDetail = null;
 	let persistentNode = null;
 	let npmPrefix = null;
 	const persistence = [
@@ -528,17 +556,32 @@ export async function runStandardInstall(request, adapters) {
 		}],
 		["verify-shell-bin", () => adapters.fs.isFile(path.join(globalBin.path, platform === "win32" ? "gentle-shell.cmd" : "gentle-shell"))],
 		["verify-gentle-ai", async () => (await adapters.verifyGentleAi({ packageRoot, platform, env, home }))?.ok === true],
-		["shell-setup", async () => succeeded(await adapters.run(adapters.nodePath,
-			[path.join(packageRoot, "bin", "gentle-shell.mjs"), "setup"], { env: setupEnvironment(child, platform), deadlineMs: deadlines.setup }))],
+			// The setup commands are the only ones whose stderr tail is requested.
+		["shell-setup", async () => {
+			const result = await adapters.run(adapters.nodePath, [path.join(packageRoot, "bin", "gentle-shell.mjs"), "setup"],
+				{ env: setupEnvironment(child, platform), deadlineMs: deadlines.setup, stderrTail: 4096 });
+			if (succeeded(result)) return true;
+			setupDetail = setupErrorDetail(result?.stderrTail, home, platform);
+			return false;
+		}],
 	];
 	// A child PATH never proves a fresh terminal; persist it with pnpm's own setup.
 	// globalBin.onPath was computed from the user's own PATH, not the child env.
 	const persistPath = !globalBin.onPath;
-	if (persistPath) steps.push(["persist-path", async () => succeeded(await runPnpm(["setup"], deadlines.probe))]);
+	if (persistPath) {
+		steps.push(["persist-path", async () => {
+			const result = await adapters.run(pnpm.command, [...pnpm.prefix, "setup"], { env: child, deadlineMs: deadlines.probe, stderrTail: 4096 });
+			if (succeeded(result)) return true;
+			// pnpm prints its own errors, such as ERR_PNPM_UNKNOWN_SHELL, on stdout.
+			setupDetail = setupErrorDetail(result?.stderrTail, home, platform) ?? setupErrorDetail(result?.stdout, home, platform);
+			return false;
+		}]);
+	}
 	for (const [step, run] of steps) {
 		if (!(await Promise.resolve().then(run).catch(() => false))) {
 			log({ step, status: "failed" });
-			return { outcome: "failed", failedStep: step, completed };
+			const detail = ["shell-setup", "persist-path"].includes(step) && setupDetail ? { detail: setupDetail } : {};
+			return { outcome: "failed", failedStep: step, completed, ...detail };
 		}
 		completed.push(step);
 		log({ step, status: "done" });
