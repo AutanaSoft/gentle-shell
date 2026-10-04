@@ -62,3 +62,24 @@ test("T27: single-shot host modes render the background policy as off", () => {
 		assert.doesNotMatch(prompt, /single-shot mode/, `${String(mode)} must keep the configured policy`);
 	}
 });
+
+// T28 (L58): the user's hypothesis, confirmed in the assets: only the delegated
+// worker had a TRIANGULATE step; the inline path (the one arm B uses) said
+// "RED, GREEN, then refactor". Both now triangulate with at least two edge
+// cases beyond the request's examples after GREEN.
+const TRIANGULATE = "TRIANGULATE: add at least two edge cases beyond the request's examples";
+test("T28: inline test-first triangulates after GREEN", () => {
+	for (const persona of ["gentleman", "neutral"] as const) {
+		const prompt = __testing.buildGentlePrompt(persona);
+		const principle = prompt.split("\n").find((line) => line.includes("use test-first by default"));
+		assert.ok(principle?.includes("observe RED, GREEN, TRIANGULATE, then refactor"), `${persona} principle must triangulate`);
+		assert.ok(prompt.includes(TRIANGULATE), `${persona} prompt must define TRIANGULATE`);
+		assert.ok(prompt.includes("they need no RED run"), `${persona} TRIANGULATE must not demand a RED run`);
+	}
+});
+
+test("T28: the worker TRIANGULATE step is concrete", () => {
+	const worker = read("assets/agents/gentle-ai-worker.md");
+	assert.ok(worker.includes(`3. ${TRIANGULATE}`), "worker TRIANGULATE must ask for two edge cases");
+	assert.ok(worker.includes("they need no RED run"), "worker TRIANGULATE must not demand a RED run");
+});

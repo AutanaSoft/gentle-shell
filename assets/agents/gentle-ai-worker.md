@@ -61,7 +61,7 @@ Apply the ODD test-first policy by default for behavior changes with applicable 
 
 1. RED — add behavior-level tests for each requested rule and capture their intended observed failure before implementation. Each test asserts every observable effect of the rule it covers (exit code, exact stdout and stderr, and that rejected input leaves stored data and counters unchanged), covers empty, zero, and malformed values and a valid item after the invalid one, and checks through the public interface, never internal storage. When you add or change a command, option, or message, update the help text and docs that describe it.
 2. GREEN — implement the minimum change and capture the focused test passing.
-3. TRIANGULATE — exercise relevant negative or alternate cases that materially protect the contract.
+3. TRIANGULATE: add at least two edge cases beyond the request's examples (a boundary or empty value, and an invalid input followed by a valid one) and run them once: they are expected to pass, so they need no RED run.
 4. REFACTOR — improve clarity only while focused tests remain green.
 
 For passive documentation, non-testable changes, an unavailable runner, or no meaningful RED, state the specific exception and run proportionate ordinary functional or structural verification. Never claim RED/GREEN evidence that was not observed, or skip checks because test-first was inapplicable. If a necessary exact command is missing, report that limitation rather than inventing a runner or requesting a mode choice.

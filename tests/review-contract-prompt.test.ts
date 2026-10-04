@@ -104,7 +104,7 @@ test("before_agent_start injects the mirrored review execution contract for the 
 	const appended = event.systemPromptOptions.appendSystemPrompt;
 	const expected = mirroredPiOrchestrationText();
 	assert.match(appended, /large tasks get ODD tracking and workers/);
-	assert.match(appended, /For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observe RED, GREEN, then refactor with focused checks/);
+	assert.match(appended, /For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observe RED, GREEN, TRIANGULATE, then refactor with focused checks/);
 	assert.match(appended, /Test presence alone does not establish applicability; no chat or TUI toggle activates it/);
 	assert.match(appended, /no meaningful RED, explain why and run proportionate ordinary functional or structural verification/);
 	assert.match(appended, /Never invent lifecycle evidence or skip checks/);
