@@ -55,7 +55,7 @@ S8. Bench: "corras los bench utilizando estas configuraciones para ver cómo fun
   handoff (all units/fixes), never serial piecemeal. Evidence L14 (x1 after-R: "Implement ONLY the total-stock task first", 0.101 -> 0.464).
 - [x] T9 (S2, AC2b) delegated writer · parallelism must actually run in parallel: launch every disjoint unit in the same turn in background mode,
   then wait for all; serial launches void the reason (fall back to inline). Evidence L14 (x5 after-B: units ran serially, 0.158 -> 0.528).
-- [ ] T10 (S4, AC4c) delegated writer · narrow high-risk items 1 and 3 to changing/breaking existing things: item 1 = migrations, rewriting or
+- [x] T10 (S4, AC4c) delegated writer · narrow high-risk items 1 and 3 to changing/breaking existing things: item 1 = migrations, rewriting or
   deleting stored data, format changes, or writing data without validation (not ordinary saves of new records); item 3 = changing or removing a
   contract other code or repos already consume (adding a flag, command or optional field is not high risk). Evidence L19/L20.
 - [ ] T6 (S8, AC8) runs · bench before/after and report (stage cap reuses user's USD 60 approval)
@@ -86,3 +86,5 @@ L19 2026-10-04 T6b result (x1731after2 = 02c4fcbb with T7-T9, n=1, USD 4.71): to
 L20 2026-10-04 user (verbatim): > Hmm es que porque verifico todo ? Si trabajo con luna pero no sé necesito verify porque el riesgo no era real... Porque lo hicimos ?
    finding: verify was driven by the Risk line tagging items 1/3 ("persisted data or formats", "CLI flags") for additive features, not by Luna; x5 after verify did not catch the missing feature.
 L21 2026-10-04 user (verbatim): > Dale  (narrow items 1 and 3: high risk = changing/breaking existing, not adding)
+L22 2026-10-04 user (answer): > A: subir el límite a 8.400 B (recomendado)  -> always-on core budget 8,192 -> 8,400 B for T10 narrowed items 1 and 3 (+156 B; #1494 S7 budget superseded by user decision).
+L23 2026-10-04 T10 done: writer muth5bfb-e-10q2 + continuation muthfvgf-f-10fi (RED 3 -> GREEN 252/252); parent raised the second core budget assert in tests/orchestrator-rdd-ownership.test.ts:73 to 8,400 B. Parent checks: npm test 4767/4767 exit 0, typecheck exit 0. Core 8,347/8,400 B (128-char root). HIGH_RISK_ITEMS[3] label now "changing or removing contracts others already consume" (user-visible in agentEscalation.label).

@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { __testing } from "../extensions/gentle-ai.ts";
+import { HIGH_RISK_ITEMS } from "../lib/review-risk-assessment.ts";
 import { readDelegationDetail } from "./support/orchestrator-modules.ts";
 
 // gentle-shell#1731: the delegated writer fires on named reasons (parallelism,
@@ -201,6 +202,40 @@ test("T7/AC4: every code change closes with a forced risk line that routes any l
 	assert.ok(__testing.getOrchestratorPrompt().includes(rule), "the risk line must reach the always-on prompt");
 	for (const [path, text] of Object.entries({ delegation, writer, verification })) {
 		assert.ok(!text.includes("`Risk: item N (reason)`"), `${path} restates the core risk line`);
+	}
+});
+
+// T10 (S4, L19-L21): the risk line tagged items 1 and 3 for additive features,
+// so verify ran on most tasks. High risk is changing or breaking existing
+// things, not adding.
+function highRiskItem(n: number): string {
+	const list = lineStarting(taskSize, "**High risk**");
+	const start = list.indexOf(`(${n}) `);
+	const next = list.indexOf(`; (${n + 1}) `, start);
+	const end = next >= 0 ? next : list.indexOf(". ", start);
+	assert.ok(start >= 0 && end > start, `high-risk item ${n} is missing`);
+	return list.slice(start, end);
+}
+
+test("T10/AC4: item 1 covers changing stored data or unvalidated writes, not ordinary new records", () => {
+	const item = highRiskItem(1);
+	for (const clause of ["migrations", "rewriting or deleting stored data", "format changes", "writing data without validation", "not saving new records"]) {
+		assert.ok(item.includes(clause), `item 1 is missing: ${clause}`);
+	}
+	assert.ok(!item.includes("persisted data"), "item 1 keeps the broad persisted-data form");
+});
+
+test("T10/AC4: item 3 covers changing or removing consumed contracts, not adding a flag, command or optional field", () => {
+	const item = highRiskItem(3);
+	assert.ok(item.startsWith("(3) changing or removing contracts others already consume ("), `item 3 is not limited to existing contracts: ${item}`);
+	for (const clause of ["public API", "CLI flags", "config formats", "exports", "mirrored prompts", "not adding a flag, command or optional field"]) {
+		assert.ok(item.includes(clause), `item 3 is missing: ${clause}`);
+	}
+});
+
+test("T10: escalate labels name the core high-risk items", () => {
+	for (const [n, label] of Object.entries(HIGH_RISK_ITEMS)) {
+		assert.ok(highRiskItem(Number(n)).startsWith(`(${n}) ${label}`), `escalate label ${n} drifts from the core list: ${label}`);
 	}
 });
 

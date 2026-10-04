@@ -108,8 +108,11 @@ test("AC5: the high-risk list lives once in the core, native tier wins, unclear 
 		"**High risk**",
 		"hard to detect, hard to undo, or reaches beyond the change",
 		"(1) data or irreversible effects",
+		// gentle-shell#1731 T10: items 1 and 3 cover changing or breaking existing things, not adding.
+		"rewriting or deleting stored data, format changes, writing data without validation; not saving new records",
 		"(2) security",
-		"(3) contracts others consume",
+		"(3) changing or removing contracts others already consume",
+		"; not adding a flag, command or optional field",
 		"(4) concurrency",
 		"(5) delivery or environment",
 		"(6) no test would catch a regression",
@@ -117,6 +120,9 @@ test("AC5: the high-risk list lives once in the core, native tier wins, unclear 
 		"When RDD is on and native assess returns a tier, that tier wins",
 	]) {
 		assert.ok(size.includes(clause), `high-risk definition is missing: ${clause}`);
+	}
+	for (const broad of ["(1) data or irreversible effects (migrations, persisted data or formats)", "(3) contracts others consume"]) {
+		assert.ok(!size.includes(broad), `high-risk list keeps the broad form: ${broad}`);
 	}
 	for (const [path, text] of Object.entries({ delegation, skill })) {
 		assert.ok(!text.includes("(1) data or irreversible effects"), `${path} restates the high-risk list`);
