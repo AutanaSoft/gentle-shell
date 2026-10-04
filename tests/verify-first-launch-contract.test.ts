@@ -1,0 +1,78 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import test from "node:test";
+import { __testing } from "../extensions/gentle-ai.ts";
+
+// gentle-shell#1731 T16 (S5; L33-L34): in the after3 bench (B x4/x5) the first
+// verify launch ran no probes because the handoff said only "read-only" and
+// named no probe commands or isolated state, so every probe was reported
+// unverified and the parent continued the task (~2 min per cell). Read-only now
+// means no repository or git-state edits, and probes in a fresh scratch copy run
+// on the first launch.
+// T17 (S3; L33-L34): B x4 delegated a 1.2 min exploration and then the parent
+// re-read the same 10 files; exploration is delegated only for a map the parent
+// needs to decide or route.
+// These are instruction-delivery contracts, not proof of model adherence.
+
+const read = (relative: string): string => readFileSync(join(import.meta.dirname, "..", relative), "utf8");
+const verify = read("assets/agents/gentle-ai-verify.md");
+const verification = read("assets/orchestrator-verification.md");
+
+function containsAll(text: string, clauses: readonly string[], label: string): void {
+	for (const clause of clauses) assert.ok(text.includes(clause), `${label} is missing: ${clause}`);
+}
+
+test("T16: read-only means no repository or git-state edits", () => {
+	containsAll(verify, [
+		"read-only technical verifier for generic ODD work",
+		"Read-only means no edits to the repository or its git state",
+	], "verify agent");
+});
+
+test("T16: verify probes on its first launch inside a fresh mktemp scratch copy without waiting for authorization", () => {
+	containsAll(verify, [
+		"Probe on your first launch; never wait for further authorization",
+		"fresh `mktemp -d` scratch copy of the workspace",
+		"the project's own test, CLI, and typecheck commands",
+		"No network, no installs, no writes outside the scratch directory",
+		"report that probe as unverified with its exact command instead of running it",
+	], "first-launch probe rule");
+	assert.ok(
+		!verify.includes("Run every probe only through command forms the parent authorized and only on isolated state the parent named"),
+		"the old rule makes every probe unverified when the handoff names no commands",
+	);
+});
+
+test("T16: verify keeps its repository and tool boundaries", () => {
+	containsAll(verify, [
+		"Do not edit, write, or fix findings.",
+		"install dependencies, or mutate repository state",
+		"Treat every unexpected mutation as a blocker",
+	], "verify boundaries");
+	const tools = verify.split("---")[1] ?? "";
+	assert.ok(!/\n {2}- (edit|write)\n/.test(tools), "verify must not gain edit or write tools");
+});
+
+test("T16: the verify handoff names probe command forms and the scratch location, never just read-only", () => {
+	const item = verification.split("\n").find((line) => line.startsWith("4. **Verify handoff**"));
+	assert.ok(item, "verify handoff item is missing");
+	containsAll(item, [
+		"the probe command forms (tests, CLI, typecheck)",
+		"probes on isolated state",
+		"fresh `mktemp -d` scratch copy",
+		"never just \"read-only\"",
+	], "verify handoff");
+});
+
+test("T17: the always-on Explore step delegates exploration only for a map the parent needs", () => {
+	for (const persona of ["gentleman", "neutral"] as const) {
+		const prompt = __testing.buildGentlePrompt(persona);
+		const step = prompt.split("\n").find((line) => line.startsWith("2. **Explore.**"));
+		assert.ok(step, "ODD step 2 Explore is missing");
+		containsAll(step, [
+			"Do not delegate exploration of files you will read anyway to work inline",
+			"explore only for a map you need to decide or route",
+		], "ODD Explore step");
+	}
+});

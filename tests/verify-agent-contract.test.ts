@@ -74,10 +74,12 @@ test("T11.6: verify leaves its probes as regression tests the writer commits", (
 	], "durable probe item");
 });
 
-test("T11: probes stay inside the authorized commands on isolated state, and verify stays read-only", () => {
+// T16 replaced "Run every probe only through command forms the parent authorized and only on isolated state the
+// parent named": probes now run on the first launch in a fresh scratch copy (verify-first-launch-contract).
+test("T11: probes stay inside the authorized commands or the scratch copy, and verify stays read-only", () => {
 	containsAll(verify, [
 		"execute only exact test, build, lint, or spec example commands explicitly authorized by the parent",
-		"Run every probe only through command forms the parent authorized and only on isolated state the parent named",
+		"only inside your scratch copy or on isolated state the parent named",
 		"report that probe as unverified with its exact command instead of running it",
 		"Do not edit, write, or fix findings.",
 		"Treat every unexpected mutation as a blocker",
