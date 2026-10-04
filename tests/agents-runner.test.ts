@@ -753,7 +753,7 @@ test("AgentRunner gives the child its exact --tools list and never forwards a st
 	h.runner.cancel(unscoped.id);
 });
 
-// A child reports missing tools at session_start, before Pi answers the
+// A child reports missing tools at its first before_agent_start, before Pi answers the
 // prompt command; the note still lands and the launch steps still advance.
 test("AgentRunner records a missing-tools note that arrives before the prompt is accepted", async () => {
 	const h = harness();
