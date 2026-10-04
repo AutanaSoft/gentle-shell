@@ -6,15 +6,14 @@ import test, { after, before } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createGentleAiExtension, __testing } from "../extensions/gentle-ai.ts";
 
-// gentle-shell#1731 S3/AC3: the primary-session harness carries one runtime
-// "Model routing" fact computed from the orchestrator model, the effective
-// gentle-ai-worker model, and catalog prices. It lives in the harness section,
-// outside the memoized 8,192 B orchestrator core, and never throws.
+// gentle-shell#1731 T24 (L49): the cost reason is off, so the harness no
+// longer injects the orchestrator/worker "Model routing" price ratio, even
+// when configured routing makes the orchestrator 3x the worker.
+// lib/model-price-ratio.ts stays (tests/model-price-ratio.test.ts) so a later
+// phase can re-enable the fact.
 
 type BeforeAgentStartHandler = (event: unknown, ctx: ExtensionContext) => Promise<undefined>;
 type MutableEvent = { agentName?: string; systemPrompt: string; systemPromptOptions: { appendSystemPrompt: string } };
-
-const ROUTING_LINE = "Model routing: orchestrator anthropic/fable costs 3.0x the worker anthropic/opus (input 3.0x, output 3.0x).";
 
 let fixtureRoot: string;
 let fixtureCwd: string;
@@ -96,41 +95,25 @@ function primaryEvent(overrides: Partial<MutableEvent> = {}): MutableEvent {
 	return { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "" }, ...overrides };
 }
 
-test("buildGentlePrompt places the model routing line in the harness section, outside the orchestrator core", () => {
+test("buildGentlePrompt renders no model routing fact", () => {
 	const rddLine = __testing.renderRddStatusLine(undefined);
-	const prompt = __testing.buildGentlePrompt("neutral", fixtureCwd, undefined, rddLine, ROUTING_LINE);
-	const core = __testing.getOrchestratorPrompt(fixtureCwd, undefined, rddLine);
-	const lineIndex = prompt.indexOf(`\n${ROUTING_LINE}\n`);
-	assert.ok(lineIndex > prompt.indexOf("Harness principles:"), "the fact belongs to the harness section");
-	assert.ok(lineIndex < prompt.indexOf(core), "the fact precedes the memoized orchestrator core");
-	assert.ok(!core.includes("Model routing:"), "the orchestrator core never carries the fact");
-	assert.equal(prompt.split("Model routing:").length - 1, 1);
+	assert.doesNotMatch(__testing.buildGentlePrompt("neutral", fixtureCwd, undefined, rddLine), /Model routing:|price ratio/);
+	assert.doesNotMatch(__testing.getOrchestratorPrompt(fixtureCwd, undefined, rddLine), /Model routing:/);
 });
 
-test("buildGentlePrompt without a model routing line renders no fact", () => {
-	const prompt = __testing.buildGentlePrompt("neutral", fixtureCwd, undefined, __testing.renderRddStatusLine(undefined));
-	assert.doesNotMatch(prompt, /Model routing:/);
-});
-
-test("before_agent_start injects the runtime-computed ratio for the primary session", async () => {
+test("before_agent_start never injects the price ratio for the primary session, even at 3x", async () => {
 	const event = primaryEvent();
 	await harness()(event, ctx());
 	const appended = event.systemPromptOptions.appendSystemPrompt;
-	assert.ok(appended.includes(ROUTING_LINE), appended.slice(0, 200));
-	assert.equal(appended.split("Model routing:").length - 1, 1);
+	assert.ok(appended.includes("Harness principles:"), appended.slice(0, 200));
+	assert.doesNotMatch(appended, /Model routing:|price ratio/);
 });
 
-test("before_agent_start renders the unknown line when the orchestrator model is missing", async () => {
+test("before_agent_start never consults the model catalog for a price ratio", async () => {
 	const event = primaryEvent();
-	await harness()(event, ctx({ model: undefined }));
-	assert.match(event.systemPromptOptions.appendSystemPrompt, /\nModel routing: price ratio unknown \(orchestrator model unknown\)\.\n/);
-});
-
-test("before_agent_start renders the unknown line instead of throwing when the catalog fails", async () => {
-	const event = primaryEvent();
-	const failing = { find: () => { throw new Error("catalog offline"); }, getAll: () => { throw new Error("catalog offline"); } };
+	const failing = { find: () => assert.fail("no price lookup"), getAll: () => assert.fail("no price lookup") };
 	await harness()(event, ctx({ modelRegistry: failing }));
-	assert.match(event.systemPromptOptions.appendSystemPrompt, /\nModel routing: price ratio unknown \([^)]+\)\.\n/);
+	assert.doesNotMatch(event.systemPromptOptions.appendSystemPrompt, /Model routing:/);
 });
 
 test("before_agent_start never injects the fact into a named agent session", async () => {

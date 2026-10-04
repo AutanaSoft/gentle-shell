@@ -1,9 +1,8 @@
 # Orchestrator — Writer Handoff (lazy-loaded)
 
-Parent Pi session only. Load it when the Writer rule fires or an explicitly activated Judgment Day fix batch is dispatched; small tasks never need it. The Writer rule fires on a named reason (parallel units, a reported price ratio of about 3x or more, the context backstop), never on size alone: a large task without a reason stays inline, following its logbook. Each writer prompt requires the self-review of the Parallel review protocol in `orchestrator-verification.md`. A reason holds only when the launch delivers it:
+Parent Pi session only. Load it when the Writer rule fires or an explicitly activated Judgment Day fix batch is dispatched; small tasks never need it. The Writer rule fires on a named reason (parallel units, the context backstop), never on size alone or a price ratio: a large task without a reason stays inline, following its logbook. Configured per-agent models (`subagents.json` `model_profiles`) still apply to every writer it launches. Each writer prompt requires the self-review of the Parallel review protocol in `orchestrator-verification.md`. A reason holds only when the launch delivers it:
 
 - **Parallelism**: with the Background subagent policy on, launch every disjoint unit in the same turn via `subagent_run` with `mode: "background"`, then wait for all completions before the Seam check; serial launches void the reason: if units cannot launch together, work inline.
-- **Model routing**: never on the small path; delegate the whole implementation in one handoff listing every unit and fix, never serial piecemeal handoffs.
 
 #### Allowed edit surfaces (MANDATORY)
 

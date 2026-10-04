@@ -8,10 +8,10 @@ import { HIGH_RISK_ITEMS } from "../lib/review-risk-assessment.ts";
 import { readDelegationDetail } from "./support/orchestrator-modules.ts";
 
 // gentle-shell#1731: the delegated writer fires on named reasons (parallelism,
-// model routing, context), never on task size. A large task keeps the ODD
-// logbook (#1494 resume test) and works inline when no reason fires. The
-// model-routing reason is fact-gated: it fires only when the harness reports a
-// price ratio, so agents without prices keep the #1494 inline path.
+// context), never on task size. A large task keeps the ODD logbook (#1494
+// resume test) and works inline when no reason fires. T24 (L49) turned the
+// cost reason off: a price ratio never fires the Writer rule, while configured
+// per-agent model routing still applies to writers launched for other reasons.
 // These are instruction-delivery contracts, not proof of model adherence.
 
 const read = (relative: string): string => readFileSync(join(import.meta.dirname, "..", relative), "utf8");
@@ -35,7 +35,6 @@ test("AC1: the core writer rule fires on named reasons, never on size or file co
 		"never by file count or a large task alone",
 		"`orchestrator-writer.md`",
 		"2+ independent units, disjoint files, each heavier than a subagent start",
-		"reported Model routing ratio ~3x+",
 		"Context backstop",
 	]) {
 		assert.ok(coreWriter.includes(clause), `core Writer rule is missing: ${clause}`);
@@ -52,8 +51,7 @@ test("AC1: the lazy writer trigger names its reasons and keeps the logbook on th
 		"a large task alone never delegates, and file count never fires this trigger",
 		"Delegate one bounded writer per unit only for a named reason",
 		"(a) parallelism",
-		"(b) model routing",
-		"(c) context",
+		"(b) context",
 		"Without a reason, the parent works inline, following the logbook (feature document, mirror, `todo`, work-unit commits)",
 	]) {
 		assert.ok(delegationWriter.includes(clause), `lazy Writer trigger is missing: ${clause}`);
@@ -64,7 +62,7 @@ test("AC1: the lazy writer trigger names its reasons and keeps the logbook on th
 		assert.ok(!text.includes("a large task (track and writer)"), `${path} still fires the writer on size`);
 	}
 	assert.ok(writer.includes("never on size alone"), "the writer module must say the Writer rule never fires on size alone");
-	assert.ok(skill.includes("a writer reason (parallel units, a reported price ratio of about 3x or more, or context)"), "the skill must name the writer reasons");
+	assert.ok(skill.includes("a writer reason (parallel units or context)"), "the skill must name the writer reasons");
 });
 
 test("AC2: parallelism needs 2+ independent units, disjoint files, each heavier than a subagent start", () => {
@@ -77,16 +75,25 @@ test("AC2: parallelism needs 2+ independent units, disjoint files, each heavier 
 	assert.ok(writer.includes("parallel units"), "the writer module must name the parallelism reason");
 });
 
-test("S3/L8: the model-routing reason is fact-gated with a safe default", () => {
-	assert.ok(
-		delegationWriter.includes(
-			"(b) model routing — the harness reports a `Model routing:` price ratio of about 3x or more: delegate implementation of anything beyond a trivial single edit; when no ratio is reported, or it is unknown, this reason does not fire",
-		),
-		"lazy Writer trigger must gate the cost reason on a reported ratio",
-	);
-	assert.ok(coreWriter.includes("a reported Model routing ratio ~3x+ (unknown: no), beyond one trivial edit"), "core Writer rule must not fire on cost without a reported ratio");
-	// The fact line itself lives only in the harness section (T1).
+test("T24/L49: a price ratio no longer fires the Writer rule", () => {
+	assert.doesNotMatch(coreWriter, /ratio|price|Model routing|small path/i, "core Writer rule still fires on cost");
 	assert.ok(!core.includes("Model routing:"), "the orchestrator core never carries the fact line");
+	const intro = lineStarting(writer, "Parent Pi session only.");
+	assert.ok(intro.includes("The Writer rule fires on a named reason (parallel units, the context backstop), never on size alone or a price ratio"), "the writer module must name only the remaining reasons");
+	assert.doesNotMatch(writer, /about 3x|price ratio of|- \*\*Model routing\*\*/, "the writer module keeps the cost reason");
+	// T24 follow-up: no surface names the price ratio as a writer reason.
+	for (const [path, text] of Object.entries({ delegationWriter, skill, readme: read("docs/readme-reference.md") })) {
+		assert.doesNotMatch(text, /model routing —|price ratio of about 3x/, `${path} still names the cost reason`);
+	}
+});
+
+test("T24/L49: configured per-agent model routing still applies to writers launched for other reasons", () => {
+	const intro = lineStarting(writer, "Parent Pi session only.");
+	assert.ok(intro.includes("Configured per-agent models (`subagents.json` `model_profiles`) still apply to every writer it launches."), "the writer module must keep configured routing");
+	assert.ok(
+		delegation.includes("Let `pi-subagents` resolve model and thinking from `.pi/settings.json`, `.pi/subagents.json`, global subagent config, and runtime defaults."),
+		"delegated launches must keep resolving configured models",
+	);
 });
 
 test("AC4: verification stays risk-gated and the writer reasons never include risk", () => {
@@ -227,8 +234,9 @@ test("S1: the small path stays inline and no lazy surface keeps the size-based w
 
 // T7-T9 (L14): the bench showed the rules decide WHETHER to delegate but not
 // HOW. T7 forces a risk declaration on every code change, small path included,
-// so it lives in the always-on core. T8 and T9 bind how the cost and
-// parallelism reasons launch writers, so they live in the lazy writer module.
+// so it lives in the always-on core. T9 binds how the parallelism reason
+// launches writers, so it lives in the lazy writer module (T24 retired T8's
+// cost-reason launch rule with the cost reason itself).
 const taskSize = sectionFrom(core, "## Task Size");
 
 test("T7/AC4: every code change closes with a forced risk line that routes any listed item to independent verify", () => {
@@ -285,17 +293,6 @@ test("T10: escalate labels name the core high-risk items", () => {
 	}
 });
 
-test("T8/AC3: the cost reason never fires on the small path and delegates the whole implementation in one handoff", () => {
-	assert.ok(
-		coreWriter.includes("a reported Model routing ratio ~3x+ (unknown: no), beyond one trivial edit, never on the small path"),
-		"core Writer rule must exclude the cost reason on the small path",
-	);
-	const routing = lineStarting(writer, "- **Model routing**");
-	for (const clause of ["never on the small path", "the whole implementation in one handoff", "every unit and fix", "never serial piecemeal handoffs"]) {
-		assert.ok(routing.includes(clause), `writer model-routing launch rule is missing: ${clause}`);
-	}
-});
-
 test("T9/AC2: the parallelism reason launches every unit together in background and waits for all", () => {
 	const parallel = lineStarting(writer, "- **Parallelism**");
 	for (const clause of [
@@ -308,9 +305,7 @@ test("T9/AC2: the parallelism reason launches every unit together in background 
 	]) {
 		assert.ok(parallel.includes(clause), `writer parallelism launch rule is missing: ${clause}`);
 	}
-	for (const [label, text] of Object.entries({ parallel, routing: lineStarting(writer, "- **Model routing**") })) {
-		assert.ok(!/high risk|high-risk|verify/i.test(text), `${label} mixes risk or verification into the writer reasons`);
-	}
+	assert.ok(!/high risk|high-risk|verify/i.test(parallel), "parallel mixes risk or verification into the writer reasons");
 });
 
 // T4 (S2, AC6): the runtime rejects an overlapping live writer at admission,

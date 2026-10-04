@@ -97,8 +97,8 @@ const ANCHORS: readonly RoutingAnchor[] = [
 		label: "writer trigger fires only for a large task, never by file count",
 		canonical: "**Writer trigger:** a large task delegates one bounded writer per task; file count never fires this trigger",
 		// Gentle Shell intentionally leads the canon here (gentle-shell#1731): the
-		// writer fires on named reasons (parallelism, a reported model-routing
-		// price ratio, context), never on size alone. The canon port is G1 in
+		// writer fires on named reasons (parallelism, context), never on size
+		// alone; T24 turned the price-ratio reason off. The canon port is G1 in
 		// odd/tasks/delegate-for-reason.md.
 		mirrors: [
 			{ surface: DELEGATION, includes: "**Writer trigger (Writer rule):** a large task alone never delegates, and file count never fires this trigger" },
