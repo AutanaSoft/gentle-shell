@@ -3687,6 +3687,7 @@ test("a session-bound panel renders the binding snapshot as the current routing"
 	writeStore({ team: { worker: { model: "openai/beta" } } }, "team");
 	mkdirSync(fixture.configHome, { recursive: true });
 	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	t.after(() => resetSessionProfileBindingsForTesting());
 	bindSessionProfile("session-panel", "team", { worker: { model: "openai/gamma" } });
 	fixture.onInput((panel) => {
 		const rendered = renderComponent(panel);
@@ -3700,10 +3701,11 @@ test("a session-bound panel renders the binding snapshot as the current routing"
 });
 
 test("the (session) marker survives a snapshot refresh of the panel list", async (t) => {
-	const { fixture, writeStore } = profilesStoreFixture(t);
+	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
 	writeStore({ team: { worker: { model: "openai/beta" } } }, "team");
 	mkdirSync(fixture.configHome, { recursive: true });
 	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	t.after(() => resetSessionProfileBindingsForTesting());
 	bindSessionProfile("session-panel", "team", { worker: { model: "openai/gamma" } });
 	fixture.onInput((panel) => {
 		assert.match(renderComponent(panel), /team \(active\) \(session\)/);
@@ -3713,6 +3715,12 @@ test("the (session) marker survives a snapshot refresh of the panel list", async
 		panel.handleInput("\x1b");
 	});
 	await fixture.run("gentle:profiles");
+	// The snapshot must capture the routing the panel showed as current, so the
+	// saved team profile carries the session binding's model, never the global
+	// layer underneath it.
+	const saved = readValidProfilesStore(storePath);
+	assert.equal(saved.profiles.team?.worker?.model, "openai/gamma", "the saved profile carries the session-bound routing");
+	assert.notEqual(saved.profiles.team?.worker?.model, "openai/alpha", "the global routing never leaks into the saved snapshot");
 	resetSessionProfileBindingsForTesting();
 });
 

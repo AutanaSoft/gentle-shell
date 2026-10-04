@@ -4836,7 +4836,10 @@ async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): 
 			file,
 			name,
 			profileSnapshotFrom(
-				readEffectiveModelConfig(ctx.cwd),
+				// The snapshot captures the same routing the panel shows as current,
+				// so a session binding outranks the shared layers here too.
+				readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.modelProfiles
+					?? readEffectiveModelConfig(ctx.cwd),
 				readOrchestratorSettings(orchestratorSettingsPath()),
 			),
 		);

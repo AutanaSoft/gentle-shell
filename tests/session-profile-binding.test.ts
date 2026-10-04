@@ -107,9 +107,13 @@ test("session bindings from one process never leak into a fresh map state", () =
 const secondEntrypointSpecifier = new URL("../lib/session-profile-binding.ts?gentle-agents-entrypoint", import.meta.url).href;
 const otherEntrypoint = await import(secondEntrypointSpecifier);
 
-test("a binding written by one entrypoint is visible to every other entrypoint", () => {
+test("a binding written by one entrypoint is visible to every other entrypoint", (t) => {
 	resetSessionProfileBindingsForTesting();
 	otherEntrypoint.resetSessionProfileBindingsForTesting();
+	t.after(() => {
+		resetSessionProfileBindingsForTesting();
+		otherEntrypoint.resetSessionProfileBindingsForTesting();
+	});
 	bindSessionProfile("session-1", "work", { worker: { model: "zai/glm-4.7" } });
 	const read = otherEntrypoint.readSessionProfileBinding("session-1");
 	assert.equal(read?.name, "work", "the launch-path entrypoint must see what the panel wrote");
@@ -117,15 +121,23 @@ test("a binding written by one entrypoint is visible to every other entrypoint",
 	resetSessionProfileBindingsForTesting();
 });
 
-test("a binding written by a non-panel entrypoint is visible to the panel entrypoint", () => {
+test("a binding written by a non-panel entrypoint is visible to the panel entrypoint", (t) => {
 	resetSessionProfileBindingsForTesting();
+	t.after(() => {
+		resetSessionProfileBindingsForTesting();
+		otherEntrypoint.resetSessionProfileBindingsForTesting();
+	});
 	otherEntrypoint.bindSessionProfile("session-2", "beta", { explore: { model: "openai-codex/gpt-5.6-terra" } });
 	assert.equal(readSessionProfileBinding("session-2")?.name, "beta");
 	resetSessionProfileBindingsForTesting();
 });
 
-test("clearing from one entrypoint unbinds every entrypoint", () => {
+test("clearing from one entrypoint unbinds every entrypoint", (t) => {
 	resetSessionProfileBindingsForTesting();
+	t.after(() => {
+		resetSessionProfileBindingsForTesting();
+		otherEntrypoint.resetSessionProfileBindingsForTesting();
+	});
 	bindSessionProfile("session-3", "work", { worker: { model: "zai/glm-4.7" } });
 	otherEntrypoint.clearSessionProfileBinding("session-3");
 	assert.equal(readSessionProfileBinding("session-3"), undefined, "a cleared binding falls back in every entrypoint");
@@ -133,8 +145,12 @@ test("clearing from one entrypoint unbinds every entrypoint", () => {
 	resetSessionProfileBindingsForTesting();
 });
 
-test("each entrypoint still hands out private copies of the shared store", () => {
+test("each entrypoint still hands out private copies of the shared store", (t) => {
 	resetSessionProfileBindingsForTesting();
+	t.after(() => {
+		resetSessionProfileBindingsForTesting();
+		otherEntrypoint.resetSessionProfileBindingsForTesting();
+	});
 	bindSessionProfile("session-4", "work", { worker: { model: "zai/glm-4.7" } });
 	const first = otherEntrypoint.readSessionProfileBinding("session-4");
 	first!.modelProfiles.worker!.model = "mutated/elsewhere";
