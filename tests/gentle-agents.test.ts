@@ -357,15 +357,17 @@ test("cache warming follows actual Gentle Agents ownership and completion lifecy
 	await decide(undefined);
 });
 
-const PRINT_BACKGROUND_ERROR = "Background subagents are unavailable in print mode: pi -p exits before a parent session can receive results. Use task mode, RPC mode, or interactive Pi.";
+// `pi -p` and `pi --mode json` share pi's one-shot runner: it disposes the
+// runtime once the prompt returns, so neither can receive a background result.
+const SINGLE_SHOT_BACKGROUND_ERROR = "Background subagents are unavailable in single-shot modes: pi -p and pi --mode json exit before a parent session can receive results. Use task mode, RPC mode, or interactive Pi.";
 
-for (const continuation of [false, true]) {
-	test(`print mode rejects background ${continuation ? "continuation" : "launch"} before allocating a task`, async (t) => {
+for (const hostMode of ["print", "json"] as const) for (const continuation of [false, true]) {
+	test(`${hostMode} mode rejects background ${continuation ? "continuation" : "launch"} before allocating a task`, async (t) => {
 		const h = fakePi();
 		const runtime = deps();
 		gentleAgents(h.pi, {}, runtime.deps);
 		const { ctx } = fakeContext();
-		Object.assign(ctx, { mode: "print", hasUI: false });
+		Object.assign(ctx, { mode: hostMode, hasUI: false });
 		await h.fire("session_start", ctx);
 		let taskId: string | undefined;
 		if (continuation) {
@@ -384,7 +386,7 @@ for (const continuation of [false, true]) {
 		const tool = h.tools.get(continuation ? "subagent_continue" : "subagent_run")!;
 		await assert.rejects(tool.execute("denied", continuation
 			? { task_id: taskId, prompt: "Follow up", mode: "background" }
-			: { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx), { message: PRINT_BACKGROUND_ERROR });
+			: { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx), { message: SINGLE_SHOT_BACKGROUND_ERROR });
 		await tick();
 		assert.equal(run.mock.callCount(), 0, "rejection must precede runner task ID allocation");
 		assert.equal(runtime.spawned.length, spawnedBefore, "no child spawned");
@@ -394,8 +396,9 @@ for (const continuation of [false, true]) {
 	});
 }
 
-for (const mode of ["print", "tui", "rpc"] as const) {
-	test(`${mode} preserves ${mode === "print" ? "bounded task" : "background"} execution`, async () => {
+for (const mode of ["print", "json", "tui", "rpc"] as const) {
+	const singleShot = mode === "print" || mode === "json";
+	test(`${mode} preserves ${singleShot ? "bounded task" : "background"} execution`, async () => {
 		const h = fakePi();
 		const runtime = deps();
 		gentleAgents(h.pi, {}, runtime.deps);
@@ -403,17 +406,17 @@ for (const mode of ["print", "tui", "rpc"] as const) {
 		Object.assign(ctx, { mode, hasUI: mode === "tui" });
 		await h.fire("session_start", ctx);
 		let resolved = false;
-		const pending = h.tools.get("subagent_run")!.execute("control", { agent: "explore", task: "Map", mode: mode === "print" ? "task" : "background" }, undefined, undefined, ctx).then(result => { resolved = true; return result; });
+		const pending = h.tools.get("subagent_run")!.execute("control", { agent: "explore", task: "Map", mode: singleShot ? "task" : "background" }, undefined, undefined, ctx).then(result => { resolved = true; return result; });
 		await tick();
 		assert.equal(runtime.spawned.length, 1);
-		assert.equal(resolved, mode !== "print", "only task mode waits for completion");
+		assert.equal(resolved, !singleShot, "only task mode waits for completion");
 		runtime.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "mapped" }] }] });
 		runtime.children[0].emit({ type: "agent_settled" });
 		const result = await pending;
-		if (mode === "print") assert.match(result.content[0].text, /mapped/);
 		const taskId = (result.details.gentleAgents as { taskId: string }).taskId;
 		assert.ok(taskId);
-		if (mode !== "print") {
+		if (singleShot) assert.equal(result.content[0].text, `Subagent explore (task ${taskId}, "Map") finished.\n\nmapped`, "the task result names its real id for subagent_continue");
+		if (!singleShot) {
 			await tick();
 			assert.match((await h.tools.get("subagent_status")!.execute("status", { task_id: taskId }, undefined, undefined, ctx)).content[0].text, /completed · background/);
 			assert.equal(h.sent.length, 1, "settlement delivers exactly one completion");
@@ -668,7 +671,7 @@ test("first handoff failure keeps ordinary completion, later failure retains yie
 	firstHarness.children[0].message({ id: "q1", kind: "query", message: "q" });
 	firstHarness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "ordinary" }], stopReason: "stop" }] });
 	firstHarness.children[0].emit({ type: "agent_settled" });
-	assert.equal((await ordinary).content[0].text, "ordinary");
+	assert.match((await ordinary).content[0].text, /^Subagent explore \(task [^,]+, "fail handoff"\) finished\.\n\nordinary$/);
 
 	const second = fakePi();
 	const secondHarness = deps();
@@ -3039,7 +3042,9 @@ test("subagent_list_agents and subagent_run in task mode launch a child with the
 	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "lib has three agent files." }] }] });
 	harness.children[0].emit({ type: "agent_settled" });
 	const result = await running;
-	assert.equal(result.content[0].text, "lib has three agent files.");
+	const runId = (result.details.gentleAgents as { taskId: string }).taskId;
+	assert.equal(result.content[0].text, `Subagent explore (task ${runId}, "map lib modules") finished.\n\nlib has three agent files.`, "the model sees the real task id and label, not only details");
+	assert.deepEqual(tools.get("subagent_run")!.renderResult(result as Parameters<Registered["renderResult"]>[0], { expanded: false }, plainTheme).render(80).map((line) => line.trimEnd()), ["lib has three agent files."], "the collapsed card still leads with the answer");
 	assert.equal((result.details.gentleAgents as { status: string }).status, "completed");
 	assert.match(widget()![1], /✓  explore  map lib modules/);
 	const orphan = tools.get("subagent_run")!.execute("c9", { agent: "explore", task: "Orphan", mode: "background" }, undefined, undefined, ctx);
@@ -3145,7 +3150,8 @@ test("background runs return at once; status, result, send_message, cancel, and 
 	await tick();
 	harness.children[1].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Summary." }] }] });
 	harness.children[1].emit({ type: "agent_settled" });
-	assert.equal((await resumed).content[0].text, "Summary.");
+	const summary = await resumed;
+	assert.equal(summary.content[0].text, `Subagent explore (task ${(summary.details.gentleAgents as { taskId: string }).taskId}, "Now summarize") finished.\n\nSummary.`);
 	assert.match((await tools.get("subagent_cancel")!.execute("c9", { task_id: id }, undefined, undefined, ctx)).content[0].text, /not running/);
 	assert.match((await tools.get("subagent_status")!.execute("c10", { task_id: "nope" }, undefined, undefined, ctx)).content[0].text, /Error: no task nope/);
 	// gentle-shell#1713: a guessed id ("1") must point back to real ids.

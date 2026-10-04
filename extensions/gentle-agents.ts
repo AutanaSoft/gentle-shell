@@ -283,18 +283,27 @@ function expandHint(expanded: boolean): string {
 	}
 }
 
+// pi runs `-p` and `--mode json` through one one-shot runner that disposes
+// the runtime as soon as the prompt returns, so a background result has no
+// parent session left to reach (gentle-shell#1731 T18).
+export function isSingleShotMode(mode: string | undefined): boolean {
+	return mode === "print" || mode === "json";
+}
+
+const SINGLE_SHOT_BACKGROUND_ERROR = "Background subagents are unavailable in single-shot modes: pi -p and pi --mode json exit before a parent session can receive results. Use task mode, RPC mode, or interactive Pi.";
+
 // The default mode for a subagent_run request that named neither an explicit
 // mode nor an agent-defined one. Background is a runtime default only when
 // the background-subagents policy is on AND the parent can receive results:
-// print mode exits before a parent session exists to deliver them to (see
-// the `ctx.mode === "print"` guard in `launch` below), so it must keep the
-// configured default (normally task) even when the policy is on.
+// single-shot modes exit before a parent session exists to deliver them to
+// (see the guard in `launch` below), so they keep the configured default
+// (normally task) even when the policy is on.
 export function resolveDefaultSubagentMode(input: {
 	configuredDefault: AgentMode;
 	policy: "on" | "off";
 	parentMode: string | undefined;
 }): AgentMode {
-	return input.policy === "on" && input.parentMode !== "print"
+	return input.policy === "on" && !isSingleShotMode(input.parentMode)
 		? AGENT_MODE.BACKGROUND
 		: input.configuredDefault;
 }
@@ -1259,7 +1268,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	const buildRequest = async (ctx: ExtensionContext, agent: AgentDefinition, prompt: string, label: string | undefined, context: string | undefined, mode: AgentMode, resume?: string, workspaceRoot?: string, signal?: AbortSignal, repositoryRoot?: string): Promise<TaskRequest> => {
 		if (retiredSddAgent(agent.name)) throw new Error("Retired SDD agents cannot be dispatched.");
 		if (![AGENT_MODE.TASK, AGENT_MODE.BACKGROUND].includes(mode)) throw new Error("Subagent mode must be task or background.");
-		if (ctx.mode === "print" && mode === AGENT_MODE.BACKGROUND) throw new Error("Background subagents are unavailable in print mode: pi -p exits before a parent session can receive results. Use task mode, RPC mode, or interactive Pi.");
+		if (isSingleShotMode(ctx.mode) && mode === AGENT_MODE.BACKGROUND) throw new Error(SINGLE_SHOT_BACKGROUND_ERROR);
 		const scopeDenied = rejectUnscopedBoundedWriterDispatch({ agent: agent.name, task: prompt, context });
 		if (scopeDenied) throw new Error(scopeDenied.reason);
 		if (signal?.aborted) throw new Error("Subagent launch aborted before authorization.");
@@ -1397,9 +1406,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	};
 
 	const launch = async (ctx: ExtensionContext, request: TaskRequest, signal?: AbortSignal): Promise<ToolText> => {
-		if (ctx.mode === "print" && request.mode === AGENT_MODE.BACKGROUND) {
-			throw new Error("Background subagents are unavailable in print mode: pi -p exits before a parent session can receive results. Use task mode, RPC mode, or interactive Pi.");
-		}
+		if (isSingleShotMode(ctx.mode) && request.mode === AGENT_MODE.BACKGROUND) throw new Error(SINGLE_SHOT_BACKGROUND_ERROR);
 		if (retiredSddAgent(request.agent.name)) throw new Error("Retired SDD agents cannot be dispatched.");
 
 		// Bounded live observation only. Native send owns the fresh policy decision;
@@ -1464,7 +1471,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			const finished = await runner.waitFor(task.id);
 			completions.consume(finished.id);
 			messages.invalidateTask(finished.id);
-			return text(finishedText(finished), taskDetails(finished));
+			// The id rides in the text too: details never reach the model, which
+			// otherwise guesses ordinal ids for subagent_continue (#1731 T19).
+			return text(completionText(finished), taskDetails(finished));
 		} finally {
 			signal?.removeEventListener("abort", onAbort);
 		}
@@ -1490,7 +1499,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					return { render: () => [], invalidate() {} };
 				}
 				const body = result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
-				const visibleBody = options.expanded ? body : theme.fg("muted", body.split("\n")[0] ?? "");
+				const visibleBody = options.expanded ? body : theme.fg("muted", agentResultPreview(body).split("\n")[0] ?? "");
 				const title = `${AGENTS_GLYPH} agent result${task?.taskId ? ` · ${sanitizeTerminalText(task.taskId)}` : ""}`;
 				return new Text(name === "result" ? `${theme.fg("toolTitle", title)}\n${visibleBody}` : visibleBody, 0, 0);
 			},
