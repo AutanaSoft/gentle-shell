@@ -162,6 +162,37 @@ test("AC5/S7: one inline full-suite seam check after parallel units", () => {
 	}
 });
 
+// T12 (S4, S6; L24): in the bench verify ran once per worker cycle instead of
+// once per unit, and a parent scoped it to "T1 only".
+test("T12/S6: one independent verify per delegated unit after its self-review, never per worker cycle", () => {
+	const item = reviewItem("2. **Independent verify per unit**");
+	for (const clause of [
+		"once, after its final self-review",
+		"never per worker cycle or retry",
+		"its Risk line",
+		"small-model bias per the tier table",
+	]) {
+		assert.ok(item.includes(clause), `independent verify timing is missing: ${clause}`);
+	}
+	assert.ok(!item.includes("(1) "), "the timing rule restates the high-risk list");
+});
+
+test("T11/S4: the parent hands verify the whole spec, authorizes its probes and resolves every unmet item", () => {
+	const item = reviewItem("4. **Verify handoff**");
+	for (const clause of [
+		"the whole feature document",
+		"every `S#`, never one task",
+		"the baseline commit",
+		"probes on isolated state",
+		"typecheck",
+		"`gentle-ai-verify` holds the checklist",
+		"every unmet item before closing",
+		"the writer commits its probes as regression tests",
+	]) {
+		assert.ok(item.includes(clause), `verify handoff item is missing: ${clause}`);
+	}
+});
+
 test("AC4/S4: the normative verification rule text is unchanged by the review protocol", () => {
 	const normative = sectionFrom(verification, "## Verification rule (normative)");
 	assert.equal(
