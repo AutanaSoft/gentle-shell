@@ -44,6 +44,14 @@ test("T16: verify probes on its first launch inside a fresh mktemp scratch copy 
 	);
 });
 
+test("T16/W1: the scratch copy method cannot write outside the scratch directory", () => {
+	containsAll(verify, [
+		"copy the workspace files without `.git`",
+		"never `git worktree`, `git stash`, or a symlink into the workspace",
+		"set `HOME` and `TMPDIR` inside the scratch directory",
+	], "scratch copy method");
+});
+
 test("T16: verify keeps its repository and tool boundaries", () => {
 	containsAll(verify, [
 		"Do not edit, write, or fix findings.",
