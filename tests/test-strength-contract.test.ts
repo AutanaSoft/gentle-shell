@@ -16,8 +16,7 @@ const TEST_RULE = [
 	"Each test asserts every observable effect of the rule it covers",
 	"exit code, exact stdout and stderr",
 	"rejected input leaves stored data and counters unchanged",
-	"empty, zero, and malformed values",
-	"a valid item after the invalid one",
+	"covers the cases the rule itself names (its examples, boundaries, and errors)",
 	"through the public interface, never internal storage",
 ];
 
@@ -63,23 +62,26 @@ test("T27: single-shot host modes render the background policy as off", () => {
 	}
 });
 
-// T28 (L58): the user's hypothesis, confirmed in the assets: only the delegated
-// worker had a TRIANGULATE step; the inline path (the one arm B uses) said
-// "RED, GREEN, then refactor". Both now triangulate with at least two edge
-// cases beyond the request's examples after GREEN.
-const TRIANGULATE = "TRIANGULATE: add at least two edge cases beyond the request's examples";
-test("T28: inline test-first triangulates after GREEN", () => {
+// T28b (L60-L62): a fixed quota of generic edge cases is test padding. Every
+// real defect in the blind reviews came from a case derived from the request
+// or from an existing command the change touched (budget set --year, edit
+// --amount ignored), never from an invented edge. Tests are derived: one per
+// requested rule with the cases it names, plus one per touched existing
+// command or option proving its previous behavior still holds. Nothing else.
+const PRESERVE = "For every existing command or option the change touches, add one test proving its previous behavior still holds; add no other cases";
+test("T28b: inline test-first derives cases from the rules and touched commands, with no edge-case quota", () => {
 	for (const persona of ["gentleman", "neutral"] as const) {
 		const prompt = __testing.buildGentlePrompt(persona);
 		const principle = prompt.split("\n").find((line) => line.includes("use test-first by default"));
-		assert.ok(principle?.includes("observe RED, GREEN, TRIANGULATE, then refactor"), `${persona} principle must triangulate`);
-		assert.ok(prompt.includes(TRIANGULATE), `${persona} prompt must define TRIANGULATE`);
-		assert.ok(prompt.includes("they need no RED run"), `${persona} TRIANGULATE must not demand a RED run`);
+		assert.ok(principle?.includes("observe RED, GREEN, then refactor with focused checks"), `${persona} principle keeps RED, GREEN, refactor`);
+		assert.ok(principle?.includes("one RED test per requested rule"), `${persona} principle must ask for one RED test per rule`);
+		assert.ok(principle?.includes(PRESERVE), `${persona} principle must add the preserve test`);
+		assert.doesNotMatch(prompt, /TRIANGULATE|at least two edge cases/, `${persona} prompt must not keep the edge-case quota`);
 	}
 });
 
-test("T28: the worker TRIANGULATE step is concrete", () => {
+test("T28b: the worker preserves touched behavior instead of inventing edge cases", () => {
 	const worker = read("assets/agents/gentle-ai-worker.md");
-	assert.ok(worker.includes(`3. ${TRIANGULATE}`), "worker TRIANGULATE must ask for two edge cases");
-	assert.ok(worker.includes("they need no RED run"), "worker TRIANGULATE must not demand a RED run");
+	assert.ok(worker.includes(`3. PRESERVE — ${PRESERVE}`), "worker step 3 must be PRESERVE");
+	assert.doesNotMatch(worker, /at least two edge cases|3\. TRIANGULATE/, "worker must not keep the edge-case quota");
 });
