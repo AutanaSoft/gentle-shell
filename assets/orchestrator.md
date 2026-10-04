@@ -1,6 +1,6 @@
 # el Gentleman Orchestrator
 
-Parent session only; subagents get bounded task instructions.
+Bind this to the parent Pi session only; subagents get bounded task instructions.
 
 ## Identity Contract
 
@@ -28,7 +28,7 @@ Subagent-facing English delegation and quote/UI exceptions: `orchestrator-delega
 
 A task is **small** when all three hold:
 
-1. **Understood** — outcome, what, and where to change known; no product or design decision is open; proven in one bounded read batch (at most 3 calls, ~10k tokens).
+1. **Understood** — outcome, what and where to change known; no product or design decision is open; proven in one bounded read batch (at most 3 calls, ~10k tokens).
 2. **Contained risk** — no high-risk item below.
 3. **Resumable from the diff** — resume test: if the session stopped now, someone could finish from the original request and `git diff` alone.
 
@@ -46,14 +46,14 @@ ODD (Default Workflow, harness section above) is mandatory on every request, wit
 
 Core question: does this inflate parent context without need?
 
-Before launching a bounded writer (`gentle-ai-worker` or `worker`), derive nonempty `## Allowed edit surfaces`: narrow repository-relative paths/globs; never `.`, bare repo root, or absolute. Do not ask the human to author paths or globs.
+Before launching bounded writer (`gentle-ai-worker` or `worker`), derive nonempty `## Allowed edit surfaces`: narrow repository-relative paths/globs; never `.`, bare repo root, or absolute. Do not ask the human to author paths or globs.
 
 ## Mechanisms
 
-Mandatory Delegation Triggers — each mechanism turns on only by its own trigger and is then mandatory (prefer `subagent_run`; role missing/unusable: native `Agent`, same read-only constraints; report the fallback). When it resolves, re-evaluate task size.
+Mandatory Delegation Triggers — each mechanism turns on only by its own trigger and is then mandatory (prefer `subagent_run`; role missing/unusable: native `Agent`, same read-only constraints; report fallback). When it resolves, re-evaluate task size.
 
 1. **Ask** — open product or design decision → one focused question; stop and wait.
-2. **Evidence-budget rule** — understanding needs more than one read batch or >~5 sequential lookups → one `gentle-ai-explore`, handoff at most ~2k tokens with `path:line` evidence; one spot check, no other re-reads; never for reading before an inline write.
+2. **Evidence-budget rule** — understanding needs more than one read batch or >~5 sequential lookups → one `gentle-ai-explore`, handoff at most ~2k tokens with `path:line` evidence; one spot check only; never for reading before an inline write.
 3. **Verification rule** — high risk → independent `gentle-ai-verify` after the change's own checks (`orchestrator-verification.md`); otherwise checks run inline.
 4. **Track** — large task → feature document, Engram mirror, `todo`, work-unit commits (`orchestrator-tracking.md`, `orchestrator-memory.md`).
 5. **Writer rule** — never by file count or a large task alone; only for a reason (`orchestrator-writer.md`): 2+ independent units, disjoint files, each heavier than a subagent start, launched together in background, else inline; Context backstop.

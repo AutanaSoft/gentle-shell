@@ -12,6 +12,7 @@ import { SessionChanges, type SessionChangeEvidence } from "../lib/session-chang
 import test, { after, afterEach, before, mock } from "node:test";
 import type { TestContext } from "node:test";
 import { generateUnifiedPatch, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
 import { visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { sidebarState } from "../lib/shell-sidebar.ts";
 import gentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
@@ -21,7 +22,8 @@ import { historyDir, loadHistory, saveTask } from "../lib/agents-history.ts";
 import { STALE_COMPLETION_MS } from "../lib/agents-completion-delivery.ts";
 import { applyTaskEvent, emptyThread, TASK_EVENT, TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
 import { NativePointerScope } from "../lib/native-pointer-region.ts";
-import { PresenceCursor, PresencePublisher, listPresence, readActivity } from "../lib/orchestrator-presence.ts";
+import { PresenceCursor, PresencePublisher, listPresence, readActivity, readDiscovery } from "../lib/orchestrator-presence.ts";
+import { OrchestratorScopeCache } from "../lib/orchestrator-scope.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
 import { AgentRunner } from "../lib/agents-runner.ts";
@@ -193,7 +195,7 @@ function fakeContext(tui: { requestRender(): void } = fakeTui, confirmResult: (t
 		cwd,
 		hasUI: true,
 		mode: "tui",
-		sessionManager: { getSessionId: () => "s1", getCwd: () => cwd, getEntries: () => [] },
+		sessionManager: { getSessionId: () => "s1", getCwd: () => cwd, getEntries: () => [], getBranch: () => [] },
 		ui: {
 			notify: (message: string) => dialogs.push(`notify:${message}`),
 			custom: (factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (value: unknown) => void) => Overlay, options: unknown) =>
@@ -1249,10 +1251,16 @@ function liveProfile(name: string): string {
 	return profile;
 }
 
-function liveInstance(t: test.TestContext, profile: string, sessionId: string) {
+function liveInstance(t: test.TestContext, profile: string, sessionId: string, metadata = false) {
 	const h = fakePi();
 	const runtime = deps();
 	const context = fakeContext();
+	if (metadata) {
+		runtime.deps.sessionTransport = {
+			...inertSessionTransport,
+			createListener: registry => ({ registry, record: { version: 1, sessionId, endpoint: `/fixture/${sessionId}`, createdAt: 1 }, start: async () => {}, close: async () => {} }),
+		};
+	}
 	Object.assign(context.ctx.sessionManager, {
 		getSessionId: () => sessionId,
 		getSessionName: () => sessionId,
@@ -1281,8 +1289,8 @@ async function liveOverlay(instance: ReturnType<typeof liveInstance>) {
 
 test("live-only extension instances discover same-profile peers across cwd boundaries without importing their tasks", async (t) => {
 	const profile = liveProfile("live-peer-profile");
-	const local = liveInstance(t, profile, "local-live");
-	const peer = liveInstance(t, profile, "peer-live");
+	const local = liveInstance(t, profile, "local-live", true);
+	const peer = liveInstance(t, profile, "peer-live", true);
 	assert.equal(listPresence(profile).entries.length, 0, "factory construction starts no presence resources");
 	await local.fire("session_start", local.ctx, { reason: "startup" });
 	await peer.fire("session_start", peer.ctx, { reason: "startup" });
@@ -1297,6 +1305,10 @@ test("live-only extension instances discover same-profile peers across cwd bound
 	};
 	await run(local, "local");
 	const peerId = await run(peer, "peer");
+	await eventually(() => listPresence(profile).entries.some(header => readDiscovery(profile, header)?.tasks.some(task => task.id === peerId)), "admitted runtime-owned tasks publish without subsequent child events");
+	const scope = listPresence(profile).entries.map(header => readDiscovery(profile, header)?.scope).find(scope => scope?.tasks.some(task => task.id === peerId));
+	assert.equal(scope?.tasks.find(task => task.id === peerId)?.repository.root, peer.ctx.sessionManager.getCwd());
+	assert.equal(scope?.host.cloneHash, scope?.tasks.find(task => task.id === peerId)?.repository.cloneHash);
 	await tick();
 	peer.children[0].emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "peer streamed text" } });
 	await eventually(() => listPresence(profile).entries.some((header) => readActivity(profile, header).activity?.tasks.some((row) => row.summary.id === peerId && row.thread.items.some((item) => item.text === "peer streamed text"))), "task deltas, not just status changes, must publish peer activity");
@@ -3022,7 +3034,7 @@ test("subagent_list_agents and subagent_run in task mode launch a child with the
 	gentleAgents(pi, {}, harness.deps);
 	const { ctx, widget } = fakeContext();
 	await fire("session_start", ctx);
-	assert.deepEqual([...tools.keys()].sort(), ["orchestrator_list", "orchestrator_send_message", "orchestrator_session_id", "subagent_cancel", "subagent_continue", "subagent_list_agents", "subagent_list_tasks", "subagent_reply", "subagent_result", "subagent_run", "subagent_send_message", "subagent_status"]);
+	assert.deepEqual([...tools.keys()].sort(), ["orchestrator_consult", "orchestrator_list", "orchestrator_send_message", "orchestrator_session_id", "subagent_cancel", "subagent_continue", "subagent_list_agents", "subagent_list_tasks", "subagent_reply", "subagent_result", "subagent_run", "subagent_send_message", "subagent_status"]);
 	const listed = await tools.get("subagent_list_agents")!.execute("c0", {}, undefined, undefined, ctx);
 	assert.match(listed.content[0].text, /- explore \(global\): maps things/);
 
@@ -3356,7 +3368,7 @@ test("AgentsView production footer uses rendered bounds and invalidates them bef
 	const harness = deps();
 	gentleAgents(pi, {}, harness.deps);
 	const { ctx, overlays, customCompletions } = fakeContext();
-	(ctx as unknown as { sessionManager: { getSessionId(): string; getCwd(): string; getEntries(): [] } }).sessionManager = { getSessionId: () => "footer-session", getCwd: () => cwd, getEntries: () => [] };
+	Object.assign(ctx.sessionManager, { getSessionId: () => "footer-session" });
 	await fire("session_start", ctx);
 	await tools.get("subagent_run")!.execute("c1", { agent: "寿司", task: "Footer target", mode: "background" }, undefined, undefined, ctx);
 	await tick();
@@ -3557,17 +3569,45 @@ test("the overlay explains that stopping a waiting subagent dismisses its questi
 	await opened;
 });
 
-test("restored task history cannot enter the live panel or execute stop even with the current session ID", async () => {
+test("restored task history cannot enter the live panel or discovery during synchronous summary callbacks", async (t) => {
 	const { pi, fire, commands, tools } = fakePi();
 	const harness = deps();
 	const historyHome = join(root, "history-home");
 	const historical: TaskRecord = { id: "history-running", agent: "explore", mode: "background", prompt: "p", label: "p", cwd, parentSessionId: "s1", status: TASK_STATUS.RUNNING, createdAt: 1, startedAt: 1, endedAt: null, model: "m", thinking: undefined, sessionPath: null, error: null, result: null, lastStep: "working", lastActivityAt: 1, turns: 0, toolCalls: 0, tokens: 0, cost: 0 };
-	await saveTask(historyDir(historyHome), historical, emptyThread());
 	harness.deps.home = historyHome;
+	const profile = liveProfile("restored-discovery");
+	await saveTask(historyDir(historyHome, profile), historical, emptyThread());
+	chmodSync(join(profile, "gentle-agents"), 0o755);
+	harness.deps.agentHome = profile;
+	const registry = { list: async () => [], listActivations: async () => [] };
+	harness.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: (_, sessionId) => ({ registry, record: { version: 1, sessionId, endpoint: "/fixture/restore", createdAt: 1 }, start: async () => {}, close: async () => {} }),
+		createClient: inertSessionTransport.createClient,
+	};
+	let checked = false;
+	let leaked: unknown;
+	const update = PresencePublisher.prototype.update;
+	let snapshot: unknown;
+	t.mock.method(PresencePublisher.prototype, "update", function (this: PresencePublisher, input: Parameters<PresencePublisher["update"]>[0]) {
+		snapshot = input.map(row => row.task.id);
+		return update.call(this, input);
+	});
+	const restore = TaskStore.prototype.restore;
+	t.mock.method(TaskStore.prototype, "restore", function (this: TaskStore, ...args: Parameters<TaskStore["restore"]>) {
+		const result = restore.apply(this, args);
+		leaked = snapshot;
+		checked = true;
+		return result;
+	});
 	gentleAgents(pi, {}, harness.deps);
 	const { ctx, dialogs, overlays } = fakeContext();
 	await fire("session_start", ctx);
-	await tools.get("subagent_status")!.execute("restore", { task_id: historical.id }, undefined, undefined, ctx);
+	await tick();
+	await fire("session_start", ctx, { reason: "resume" });
+	await eventually(() => checked, "restoration callback checked");
+	assert.deepEqual(leaked, [], "summary callback must not publish restored running history");
+	assert.deepEqual(readDiscovery(profile, listPresence(profile).entries[0])?.tasks, []);
 	const opened = commands.get("gentle:agents")!.handler("", ctx);
 	for (let attempt = 0; attempt < 40 && overlays.length === 0; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 25));
 	assert.doesNotMatch(stripAnsi(overlays[0]!.render(80).join("\n")), /Stop selected|Subagent explore/);
@@ -3717,8 +3757,8 @@ test("the card follows the active session: after /new the earlier session's task
 	await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Long job", mode: "background" }, undefined, undefined, ctx);
 	await tick();
 	assert.match(widget()![1], /◐  explore  Long job/);
-	const sessions = ctx as unknown as { sessionManager: { getSessionId(): string; getCwd(): string; getEntries(): [] } };
-	sessions.sessionManager = { getSessionId: () => "s2", getCwd: () => cwd, getEntries: () => [] };
+	const sessions = ctx as unknown as { sessionManager: { getSessionId(): string; getCwd(): string; getBranch(): []; getEntries(): [] } };
+	sessions.sessionManager = { getSessionId: () => "s2", getCwd: () => cwd, getBranch: () => [], getEntries: () => [] };
 	await fire("session_start", ctx, { type: "session_start", reason: "new" });
 	assert.deepEqual(widget(), [], "the new session starts with an empty card");
 	assert.match((await tools.get("subagent_list_tasks")!.execute("c2", {}, undefined, undefined, ctx)).content[0].text, /No subagent tasks in this session/);
@@ -3730,7 +3770,7 @@ test("the card follows the active session: after /new the earlier session's task
 	assert.doesNotMatch(overlay.render(80).map(stripAnsi).join("\n"), /◐ Subagent explore/, "retained children of a replaced session do not imply an open orchestrator");
 	overlay.handleInput("\x1b");
 	await opened;
-	sessions.sessionManager = { getSessionId: () => "s1", getCwd: () => cwd, getEntries: () => [] };
+	sessions.sessionManager = { getSessionId: () => "s1", getCwd: () => cwd, getBranch: () => [], getEntries: () => [] };
 	await fire("session_start", ctx, { type: "session_start", reason: "resume" });
 	assert.match(widget()![1], /◐  explore  Long job/, "resuming the first session shows its task again");
 });
@@ -3819,6 +3859,284 @@ test("session transport startup failure cleans the constructed Windows-capable t
 	assert.match((await h.tools.get("orchestrator_session_id")!.execute("id", {}, undefined, undefined, ctx)).content[0].text, /not ready/);
 });
 
+test("registered session identity declares subjects and refreshes canonical idle renames", async (t) => {
+	const h = fakePi();
+	const runtime = deps();
+	const profile = realpathSync(mkdtempSync(join(root, "subject-runtime-")));
+	runtime.deps.agentHome = profile;
+	let ready = false;
+	const registry = { list: async () => [], listActivations: async () => [] };
+	runtime.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: (_registry, sessionId) => ({ registry,
+			record: { version: 1 as const, sessionId, endpoint: "/fixture/subject.sock", createdAt: 1 },
+			start: async () => { ready = true; }, close: async () => {} }),
+		createClient: () => ({ close() {}, sendNotification: async () => { throw new Error("no messages expected"); } }),
+	};
+	const heartbeats: (() => void)[] = [];
+	const interval = globalThis.setInterval;
+	t.mock.method(globalThis, "setInterval", (callback: () => void, ms: number) => {
+		if (ms === 5000) heartbeats.push(callback);
+		return interval(callback, ms);
+	});
+	let name = "";
+	const names: string[] = [];
+	Object.assign(h.pi, { setSessionName: (value: string) => { name = value; names.push(value); } });
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	const registrations = [{ type: "custom", customType: SESSION_WORKTREE_ENTRY, data: { sessionId: "s1", root: cwd, evidence: "fixture" } }];
+	Object.assign(ctx.sessionManager, { getSessionName: () => name, getEntries: () => registrations });
+	await h.fire("session_start", ctx);
+	await eventually(() => ready, "subject transport ready");
+	const tool = h.tools.get("orchestrator_session_id")!;
+	const declare = (subject?: unknown, context = ctx) => tool.execute("id", { subject }, undefined, undefined, context);
+	const result = await declare("\u001b[31m Fix\n auth\u202e ");
+	assert.equal(name, "Fix auth");
+	assert.match(result.content[0].text, /Active session ID: s1.*\n.*Fix auth/);
+	assert.deepEqual(result.details.gentleAgents, { senderSessionId: "s1", alias: "Fix auth" });
+	const before = listPresence(profile).entries[0]!;
+	assert.equal(before.label, "Fix auth");
+	assert.equal(readDiscovery(profile, before)?.state, undefined, "no implicit summary");
+	Object.assign(ctx.sessionManager, { getBranch: () => h.entries });
+	await tool.execute("publish", { state: { objective: "Verify auth", decisions: "Advisory only" } }, undefined, undefined, ctx);
+	assert.equal(readDiscovery(profile, listPresence(profile).entries[0])?.state?.state?.objective, "Verify auth");
+	const published = h.entries.at(-1)!;
+	const writes = h.entries.length;
+	await assert.rejects(() => tool.execute("invalid", { subject: "No effect", state: { grant: "yes" } }, undefined, undefined, ctx), /invalid/);
+	assert.equal(h.entries.length, writes);
+	assert.equal(name, "Fix auth");
+	await declare();
+	assert.equal(h.entries.length, writes, "omission leaves notes unchanged");
+	assert.equal(readDiscovery(profile, before)?.workspace, cwd);
+	assert.equal(readDiscovery(profile, before)?.scope?.host.root, cwd);
+	assert.equal(readDiscovery(profile, before)?.scope?.registered[0]?.root, cwd);
+	name = "Human rename";
+	heartbeats[0](); // Existing publisher heartbeat, without any task/model activity.
+	const renamed = listPresence(profile).entries[0]!;
+	assert.equal(renamed.label, name);
+	assert.equal(renamed.generation, before.generation);
+	assert.deepEqual(readActivity(profile, renamed).activity?.tasks, []);
+	assert.equal(readDiscovery(profile, renamed)?.scope?.host.resolvedAt, readDiscovery(profile, before)?.scope?.host.resolvedAt);
+	registrations.push({ ...registrations[0], data: { ...registrations[0].data, root: join(cwd, "registered") } });
+	h.pi.events.emit(SESSION_WORKTREE_CHANGED, { sessionId: "s1" });
+	assert.deepEqual(readDiscovery(profile, listPresence(profile).entries[0])?.scope?.registered.map(fact => fact.root), [cwd, join(cwd, "registered")]);
+	await declare("Do not overwrite");
+	assert.deepEqual(names, ["Fix auth"]);
+	assert.match((await declare()).content[0].text, /Human rename/);
+	name = "";
+	await declare("\u0000\u001b[31m");
+	assert.equal(name, "", "control-only subject never names a session");
+	await declare("😀".repeat(130));
+	assert.equal(Array.from(name).length, 120);
+	await tool.execute("withdraw", { state: null }, undefined, undefined, ctx);
+	await h.fire("session_start", ctx, { reason: "reload" });
+	await eventually(() => readDiscovery(profile, listPresence(profile).entries[0])?.state?.state === null, "withdrawal reload");
+	Object.assign(ctx.sessionManager, { getBranch: () => [published] });
+	await h.fire("session_tree", ctx);
+	assert.equal(readDiscovery(profile, listPresence(profile).entries[0])?.state?.state?.objective, "Verify auth");
+	const sameId = fakeContext().ctx;
+	Object.assign(sameId.sessionManager, { getSessionName: () => name, getBranch: () => [] });
+	await h.fire("session_start", sameId, { reason: "resume" });
+	assert.equal(readDiscovery(profile, listPresence(profile).entries[0])?.state, undefined);
+	const replacement = fakeContext().ctx;
+	Object.assign(replacement.sessionManager, { getSessionId: () => "s2", getSessionName: () => "Replacement" });
+	await h.fire("session_start", replacement, { reason: "new" });
+	heartbeats[0]();
+	assert.equal(listPresence(profile).entries.length, 1);
+	assert.equal(listPresence(profile).entries[0].label, "Replacement");
+	assert.equal(readDiscovery(profile, listPresence(profile).entries[0])?.scope?.host.root, cwd);
+	const stale = await declare("Stale subject", ctx);
+	assert.match(stale.content[0].text, /not ready/);
+	assert.equal(names.length, 2);
+	assert.equal(runtime.spawned.length, 0);
+	assert.equal(h.sent.length, 0);
+	assert.equal(h.userMessages.length, 0);
+});
+
+test("registered orchestrator_list joins peer metadata without child launches or messages", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	const profile = realpathSync(mkdtempSync(join(root, "discovery-runtime-")));
+	const peer = { version: 1 as const, sessionId: "peer", endpoint: "/fixture/peer.sock", createdAt: 1 };
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer", label: "Auth review", activity: [] });
+	try {
+		const scope = new OrchestratorScopeCache(path => ({ root: path, commonDir: "/clone" })).project("/repo", [{ id: "child", cwd: "/repo-child" }], ["/repo"]);
+		const tasks = [{ id: "child", label: "Check auth", status: "waiting", cwd: "/repo-child" },
+			...Array.from({ length: 9 }, (_, i) => ({ id: `extra${i}`, label: `Extra ${i}`, status: "running", cwd: `/child/${i}` }))];
+		publisher.updateDiscovery(peer, { workspace: "/repo", tasks, registered: Array.from({ length: 10 }, (_, i) => `/registered/${i}`), scope });
+		let ready = false;
+		let probes = 0;
+		const resolveWorktree = runtime.deps.resolveWorktree;
+		runtime.deps.resolveWorktree = (...args) => { probes++; return resolveWorktree(...args); };
+		let gate: (() => Promise<void>) | undefined;
+		const registry = { list: async () => [], listActivations: async () => { await gate?.(); return [peer]; } };
+		runtime.deps.agentHome = profile;
+		runtime.deps.sessionTransport = {
+			createRegistry: async () => registry,
+			createListener: () => ({ registry, start: async () => { ready = true; }, close: async () => {} }),
+			createClient: () => ({ close() {}, sendNotification: async () => { throw new Error("no messages expected"); } }),
+		};
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx } = fakeContext();
+		await h.fire("session_start", ctx);
+		await eventually(() => ready, "discovery transport ready");
+		ctx.ui.select = async () => { throw new Error("metadata consultation must not ask for consent"); };
+		const result = await h.tools.get("orchestrator_list")!.execute("list", {}, undefined, undefined, ctx);
+		assert.match(result.content[0].text, /peer.*Auth review.*recorded workspace: \/repo/);
+		assert.match(result.content[0].text, /Check auth \[waiting\].*launch workspace: \/repo-child/);
+		assert.match(result.content[0].text, /reachability is unknown/);
+		assert.equal((result.details.gentleAgents as any).candidates[0].scope.host.root, "/repo");
+		assert.equal((result.details.gentleAgents as any).candidates[0].scope.tasks[0].repository.root, "/repo-child");
+		assert.match(result.content[0].text, /clone: [a-f0-9]{64}/);
+		const cursor = (result.details.gentleAgents as any).candidates[0].catalog.cursor;
+		const next = await h.tools.get("orchestrator_list")!.execute("next", { recipient_session_id: "peer", cursor }, undefined, undefined, ctx);
+		assert.deepEqual((next.details.gentleAgents as any).candidates[0].catalog.tasks.map((t: any) => t.id), ["extra7", "extra8"]);
+		assert.deepEqual((next.details.gentleAgents as any).candidates[0].catalog.registered, ["/registered/8", "/registered/9"]);
+		assert.equal(h.userMessages.length, 0);
+		publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [], state: {
+			schema: 1, sessionId: "peer", cwd: "/repo", recordedAt: 1, source: "owner-curated",
+			ownerReply: false, authority: "none", state: { progress: "Explicit summary" },
+		} });
+		const noted = await h.tools.get("orchestrator_list")!.execute("note", { recipient_session_id: "peer" }, undefined, undefined, ctx);
+		assert.match(noted.content[0].text, /Explicit summary/);
+		assert.equal((noted.details.gentleAgents as any).candidates[0].state.recordedAt, 1);
+		const consult = h.tools.get("orchestrator_consult")!;
+		const probesBeforeConsult = probes;
+		const receipt = JSON.parse((await consult.execute("consult", { recipient_session_id: "peer" }, undefined, undefined, ctx)).content[0].text);
+		assert.equal(receipt.snapshot.state.state.progress, "Explicit summary");
+		assert.equal(receipt.snapshot.state.recordedAt, 1);
+		assert.equal(receipt.ownerReply, false);
+		assert.equal(receipt.authority, "none");
+		assert.equal(receipt.targetSessionId, "peer");
+		assert.doesNotMatch(JSON.stringify(receipt), /endpoint|activation|prompt|thread/);
+		for (const invalid of [{ recipient_session_id: "peer", kind: "reasoning" }, { recipient_session_id: "peer", question: "secret" }, {}]) {
+			await assert.rejects(consult.execute("invalid", invalid, undefined, undefined, ctx), /Invalid metadata/);
+		}
+		assert.equal(probes, probesBeforeConsult);
+		publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [] });
+		const legacy = await h.tools.get("orchestrator_list")!.execute("legacy", {}, undefined, undefined, ctx);
+		assert.match(legacy.content[0].text, /repository: unknown/);
+		assert.equal((legacy.details.gentleAgents as any).candidates[0].sessionId, "peer");
+		let release!: () => void;
+		gate = () => new Promise<void>(resolve => { release = resolve; });
+		const pending = consult.execute("pending", { recipient_session_id: "peer" }, undefined, undefined, ctx);
+		await h.fire("session_shutdown", ctx);
+		release();
+		assert.equal(JSON.parse((await pending).content[0].text).status, "unavailable");
+		assert.equal(runtime.spawned.length, 0);
+		assert.equal(h.sent.length, 0);
+		assert.equal(h.userMessages.length, 0);
+		await h.fire("session_shutdown", ctx);
+	} finally { publisher.dispose(); }
+});
+
+test("registered reasoning and revocation use live SDK host and published source only", async () => {
+	const h = fakePi(), runtime = deps();
+	const profile = realpathSync(mkdtempSync(join(root, "reasoning-runtime-")));
+	const peer = { version: 1 as const, sessionId: "peer", endpoint: "/fixture/peer.sock", createdAt: 1 };
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer", label: "Published peer", activity: [] });
+	const publish = (progress = "Recorded") => publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [], state: {
+		schema: 1, sessionId: "peer", cwd: "/repo", recordedAt: 1, source: "owner-curated",
+		ownerReply: false, authority: "none", state: { progress },
+	} });
+	publish(); let ready = false, dialogs = 0, calls = 0, choice = "Decline";
+	let complete: (() => void) | undefined, hang = false;
+	let peers = [peer];
+	let duringDialog: (() => Promise<void> | void) | undefined;
+	const registry = { list: async () => [], listActivations: async () => peers };
+	runtime.deps.agentHome = profile;
+	runtime.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: () => ({ registry, start: async () => { ready = true; }, close: async () => {} }),
+		createClient: () => ({ close() {}, sendNotification: async () => { throw Error("no owner message"); } }),
+	};
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	const answer = { role: "assistant", api: "fixture", provider: "fixture", model: "local", timestamp: 1,
+		stopReason: "stop", content: [{ type: "text", text: "Published advice" }], usage: {
+			input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } } as AssistantMessage;
+	Object.assign(ctx, { model: { id: "local", provider: "fixture", maxTokens: 1024 }, modelRegistry: {
+		streamSimple(_model: unknown, context: { tools: unknown[]; messages: unknown[] }, options: { maxRetries: number }) {
+			calls++; assert.deepEqual(context.tools, []); assert.equal(context.messages.length, 1);
+			assert.equal(options.maxRetries, 0);
+			const stream = createAssistantMessageEventStream();
+			stream.result = hang ? () => new Promise(resolve => { complete = () => resolve(answer); }) : async () => answer;
+			return stream;
+		},
+	} });
+	// Test-simulated supported UI choices, NOT evidence of actual human approval.
+	ctx.ui.select = async (title, options) => {
+		dialogs++; assert.match(title, /Model-cost permission only/);
+		assert.deepEqual(options, ["Allow once", "Allow this target + model for this session", "Decline"]);
+		await duringDialog?.(); return choice;
+	};
+	try {
+		await h.fire("session_start", ctx); await eventually(() => ready, "reasoning transport ready");
+		const tool = h.tools.get("orchestrator_consult")!;
+		const run = async (kind = "reasoning", patch = {}, caller = ctx, signal?: AbortSignal) => JSON.parse((await tool.execute("c",
+			{ recipient_session_id: "peer", kind, ...(kind === "reasoning" ? { question: "What is published?" } : {}), ...patch }, signal, undefined, caller)).content[0].text);
+		assert.equal((await run("metadata")).status, "available"); assert.deepEqual([dialogs, calls], [0, 0]);
+		assert.equal((await run()).code, "permission-required"); assert.deepEqual([dialogs, calls], [1, 0]);
+		choice = "Allow once"; const advice = await run();
+		assert.equal(advice.source, "helper_advice"); assert.equal(advice.ownerReply, false); assert.equal(advice.authority, "none");
+		assert.equal(advice.requestCaps.maxTokens, 512); assert.equal(advice.usage.totalTokens, 2);
+		assert.deepEqual(advice.actualModel, { provider: "fixture", id: "local" }); assert.deepEqual([dialogs, calls], [2, 1]);
+		choice = "Allow this target + model for this session"; await run();
+		publisher.updateDiscovery(peer, { workspace: "/updated-public", tasks: [] }); await run();
+		assert.deepEqual([dialogs, calls], [3, 3]);
+		Object.assign(ctx, { hasUI: false });
+		assert.equal((await run("revoke-reasoning")).status, "revoked");
+		assert.deepEqual([dialogs, calls], [3, 3]); Object.assign(ctx, { hasUI: true });
+		choice = "Decline"; assert.equal((await run()).code, "permission-required");
+		for (const patch of [{ hasUI: false }, { mode: "print" }, { mode: "json" }]) {
+			Object.assign(ctx, patch); assert.equal((await run()).code, "permission-required");
+		}
+		Object.assign(ctx, { hasUI: true, mode: "rpc" }); choice = "Allow once";
+		assert.equal((await run()).status, "available");
+		const before = [dialogs, calls];
+		for (const args of [{ question: "implicit" }, { kind: "reasoning" }, { kind: "revoke-reasoning", cursor: "x" },
+			{ kind: "metadata", question: "irrelevant" }, { kind: "reasoning", question: "é".repeat(513) },
+			{ kind: null }, { kind: "unknown" }, { cursor: "x".repeat(1025) }, { unexpected: true }]) {
+			await assert.rejects(tool.execute("bad", { recipient_session_id: "peer", ...args }, undefined, undefined, ctx), /Invalid metadata/);
+		}
+		assert.deepEqual([dialogs, calls], before);
+		choice = "Allow this target + model for this session"; await run();
+		for (const event of ["session_tree", "resources_discover", "session_before_switch", "session_before_fork", "session_before_tree", "model_select", "session_start"]) {
+			await h.fire(event, ctx); choice = "Decline";
+			assert.equal((await run()).code, "permission-required");
+			choice = "Allow this target + model for this session"; await run();
+		}
+		await run("revoke-reasoning"); choice = "Allow once"; hang = true;
+		for (const change of ["public", "activation", "unavailable", "private", "abort", "revoke"]) {
+			publish(); peers = [peer]; const controller = new AbortController();
+			const pending = run("reasoning", {}, ctx, controller.signal);
+			await eventually(() => !!complete, "helper pending");
+			if (change === "public") publish("Changed progress");
+			if (change === "activation") peers = [{ ...peer, endpoint: "/fixture/replaced.sock" }];
+			if (change === "unavailable") peers = [];
+			if (change === "private") { publisher.update([]); publisher.refreshLabel(); }
+			if (change === "abort") controller.abort();
+			if (change === "revoke") await run("revoke-reasoning");
+			complete!(); complete = undefined;
+			const outcome = await pending;
+			assert.equal(outcome.status, change === "private" ? "available" : "unavailable");
+		}
+		hang = false; peers = [peer];
+		for (const change of [() => Object.assign(ctx, { model: { ...ctx.model! } }),
+			() => publish("Changed after dialog"),
+			() => h.fire("session_tree", ctx), () => run("revoke-reasoning"),
+			() => h.fire("session_shutdown", ctx),
+			() => h.fire("session_start", fakeContext().ctx, { reason: "new" })]) {
+			await h.fire("session_start", ctx); await new Promise(resolve => setImmediate(resolve));
+			publish(); duringDialog = async () => { await change(); }; const count = calls;
+			assert.equal((await run()).status, "unavailable"); assert.equal(calls, count);
+		}
+		assert.equal((await run("metadata", {}, ctx)).status, "unavailable");
+		assert.equal(runtime.spawned.length, 0); assert.equal(h.sent.length, 0); assert.equal(h.userMessages.length, 0);
+	} finally { await h.fire("session_shutdown", ctx); publisher.dispose(); }
+});
+
 test("session transport adds host tools, forwards notifications, and closes on shutdown", async () => {
 	const h = fakePi();
 	const runtime = deps();
@@ -3826,7 +4144,7 @@ test("session transport adds host tools, forwards notifications, and closes on s
 	let listenerStarts = 0;
 	let listenerCloses = 0;
 	let clientCloses = 0;
-	const registry = { list: async () => [{ sessionId: "peer", reachability: "unknown" }], listActivations: async () => [] };
+	const registry = { list: async () => [{ sessionId: "peer", reachability: "unknown" }], listActivations: async () => [{ version: 1 as const, sessionId: "peer", endpoint: "/fixture/peer.sock", createdAt: 1 }] };
 	runtime.deps.sessionTransport = {
 		createRegistry: async () => registry,
 		createListener: (_registry, _sessionId, received) => {
@@ -4977,7 +5295,7 @@ test("a subdirectory session cwd and workspace_root of the same worktree share o
 	const env: NodeJS.ProcessEnv = {};
 	gentleAgents(h.pi, env, { ...runtime.deps, resolveWorktree, env, agentHome: profile });
 	const { ctx } = fakeContext();
-	Object.assign(ctx, { cwd: sub, sessionManager: { getSessionId: () => "s1", getCwd: () => sub, getEntries: () => [] } });
+	Object.assign(ctx, { cwd: sub, sessionManager: { getSessionId: () => "s1", getCwd: () => sub, getEntries: () => [], getBranch: () => [] } });
 	await h.fire("session_start", ctx);
 	const task = "Write it.\n\n## Allowed edit surfaces\nsrc/app.ts\n\n## Return\nReport";
 	try {
