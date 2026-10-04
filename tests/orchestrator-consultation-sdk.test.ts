@@ -70,16 +70,17 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 		git(clone, "remote", "remove", "origin");
 		const roots = Array.from({ length: 10 }, (_, i) => join(root, `wt${i}`));
 		for (const cwd of roots) git(clone, "worktree", "add", "--detach", cwd, "HEAD");
-		let gitProbes = 0;
-		const runGit = new Proxy(execFileSync, { apply(target, _this, [command, args, options]) {
-			assert.equal(command, "git");
-			assert.ok(String(args[args.indexOf("-C") + 1]).startsWith(root + "/"));
-			gitProbes++;
-			return Reflect.apply(target, undefined, [command, args, { ...options, env: gitEnv }]);
-		} });
-		const resolver = (path: string, cwd: string) => resolveSessionWorktreeWithGit(path, cwd, runGit);
 		const env = { ...bindings, GENTLE_PI_AGENTS: "1", GENTLE_PI_SHELL: "1" };
 		async function host(cwd: string, humanName?: string) {
+			// Attribute probes to this host's injected resolver, not a peer's asynchronous publication.
+			let gitProbes = 0;
+			const runGit = new Proxy(execFileSync, { apply(target, _this, [command, args, options]) {
+				assert.equal(command, "git");
+				assert.ok(String(args[args.indexOf("-C") + 1]).startsWith(root + "/"));
+				gitProbes++;
+				return Reflect.apply(target, undefined, [command, args, { ...options, env: gitEnv }]);
+			} });
+			const resolver = (path: string, cwd: string) => resolveSessionWorktreeWithGit(path, cwd, runGit);
 			const manager = sdk.SessionManager.create(cwd, join(root, `sessions-${live.length}`));
 			if (humanName) manager.appendSessionInfo(humanName);
 			const settings = sdk.SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false }, cacheWarming: "off", packages: [] });
