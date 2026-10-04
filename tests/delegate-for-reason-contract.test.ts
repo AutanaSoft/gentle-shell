@@ -177,6 +177,21 @@ test("T12/S6: one independent verify per delegated unit after its self-review, n
 	assert.ok(!item.includes("(1) "), "the timing rule restates the high-risk list");
 });
 
+// T15 (S6, L38): after3 B x4 paid two same-model verifies with 0 defects,
+// while verify caught real defects in smaller-model (Luna) writer code.
+test("T15/S6: same-model inline code over several deliveries gets one verify at the feature's end; smaller-model writer code stays per unit", () => {
+	const item = reviewItem("2. **Independent verify per unit**");
+	for (const clause of [
+		"Same-model inline code over several deliveries of one feature",
+		"one verify at the feature's end",
+		"smaller-model writer code stays per unit",
+		"only when that unit is high risk",
+		"small-model bias per the tier table",
+	]) {
+		assert.ok(item.includes(clause), `independent verify exception is missing: ${clause}`);
+	}
+});
+
 test("T11/S4: the parent hands verify the whole spec, authorizes its probes and resolves every unmet item", () => {
 	const item = reviewItem("4. **Verify handoff**");
 	for (const clause of [

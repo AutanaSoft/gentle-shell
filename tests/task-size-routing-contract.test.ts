@@ -136,7 +136,8 @@ const MODULE_BUDGETS: Record<string, number> = {
 	"orchestrator-tracking.md": 12_500,
 	// gentle-shell#1731 T3: parallel review protocol; lazy (delegation or high risk only), core and normative rule untouched.
 	// gentle-shell#1731 T11/T12: verify-per-unit timing and the every-S# verify handoff (6,000 -> 6,400 B).
-	"orchestrator-verification.md": 6_400,
+	// gentle-shell#1731 T15: one end-of-feature verify for same-model inline deliveries (6,400 -> 6,500 B).
+	"orchestrator-verification.md": 6_500,
 	"orchestrator-writer.md": 4_500,
 	"orchestrator-prompts.md": 13_000,
 };
