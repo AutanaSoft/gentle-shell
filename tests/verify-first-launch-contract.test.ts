@@ -52,6 +52,26 @@ test("T16/W1: the scratch copy method cannot write outside the scratch directory
 	], "scratch copy method");
 });
 
+// T21 (L44): in after4, verify reported a behavior already present at the
+// baseline (B x5, unchecked import amounts the request kept "as they do today")
+// and a value far outside the realistic domain (B x4, sums near 9e15) as
+// blockers; each forced a correction round. Blockers need provenance and
+// realistic inputs; the rest are reported as advisories.
+test("T21: verify grades severity by provenance and realistic inputs", () => {
+	containsAll(verify, [
+		"## Severity",
+		"A blocker is a defect the change caused or a spec item the change leaves unmet",
+		"Before calling a finding a blocker, reproduce it at the baseline",
+		"already present at the baseline and not asked to change is a pre-existing advisory",
+		"only with inputs outside the realistic domain",
+		"is an advisory",
+		"Any file, flag, or value a user can feed through the program's own commands is realistic input, hand-edited files included",
+		"a rule the request sets for one entry path holds for every path that creates the same data",
+		"Silently ignoring an option or value the user passed explicitly, with a success exit, is always a blocker",
+		"An unrequested change to the output, error text, or line numbering of a command that existed at the baseline is change-caused and a blocker, even when it looks like an improvement",
+	], "verify severity rule");
+});
+
 test("T16: verify keeps its repository and tool boundaries", () => {
 	containsAll(verify, [
 		"Do not edit, write, or fix findings.",
