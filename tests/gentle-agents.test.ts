@@ -3890,6 +3890,11 @@ test("registered session identity declares subjects and refreshes canonical idle
 	await eventually(() => ready, "subject transport ready");
 	const tool = h.tools.get("orchestrator_session_id")!;
 	const declare = (subject?: unknown, context = ctx) => tool.execute("id", { subject }, undefined, undefined, context);
+	const initialWrites = h.entries.length;
+	await assert.rejects(() => tool.execute("invalid-work", { subject: "No effect", state: { work: { topic: "Login" } } }, undefined, undefined, ctx), /invalid/);
+	assert.equal(name, "");
+	assert.equal(h.entries.length, initialWrites);
+	assert.equal(readDiscovery(profile, listPresence(profile).entries[0])?.state, undefined);
 	const result = await declare("\u001b[31m Fix\n auth\u202e ");
 	assert.equal(name, "Fix auth");
 	assert.match(result.content[0].text, /Active session ID: s1.*\n.*Fix auth/);
@@ -3898,8 +3903,12 @@ test("registered session identity declares subjects and refreshes canonical idle
 	assert.equal(before.label, "Fix auth");
 	assert.equal(readDiscovery(profile, before)?.state, undefined, "no implicit summary");
 	Object.assign(ctx.sessionManager, { getBranch: () => h.entries });
-	await tool.execute("publish", { state: { objective: "Verify auth", decisions: "Advisory only" } }, undefined, undefined, ctx);
+	const work = { area: "Auth", topic: "Login", tags: ["Review"], refs: [
+		{ kind: "issue", repository: "github.com/Owner/Repo", id: "12" },
+	] };
+	await tool.execute("publish", { state: { objective: "Verify auth", decisions: "Advisory only", work } }, undefined, undefined, ctx);
 	assert.equal(readDiscovery(profile, listPresence(profile).entries[0])?.state?.state?.objective, "Verify auth");
+	assert.deepEqual(readDiscovery(profile, listPresence(profile).entries[0])?.state?.state?.work, work);
 	const published = h.entries.at(-1)!;
 	const writes = h.entries.length;
 	await assert.rejects(() => tool.execute("invalid", { subject: "No effect", state: { grant: "yes" } }, undefined, undefined, ctx), /invalid/);
@@ -3994,17 +4003,19 @@ test("registered orchestrator_list joins peer metadata without child launches or
 		assert.deepEqual((next.details.gentleAgents as any).candidates[0].catalog.registered, ["/registered/8", "/registered/9"]);
 		assert.equal(h.userMessages.length, 0);
 		publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [], state: {
-			schema: 1, sessionId: "peer", cwd: "/repo", recordedAt: 1, source: "owner-curated",
-			ownerReply: false, authority: "none", state: { progress: "Explicit summary" },
+			schema: 2, sessionId: "peer", cwd: "/repo", recordedAt: 1, source: "owner-curated",
+			ownerReply: false, authority: "none", state: { progress: "Explicit summary", work: { area: "Auth" } },
 		} });
 		const noted = await h.tools.get("orchestrator_list")!.execute("note", { recipient_session_id: "peer" }, undefined, undefined, ctx);
 		assert.match(noted.content[0].text, /Explicit summary/);
 		assert.equal((noted.details.gentleAgents as any).candidates[0].state.recordedAt, 1);
+		assert.deepEqual((noted.details.gentleAgents as any).candidates[0].state.state.work, { area: "Auth" });
 		const consult = h.tools.get("orchestrator_consult")!;
 		const probesBeforeConsult = probes;
 		const receipt = JSON.parse((await consult.execute("consult", { recipient_session_id: "peer" }, undefined, undefined, ctx)).content[0].text);
 		assert.equal(receipt.snapshot.state.state.progress, "Explicit summary");
 		assert.equal(receipt.snapshot.state.recordedAt, 1);
+		assert.deepEqual(receipt.snapshot.state.state.work, { area: "Auth" });
 		assert.equal(receipt.ownerReply, false);
 		assert.equal(receipt.authority, "none");
 		assert.equal(receipt.targetSessionId, "peer");
@@ -4013,6 +4024,14 @@ test("registered orchestrator_list joins peer metadata without child launches or
 			await assert.rejects(consult.execute("invalid", invalid, undefined, undefined, ctx), /Invalid metadata/);
 		}
 		assert.equal(probes, probesBeforeConsult);
+		publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [], state: {
+			schema: 2, sessionId: "peer", cwd: "/repo", recordedAt: 2, source: "owner-curated",
+			ownerReply: false, authority: "none", state: { work: { topic: "Missing area" } },
+		} });
+		const malformed = await h.tools.get("orchestrator_list")!.execute("malformed", { recipient_session_id: "peer" }, undefined, undefined, ctx);
+		assert.equal((malformed.details.gentleAgents as any).candidates[0].sessionId, "peer");
+		assert.equal((malformed.details.gentleAgents as any).candidates[0].state, undefined);
+		assert.ok(readActivity(profile, listPresence(profile).entries[0]).activity);
 		publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [] });
 		const legacy = await h.tools.get("orchestrator_list")!.execute("legacy", {}, undefined, undefined, ctx);
 		assert.match(legacy.content[0].text, /repository: unknown/);

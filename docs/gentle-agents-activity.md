@@ -72,7 +72,30 @@ Source is `owner-curated`, `ownerReply: false`, `authority: none`: even `decisio
 is data, never a grant or human consent. Missing/invalid/over-budget notes are unknown;
 withdrawal remains explicit null. Advertising is best-effort; legacy headers/activity
 stay unchanged. Metadata and opt-in helper reasoning are available below; correlated
-owner decisions remain a later protocol unit. Neither issue is closed.
+owner decisions remain a later protocol unit tracked by #1702.
+
+### Classify recorded work
+
+Publish classification in the same curated `state`, for example:
+
+```json
+{"state":{"progress":"Reviewing login","work":{"area":"Auth","topic":"Login","tags":["Review"],"refs":[{"kind":"issue","repository":"github.com/Owner/Repo","id":"12"}]}}}
+```
+
+`topic` requires `area`; each is at most 64 UTF-8 bytes. Up to eight tags (64 bytes
+each) and eight refs are allowed. Refs require an explicit public `host/owner/repo`
+(no URL, credentials or inferred repository), and an ID at most 256 bytes; repository
+scope is also at most 256 bytes. Issue/PR IDs are positive canonical decimals;
+task IDs are opaque historical declarations, **not routable peers**. Input case is
+preserved; exact duplicate tags/refs, empty work, unknown keys and unsafe strings
+are rejected. Existing text bytes plus serialized work JSON must fit 2,048 bytes.
+
+An object replacement omitting `work` clears classification; `state: null` withdraws
+the whole record. Work uses schema 2 in the same branch entry/cache/timestamp;
+text-only records remain schema 1. Targeted list and metadata consultation readback
+carry detached work with historical `recordedAt`, owner-curated and non-authoritative.
+No refs are resolved, no launch/filter/inheritance behavior is added, and no Git,
+network or model call is needed. Helper reasoning capture remains text-only.
 
 ### Consult a published snapshot
 

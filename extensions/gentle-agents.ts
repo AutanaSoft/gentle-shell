@@ -1565,6 +1565,20 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			subject: { type: "string", maxLength: 120, description: "Optional short task subject; names only an unnamed Pi session." },
 			state: { anyOf: [{ type: "null" }, { type: "object", additionalProperties: false, properties: {
 				objective: { type: "string" }, progress: { type: "string" }, decisions: { type: "string" }, blockers: { type: "string" },
+				work: { type: "object", additionalProperties: false,
+					description: "Optional historical, non-authoritative classification; topic requires area. Text plus work JSON fits 2048 UTF-8 bytes. Exact duplicate tags/refs are rejected; no ref resolution or routing.",
+					properties: {
+						area: { type: "string", maxLength: 64 }, topic: { type: "string", maxLength: 64 },
+						tags: { type: "array", maxItems: 8, uniqueItems: true, items: { type: "string", maxLength: 64 } },
+						refs: { type: "array", maxItems: 8, uniqueItems: true, items: {
+							type: "object", additionalProperties: false, required: ["kind", "repository", "id"], properties: {
+								kind: { type: "string", enum: ["issue", "pr", "task"] },
+								repository: { type: "string", maxLength: 256, description: "Explicit public host/owner/repo, not a URL or guessed identity." },
+								id: { type: "string", maxLength: 256, description: "Positive canonical decimal issue/PR ID, or opaque historical task ID; never a peer route." },
+							},
+						} },
+					},
+				},
 			} }] },
 		} } as never,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
