@@ -85,3 +85,16 @@ test("T28b: the worker preserves touched behavior instead of inventing edge case
 	assert.ok(worker.includes(`3. PRESERVE — ${PRESERVE}`), "worker step 3 must be PRESERVE");
 	assert.doesNotMatch(worker, /at least two edge cases|3\. TRIANGULATE/, "worker must not keep the edge-case quota");
 });
+
+// T30 (L67): in every x5 blind solution (Codex and Gentle Shell) `budget set
+// --year` started answering with a new message after `--year` was added to the
+// shared budget options, and no solution had a test for it. The abstract
+// PRESERVE rule did not reach sibling subcommands; name the concrete pattern.
+const SIBLING = "When you add an option to a shared parser or command, test that every sibling subcommand that did not accept it still rejects it with the same error as before";
+test("T30: inline and worker tests protect sibling subcommands from a newly shared option", () => {
+	for (const persona of ["gentleman", "neutral"] as const) {
+		const principle = __testing.buildGentlePrompt(persona).split("\n").find((line) => line.includes("use test-first by default"));
+		assert.ok(principle?.includes(SIBLING), `${persona} principle must name the sibling-subcommand case`);
+	}
+	assert.ok(read("assets/agents/gentle-ai-worker.md").includes(SIBLING), "worker PRESERVE must name the sibling-subcommand case");
+});
