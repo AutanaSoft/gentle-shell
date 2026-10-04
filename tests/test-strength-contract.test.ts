@@ -36,3 +36,29 @@ test("T26: the worker test discipline carries the same checklist", () => {
 	for (const clause of TEST_RULE) assert.ok(worker.includes(clause), `worker test discipline is missing: ${clause}`);
 	assert.ok(!worker.includes("add the smallest behavior-level test"), "RED must not ask for the smallest test");
 });
+
+// T26b (L56): blind review of x5 ranked Codex above the inline Gentle Shell
+// arms partly because they added options without updating help and README.
+test("T26b: inline and delegated work update the help and docs that describe a changed option", () => {
+	const clause = "When you add or change a command, option, or message, update the help text and docs that describe it";
+	for (const persona of ["gentleman", "neutral"] as const) {
+		const step = __testing.buildGentlePrompt(persona).split("\n").find((line) => line.startsWith("6. **Implement"));
+		assert.ok(step?.includes(clause), `${persona} Implement step is missing the docs rule`);
+	}
+	assert.ok(read("assets/agents/gentle-ai-worker.md").includes(clause), "worker is missing the docs rule");
+});
+
+// T27 (L56): in `pi --mode json` the runtime already rejects background
+// launches (T18), but the prompt still said "Background subagent policy: on",
+// so B-bg tried background twice and took the parallel-writer path; its worker
+// shipped the silent `budget set --year` defect. Single-shot hosts render off.
+test("T27: single-shot host modes render the background policy as off", () => {
+	for (const mode of ["json", "print"]) {
+		const prompt = __testing.buildGentlePrompt("gentleman", process.cwd(), undefined, undefined, mode);
+		assert.match(prompt, /Background subagent policy: off \(single-shot mode\)/, `${mode} must render off`);
+	}
+	for (const mode of ["tui", "rpc", undefined]) {
+		const prompt = __testing.buildGentlePrompt("gentleman", process.cwd(), undefined, undefined, mode);
+		assert.doesNotMatch(prompt, /single-shot mode/, `${String(mode)} must keep the configured policy`);
+	}
+});

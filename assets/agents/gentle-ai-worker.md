@@ -59,7 +59,7 @@ Never save secrets, credentials, personal data, tokens, private keys, raw untrus
 
 Apply the ODD test-first policy by default for behavior changes with applicable runnable deterministic tests and a clear expected outcome. Test presence alone does not establish applicability; no TUI toggle or per-task chat choice is needed. Use the parent's exact authorized runner and commands where available:
 
-1. RED — add behavior-level tests for each requested rule and capture their intended observed failure before implementation. Each test asserts every observable effect of the rule it covers (exit code, exact stdout and stderr, and that rejected input leaves stored data and counters unchanged), covers empty, zero, and malformed values and a valid item after the invalid one, and checks through the public interface, never internal storage.
+1. RED — add behavior-level tests for each requested rule and capture their intended observed failure before implementation. Each test asserts every observable effect of the rule it covers (exit code, exact stdout and stderr, and that rejected input leaves stored data and counters unchanged), covers empty, zero, and malformed values and a valid item after the invalid one, and checks through the public interface, never internal storage. When you add or change a command, option, or message, update the help text and docs that describe it.
 2. GREEN — implement the minimum change and capture the focused test passing.
 3. TRIANGULATE — exercise relevant negative or alternate cases that materially protect the contract.
 4. REFACTOR — improve clarity only while focused tests remain green.
