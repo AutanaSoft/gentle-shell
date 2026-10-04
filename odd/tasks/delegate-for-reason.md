@@ -55,6 +55,9 @@ S8. Bench: "corras los bench utilizando estas configuraciones para ver cómo fun
   handoff (all units/fixes), never serial piecemeal. Evidence L14 (x1 after-R: "Implement ONLY the total-stock task first", 0.101 -> 0.464).
 - [x] T9 (S2, AC2b) delegated writer · parallelism must actually run in parallel: launch every disjoint unit in the same turn in background mode,
   then wait for all; serial launches void the reason (fall back to inline). Evidence L14 (x5 after-B: units ran serially, 0.158 -> 0.528).
+- [ ] T10 (S4, AC4c) delegated writer · narrow high-risk items 1 and 3 to changing/breaking existing things: item 1 = migrations, rewriting or
+  deleting stored data, format changes, or writing data without validation (not ordinary saves of new records); item 3 = changing or removing a
+  contract other code or repos already consume (adding a flag, command or optional field is not high risk). Evidence L19/L20.
 - [ ] T6 (S8, AC8) runs · bench before/after and report (stage cap reuses user's USD 60 approval)
 - [ ] G1 other repo, needs user OK · port kernel wording to gentle-ai canon (`routing.go`) with parity
 - [ ] G2 other repo, needs user OK · gentle-ai `review start` accepts escalate (RDD alignment)
@@ -80,3 +83,6 @@ L16 2026-10-04 T7-T9 writer muszgpjd-d-zjr7: RED 3 -> GREEN 77/77; full 4764/476
 L17 2026-10-04 T6 result (x1731base=5d75a2ab vs x1731after=696dcee2, n=1, 20 cells, USD 9.74, all graded, 26/26 etc acceptance on final): totals x1+x2+x5+x4: A 0.522; B base 1.463 -> after 2.594; R base 1.807 -> after 3.358. x4: A 0.247/6.4 min round 0; B base 1.018 r1 -> after 1.886 r1 (T1 inline, then 3 serial workers mode task + 2 verifies); R base 0.937 r0 -> after 2.185 r1 / 50 min. Conclusion: #1731 before T7-T9 made every arm worse; failures = unforced risk check, piecemeal routed delegation, serial 'parallel' units.
 L18 2026-10-04 T6b launched: pin after2-1731 (02c4fcbb, T7-T9), config bench.1731-after2.json, nohup run-1731b.sh (B and R on x1, x2, x5, x4; cap USD 8; status run-1731b.status).
 L19 2026-10-04 T6b result (x1731after2 = 02c4fcbb with T7-T9, n=1, USD 4.71): totals x1+x2+x5+x4 B 1.589 (base 1.463, after 2.594), R 3.124 (base 1.807, after 3.358), Codex 0.522. T7 works: Risk line in 8/8 cells; x2 now verifies (items 1/3). T8 works on small: R x1 0.156 inline (was 0.464). T9 untestable: bench cells run with `Background subagent policy: off`, so 0 background launches; B x4 still ran explore x2, worker x2 (serial, fg) and verify x2 (1.016 vs base 1.018). R still costs more on x5 (0.634) and x4 (2.115, 45.6 min). New issue: Risk line tags item 3 (contracts) for ordinary CLI output changes -> verify on most ledger tasks. Bench defect: cells must enable the background policy to measure parallelism.
+L20 2026-10-04 user (verbatim): > Hmm es que porque verifico todo ? Si trabajo con luna pero no sé necesito verify porque el riesgo no era real... Porque lo hicimos ?
+   finding: verify was driven by the Risk line tagging items 1/3 ("persisted data or formats", "CLI flags") for additive features, not by Luna; x5 after verify did not catch the missing feature.
+L21 2026-10-04 user (verbatim): > Dale  (narrow items 1 and 3: high risk = changing/breaking existing, not adding)
