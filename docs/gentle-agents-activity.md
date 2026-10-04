@@ -119,8 +119,25 @@ The detached whole JSON result fits 16 KiB by omitting whole matching rows, with
 context/catalogs, unclassified nodes, unmatched annotations, catalog omissions and
 peers with pending pages. `recordedAt` is historical, separate from `observedAt`;
 `ownerReply: false`, `authority: none`, and unknown reachability confer no permission.
-Public tool/SDK registration and related-source queries are later slices;
-`related_to` is currently rejected, not silently ignored.
+Related queries add `related_to: {session_id, task_id?}` using exact stable owner
+and actual task IDs (nonempty, safe, at most 256 UTF-8 bytes each). The source task
+must be on that owner's current published catalog page; annotations alone never
+resolve a source. Root and child classification stay independent. The advertised
+source owner is included within the same 64-peer cap by deterministic replacement,
+retaining all activations. A selected different recipient remains the only match
+recipient; its cursor is never borrowed for source context. No automatic paging occurs.
+
+`source` reports `available` with detached public node/classification and `recordedAt`,
+or `unavailable` with an explicit reason and zero matches, never a refusal or broad
+fallback. Provenance is `published-work`; basic queries omit `source` entirely.
+Ordinary filters still combine with AND, but the source need not satisfy them.
+Matches exclude only the exact source entity, not its independently classified siblings.
+At least one reason is required: `shared-declared-reference` means exact typed ref
+identity, not dependency or approval; `possible-area-overlap`, `possible-topic-overlap`
+(also requires shared area), and `possible-tag-overlap` mean only literal possible
+overlap. There is no semantic/model matching. Source information and complete reason
+arrays count toward the same 16-KiB whole-row omission budget and non-exhaustive coverage.
+Public tool/SDK registration remains a later slice.
 
 ### Annotate an allocated task
 

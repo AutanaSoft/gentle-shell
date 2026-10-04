@@ -11,6 +11,7 @@ export interface WorkFilter {
 	text?: string;
 	ref?: WorkRef;
 	repository_root?: string;
+	related_to?: { session_id: string; task_id?: string };
 }
 const safeText = (v: unknown, max: number): v is string => typeof v === "string" && !!v.trim()
 	&& Buffer.byteLength(v) <= max && !/[\p{Cc}\p{Cf}\p{Cs}]/u.test(v);
@@ -21,7 +22,7 @@ export function validateWorkFilter(value: unknown): WorkFilter {
 	const invalid = () => { throw new Error("invalid-work-filter"); };
 	if (!value || typeof value !== "object" || Array.isArray(value)) return invalid();
 	const input = value as Record<string, unknown>;
-	if (Object.keys(input).some(k => !["area", "topic", "tag", "text", "ref", "repository_root"].includes(k))) return invalid();
+	if (Object.keys(input).some(k => !["area", "topic", "tag", "text", "ref", "repository_root", "related_to"].includes(k))) return invalid();
 	const result: WorkFilter = {};
 	for (const key of ["area", "topic", "tag", "text", "repository_root"] as const) {
 		if (!Object.hasOwn(input, key)) continue;
@@ -34,6 +35,16 @@ export function validateWorkFilter(value: unknown): WorkFilter {
 	if (Object.hasOwn(input, "ref")) {
 		try { result.ref = decodeWorkDescriptor({ refs: [input.ref] }).refs![0]; }
 		catch { return invalid(); }
+	}
+	if (Object.hasOwn(input, "related_to")) {
+		const source = input.related_to;
+		if (!source || typeof source !== "object" || Array.isArray(source)) return invalid();
+		const keys = source as Record<string, unknown>;
+		if (Object.keys(keys).some(k => !["session_id", "task_id"].includes(k))
+			|| !Object.hasOwn(keys, "session_id") || !safeText(keys.session_id, 256)
+			|| (Object.hasOwn(keys, "task_id") && !safeText(keys.task_id, 256))) return invalid();
+		result.related_to = { session_id: keys.session_id,
+			...(Object.hasOwn(keys, "task_id") ? { task_id: keys.task_id as string } : {}) };
 	}
 	return result;
 }
@@ -65,6 +76,13 @@ export interface WorkSearchResult {
 		catalogOmittedTasks: number;
 		pendingCatalogPages: number;
 		omittedMatches: number;
+	};
+	source?: {
+		status: "available" | "unavailable";
+		provenance: "published-work";
+		selector: NonNullable<WorkFilter["related_to"]>;
+		reason?: string;
+		node?: WorkNode;
 	};
 	matches: (WorkNode & { reasons: string[] })[];
 }
@@ -120,6 +138,20 @@ function matchReasons(node: WorkNode, filter: WorkFilter): string[] | undefined 
 	return reasons.length ? reasons : ["classified"];
 }
 
+function relationReasons(node: WorkNode, source: WorkNode): string[] {
+	if (node.sessionId === source.sessionId && node.taskId === source.taskId) return [];
+	const work = node.work;
+	const other = source.work;
+	const reasons: string[] = [];
+	if (work.refs?.some(r => other.refs?.some(s => r.kind === s.kind && r.repository === s.repository && r.id === s.id)))
+		reasons.push("shared-declared-reference");
+	const area = !!work.area && !!other.area && fold(work.area) === fold(other.area);
+	if (area) reasons.push("possible-area-overlap");
+	if (area && work.topic && other.topic && fold(work.topic) === fold(other.topic)) reasons.push("possible-topic-overlap");
+	if (work.tags?.some(t => other.tags?.some(s => fold(t) === fold(s)))) reasons.push("possible-tag-overlap");
+	return reasons;
+}
+
 /** Detached bounded index, not an owner reply, live probe, or exhaustive search. */
 export function searchPublishedWork(profile: string, peers: readonly PresenceRecord[], filter: unknown = {},
 	selection?: { recipientSessionId?: string; cursor?: string }, now = Date.now()): WorkSearchResult {
@@ -135,15 +167,43 @@ export function searchPublishedWork(profile: string, peers: readonly PresenceRec
 	const ids = [...new Set(peers.map(p => p.sessionId))].sort();
 	const eligible = selection?.recipientSessionId !== undefined ? ids.filter(id => id === selection.recipientSessionId) : ids;
 	const selected = new Set(eligible.slice(0, 64));
+	const sourceId = validated.related_to?.session_id;
+	if (sourceId !== undefined && ids.includes(sourceId) && !selected.has(sourceId)) {
+		if (selected.size === 64) selected.delete(eligible[63]);
+		selected.add(sourceId);
+	}
 	const result: WorkSearchResult = { schema: 1, ownerReply: false, authority: "none", reachability: "unknown", observedAt: now,
 		coverage: { exhaustive: false, examinedPeers: selected.size, unexaminedPeers: ids.length - selected.size,
 			unknownContext: 0, unclassified: 0, unmatchedTaskAnnotations: 0, catalogUnknown: 0,
 			catalogOmittedTasks: 0, pendingCatalogPages: 0, omittedMatches: 0 }, matches: [] };
 	// Retain duplicate activations so discovery can refuse ambiguous joins.
-	const candidates = discoverOrchestrators(profile, peers.filter(p => selected.has(p.sessionId)), now,
-		{ ...selection, includeWork: true }).sort((a, b) => a.sessionId < b.sessionId ? -1 : a.sessionId > b.sessionId ? 1 : 0);
-	const matches = candidates.flatMap(c => collectNodes(c, result.coverage))
-		.map(node => ({ node, reasons: matchReasons(node, validated) })).filter(m => m.reasons !== undefined);
+	const candidatePeers = peers.filter(p => selected.has(p.sessionId));
+	const candidates = discoverOrchestrators(profile, candidatePeers, now, { ...selection, includeWork: true });
+	if (sourceId !== undefined && selected.has(sourceId) && selection?.recipientSessionId !== undefined
+		&& selection.recipientSessionId !== sourceId) {
+		candidates.push(...discoverOrchestrators(profile, candidatePeers.filter(p => p.sessionId === sourceId), now, { includeWork: true }));
+	}
+	candidates.sort((a, b) => a.sessionId < b.sessionId ? -1 : a.sessionId > b.sessionId ? 1 : 0);
+	const nodes = candidates.flatMap(c => collectNodes(c, result.coverage));
+	let source: WorkNode | undefined;
+	if (validated.related_to) {
+		const selector = validated.related_to;
+		const candidate = candidates.find(c => c.sessionId === sourceId);
+		source = nodes.find(n => n.sessionId === sourceId && n.taskId === selector.task_id);
+		const reason = !candidate ? "source-not-advertised" : !candidate.workRecord ? "source-context-unavailable"
+			: selector.task_id !== undefined && !candidate.catalog ? "source-catalog-unavailable"
+			: selector.task_id !== undefined && !candidate.catalog?.tasks.some(t => t.id === selector.task_id)
+				? "source-task-not-on-current-page" : "source-unclassified";
+		result.source = { status: source ? "available" : "unavailable", provenance: "published-work", selector,
+			...(source ? { node: source } : { reason }) };
+	}
+	const matches = nodes.filter(n => selection?.recipientSessionId === undefined || n.sessionId === selection.recipientSessionId)
+		.map(node => {
+			const ordinary = matchReasons(node, validated);
+			if (!validated.related_to) return { node, reasons: ordinary };
+			const related = source ? relationReasons(node, source) : [];
+			return { node, reasons: ordinary && related.length ? [...ordinary.filter(r => r !== "classified"), ...related] : undefined };
+		}).filter(m => m.reasons !== undefined);
 	result.coverage.omittedMatches = matches.length;
 	for (const { node, reasons } of matches) {
 		result.matches.push({ ...node, reasons: reasons! });
