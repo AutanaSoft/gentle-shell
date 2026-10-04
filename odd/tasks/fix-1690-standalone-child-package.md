@@ -117,6 +117,18 @@ gentle-shell UI/timers, the gentle-agents host, gentle-todo, runtime-metrics, ge
 - RDD pending for P1, P2 and P4.
 - PR #1712 (carlosmoradev, "Fixes #1688", opened 14:37Z) adds `child-capture.ts` as a third curated entry. That conflicts with the frozen list, and once the package is forwarded `installSessionChangeCapture` (no idempotency guard) would be installed twice in children. A coordination comment is drafted for the user.
 
+## Rebase onto origin/main 653dad90 (2026-10-04)
+
+- #1690 got `status:approved` from barbatdev (2026-10-03 18:59Z). The chain was rebased onto `653dad90`, 125 commits newer. One textual conflict in `tests/gentle-agents.test.ts` (upstream #1713 test next to T4's test): both tests kept.
+- Two semantic conflicts were found by the verifier and fixed: `2efe8919` (PR1) keeps the dev-binary notice in children for upstream test `tests/gentle-ai-dev-binary-surfacing.test.ts:236-259`, and `1030d68d` (PR2) passes `cwd` in the upstream bin fixture.
+- Tips: PR1 `2efe8919`, PR2 `1030d68d`, PR3 `89295f6e`, PR4 this branch. Focused suites 178/584/1105/1109 pass; check-types, runtime `--check` and verify-package-files pass on all four; the PR1 full suite passes; the PR4 full suite has 2 failures in `tests/history-session-scan-extract.test.ts` (mtime vs `Date.now`), a known timing flake untouched by the chain (passes alone 14/14).
+- RDD reviews after the rebase, all `approved` with no correction and authority burned:
+  - PR1 polish `c3f3c158..2efe8919` (`review-388a341464ae8fcc`). WARNING: the child dev-binary branch is only covered by the upstream test; the invalid-override toast and the describe-failure path have no child test.
+  - PR2 polish `ac5ea634..1030d68d` (`review-1cd635fb601b1443`). Suggestions: no bin-level test pins the bin `cwd` and spawn coupling; the no-declaration branch is not tested with a relative `packageRoot`.
+  - T4 rebased `ad09a68e` on `1030d68d` (`review-b620b477747a1aca`). The range-diff against `78391611` changes only context lines. WARNING: T4 drops the curated entries before T5, which is fine because they ship together in PR3. Suggestion: line references in this document are stale after the rebase.
+  - PR4 polish `8a40d5f4..172aaddd` (`review-238aba2660e2a7fd`): no findings.
+- Line numbers cited in this document refer to the pre-rebase code.
+
 ## Delivery budget
 
 As of `f384d2a1`, the branch carries 322 changed lines against origin/main in code and tests (T2), plus about 100 in this ODD document, roughly 420 in total. The forecast for T2b-T7 is about 600-800 more lines, so a single PR would exceed the 400-line budget several times over. Proposed: stacked PRs to main, each landable on its own:
