@@ -58,13 +58,13 @@ S8. Bench: "corras los bench utilizando estas configuraciones para ver cómo fun
 - [x] T10 (S4, AC4c) delegated writer · narrow high-risk items 1 and 3 to changing/breaking existing things: item 1 = migrations, rewriting or
   deleting stored data, format changes, or writing data without validation (not ordinary saves of new records); item 3 = changing or removing a
   contract other code or repos already consume (adding a flag, command or optional field is not high risk). Evidence L19/L20.
-- [ ] T11 (S4, S5) delegated writer · useful verify (what): gentle-ai-verify derives adversarial probes from every numbered spec rule (negative/boundary
+- [x] T11 (S4, S5) delegated writer · useful verify (what): gentle-ai-verify derives adversarial probes from every numbered spec rule (negative/boundary
   cases, exact messages and exit codes), never relies on the writer's own tests, checks invariants (stored data byte-identical after every error;
   legacy command output unchanged vs the baseline commit), cross-feature interactions, typecheck, scope creep; returns a verdict for EVERY spec item
   (met / unmet / not implemented), no partial-scope carve-out; leaves its probes as committed regression tests. Evidence L24.
-- [ ] T12 (S4, S6) same writer as T11 · verify timing (when): one independent verify per delegated unit, after the writer's self-review, never per
+- [x] T12 (S4, S6) same writer as T11 · verify timing (when): one independent verify per delegated unit, after the writer's self-review, never per
   worker cycle; keep the small-model bias (Luna-written units had most defects); risk from the T7 line with the T10 list. Evidence L24.
-- [ ] T13 delegated writer (disjoint files, parallel with T11/T12) · no self-imposed pause: hedged delivery wording ("I may stop you", "review commit
+- [x] T13 delegated writer (disjoint files, parallel with T11/T12) · no self-imposed pause: hedged delivery wording ("I may stop you", "review commit
   by commit", "pick it up later") means resumable notes and separate commits, not a stop; complete every authorized task unless the user explicitly
   says to wait; Close gate: pending tracked tasks require continuing or quoting the user's explicit stop. Evidence L24.
 - [ ] T14 bench: verify recall/precision on the blind-quality pack (known defects + clean controls), then re-run x2/x4/x5 with the new pin.
@@ -101,3 +101,4 @@ L23 2026-10-04 T10 done: writer muth5bfb-e-10q2 + continuation muthfvgf-f-10fi (
 L24 2026-10-04 analysis: x4 first-pass misses in all Gentle cells = self-imposed pause on "I may stop you between the two" (explore muthtmgr-h-2cr9); blind quality (static muthtmgr-g-m1ap + 130 dynamic probes muthv835-i-utfe): Codex x4 best, Gentle not better; in-run verify missed defects the blind probes found (base/B invalid split import, base/R budget ignores refund parts whose own test locks the bug).
 L25 2026-10-04 user (verbatim): > En el 2 no es mejor ver cómo hacer verify útil ?
 L26 2026-10-04 user (verbatim): > Y arreglar el cuando llamarlo que me habías dicho que no lo hace bien
+L27 2026-10-04 T13 writer mutja6s6-k-ct6m (tracking module: narrowed conditional intent, hedge rule, Close gate; 12,494/12,500 B) + parent same rule in the always-on harness (extensions/gentle-ai.ts Authorize/Close) with RED->GREEN test. T11/T12 writer mutja6s5-j-wc81 (verify agent spec-derived probes checklist 4,298 B; module per-unit timing + every-S# handoff); parent raised verification.md lazy budget 6,000 -> 6,400 B (option A; B would drop the every-S# rule). Parent checks: npm test 4781/4781 exit 0, typecheck 0. Committed T13 then T11/T12 separately.
