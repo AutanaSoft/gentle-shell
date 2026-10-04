@@ -149,7 +149,7 @@ Every PR carries the chain context and a dependency diagram (chained-pr skill). 
 
 ## Pending follow-ups
 
-- [ ] Optional PR4 polish (T7 review): rename the helper self-check assertions in `tests/child-package-entrypoints.test.ts:37-50`; optionally add one line to `docs/gentle-shell.md` § Gentle Agents about the pre-existing takeover crash with an extension-less package.
+- [x] Optional PR4 polish (T7 review): rename the helper self-check assertions in `tests/child-package-entrypoints.test.ts:37-50`; optionally add one line to `docs/gentle-shell.md` § Gentle Agents about the pre-existing takeover crash with an extension-less package.
 
 - [ ] Pre-existing: a takeover `-e` of a settings package without extensions (only `package.json`, skills-only) makes pi exit with "Failed to load extension" (seen in the T7 probe for a child; `otherPackageInjections` in `lib/gentle-shell-launcher.ts:707` does not filter such packages for the parent either). Confirm on the parent, then file it or fix it separately.
 
@@ -158,7 +158,7 @@ Every PR carries the chain context and a dependency diagram (chained-pr skill). 
 
 - [x] Optional PR2 polish (T3 review suggestions, non-blocking): (1) `lib/gentle-shell-launcher.ts:980-981`: `absoluteExtensionPath` resolves against `process.cwd()`, so `buildPiInvocation` is not pure; inject the cwd or pin it with a test. (2) `:956`: the set is deduped by raw string before the paths are made absolute; dedupe after absolutizing (harmless today because pi dedupes by realpath).
 
-- [ ] Optional PR1 polish (T2b review suggestions, non-blocking): (a) `tests/gentle-ai-child-guards.test.ts:90-94`: await the `tool_execution_start` handler before counting ledger entries; (b) `extensions/gentle-ai.ts:9686-9688`: no test asserts that `yolo.reset`/`reviewSidebar.reset` run in a child. Add one, or narrow the comment.
+- [x] Optional PR1 polish (T2b review suggestions, non-blocking): (a) `tests/gentle-ai-child-guards.test.ts:90-94`: await the `tool_execution_start` handler before counting ledger entries; (b) `extensions/gentle-ai.ts:9686-9688`: no test asserts that `yolo.reset`/`reviewSidebar.reset` run in a child. Add one, or narrow the comment.
 
 - [ ] **Report upstream: `gentle_review` unreachable from Pi over pi-claude-bridge.** Target: pi-claude-bridge (elidickinson) or gentle-shell; decide after confirming the cause.
   - Symptom (2026-10-03, Gentle Shell standalone, Pi 1.0.0, pi-claude-bridge 0.9.0, model Opus 5.5): the gentle-pi tool `gentle_review` (registered unconditionally, `extensions/gentle-ai.ts:9526`) never reaches the model. `gentle_review_capture`, `gentle_review_capture_group` and `gentle_review_scope` do. The model's own instructions say some tools are deferred, and a SessionStart hook asks it to run `ToolSearch`, which it does not have.
