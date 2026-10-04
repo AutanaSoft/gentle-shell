@@ -15,7 +15,7 @@ test("T29: the core parallelism reason requires launching the units together in 
 	const rule = core.split("\n").find((line) => line.includes("5. **Writer rule**"));
 	assert.ok(rule, "core Writer rule is missing");
 	assert.ok(
-		rule.includes("launched together in background (policy on); otherwise inline"),
+		rule.includes("launched together in background, else inline"),
 		"parallelism must require background launches in the same turn",
 	);
 });

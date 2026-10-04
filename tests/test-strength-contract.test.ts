@@ -86,15 +86,27 @@ test("T28b: the worker preserves touched behavior instead of inventing edge case
 	assert.doesNotMatch(worker, /at least two edge cases|3\. TRIANGULATE/, "worker must not keep the edge-case quota");
 });
 
-// T30 (L67): in every x5 blind solution (Codex and Gentle Shell) `budget set
-// --year` started answering with a new message after `--year` was added to the
-// shared budget options, and no solution had a test for it. The abstract
-// PRESERVE rule did not reach sibling subcommands; name the concrete pattern.
-const SIBLING = "When you add an option to a shared parser or command, test that every sibling subcommand that did not accept it still rejects it with the same error as before";
-test("T30: inline and worker tests protect sibling subcommands from a newly shared option", () => {
+// T31 (L68-L70): T30 named a CLI-parser case and did not work (0/2 probes
+// wrote the sibling test); it was fixture-specific. Replaced with the general
+// definition of "touched", and high-risk item 3 now separates a requested
+// contract change (covered by the request's tests) from existing behavior
+// nobody asked to change that shares the changed code (the real regressions).
+const TOUCHED = "An existing behavior counts as touched when it shares the code you changed (options, parsers, helpers, validation)";
+test("T31: PRESERVE uses the general definition of touched, not a parser-specific case", () => {
 	for (const persona of ["gentleman", "neutral"] as const) {
-		const principle = __testing.buildGentlePrompt(persona).split("\n").find((line) => line.includes("use test-first by default"));
-		assert.ok(principle?.includes(SIBLING), `${persona} principle must name the sibling-subcommand case`);
+		const prompt = __testing.buildGentlePrompt(persona);
+		assert.ok(prompt.includes(TOUCHED), `${persona} prompt must define touched behavior`);
+		assert.doesNotMatch(prompt, /shared parser or command, test that every sibling subcommand/, `${persona} must drop the T30 parser case`);
 	}
-	assert.ok(read("assets/agents/gentle-ai-worker.md").includes(SIBLING), "worker PRESERVE must name the sibling-subcommand case");
+	const worker = read("assets/agents/gentle-ai-worker.md");
+	assert.ok(worker.includes(TOUCHED), "worker must define touched behavior");
+	assert.doesNotMatch(worker, /shared parser or command, test that every sibling subcommand/, "worker must drop the T30 parser case");
+});
+
+test("T31: high-risk item 3 is about unrequested breaks, not the requested change", () => {
+	const core = read("assets/orchestrator.md");
+	assert.ok(
+		core.includes("requested changes are not; unrequested breaks in shared code are"),
+		"item 3 must separate requested changes from unrequested breaks",
+	);
 });
