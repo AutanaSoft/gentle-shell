@@ -1,5 +1,6 @@
 import { agentsViewKey, agentsCollapseKey, agentsStopKey } from "../lib/agents-keys.ts";
 import { spawn } from "node:child_process";
+import { Type } from "typebox";
 import { recordReviewMutation } from "../lib/review-reminder-receipt.ts";
 import { SESSION_CHANGE_RELAY } from "../lib/session-changes.ts";
 import { publishForeignSessionChange } from "../lib/session-change-capture.ts";
@@ -39,6 +40,7 @@ import { consultPublishedMetadata, unavailableMetadata, type MetadataReceipt } f
 import { HelperCostPermission } from "../lib/orchestrator-helper-consent.ts";
 import { OrchestratorStateCache } from "../lib/orchestrator-state.ts";
 import { decodeWorkDescriptor } from "../lib/orchestrator-work.ts";
+import { validateWorkFilter, searchPublishedWork } from "../lib/orchestrator-work-search.ts";
 import { OrchestratorScopeCache, type RepositoryFact } from "../lib/orchestrator-scope.ts";
 import { createRpcActivityPublisher, type RpcActivityPublisher } from "../lib/agents-rpc-publisher.ts";
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
@@ -1653,19 +1655,48 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.registerTool({
 		name: "orchestrator_list",
 		label: "List orchestrators",
-		description: "List other sessions advertised by the trusted local profile. Advertised reachability is unknown and does not prove a session is live.",
-		parameters: { type: "object", additionalProperties: false, properties: {
-			recipient_session_id: { type: "string", description: "Exact routing ID of the peer to inspect." },
-			cursor: { type: "string", description: "Opaque catalog continuation from that peer; requires recipient_session_id." },
-		} } as never,
+		description: "List other sessions advertised by the trusted local profile. Optional filter searches only published classified work with bounded, non-exhaustive coverage, no authority and unknown reachability. Omit filter for the existing session list.",
+		parameters: Type.Object({
+			recipient_session_id: Type.Optional(Type.String({ description: "Exact routing ID of the peer to inspect." })),
+			cursor: Type.Optional(Type.String({ description: "Opaque catalog continuation from that peer; requires recipient_session_id." })),
+			filter: Type.Optional(Type.Object({
+				area: Type.Optional(Type.String()),
+				topic: Type.Optional(Type.String({ description: "Requires area." })),
+				tag: Type.Optional(Type.String()),
+				text: Type.Optional(Type.String({ description: "Literal label/descriptor search, never state prose or history." })),
+				ref: Type.Optional(Type.Object({
+					kind: Type.Union([Type.Literal("issue"), Type.Literal("pr"), Type.Literal("task")]),
+					repository: Type.String({ description: "Exact public host/owner/repo scope." }),
+					id: Type.String(),
+				}, { additionalProperties: false })),
+				repository_root: Type.Optional(Type.String({ description: "Recorded absolute Git root; no new Git probe." })),
+				related_to: Type.Optional(Type.Object({
+					session_id: Type.String({ description: "Exact stable source owner session ID." }),
+					task_id: Type.Optional(Type.String({ description: "Actual task ID on the current catalog page, not child session ID." })),
+				}, { additionalProperties: false })),
+			}, { additionalProperties: false, description: "Explicit {} indexes classified work; criteria combine with AND." })),
+		}, { additionalProperties: false }),
 		async execute(_id, _params, _signal, _onUpdate, ctx) {
+			const params = _params as { recipient_session_id?: string; cursor?: string; filter?: unknown };
+			let filter;
+			try {
+				if (!params || typeof params !== "object" || Array.isArray(params)
+					|| Object.keys(params).some(key => !["recipient_session_id", "cursor", "filter"].includes(key))
+					|| (params.recipient_session_id !== undefined && !validTransportSessionId(params.recipient_session_id))
+					|| (params.cursor !== undefined && (typeof params.cursor !== "string" || params.cursor.length > 1024))) throw new Error();
+				if (Object.hasOwn(params, "filter")) filter = validateWorkFilter(params.filter);
+			} catch { throw new Error("Invalid orchestrator list parameters."); }
+			if (params.cursor !== undefined && !params.recipient_session_id) return text("Error: cursor requires recipient_session_id.", { error: "invalid-cursor" });
 			const transport = activeTransportFor(ctx);
 			if (!transport) return text("Error: session discovery is not ready.", { error: "not ready" });
 			try {
 				const activations = await transport.listener.registry.listActivations(transport.sessionId);
 				if (activeTransportFor(ctx) !== transport) return text("Error: session discovery became unavailable before results were confirmed.", { error: "stale" });
-				const params = _params as { recipient_session_id?: string; cursor?: string };
-				if (params.cursor !== undefined && !params.recipient_session_id) return text("Error: cursor requires recipient_session_id.", { error: "invalid-cursor" });
+				if (filter !== undefined) {
+					const workSearch = searchPublishedWork(agentHome, activations, filter, params.recipient_session_id
+						? { recipientSessionId: params.recipient_session_id, cursor: params.cursor } : undefined);
+					return text(JSON.stringify(workSearch), { gentleAgents: { workSearch } });
+				}
 				const peers = discoverOrchestrators(agentHome, activations, Date.now(), params.recipient_session_id
 					? { recipientSessionId: params.recipient_session_id, cursor: params.cursor } : undefined);
 				const repository = (fact?: RepositoryFact) => fact?.root

@@ -25,7 +25,8 @@ Do not close owner-decision coverage or duplicate ODD-file indexing/automatic ag
 - [x] Annotate actual allocated owned child task IDs explicitly, without child-prompt inheritance.
 - [x] Provide bounded basic work indexing/filter queries over existing discovery.
 - [x] Extend queries with exact related-work source joins and declared/possible match reasons.
-- [ ] Wire the existing public list tool and cover SDK/search/helper capture boundaries.
+- [x] Wire the existing public list tool and cover real public SDK search boundaries.
+- [ ] Extend the helper's explicit bounded whitelist for root work and active-page task notes.
 
 ## Evidence
 - Baseline: `653dad90fe2072929e8fb722e0b95ce35e827f9e` (all prior coordination PRs merged).
@@ -57,7 +58,14 @@ Do not close owner-decision coverage or duplicate ODD-file indexing/automatic ag
 - Related library: 55 regression tests passed; type baseline 186 and runtime eight unchanged.
 - Source beyond the first 64 replaces one examined peer; targeted candidate scope remains exact.
 - Source/rows/reasons share the whole 16-KiB bound; unrelated/unavailable sources never broaden to an index.
-- Independent related verification: 259 passed, no source/index drift. Public tool/SDK/helper capture still not implemented.
+- Independent related verification: 259 passed, no source/index drift; PR #1786, `c494f726`, 270 A+D.
+- Public filter/SDK wiring and explicit helper capture are separate useful behavior units.
+- Public-tool RED returned old text rather than the query envelope; focused GREEN passed.
+- Writer public/SDK/query/budget tests: 250 passed; broader transport/runner group: 248 passed (overlap).
+- Actual SDK metadata queries added zero owner/helper calls, cost dialogs or caller Git probes; ordinary caller driver turns still occur.
+- Replacement/withdrawal, scoped ref collisions, ghost sources and private-history exclusion exercised through production tools.
+- Type baseline 186/runtime eight unchanged; helper capture remains intentionally text-only.
+- Independent public-wiring verification: 452 passed, no source/index drift; no human/RPC wire-client or OS agent-child proof.
 
 ## Remaining
 Scoped design, meaningful RED → GREEN per runnable behavior, independent verification,

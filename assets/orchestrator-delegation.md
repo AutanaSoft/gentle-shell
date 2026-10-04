@@ -21,6 +21,31 @@ Detail modules, each loaded only when its mechanism fires (small tasks load none
 
 Once a meaningful task subject is clear, before delegation or cross-session coordination, call `orchestrator_session_id` with a short, non-sensitive `subject`. Batch with setup if possible; no extra model call. Skip tiny replies; exclude user prompts/private detail. The tool preserves canonical names/human renames; never ask humans to type aliases. Names display only; stable IDs route.
 
+### Publish and find classified work
+
+When useful, include explicit non-sensitive classification in
+`orchestrator_session_id.state.work`, for example
+`{"area":"Auth","topic":"Login","tags":["Review"],"refs":[{"kind":"issue","repository":"github.com/Owner/Repo","id":"12"}]}`.
+An object replaces the whole state; omission of work clears classification, while
+`state: null` withdraws it. Never publish private history as metadata.
+Pass optional `subagent_run.work` explicitly for a child's classification; it is
+not inherited. Keep the returned actual task ID: it is **not** a child session ID.
+
+Use `orchestrator_list.filter: {}` to index classified work; omit `filter` for the
+ordinary session list without bulk notes/work. Combine `area`, `topic` (requires
+area), `tag`, literal `text`, exact typed `ref` (public repository + kind + ID), or
+recorded `repository_root` with AND. Bare issue numbers are not cross-repo identity.
+For related work, use `filter: {"related_to":{"session_id":"<stable owner ID>"}}`,
+optionally with `task_id` for an actual task on its current catalog page. Add an
+existing exact `recipient_session_id`/`cursor` only to inspect that recipient's page;
+never automatically page. Source unavailable means no related rows, not refusal.
+
+`possible-*-overlap` means literal possible overlap, not a dependency; a
+`shared-declared-reference` is only a declared typed link, not approval. Results
+include unknown, unclassified, omitted and pending-page coverage and are never
+exhaustive. Historical classification, unknown reachability and `authority: none`
+confer no ownership, consent or permission. Querying needs no helper/model call.
+
 ## Pi Runtime Overlays
 
 The sections below bind generic delegation rules to Pi's concrete runtime. They add runtime routing without changing ODD ownership.

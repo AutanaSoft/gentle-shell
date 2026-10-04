@@ -97,7 +97,18 @@ carry detached work with historical `recordedAt`, owner-curated and non-authorit
 No refs are resolved and classification publication adds no inheritance behavior. Classification
 itself needs no Git, network or model call. Helper reasoning capture remains text-only.
 
-### Search classified work (library only)
+### Search classified work
+
+Call `orchestrator_list` with explicit `filter: {}` to index classified work, or
+combine `filter` fields to narrow matches. Without `filter`, the existing session
+list remains unchanged: no bulk curated state or work. Unknown argument/filter
+keys and unsafe input fail before profile/peer reads; the discoverable strict
+schema supplements, not replaces, UTF-8 byte and control validation.
+
+Filtered calls return the full bounded `WorkSearchResult` JSON in text and
+`details.gentleAgents.workSearch`, not the default `candidates` envelope. Existing
+`recipient_session_id` and `cursor` select one recorded catalog page; a cursor still
+requires that exact recipient. Source inclusion is internal, not a new lookup.
 
 `searchPublishedWork(profile, peers, filter?, selection?, now?)` in
 [`lib/orchestrator-work-search.ts`](../lib/orchestrator-work-search.ts) is a working,
@@ -137,7 +148,8 @@ identity, not dependency or approval; `possible-area-overlap`, `possible-topic-o
 (also requires shared area), and `possible-tag-overlap` mean only literal possible
 overlap. There is no semantic/model matching. Source information and complete reason
 arrays count toward the same 16-KiB whole-row omission budget and non-exhaustive coverage.
-Public tool/SDK registration remains a later slice.
+The public tool adds no registry, Git probes, owner wakes, model calls or UI-cost
+requests. Helper reasoning remains text-only and is not extended by this query.
 
 ### Annotate an allocated task
 
@@ -154,7 +166,7 @@ nested tasks. Nonempty tasks alone are valid work. Keys are exact task IDs, at m
 The same 2,048-byte text-plus-work and 4-KiB record bounds apply. Replacement omitting
 `tasks` clears annotations; historical declarations are never silently pruned.
 These IDs are not child session IDs or evidence of current runtime ownership;
-future search/join behavior is not implemented in this slice.
+search joins annotations only to the owner's current bounded catalog page.
 
 The launch result retains the allocated task and includes `workPublication.status`:
 `recorded` means local curated persistence, **not guaranteed peer advertisement**.
@@ -274,7 +286,16 @@ Driver tool/final model turns are intentional local iterations; consultation add
 no receiver model calls or caller Git probes during the business tool execution.
 Intentional owner-publication prompts are counted separately, including during
 the controlled in-flight test. Shell prompt setup still probes Git.
-No child execution or 1,000-projection claim is made.
+Work acceptance additionally publishes schema-2 classification through the public
+tool, indexes explicit `{}`, combines area/topic/tag, and distinguishes exact refs
+with the same bare ID across repositories and issue/PR kinds. Related queries use
+the stable source owner ID; a ghost task annotation without a current owned catalog
+row is unavailable, not a child launch. Replacement clears old work and null
+withdrawal/text-only records keep unclassified/unknown coverage honest. Default
+lists and searches exclude private history and curated prose. Scoped counters
+verify no additional owner/nested-helper calls, model-cost dialogs or caller Git
+probes for queries, including a simulated-UI context; ordinary local driver calls
+remain expected. No child execution or 1,000-projection claim is made.
 
 Public `AgentSession.bindExtensions(bindings: ExtensionBindings): Promise<void>`
 accepts `mode: "rpc"` and a fully typed `uiContext: ExtensionUIContext`. The fixture
