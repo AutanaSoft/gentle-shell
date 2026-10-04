@@ -357,15 +357,18 @@ test("core-alone: load-bearing direct-delegation tokens remain without lazy unio
 	assert.match(core, /Context backstop/);
 });
 
-test("core-alone: parent declares a known subject before coordination without per-reply calls", () => {
+test("lazy coordination detail retains subject guidance without inflating the core", () => {
 	const core = readRealAsset("orchestrator.md");
+	const detail = readRealAsset("orchestrator-delegation.md");
 	assert.match(core, /Bind this to the parent Pi session only/);
-	assert.match(core, /Once a meaningful task subject is clear, before delegation or cross-session coordination, call `orchestrator_session_id`/);
-	assert.match(core, /short, non-sensitive `subject`/);
-	assert.match(core, /Batch with setup if possible; no extra model call/);
-	assert.match(core, /Skip tiny replies; exclude user prompts\/private detail/);
-	assert.match(core, /preserves canonical names\/human renames; never ask humans to type aliases/);
-	assert.match(core, /Names display only; stable IDs route/);
+	assert.match(core, /orchestrator-delegation\.md/);
+	assert.match(detail, /on delegation or routing triggers/);
+	assert.match(detail, /Once a meaningful task subject is clear, before delegation or cross-session coordination, call `orchestrator_session_id`/);
+	assert.match(detail, /short, non-sensitive `subject`/);
+	assert.match(detail, /Batch with setup if possible; no extra model call/);
+	assert.match(detail, /Skip tiny replies; exclude user prompts\/private detail/);
+	assert.match(detail, /preserves canonical names\/human renames; never ask humans to type aliases/);
+	assert.match(detail, /Names display only; stable IDs route/);
 });
 
 test("core-alone: dynamic Gentle AI ownership replaces package lifecycle instructions", () => {
