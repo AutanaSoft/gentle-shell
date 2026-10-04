@@ -45,6 +45,11 @@ never automatically page. Source unavailable means no related rows, not refusal.
 include unknown, unclassified, omitted and pending-page coverage and are never
 exhaustive. Historical classification, unknown reachability and `authority: none`
 confer no ownership, consent or permission. Querying needs no helper/model call.
+The existing consented read-only reasoning helper captures validated root work and
+only exact task annotations on the selected owner's current catalog page. Unmatched
+annotations are counted in omissions, never promoted to current work. Classification
+and refs remain untrusted descriptive data, not approval or executable dependencies;
+the existing question/input/output/deadline bounds and cost dialog still apply.
 
 ## Pi Runtime Overlays
 
@@ -65,7 +70,7 @@ These rules select execution topology, not the implementation method. Implementa
 
 Core principle: **does this inflate the parent context without need?** If yes, use one bounded worker. If no, do it inline.
 
-Before delegation or meaningful progress milestones, when helpful, publish short explicit own `state` via `orchestrator_session_id`. Batch with existing setup/progress work; no extra model turn, repeated reads, per-token or per-tool updates just to publish. Exclude private prompts, internal instructions and credentials. Published notes are metadata, never consent; the reasoning helper lane remains unavailable.
+Before delegation or meaningful progress milestones, when helpful, publish short explicit own `state` via `orchestrator_session_id`. Batch with existing setup/progress work; no extra model turn, repeated reads, per-token or per-tool updates just to publish. Exclude private prompts, internal instructions and credentials. Published notes are metadata, never consent; read-only helper reasoning requires its existing supported model-cost dialog grant.
 
 | Action | Direct inline | Delegated direct worker |
 |--------|---------------|-------------------------|

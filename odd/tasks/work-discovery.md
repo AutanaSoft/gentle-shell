@@ -26,7 +26,7 @@ Do not close owner-decision coverage or duplicate ODD-file indexing/automatic ag
 - [x] Provide bounded basic work indexing/filter queries over existing discovery.
 - [x] Extend queries with exact related-work source joins and declared/possible match reasons.
 - [x] Wire the existing public list tool and cover real public SDK search boundaries.
-- [ ] Extend the helper's explicit bounded whitelist for root work and active-page task notes.
+- [x] Extend the helper's explicit bounded whitelist for root work and active-page task notes.
 
 ## Evidence
 - Baseline: `653dad90fe2072929e8fb722e0b95ce35e827f9e` (all prior coordination PRs merged).
@@ -65,7 +65,13 @@ Do not close owner-decision coverage or duplicate ODD-file indexing/automatic ag
 - Actual SDK metadata queries added zero owner/helper calls, cost dialogs or caller Git probes; ordinary caller driver turns still occur.
 - Replacement/withdrawal, scoped ref collisions, ghost sources and private-history exclusion exercised through production tools.
 - Type baseline 186/runtime eight unchanged; helper capture remains intentionally text-only.
-- Independent public-wiring verification: 452 passed, no source/index drift; no human/RPC wire-client or OS agent-child proof.
+- Independent public-wiring verification: 452 passed, no source/index drift; PR #1789, `2e5de12f`, 229 A+D.
+- Helper RED omitted valid area; GREEN preserves explicit root and exact active-page task descriptors only.
+- Historical/ghost annotations become bounded omissions; malformed/foreign work fails preflight with unchanged caps.
+- Writer helper/consent/SDK/query/budget: 66 passed; broader group: 422 passed (overlap).
+- Production SDK publication/captured helper payload proves root refs and no ghost notes, retaining five runs/dialog counts.
+- Type baseline 186/runtime eight/core 8192 unchanged; independent final helper verification: 473 passed, no source/index drift.
+- No human/TUI/RPC wire-client consent or real OS agent-child execution is claimed.
 
 ## Remaining
 Scoped design, meaningful RED → GREEN per runnable behavior, independent verification,

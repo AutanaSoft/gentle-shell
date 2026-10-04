@@ -410,6 +410,8 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 		assert.ok(withdrawnWork.coverage.unclassified >= 2);
 		await owner.tool("orchestrator_session_id", { state }); // Text-only restoration preserves original helper fixture.
 		assert.deepEqual((await search({})).matches, []);
+		// Explicit public replacement, never reconstruct work from private history.
+		await owner.tool("orchestrator_session_id", { state: { ...state, work } });
 		const invoke = async (kind: "metadata" | "reasoning" | "revoke-reasoning", expectedRuns: number, expectedDialogs: number, publicationDuringRun = false) => {
 			const receiver = owner.calls(), runs = eligible.helperCalls(), dialogs = eligible.dialogs.length;
 			const result = await eligible.tool("orchestrator_consult", { recipient_session_id: sid, kind,
@@ -452,7 +454,10 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 			assert.ok(payload.source.unknowns.includes("owner-decision"));
 			assert.ok(payload.source.omissions.includes("git-facts-beyond-published-prefix"));
 			assert.deepEqual(Object.keys(payload.source.snapshot).sort(), ["catalog", "label", "omittedTasks", "scope", "state", "tasks", "workspace"]);
-			assert.deepEqual(payload.source.snapshot.state.state, state);
+			assert.deepEqual(payload.source.snapshot.state.state, { ...state,
+				work: { area: "Auth", topic: "Login", tags: ["Review"], refs: [issue] } });
+			assert.ok(payload.source.omissions.includes("unmatched-task-annotations:1"));
+			assert.doesNotMatch(capture.content, /ghost/); // declaration is not a real allocation
 			assert.deepEqual(payload.source.snapshot.catalog.registered, [roots[8]], "selected public page, no cursor capability");
 			return receipt;
 		};
@@ -463,7 +468,7 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 		assert.equal((await invoke("reasoning", 0, 1)).code, "permission-required");
 		eligible.choose("session"); await advice(1, 1);
 		state.progress = "Updated public milestone";
-		await owner.tool("orchestrator_session_id", { state }); // Intentional publication, outside receiver-count interval.
+		await owner.tool("orchestrator_session_id", { state: { ...state, work } }); // Explicit replacement, outside receiver-count interval.
 		eligible.choose("decline");
 		const reused = await advice(1, 0);
 		assert.notEqual(reused.snapshotDigest, once.snapshotDigest);
