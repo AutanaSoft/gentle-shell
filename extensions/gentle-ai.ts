@@ -9802,9 +9802,27 @@ function createGentleAiExtensionForTesting(
 		// standing review grant is host-only (a child never captures an identity),
 		// so revoke/refresh have nothing to act on; the child relay is load-time.
 		// Only that parent-owned work is skipped: the session-local resets above,
-		// and any step added after this call, still run in children.
+		// the dev-binary notice, and any step added after this call, still run in
+		// children.
 		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") await startParentSession(event, ctx);
+		else await surfaceDevBinaryOverride(ctx);
 	});
+
+	// Loud, every session: an active dev-binary override means this session
+	// runs an unpinned gentle-ai. One visible startup notice: the gentle-shell
+	// 🌹 card owns the announcement when it can render (shell enabled with UI);
+	// this toast is only the fallback for when the card is unavailable. The
+	// hasUI guard stays: headless contexts have no toast to show.
+	const surfaceDevBinaryOverride = async (ctx: ExtensionContext): Promise<void> => {
+		const devBinaryToastFallback = ctx.hasUI && !shellEnabled();
+		try {
+			const devBinary = await describeDevBinaryOverride();
+			if (devBinaryToastFallback && devBinary.state === "active") ctx.ui.notify(devBinary.line, "warning");
+			if (devBinaryToastFallback && devBinary.state === "invalid") ctx.ui.notify(devBinary.line, "error");
+		} catch (error) {
+			if (ctx.hasUI) ctx.ui.notify(`Gentle AI dev binary override check failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
+		}
+	};
 
 	const startParentSession = async (event: unknown, ctx: ExtensionContext): Promise<void> => {
 		const epoch = reminderEpoch;
@@ -9827,19 +9845,7 @@ function createGentleAiExtensionForTesting(
 		const reason = (event as { reason?: unknown }).reason;
 		if (reason !== "reload") revokeCurrentReviewSessionPermission(ctx);
 		await refreshReviewSessionPermissionStatus(ctx);
-		// Loud, every session: an active dev-binary override means this session
-		// runs an unpinned gentle-ai. One visible startup notice: the gentle-shell
-		// 🌹 card owns the announcement when it can render (shell enabled with UI);
-		// this toast is only the fallback for when the card is unavailable. The
-		// hasUI guard stays: headless contexts have no toast to show.
-		const devBinaryToastFallback = ctx.hasUI && !shellEnabled();
-		try {
-			const devBinary = await describeDevBinaryOverride();
-			if (devBinaryToastFallback && devBinary.state === "active") ctx.ui.notify(devBinary.line, "warning");
-			if (devBinaryToastFallback && devBinary.state === "invalid") ctx.ui.notify(devBinary.line, "error");
-		} catch (error) {
-			if (ctx.hasUI) ctx.ui.notify(`Gentle AI dev binary override check failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
-		}
+		await surfaceDevBinaryOverride(ctx);
 		try {
 			const installResult = installPackageAssets(ctx.cwd, true, ["delegation", "review"]);
 			migrateLegacyProjectModelOverrides(ctx.cwd);
