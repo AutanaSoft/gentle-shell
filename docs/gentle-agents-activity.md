@@ -74,6 +74,31 @@ withdrawal remains explicit null. Advertising is best-effort; legacy headers/act
 stay unchanged. Metadata and opt-in helper reasoning are available below; correlated
 owner decisions remain a later protocol unit tracked by #1702.
 
+### Publish and find classified work
+
+When useful, include explicit non-sensitive classification in
+`orchestrator_session_id.state.work`, for example
+`{"area":"Auth","topic":"Login","tags":["Review"],"refs":[{"kind":"issue","repository":"github.com/Owner/Repo","id":"12"}]}`.
+An object replaces the whole state; omission of work clears classification, while
+`state: null` withdraws it. Never publish private history as metadata.
+Pass optional `subagent_run.work` explicitly for a child's classification; it is
+not inherited. Keep the returned actual task ID: it is **not** a child session ID.
+
+Use `orchestrator_list.filter: {}` to index classified work; omit `filter` for the
+ordinary session list without bulk notes/work. Combine `area`, `topic` (requires
+area), `tag`, literal `text`, exact typed `ref` (public repository + kind + ID), or
+recorded `repository_root` with AND. Bare issue numbers are not cross-repo identity.
+For related work, use `filter: {"related_to":{"session_id":"<stable owner ID>"}}`,
+optionally with `task_id` for an actual task on its current catalog page. Add an
+existing exact `recipient_session_id`/`cursor` only to inspect that recipient's page;
+never automatically page. Source unavailable means no related rows, not refusal.
+
+`possible-*-overlap` means literal possible overlap, not a dependency; a
+`shared-declared-reference` is only a declared typed link, not approval. Results
+include unknown, unclassified, omitted and pending-page coverage and are never
+exhaustive. Historical classification, unknown reachability and `authority: none`
+confer no ownership, consent or permission. Querying needs no helper/model call.
+
 ### Classify recorded work
 
 Publish classification in the same curated `state`, for example:
