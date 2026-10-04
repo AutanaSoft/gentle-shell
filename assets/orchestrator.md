@@ -53,7 +53,7 @@ Before launching a bounded writer (`gentle-ai-worker` or `worker`), derive nonem
 Mandatory Delegation Triggers — each mechanism turns on only by its own trigger and is then mandatory (prefer `subagent_run`; role missing/unusable: native `Agent`, same read-only constraints; report the fallback). When it resolves, re-evaluate task size.
 
 1. **Ask** — open product or design decision → one focused question; stop and wait.
-2. **Evidence-budget rule** — understanding needs more than one read batch or >~5 sequential lookups → one `gentle-ai-explore`, handoff at most ~2k tokens with `path:line` evidence; one spot check, no other re-reads.
+2. **Evidence-budget rule** — understanding needs more than one read batch or >~5 sequential lookups → one `gentle-ai-explore`, handoff at most ~2k tokens with `path:line` evidence; one spot check, no other re-reads; never for reading before an inline write.
 3. **Verification rule** — high risk → independent `gentle-ai-verify` after the change's own checks (`orchestrator-verification.md`); otherwise checks run inline.
 4. **Track** — large task → feature document, Engram mirror, `todo`, work-unit commits (`orchestrator-tracking.md`, `orchestrator-memory.md`).
 5. **Writer rule** — never by file count or a large task alone; only for a reason (`orchestrator-writer.md`): 2+ independent units, disjoint files, each heavier than a subagent start; a reported Model routing ratio ~3x+ (unknown: no), beyond one trivial edit, never on the small path; Context backstop.
