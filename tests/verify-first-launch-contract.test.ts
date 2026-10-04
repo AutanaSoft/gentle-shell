@@ -72,6 +72,20 @@ test("T21: verify grades severity by provenance and realistic inputs", () => {
 	], "verify severity rule");
 });
 
+// T22 (L45): R-xh x4 ran about six verify/fix/recheck rounds on one delivery
+// (each recheck found something new) and hit the 60 min timeout; the only rule
+// was "resolve every unmet item before closing". Corrections are bounded.
+test("T22: verify blockers get one correction batch and one scoped recheck", () => {
+	containsAll(verification, [
+		"5. **One correction**",
+		"one correction batch that fixes every reported blocker",
+		"one re-verify limited to those blockers",
+		"never a new full sweep",
+		"Blockers still open after that stop as one **Needs your decision**",
+		"Advisories never start a correction",
+	], "verification correction bound");
+});
+
 test("T16: verify keeps its repository and tool boundaries", () => {
 	containsAll(verify, [
 		"Do not edit, write, or fix findings.",

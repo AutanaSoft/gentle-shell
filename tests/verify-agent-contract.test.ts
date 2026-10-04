@@ -60,7 +60,7 @@ test("T11.5: verify returns a verdict for every spec item with no partial-scope 
 		"met, unmet, or not implemented",
 		"no partial-scope carve-out",
 		"even when the parent named one task or unit",
-		"the parent resolves every unmet item before closing",
+		"the parent resolves every unmet item before closing, with one correction batch and one recheck limited to the reported blockers",
 	], "verdict item");
 	assert.ok(verify.includes("verdict per `S#`"), "the feature-document verdict per S# must stay");
 });
