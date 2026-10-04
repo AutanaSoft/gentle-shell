@@ -89,6 +89,9 @@ test("T22: verify blockers get one correction batch and one scoped recheck", () 
 	containsAll(verify, [
 		"Keep the scratch path in your commands; never write it, or anything else, to a file outside the scratch",
 		"NO_UPDATE_NOTIFIER=1",
+		"Create the scratch directory with `mktemp -d` under the system temp directory, never inside the workspace",
+		"`NODE_COMPILE_CACHE`",
+		"leave no new file in the workspace",
 	], "verify scratch hygiene");
 });
 
