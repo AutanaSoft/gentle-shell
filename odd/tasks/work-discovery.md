@@ -22,7 +22,7 @@ Do not close owner-decision coverage or duplicate ODD-file indexing/automatic ag
 
 ## Work units (forecast pending scoped exploration)
 - [x] Publish bounded classification with compatible persistence and regression tests.
-- [ ] Annotate actual allocated owned child task IDs explicitly, without child-prompt inheritance.
+- [x] Annotate actual allocated owned child task IDs explicitly, without child-prompt inheritance.
 - [ ] Expose/filter published classification through existing discovery, with match reasons.
 - [ ] Cover real SDK publication/search and explicit helper capture boundaries.
 
@@ -38,7 +38,12 @@ Do not close owner-decision coverage or duplicate ODD-file indexing/automatic ag
 - Publication GREEN: 199 focused + 20 regression tests passed; type baseline 186, no regressions.
 - Runtime check: eight modules match; orchestrator code remains loaded directly as TypeScript.
 - Native assessment after staging: medium/large, 293 A+D, under budget; native outcome unknown.
-- Earlier untracked assessment failed closed; independent read-only verification is pending.
+- Publication independent verification: 219 passed; PR #1779, `bc7624a2`, 301 A+D, CI green.
+- Annotation RED: missing status and invalid metadata reached preparation; two intended failures.
+- Annotation GREEN: 231 affected tests passed, type baseline 186 unchanged, runtime eight unchanged.
+- Independent inspection reproduced same-manager reentrant owner-cache replacement despite 230 passing tests.
+- Guard fix RED: missing expected exception; GREEN pins captured owner and preserves new-owner notes.
+- Fixed annotation slice: 223 A+D before tracker; fresh independent verification 231 passed, no drift.
 - Helper capture intentionally still excludes `work`; publication is not search or inheritance.
 
 ## Remaining

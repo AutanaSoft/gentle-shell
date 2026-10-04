@@ -1,9 +1,9 @@
 import { isAbsolute } from "node:path";
-import { decodeWork, type WorkDescriptor } from "./orchestrator-work.ts";
+import { decodeWork, type PublishedWork } from "./orchestrator-work.ts";
 
 export const ORCHESTRATOR_STATE_ENTRY = "gentle-agents.published-state";
 const fields = ["objective", "progress", "decisions", "blockers"] as const;
-export type CuratedState = Partial<Record<typeof fields[number], string>> & { work?: WorkDescriptor };
+export type CuratedState = Partial<Record<typeof fields[number], string>> & { work?: PublishedWork };
 export interface PublishedState {
 	schema: 1 | 2; sessionId: string; recordedAt: number; cwd: string | null;
 	source: "owner-curated"; ownerReply: false; authority: "none"; state: CuratedState | null;
@@ -84,6 +84,7 @@ export class OrchestratorStateCache {
 			source: "owner-curated", ownerReply: false, authority: "none", state });
 		if (!record) throw new Error("invalid-published-state");
 		append(ORCHESTRATOR_STATE_ENTRY, structuredClone(record));
+		if (this.manager !== manager || this.sessionId !== record.sessionId || manager.getSessionId() !== record.sessionId) throw new Error("stale-published-state");
 		this.value = record;
 	}
 }
