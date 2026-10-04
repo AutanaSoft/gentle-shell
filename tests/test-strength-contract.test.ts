@@ -110,3 +110,15 @@ test("T31: high-risk item 3 is about unrequested breaks, not the requested chang
 		"item 3 must separate requested changes from unrequested breaks",
 	);
 });
+
+// T33 (L74): in p31 x5 both runs declared `Risk: none` after adding --year to
+// the shared budget options; one shipped `budget set --year` silently saving a
+// wrong budget, the regression verify used to catch. The Risk line must check
+// shared code before claiming none.
+const SHARED_CHECK = "Before writing `Risk: none`, check whether your diff changes code that existing behavior the request did not mention also uses (shared options, parsers, helpers); if it does, that is item 3";
+test("T33: the Close step checks shared code before Risk: none", () => {
+	for (const persona of ["gentleman", "neutral"] as const) {
+		const step = __testing.buildGentlePrompt(persona).split("\n").find((line) => line.startsWith("7. **Close"));
+		assert.ok(step?.includes(SHARED_CHECK), `${persona} Close step must check shared code before Risk: none`);
+	}
+});
