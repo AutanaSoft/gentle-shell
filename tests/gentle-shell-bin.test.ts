@@ -40,7 +40,7 @@ test("Herdr activity is discoverable through the isolated launcher package", asy
 			runtime: { kind: "path", command: "fake-pi", args: [] },
 			home: { mode: "isolated", source: "default", dir: "/fake/home" },
 			packageRoot, declaration: undefined, takeOver, otherPackagePaths: [],
-			passthrough: [], baseEnv: {}, homedir: "/fake",
+			passthrough: [], baseEnv: {}, homedir: "/fake", cwd: "/fake/cwd",
 		});
 		assert.ok(invocation.args.includes(packageRoot));
 		assert.equal(invocation.env.PI_CODING_AGENT_DIR, "/fake/home");
