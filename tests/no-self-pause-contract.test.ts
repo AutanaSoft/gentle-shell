@@ -62,7 +62,7 @@ test("T13: the Close gate requires continuing or quoting the user's explicit sto
 
 test("T13: budgets hold and the pinned human-control line is untouched", () => {
 	const bytes = Buffer.byteLength(tracking, "utf8");
-	assert.ok(bytes <= 12_500, `orchestrator-tracking.md is ${bytes} B, over its 12,500 B budget`);
+	assert.ok(bytes <= 12_600, `orchestrator-tracking.md is ${bytes} B, over its 12,600 B budget`);
 	assert.ok(core.includes("- Preserve human control: user decisions beat agent momentum."), "core human-control line must stay verbatim");
 	assert.ok(core.includes("4. **Track**") && core.includes("`orchestrator-tracking.md`"), "Track must still load the tracking module");
 });

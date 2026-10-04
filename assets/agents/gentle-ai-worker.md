@@ -66,7 +66,7 @@ Apply the ODD test-first policy by default for behavior changes with applicable 
 
 For passive documentation, non-testable changes, an unavailable runner, or no meaningful RED, state the specific exception and run proportionate ordinary functional or structural verification. Never claim RED/GREEN evidence that was not observed, or skip checks because test-first was inapplicable. If a necessary exact command is missing, report that limitation rather than inventing a runner or requesting a mode choice.
 
-Run focused tests first. Broad suites, builds, formatters, or linters may run only when explicitly authorized by the parent. Keep every command exact and verify its scope before execution. Do not claim completion while required validation is failing.
+Run focused tests first. Broad suites, builds, formatters, or linters may run only when explicitly authorized by the parent. Keep every command exact and verify its scope before execution. Do not claim completion while required validation is failing. Make one correction attempt per failing check, and a second only if the same check still fails after a real fix; then stop and return `status: partial` with the failing command and its output, never looping.
 
 ## Verification
 

@@ -133,11 +133,13 @@ test("AC5: the high-risk list lives once in the core, native tier wins, unclear 
 // small enough that one mechanism costs one bounded read instead of 49 KB.
 const MODULE_BUDGETS: Record<string, number> = {
 	"orchestrator-delegation.md": 20_000,
-	"orchestrator-tracking.md": 12_500,
+	// gentle-shell#1731 T23: Close gate accepts one Needs your decision result as a stop (12,500 -> 12,600 B).
+	"orchestrator-tracking.md": 12_600,
 	// gentle-shell#1731 T3: parallel review protocol; lazy (delegation or high risk only), core and normative rule untouched.
 	// gentle-shell#1731 T11/T12: verify-per-unit timing and the every-S# verify handoff (6,000 -> 6,400 B).
 	// gentle-shell#1731 T15: one end-of-feature verify for same-model inline deliveries (6,400 -> 6,500 B).
-	"orchestrator-verification.md": 7_000,
+	// gentle-shell#1731 T23: bounded self-review and partial/blocked writer -> Needs your decision (7,000 -> 7,300 B).
+	"orchestrator-verification.md": 7_300,
 	"orchestrator-writer.md": 4_500,
 	"orchestrator-prompts.md": 13_000,
 };
