@@ -64,15 +64,26 @@ Do not close owner-decision coverage or duplicate ODD-file indexing/automatic ag
 - Writer public/SDK/query/budget tests: 250 passed; broader transport/runner group: 248 passed (overlap).
 - Actual SDK metadata queries added zero owner/helper calls, cost dialogs or caller Git probes; ordinary caller driver turns still occur.
 - Replacement/withdrawal, scoped ref collisions, ghost sources and private-history exclusion exercised through production tools.
-- Type baseline 186/runtime eight unchanged; helper capture remains intentionally text-only.
-- Independent public-wiring verification: 452 passed, no source/index drift; PR #1789, `2e5de12f`, 229 A+D.
+- At the public-wiring boundary, type baseline 186/runtime eight were unchanged; helper capture was intentionally text-only.
+- Original public-wiring independent verification: 452 passed, no source/index drift; PR #1789, `2e5de12f`, originally 229 A+D.
+- CI exposed the separate lazy-module guard: 21,595 bytes exceeded its unchanged 20,000-byte cap.
+- Guard RED: eight passed, one failed; full-suite packaging RED: 4,780 passed, one failed, 44 skipped.
+- Full work guidance is preserved verbatim in the human guide; repeated routing now names one canonical rule.
+- Reference-resolution negatives retain fallback order and stop requirements; neither byte guard was raised.
+- Parent correction GREEN: 316 focused passed; full suite 4,781 passed, zero failed, 44 skipped; provider contract and runtime harness passed.
+- Parent asset: 19,496 bytes; core 8,192-byte guard unchanged. Native assessment: medium/runtime-large, under budget, unknown outcome; writer self-verification stands.
+- Parent correction delivered on PR #1789 at `63d4b293`, 299 A+D, with fresh CI green.
 - Helper RED omitted valid area; GREEN preserves explicit root and exact active-page task descriptors only.
 - Historical/ghost annotations become bounded omissions; malformed/foreign work fails preflight with unchanged caps.
 - Writer helper/consent/SDK/query/budget: 66 passed; broader group: 422 passed (overlap).
 - Production SDK publication/captured helper payload proves root refs and no ghost notes, retaining five runs/dialog counts.
-- Type baseline 186/runtime eight/core 8192 unchanged; independent final helper verification: 473 passed, no source/index drift.
+- Original helper implementation: PR #1795, `c392c803`, 193 A+D; type baseline 186/runtime eight/core 8192 unchanged; independent verification: 473 passed, no source/index drift.
 - No human/TUI/RPC wire-client consent or real OS agent-child execution is claimed.
+- Integration preserves both full human-guide blocks verbatim and the parent classification/routing outline.
+- Integrated GREEN: 336 focused passed; full suite 4,785 passed, zero failed, 44 skipped; provider contract and runtime harness passed.
+- Integrated delegation asset: 19,769/20,000 bytes; rendered core 8,110/8,192 bytes, with core source unchanged.
+- Type baseline 186 has no regressions; eight runtime modules match; package check passed (159 files, 69 pinned artifacts).
 
 ## Remaining
-Scoped design, meaningful RED → GREEN per runnable behavior, independent verification,
-exact authored line counts, remote PR/check readbacks. Runtime activation is not part of delivery.
+Publish the verified helper integration and confirm fresh CI for the whole stack.
+Runtime activation is not part of delivery.
