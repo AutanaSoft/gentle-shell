@@ -23,8 +23,9 @@ Do not close owner-decision coverage or duplicate ODD-file indexing/automatic ag
 ## Work units (forecast pending scoped exploration)
 - [x] Publish bounded classification with compatible persistence and regression tests.
 - [x] Annotate actual allocated owned child task IDs explicitly, without child-prompt inheritance.
-- [ ] Expose/filter published classification through existing discovery, with match reasons.
-- [ ] Cover real SDK publication/search and explicit helper capture boundaries.
+- [x] Provide bounded basic work indexing/filter queries over existing discovery.
+- [ ] Extend queries with exact related-work source joins and declared/possible match reasons.
+- [ ] Wire the existing public list tool and cover SDK/search/helper capture boundaries.
 
 ## Evidence
 - Baseline: `653dad90fe2072929e8fb722e0b95ce35e827f9e` (all prior coordination PRs merged).
@@ -44,7 +45,14 @@ Do not close owner-decision coverage or duplicate ODD-file indexing/automatic ag
 - Independent inspection reproduced same-manager reentrant owner-cache replacement despite 230 passing tests.
 - Guard fix RED: missing expected exception; GREEN pins captured owner and preserves new-owner notes.
 - Fixed annotation slice: 223 A+D before tracker; fresh independent verification 231 passed, no drift.
-- Helper capture intentionally still excludes `work`; publication is not search or inheritance.
+- Annotation independent verification: 231 passed; PR #1780, `520cab8b`, 232 A+D, CI green.
+- Full query forecast was 430–540 A+D; one final behavior split keeps each slice ≤400.
+- Basic filter library, related-source queries, then public SDK wiring are separate useful units.
+- Basic projection RED failed against old discovery; focused GREEN: seven query tests.
+- Empty recipient RED broadened to all peers; GREEN preserves direct empty selection and rejects invalid query targets before reads.
+- Eight affected suites: 46 passed; type baseline 186 and runtime eight unchanged.
+- Independent basic-library verification: 254 passed, no source/index drift; public wiring and related-source mode remain separate.
+- Helper capture intentionally still excludes `work`; public search is not yet implemented.
 
 ## Remaining
 Scoped design, meaningful RED → GREEN per runnable behavior, independent verification,
