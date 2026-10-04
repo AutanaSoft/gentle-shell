@@ -122,9 +122,11 @@ export interface AgentsDeps extends RunnerDeps {
 // isolated Gentle Shell home, so context filtering and destructive-command
 // safety are passed to every child explicitly. Missing files are omitted;
 // installations must include both entries to provide the delegated boundary.
+// gentle-shell#1731 T32: the nan provider is registered by a gentle-pi
+// extension, so children need it too or a model routed to nan/* is not found.
 export function childContextExtensionPaths(exists: (path: string) => boolean = existsSync): string[] {
 	try {
-		return ["./child-context.ts", "./child-safety.ts"]
+		return ["./child-context.ts", "./child-safety.ts", "./nan-provider.ts"]
 			.map((path) => fileURLToPath(new URL(path, import.meta.url)))
 			.filter(exists);
 	} catch {
