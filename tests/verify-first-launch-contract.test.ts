@@ -83,7 +83,13 @@ test("T22: verify blockers get one correction batch and one scoped recheck", () 
 		"never a new full sweep",
 		"Blockers still open after that stop as one **Needs your decision**",
 		"Advisories never start a correction",
+		"A second correction runs automatically only when the recheck shows the same blocker still failing",
+		"a new finding never earns one",
 	], "verification correction bound");
+	containsAll(verify, [
+		"Keep the scratch path in your commands; never write it, or anything else, to a file outside the scratch",
+		"NO_UPDATE_NOTIFIER=1",
+	], "verify scratch hygiene");
 });
 
 test("T16: verify keeps its repository and tool boundaries", () => {
