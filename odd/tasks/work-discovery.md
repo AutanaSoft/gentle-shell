@@ -84,6 +84,7 @@ Do not close owner-decision coverage or duplicate ODD-file indexing/automatic ag
 - Integrated delegation asset: 19,769/20,000 bytes; rendered core 8,110/8,192 bytes, with core source unchanged.
 - Type baseline 186 has no regressions; eight runtime modules match; package check passed (159 files, 69 pinned artifacts).
 
+- Helper integration committed and pushed as `ce23a1d3`, with feature parents `c392c803` and `63d4b293`; no main merge occurred.
+
 ## Remaining
-Publish the verified helper integration and confirm fresh CI for the whole stack.
-Runtime activation is not part of delivery.
+Confirm fresh CI for the published stack. Runtime activation is not part of delivery.
