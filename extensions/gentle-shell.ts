@@ -119,6 +119,7 @@ import { REVIEW_SIDEBAR_EVENT, isReviewSidebarSnapshot, type ReviewSidebarSnapsh
 import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
 import { SelectionEngine } from "../lib/selection-engine.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
+import { openNotificationPanel } from "../lib/notification-ui.ts";
 
 // Gentle Shell: the visual layer gentle-pi puts on top of pi. It installs the
 // status bar, the petal prompt, the working-tree changes widget and overlay,
@@ -1032,6 +1033,8 @@ export class GentlePromptEditor extends CustomEditor {
 			} catch { /* Unknown layout: keep the original rendered prompt. */ }
 		}
 		if (this.vimPolicy !== "on") editorLines = this.selectionEngine.decorateRows(editorLines, inner, 0);
+		// SAFETY: this optional host hint is accepted only as an integer within the
+		// rendered row bounds below; absent/invalid hints fall back to all rows.
 		const visibleCount = (this as unknown as { renderedVisibleLineCount?: number }).renderedVisibleLineCount;
 		const borderEnd = Number.isInteger(visibleCount) && visibleCount! >= 1 && visibleCount! + 2 <= editorLines.length
 			? visibleCount! + 2 : editorLines.length;
@@ -1972,7 +1975,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		});
 	}
 	pi.registerCommand("gentle:customize", {
-		description: "Configure appearance, global Vim prompt editing, session-only YOLO permission and prompt history capture.",
+		description: "Configure appearance, notifications, global Vim prompt editing, session-only YOLO permission and prompt history capture.",
 		handler: async (_args, ctx) => {
 			if (ctx.mode !== "tui" || !ctx.hasUI) {
 				if (ctx.hasUI) ctx.ui.notify("Visual customization requires an interactive terminal.", "warning");
@@ -1983,6 +1986,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			let adapter: YoloUiAdapter | undefined;
 			let unobserve: (() => void) | undefined;
 			let finish: (() => void) | undefined;
+			let notificationsRequested = false;
 			const close = () => {
 				if (closed) return;
 				closed = true;
@@ -2155,6 +2159,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					else ctx.ui.notify(result.enabled ? "Prompt history capture: on. Applies from the next prompt; stored history is kept." : "Prompt history capture: off. New prompts are not recorded; stored history is kept.", "info");
 				},
 			});
+			rows.push({ category: "Notifications", label: "Notification settings", preview: () => ({
+				title: "Notifications · separate audio preferences", sample: "Opt-in audio · event sounds · explicit preview · process mute" }),
+				action: () => { notificationsRequested = true; close(); },
+			});
 			category = "Layout";
 			for (const value of Object.values(STATUS_PLACEMENT)) add(() => `Status placement: ${value}${visual().statusPlacement === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, statusPlacement: value })), () => layoutPreview({ ...visual(), statusPlacement: value }));
 			for (const value of Object.values(HEADER_PLACEMENT)) add(() => `Header placement: ${value}${visual().headerPlacement === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, headerPlacement: value })), () => layoutPreview({ ...visual(), headerPlacement: value }));
@@ -2284,6 +2292,9 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					};
 				}, { overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 60, maxHeight: "85%" } });
 			} finally { close(); }
+			// Finish/dispose the custom overlay BEFORE native dialogs own input.
+			// Resolve the facade at activation time, independent of extension load order.
+			if (notificationsRequested) await openNotificationPanel(ctx);
 		},
 	});
 	pi.registerCommand("gentle:vim", {
