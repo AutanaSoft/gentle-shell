@@ -94,8 +94,33 @@ An object replacement omitting `work` clears classification; `state: null` withd
 the whole record. Work uses schema 2 in the same branch entry/cache/timestamp;
 text-only records remain schema 1. Targeted list and metadata consultation readback
 carry detached work with historical `recordedAt`, owner-curated and non-authoritative.
-No refs are resolved and no filter or inheritance behavior is added. Classification
+No refs are resolved and classification publication adds no inheritance behavior. Classification
 itself needs no Git, network or model call. Helper reasoning capture remains text-only.
+
+### Search classified work (library only)
+
+`searchPublishedWork(profile, peers, filter?, selection?, now?)` in
+[`lib/orchestrator-work-search.ts`](../lib/orchestrator-work-search.ts) is a working,
+metadata-only index. An empty filter returns classified sessions and active tasks.
+Optional `area`, `topic` (requires area), `tag`, `text`, `ref`, and `repository_root`
+criteria combine with AND; `validateWorkFilter` rejects unknown/unsafe input before I/O.
+Human comparisons use NFC, trimming and case-insensitive literal matching; public
+spellings remain intact. Refs match exact kind/repository/ID without resolution.
+Text searches labels and descriptor fields only. Roots match recorded repository
+facts, never launch paths or freshly resolved Git; tasks never inherit parent work/roots.
+
+The query examines at most 64 deterministically selected unique peers, retaining
+activation ambiguity checks, and reads one catalog page per peer. Historical task
+annotations match only exact owner/task IDs on that current active page.
+`selection: {recipientSessionId, cursor?}` can read an existing targeted catalog page;
+a cursor without a recipient is rejected. There is no automatic paging or query cursor.
+The detached whole JSON result fits 16 KiB by omitting whole matching rows, with exact
+`omittedMatches`. Coverage is never exhaustive: it counts unexamined peers, unknown
+context/catalogs, unclassified nodes, unmatched annotations, catalog omissions and
+peers with pending pages. `recordedAt` is historical, separate from `observedAt`;
+`ownerReply: false`, `authority: none`, and unknown reachability confer no permission.
+Public tool/SDK registration and related-source queries are later slices;
+`related_to` is currently rejected, not silently ignored.
 
 ### Annotate an allocated task
 
