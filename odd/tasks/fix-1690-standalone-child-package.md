@@ -62,7 +62,13 @@ barbatdev on #1690 (2026-10-03 04:19Z):
   - No gentle-pi shared-state writes: Pi core creates `{}` `auth.json`/`models-store.json` in every home, scenario A included; git status was unchanged.
   - Cost: about +270 ms startup over the curated fallback, on par with regular gentle-pi.
   - Takeover with an extension-less package (only `package.json`) crashes the child at startup ("Failed to load extension"). The launcher's `otherPackageInjections` does not filter such packages either, so a takeover parent would hit the same failure first; the child only mirrors a set the parent already started with. Tracked as a pre-existing follow-up.
-- [ ] T7 (live probe done, see above; the pinning tests and docs land in #1773, which closes this item) Acceptance probe: spawn like the runner (`--mode rpc --session-dir <tmp>`, `GENTLE_PI_AGENTS_CHILD=1`, isolated home) and compare RPC `get_commands` with a regular gentle-pi child (baseline 18 `/gentle:*` vs 0); measure startup cost; update docs. Route: `gentle-ai-verify`.
+- T6 RDD review (native Claude Code session): `approved`, medium risk, one lens, candidate `41177ae4` against base `b54a2897` on `review/1690-t6`, no correction; authority burned (lineage `review-bc3c0b01e4e11e1f`). WARNING: the session_start check can falsely report a tool that a later-loaded extension registers in its own session_start. SUGGESTION: prove that a fully satisfied `--tools` gives no note in a real child.
+- T6 follow-up probe (verifier musjdncb-c-r14g, live Pi 1.0.0 children): a satisfied list (`read,grep,find,ls,codegraph`, plus the built-in `bash`) gives no note; the control (`zz_missing`) is reported; a tool registered in a later extension's session_start was reported falsely when the package loaded first (3a) and not in the reverse order (3b). Pi does register and activate such a tool (loader.js:231-240 → `_refreshToolRegistry`); session_start handlers run in load order (runner.js:807-830).
+- [x] T6b (PR3, commit `7629bd4d` on `fix/1690-child-package-forwarding`, writer musjhj67-d-ba2b in worktree `fix-1690-pr3`): the comparison and its once-guard moved to the first `before_agent_start`, which fires after every session_start; the handler returns undefined. RED: the late-registration test reported `late_tool` on the old code; GREEN; agents/child/gentle-agents 505/505; check-types shows no regressions. PR4 was rebased onto it cleanly (T7 tests/docs is now `cb956596`); the docs bullet now says the check happens when the first prompt starts. Not re-run live: probe case 3a with the new code.
+- T7 RDD review (native Claude Code session): `approved`, medium risk, one lens, candidate `3eeb92cd` (cb956596 + 3eeb92cd) against base `7629bd4d` on `fix/1690-child-package-acceptance`, no correction; authority burned (lineage `review-bc3533bc74a5409d`). WARNING: test (b) mirrors Pi's discovery rules by hand rather than calling the real resolver, so it detects repo-side changes only. The end-to-end proof is the live probe above (DefaultResourceLoader, each file once). SUGGESTIONS: name the helper self-checks as such, not as product coverage; one doc line on the pre-existing takeover crash with an extension-less package.
+- T7 tests and docs (writer musjb8nt-b-6bso): `tests/child-package-entrypoints.test.ts` pins (a) the frozen fallback `childContextExtensionPaths()` = exactly [child-context, child-safety], a T5 review suggestion, and (b) package entrypoint discovery: `pi.extensions` ["./extensions"], no index/package.json/ignore files in `extensions/`, and both child files top-level (the T4 review warning). These are characterization tests, proven to bite by temporarily adding a fake entry and a fake index.ts (0/2), then restored. `docs/gentle-shell.md` § Gentle Agents documents forwarding, the child skips, confirm-as-question, the missing-tools note and the frozen fallback; the parent corrected the confirm bullet for background children. Results: 178/178; verify-package-files, check-types and package-manifest 56/56 pass. Commit: the T7 tests/docs commit carrying this line.
+- T6b live re-run (verifier muskw8r1-e-uyqt): a real child with a fake offline provider (`http://127.0.0.1:9/v1`, no real credentials; Pi checks model/auth before `before_agent_start`) received one prompt. Case 3a (package first, `late_tool` registered in a later session_start) produced no note. The control (`zz_missing`) was reported 6 ms after the prompt, before `agent_start`. No note appeared before the prompt, and the real homes were unchanged.
+- [x] T7 Acceptance probe: spawn like the runner (`--mode rpc --session-dir <tmp>`, `GENTLE_PI_AGENTS_CHILD=1`, isolated home) and compare RPC `get_commands` with a regular gentle-pi child (baseline 18 `/gentle:*` vs 0); measure startup cost; update docs. Route: `gentle-ai-verify`.
 
 ## Child hook audit (T1)
 
@@ -101,11 +107,38 @@ gentle-shell UI/timers, the gentle-agents host, gentle-todo, runtime-metrics, ge
 - T1-T2 live on `fix/1690-standalone-child-package` (worktree `gentle-shell-worktrees/fix-1690-standalone-child-package`). Its RDD review of `a67bb7f5` runs from a separate native Claude Code session, and nothing else writes in that worktree while the review is open.
 - T3 onward continue on `fix/1690-child-package-forwarding` (worktree `gentle-shell-worktrees/fix-1690-child-package-forwarding`), stacked on `a67bb7f5`. If the review adds a correction commit, rebase this branch onto it before delivery.
 
+## Polish round (2026-10-03)
+
+- P1 `d2ca0c46` (PR1): awaited `tool_execution_start` handlers; a child test proving `yolo.reset`/`reviewSidebar.reset` (it bites when either call is removed or the guard moves above them). 109/109.
+- P2 `c3de137b` (PR2): `buildPiInvocation` takes an explicit `cwd` (bin passes `process.cwd()`); the signal is deduped after absolutizing; the `-e` argv is unchanged; runtime regenerated. 405/405.
+- P4 `4a9b4d69` (PR4): helper self-checks split from the product tests; test (b) notes that it mirrors Pi's rules by hand; a docs bullet on the pre-existing takeover crash.
+- The chain was rebased cleanly: PR1 `d2ca0c46`, PR2 `c3de137b` (T3 = `45fcc37d`), PR3 `8efa46c7` (T4 `c7c03449`, T5 `0e6521b3`, T6 `fd405cb1`, T6b `8efa46c7`), PR4 `4a9b4d69`. The approved patches are unchanged; only the bases moved.
+- Chain verification (verifier musll8ax-i-gkko): every branch clean and ancestry correct. Targeted tests 159/564/1063/1067 pass. check-types, runtime `--check` and verify-package-files pass on all four. The PR4 full suite gives 4635 pass, 1 fail, 44 skipped. The failure is `tests/history-session-scan-extract.test.ts:244` (file mtime vs `Date.now()` under `os.tmpdir()`); it fails the same way on the PR1 base, and the stack never touches that file. It is pre-existing and environment-dependent (likely the WSL2 clock), not caused by #1690.
+- RDD pending for P1, P2 and P4.
+- PR #1712 (carlosmoradev, "Fixes #1688", opened 14:37Z) adds `child-capture.ts` as a third curated entry. That conflicts with the frozen list, and once the package is forwarded `installSessionChangeCapture` (no idempotency guard) would be installed twice in children. A coordination comment is drafted for the user.
+
+## Rebase onto origin/main 653dad90 (2026-10-04)
+
+- #1690 got `status:approved` from barbatdev (2026-10-03 18:59Z). The chain was rebased onto `653dad90`, 125 commits newer. One textual conflict in `tests/gentle-agents.test.ts` (upstream #1713 test next to T4's test): both tests kept.
+- Two semantic conflicts were found by the verifier and fixed: `2efe8919` (PR1) keeps the dev-binary notice in children for upstream test `tests/gentle-ai-dev-binary-surfacing.test.ts:236-259`, and `1030d68d` (PR2) passes `cwd` in the upstream bin fixture.
+- Tips: PR1 `2efe8919`, PR2 `1030d68d`, PR3 `89295f6e`, PR4 this branch. Focused suites 178/584/1105/1109 pass; check-types, runtime `--check` and verify-package-files pass on all four; the PR1 full suite passes; the PR4 full suite has 2 failures in `tests/history-session-scan-extract.test.ts` (mtime vs `Date.now`), a known timing flake untouched by the chain (passes alone 14/14).
+- RDD reviews after the rebase, all `approved` with no correction and authority burned:
+  - PR1 polish `c3f3c158..2efe8919` (`review-388a341464ae8fcc`). WARNING: the child dev-binary branch is only covered by the upstream test; the invalid-override toast and the describe-failure path have no child test.
+  - PR2 polish `ac5ea634..1030d68d` (`review-1cd635fb601b1443`). Suggestions: no bin-level test pins the bin `cwd` and spawn coupling; the no-declaration branch is not tested with a relative `packageRoot`.
+  - T4 rebased `ad09a68e` on `1030d68d` (`review-b620b477747a1aca`). The range-diff against `78391611` changes only context lines. WARNING: T4 drops the curated entries before T5, which is fine because they ship together in PR3. Suggestion: line references in this document are stale after the rebase.
+  - PR4 polish `8a40d5f4..172aaddd` (`review-238aba2660e2a7fd`): no findings.
+- Line numbers cited in this document refer to the pre-rebase code.
+
 ## Merge of origin/main after #1770 landed (2026-10-05)
 
 - #1770 merged as `a8ecb141`. #1772 conflicted with upstream #1558 (session routing) and the #1731 work (writer surfaces). Resolution: keep both sides. `childExtensionRequest` replaces the curated spread, and the new `writerSurfaces`/`writerRoot` request fields stay next to `noExtensions`; upstream tests sit next to the T4 test.
-- Upstream `ccd669ac` (Alan, #1731 T32) added `./nan-provider.ts` as a third curated entry, because nan models failed in children. Kept, with user approval: the frozen fallback is now three entries. Forwarded children get nan-provider from the package anyway.
+- Upstream `ccd669ac` (Alan, #1731 T32) added `./nan-provider.ts` as a third curated entry, because nan models failed in children. Kept, with user approval: the frozen fallback is now three entries. Forwarded children get nan-provider from the package anyway. #1773 updates the frozen-list test and the docs to the three entries.
 - Agents/child/gentle-agents suites 545/545; check-types and runtime `--check` pass.
+
+- Post-sync RDD reviews, both `approved` with no correction and authority burned:
+  - #1772 (`review-9dfe7af2bbd8b41e`): candidate `cc781909` (tree identical to `8f5f3f0c`) against a review-only base `644cec80` = #1771 merged with main `a8ecb141`. The writer-surface and #1558 code is intact; the injection only replaces the curated entries.
+  - #1773 (`review-79c81e810edd3a47`): `242626d5` against `8f5f3f0c`. The frozen-list test bites: removing `./nan-provider.ts` from the list, or deleting the file, fails it.
+- The T7 notes above (a fallback of "exactly [child-context, child-safety]", 178/178, self-checks at `:37-50`) describe the two-entry version. Since this sync the fallback has three entries (605/605), and the helper self-checks are at `tests/child-package-entrypoints.test.ts:49-65`. `childExtensionRequest` is cited by name; its line numbers moved.
 
 ## Delivery budget
 
@@ -127,6 +160,8 @@ Every PR carries the chain context and a dependency diagram (chained-pr skill). 
 
 ## Pending follow-ups
 
+- [x] Optional PR4 polish (T7 review): rename the helper self-check assertions in `tests/child-package-entrypoints.test.ts:37-50`; optionally add one line to `docs/gentle-shell.md` § Gentle Agents about the pre-existing takeover crash with an extension-less package.
+
 - [ ] Pre-existing: a takeover `-e` of a settings package without extensions (only `package.json`, skills-only) makes pi exit with "Failed to load extension" (seen in the T7 probe for a child; `otherPackageInjections` in `lib/gentle-shell-launcher.ts:707` does not filter such packages for the parent either). Confirm on the parent, then file it or fix it separately.
 
 - [ ] Agent frontmatter `"*": false` (`assets/agents/review-reliability.md:5`) is passed verbatim to `--tools` by `parseTools` (`lib/agents-config.ts:173-177`) and dropped by Pi. It predates #1690 and is ignored by the T6 check; decide whether the parser should drop it.
@@ -134,7 +169,7 @@ Every PR carries the chain context and a dependency diagram (chained-pr skill). 
 
 - [x] Optional PR2 polish (T3 review suggestions, non-blocking): (1) `lib/gentle-shell-launcher.ts:980-981`: `absoluteExtensionPath` resolves against `process.cwd()`, so `buildPiInvocation` is not pure; inject the cwd or pin it with a test. (2) `:956`: the set is deduped by raw string before the paths are made absolute; dedupe after absolutizing (harmless today because pi dedupes by realpath).
 
-- [ ] Optional PR1 polish (T2b review suggestions, non-blocking): (a) `tests/gentle-ai-child-guards.test.ts:90-94`: await the `tool_execution_start` handler before counting ledger entries; (b) `extensions/gentle-ai.ts:9686-9688`: no test asserts that `yolo.reset`/`reviewSidebar.reset` run in a child. Add one, or narrow the comment.
+- [x] Optional PR1 polish (T2b review suggestions, non-blocking): (a) `tests/gentle-ai-child-guards.test.ts:90-94`: await the `tool_execution_start` handler before counting ledger entries; (b) `extensions/gentle-ai.ts:9686-9688`: no test asserts that `yolo.reset`/`reviewSidebar.reset` run in a child. Add one, or narrow the comment.
 
 - [ ] **Report upstream: `gentle_review` unreachable from Pi over pi-claude-bridge.** Target: pi-claude-bridge (elidickinson) or gentle-shell; decide after confirming the cause.
   - Symptom (2026-10-03, Gentle Shell standalone, Pi 1.0.0, pi-claude-bridge 0.9.0, model Opus 5.5): the gentle-pi tool `gentle_review` (registered unconditionally, `extensions/gentle-ai.ts:9526`) never reaches the model. `gentle_review_capture`, `gentle_review_capture_group` and `gentle_review_scope` do. The model's own instructions say some tools are deferred, and a SessionStart hook asks it to run `ToolSearch`, which it does not have.
