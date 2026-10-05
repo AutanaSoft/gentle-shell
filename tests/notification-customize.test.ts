@@ -69,7 +69,7 @@ function fakeInline(inputs: (string | undefined)[] = [], confirms: boolean[] = [
 }
 function label(row: CustomizeRow): string { return typeof row.label === "function" ? row.label() : row.label; }
 
-test("Notifications rows toggle, mute and restore directly without any nested native dialog", async () => {
+test("Notifications rows toggle and mute directly without any nested native dialog", async () => {
 	const h = harness(); try {
 		const rows = h.rows();
 		await findRow(rows, "Audio notifications: off").action(fakeInline());
@@ -78,21 +78,17 @@ test("Notifications rows toggle, mute and restore directly without any nested na
 		await findRow(rows, "Audio: unmuted").action(fakeInline());
 		assert.equal(getNotificationService()!.getState().muted, true);
 		assert.equal(h.writes, 1, "mute persists in-process without writing configuration");
-		await findRow(rows, "Audio: restore preset").action(fakeInline());
-		assert.equal(getNotificationService()!.getState().settings.enabled, true, "restore preserves enabled");
-		assert.equal(h.writes, 2);
 		assert.deepEqual(h.nested, { select: 0, input: 0, confirm: 0 });
 	} finally { h.owner.retire(); }
 });
 
-test("labels and previews never probe, play or write; availability is explicit", async () => {
+test("labels and previews never probe, play or write and the card exposes no availability row", () => {
 	const h = harness(); try {
 		const rows = h.rows();
 		for (const row of rows) { label(row); row.preview?.(); }
 		assert.equal(h.probes, 0); assert.equal(h.played, 0); assert.equal(h.writes, 0);
-		await findRow(rows, "Audio availability: check").action(fakeInline());
-		assert.equal(h.probes, 1);
-		assert.equal(h.writes, 0);
+		assert.equal(rows.some(row => label(row).startsWith("Audio availability:")), false, "availability is removed from the card");
+		assert.equal(h.probes, 0, "rendering every row still never probes the backend");
 	} finally { h.owner.retire(); }
 });
 
@@ -305,7 +301,7 @@ test("event rows cover supported events and never expose session.shutdown", () =
 test("p on every basic non-event notification control stays on the audio card, opens no profiles and never previews", () => {
 	const h = harness(); try {
 		const rows = h.rows();
-		const targets = ["Audio notifications:", "Audio: unmuted", "Audio availability:", "Audio: restore preset", "Advanced"];
+		const targets = ["Audio notifications:", "Audio: unmuted", "Advanced"];
 		const listed: number[] = [];
 		const view = new VisualCustomizeView({ rows, theme: { fg: (_role: string, text: string) => text }, rowsAvailable: () => 24, requestRender: () => {}, onClose: () => {}, profiles: {
 			list: () => { listed.push(1); return []; }, save: () => {}, apply: () => {}, delete: () => {}, reset: () => {},
@@ -324,13 +320,18 @@ test("p on every basic non-event notification control stays on the audio card, o
 	} finally { h.owner.retire(); }
 });
 
-test("the basic card exposes human Success/Error/Attention groups and an Advanced toggle without raw ids", () => {
+test("the basic card exposes exactly six human controls and an Advanced toggle without raw ids", () => {
 	const h = harness(); try {
 		const labels = visibleRows(h.rows()).map(label);
+		assert.equal(labels.length, 6, "the basic card must expose exactly six controls");
+		assert.ok(labels.some(text => text.startsWith("Audio notifications:")), "the global switch row is required");
+		assert.ok(labels.some(text => /^Audio: (?:un)?muted/.test(text)), "the process mute row is required");
 		assert.ok(labels.some(text => text.startsWith("Success:")), "a Success group row is required");
 		assert.ok(labels.some(text => text.startsWith("Error:")), "an Error group row is required");
 		assert.ok(labels.some(text => text.startsWith("Attention:")), "an Attention group row is required");
 		assert.ok(labels.some(text => /^Advanced/.test(text)), "an Advanced toggle row is required");
+		assert.equal(labels.some(text => text.startsWith("Audio availability:")), false, "the availability row is removed");
+		assert.equal(labels.some(text => text.startsWith("Audio: restore preset")), false, "the restore row is removed");
 		for (const text of labels) {
 			assert.doesNotMatch(text, /builtin:/, `a basic label leaks a builtin id: ${text}`);
 			assert.doesNotMatch(text, /(?:agent|subagent|session)\./, `a basic label leaks a raw event id: ${text}`);
@@ -364,7 +365,7 @@ test("Advanced folds the thirteen detailed event rows inside the same card witho
 test("global controls and the fold toggle advertise no WAV key while group and detail rows do", async () => {
 	const h = harness(); try {
 		const rows = h.rows();
-		for (const prefix of ["Audio notifications:", "Audio: unmuted", "Audio availability:", "Audio: restore preset", "Advanced"])
+		for (const prefix of ["Audio notifications:", "Audio: unmuted", "Advanced"])
 			assert.doesNotMatch(keyhintOf(findRow(rows, prefix)), /f WAV/, `${prefix} is not a per-type file target`);
 		for (const { prefix } of GROUPS) assert.match(keyhintOf(findRow(rows, prefix)), /f WAV/, `${prefix} assigns its own WAV`);
 		await findRow(rows, /^Advanced/).action(fakeInline());

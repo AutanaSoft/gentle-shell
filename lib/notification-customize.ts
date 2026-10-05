@@ -61,13 +61,15 @@ function soundDescription(sound: NotificationSound): string {
 
 /**
  * Builds the Notifications category for the shared customize card. The basic
- * card exposes the global switch, mute, an explicit availability probe, the
- * preset restore and three independent type groups (Success/Error/Attention)
- * that each own their included tone or a local WAV. Per-event exceptions stay
- * folded behind `Advanced`. Every label/preview is read-only, and every action
+ * card exposes the global switch, process mute and three independent type
+ * groups (Success/Error/Attention) that each own their included tone or a
+ * local WAV, plus the `Advanced` toggle. Per-event exceptions stay folded
+ * behind `Advanced`. Every label/preview is read-only, and every action
  * resolves the owner facade at action time: importing or rendering this module
  * never discovers a player, reads a file or writes settings. Rows use the
- * inline bridge instead of nested `ctx.ui.select/input/confirm` dialogs.
+ * inline bridge instead of nested `ctx.ui.select/input/confirm` dialogs. The
+ * service keeps `restorePreset`/`availability` as an internal contract, but the
+ * card no longer surfaces them.
  */
 export function buildNotificationRows(ctx: ExtensionContext): CustomizeRow[] {
 	const category = "Notifications" as const;
@@ -103,8 +105,6 @@ export function buildNotificationRows(ctx: ExtensionContext): CustomizeRow[] {
 	/** One atomic write touching exactly `targets`; every other key (and `enabled`) is preserved. */
 	const setTargets = (inline: CustomizeInline, targets: readonly NotificationEvent[], sound: NotificationSound): Promise<void> =>
 		mutate(inline, settings => { for (const target of targets) settings.audio.events[target] = sound; });
-	const restore = (inline: CustomizeInline): Promise<void> =>
-		withRecovery(inline, (service, confirmRecovery) => service.restorePreset(ctx, { confirmRecovery }));
 	const previewSound = (sound: NotificationSound): void => {
 		const service = serviceOrNotify();
 		if (!service) return;
@@ -158,26 +158,6 @@ export function buildNotificationRows(ctx: ExtensionContext): CustomizeRow[] {
 			const service = serviceOrNotify();
 			if (!service) return;
 			if (!service.setMuted(ctx, !service.getState().muted)) notify("Audio mute could not be changed.", true);
-		},
-	});
-	rows.push({
-		category,
-		label: () => "Audio availability: check",
-		preview: () => ({ title: "Audio availability · explicit probe", sample: "checks the lazy player only on request; rendering controls never detects or starts a player" }),
-		action: async () => {
-			const service = serviceOrNotify();
-			if (!service) return;
-			const result = await service.availability(ctx);
-			if (getNotificationService() === service) notify(`Notification audio backend: ${result}.`);
-		},
-	});
-	rows.push({
-		category,
-		label: () => "Audio: restore preset",
-		preview: () => ({ title: "Audio · restore preset", sample: "restores recommended event sounds and timing while preserving the current on/off switch" }),
-		action: async inline => {
-			if (!serviceOrNotify()) return;
-			await restore(inline);
 		},
 	});
 	for (const group of GROUP_PLANS) {
