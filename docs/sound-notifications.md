@@ -1,12 +1,13 @@
 # Sound notifications
 
-Audio is **off by default**. In a primary Pi terminal, open `/gentle:customize` → **Notifications** (the card header reads **Audio notifications**) and use the controls **directly in the same two-column card**. Nothing closes the overlay or opens a second menu, and audio preferences stay separate from visual settings, profiles and visual reset. No new command is needed.
+Audio is **off by default**. In a primary Pi terminal, open `/gentle:customize` → **Notifications** (the card header reads **Audio notifications**) and use the controls **directly in the same two-column card**: the global switch, process mute, an explicit availability probe, the preset restore, and three independent type groups (**Success**, **Error**, **Attention**) that each own their included tone or a local WAV. Per-event exceptions stay folded behind **Advanced**. Nothing closes the overlay or opens a second menu, and audio preferences stay separate from visual settings, profiles and visual reset. No new command is needed.
 
 ## Use the direct controls
 
 - **Audio notifications: on / off** toggles the global switch. Highlighting or rendering the row never discovers a player or enables anything.
 - **Audio: unmuted / muted** toggles this process' mute. Mute survives reload and session replacement; restarting Pi clears it. Muting/disabling discards pending events; resuming never replays them.
-- **Event rows** (`agent.completed`, `subagent.failed`, …) show the current mapping. **Enter** cycles `silence → builtin:success → builtin:error → builtin:attention → silence` and saves that event alone. **`f`** opens an inline field for a literal absolute local WAV path. **`p`** explicitly tests the selected sound for that row; in Notifications `p` never opens the visual profiles pane.
+- **Success / Error / Attention** are the three basic types. Each shows its human selection — `success tone` / `error tone` / `attention tone`, `silence`, a local WAV basename, or `Custom (varies)` when the type's events diverge. **Enter** cycles that type between `silence → builtin:success → builtin:error → builtin:attention → silence`; on a mixed type Enter applies the recommended tone for that type. **`f`** opens an inline field to assign a literal absolute local WAV to that type, independently of the other types; the field is prefilled with the current path when the type already owns a file. **`p`** explicitly previews the type's selected sound, never an arbitrary one.
+- **Advanced: show/hide per-event exceptions** reveals the per-event rows (`agent.completed`, `subagent.failed`, …) for one-off overrides. They start folded; expanding or collapsing only changes the card view and never writes configuration or reproduces sound. Each per-event row cycles and assigns its own WAV like a type row. **`f`** and **`p`** on any type or per-event row stay inside the same card; in Notifications `p` never opens the visual profiles pane.
 - **Audio availability: check** explicitly performs the lazy player probe. Availability means an executable was found, not proof of working speakers or a live audio server.
 - **Audio: restore preset** restores the recommended mappings and timing while preserving the current on/off switch.
 
@@ -96,7 +97,7 @@ No system dependencies are installed automatically. No available player produces
 Manual acceptance remains pending for every applicable platform:
 
 - [ ] Navigate customize → Notifications in narrow/wide, regular/fullscreen terminals; cancel every inline field and confirmation. Verify Enter, `f` and `p` stay inside the same card and never open another menu.
-- [ ] Assign a valid local WAV with spaces via `f`, preview off/muted with `p`, enable, verify live outcomes and independent mappings; verify bad files and consent cancellation preserve bytes.
+- [ ] Assign a valid local WAV with spaces via `f` to one type; confirm the other types keep their own sounds, preview off/muted with `p`, enable, verify live outcomes and independent mappings; verify bad files and consent cancellation preserve bytes.
 - [ ] Mute and reload/change session, then resume without replay; confirm no probe while off unless explicitly requested.
 - [ ] Quit/reload during probe, validation and active playback: no late spawn, overlap, stale write, leaked process or delayed exit.
 - [ ] Listen to builtin/custom tones and exercise missing player, failed player and hanging player on the real host.

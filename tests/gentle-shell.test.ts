@@ -2856,8 +2856,17 @@ test("customize Notifications applies audio controls directly in the same overla
 		assert.ok(findCustomizeRow(ui, "Audio notifications: off"), "global switch is a direct row");
 		assert.ok(findCustomizeRow(ui, "Audio: unmuted"), "mute is a direct row");
 		assert.ok(findCustomizeRow(ui, "Audio availability: check"), "availability is a direct row");
+		assert.ok(findCustomizeRow(ui, "Success:"), "Success group is a direct row");
+		assert.ok(findCustomizeRow(ui, "Error:"), "Error group is a direct row");
+		assert.ok(findCustomizeRow(ui, "Attention:"), "Attention group is a direct row");
 		assert.match(ui.overlayView!.render(90).join("\n"), /Audio notifications/);
 		assert.equal(settled, false, "the overlay never closes to open a panel");
+		// Per-event exceptions stay folded until Advanced is expanded in the same overlay.
+		assert.ok(findCustomizeRow(ui, "Advanced:"), "Advanced toggle is a direct row");
+		assert.doesNotMatch(ui.overlayView!.render(90).join("\n"), /agent\.failed:/, "per-event rows stay folded by default");
+		ui.overlayView!.handleInput("\r");
+		// Let the toggle's busy microtask settle before activating a revealed row.
+		await new Promise<void>((resolve) => setImmediate(resolve));
 		const notices = ui.notices.length;
 		assert.ok(findCustomizeRow(ui, "agent.failed:"));
 		ui.overlayView!.handleInput("\r");
@@ -4589,7 +4598,7 @@ test("registered canonical root governs real Git discovery, status and diff desp
 	h.pi.exec = ((command: string, args: string[], options: { timeout?: number } = {}) => new Promise((resolve) => {
 		execFile(command, args, { env: poisoned, encoding: "utf8", timeout: options.timeout, maxBuffer: Infinity }, (error, stdout, stderr) => resolve({ stdout, stderr, code: error ? typeof error.code === "number" ? error.code : 1 : 0, killed: Boolean(error?.killed) }));
 	})) as ExtensionAPI["exec"];
-	const { ctx, ui, overlayReady } = fakeContext();
+	const { ctx, ui } = fakeContext();
 	(ctx as unknown as { cwd: string }).cwd = selected;
 	(ctx.sessionManager as unknown as { getCwd(): string }).getCwd = () => selected;
 	const run = shellGitRunner(selected, poisoned);
