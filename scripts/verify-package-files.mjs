@@ -11,6 +11,7 @@ const requiredPaths = [
   "bin/gentle-shell.mjs",
   "extensions/gentle-notifications.ts",
   "lib/notification-audio.ts",
+  "lib/notification-customize.ts",
   "lib/notification-events.ts",
   "lib/notification-policy.ts",
   "lib/notification-scheduler.ts",

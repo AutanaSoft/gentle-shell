@@ -1,17 +1,16 @@
 # Sound notifications
 
-Audio is **off by default**. In a primary Pi terminal, open `/gentle:customize` → **Notifications** → **Notification settings**. This closes the appearance overlay and opens native dialogs; audio preferences are separate from visual settings, profiles and visual reset. No new command is needed.
+Audio is **off by default**. In a primary Pi terminal, open `/gentle:customize` → **Notifications** (the card header reads **Audio notifications**) and use the controls **directly in the same two-column card**. Nothing closes the overlay or opens a second menu, and audio preferences stay separate from visual settings, profiles and visual reset. No new command is needed.
 
-## Use the panel
+## Use the direct controls
 
-- **Enable audio / Disable audio** saves the global switch. Opening the panel does not discover a player or enable anything.
-- **Assign sound** selects origin (`session`, `agent`, `subagent`), then a supported event, then Silence, a builtin, or Local WAV file. Each mapping is independent. Selecting a file validates it without playing it.
-- **Preview sound** explicitly chooses a sound to listen to. It bypasses disabled/muted automatic audio but does not save, enable audio or replay past events. An active or pending sound can make preview busy; retry explicitly.
-- **Mute / Resume** affects this process only, surviving reload and session replacement. Restarting Pi clears mute. Muting/disabling discards pending events; resuming never replays them.
-- **Check availability** explicitly performs the lazy player probe. Availability means an executable was found, not proof of working speakers or a live audio server.
-- **Restore preset** restores the recommended mappings and timing while preserving the current enabled switch.
+- **Audio notifications: on / off** toggles the global switch. Highlighting or rendering the row never discovers a player or enables anything.
+- **Audio: unmuted / muted** toggles this process' mute. Mute survives reload and session replacement; restarting Pi clears it. Muting/disabling discards pending events; resuming never replays them.
+- **Event rows** (`agent.completed`, `subagent.failed`, …) show the current mapping. **Enter** cycles `silence → builtin:success → builtin:error → builtin:attention → silence` and saves that event alone. **`f`** opens an inline field for a literal absolute local WAV path. **`p`** explicitly tests the selected sound for that row; in Notifications `p` never opens the visual profiles pane.
+- **Audio availability: check** explicitly performs the lazy player probe. Availability means an executable was found, not proof of working speakers or a live audio server.
+- **Audio: restore preset** restores the recommended mappings and timing while preserving the current on/off switch.
 
-Escape cancels a dialog without saving its choice. Invalid/unreadable configuration disables automatic audio. Saving or restoring in that state requires a fresh explicit confirmation to replace it; cancel preserves the file and settings. A failed write does not grant consent to the next attempt. Diagnostics are generic local UI notices, not conversation messages, tools, model context or agent state.
+The inline field and the recovery confirmation render inside the same card. **Escape** cancels the field or confirmation; a second Escape closes the card. If the field, value or `y yes` cannot be shown in full (a resize or a very small terminal), Enter or `y` is refused instead of acting on something invisible. Invalid/unreadable configuration disables automatic audio: saving or restoring in that state requires a fresh explicit inline confirmation to replace it, cancel preserves the file and settings, and a failed write does not grant consent to the next attempt. Diagnostics are generic local UI notices, not conversation messages, tools, model context or agent state.
 
 ## Supported events and defaults
 
@@ -96,8 +95,8 @@ No system dependencies are installed automatically. No available player produces
 
 Manual acceptance remains pending for every applicable platform:
 
-- [ ] Navigate customize → Notifications in narrow/wide, regular/fullscreen terminals; cancel every dialog.
-- [ ] Assign a valid local WAV with spaces, preview off/muted, enable, verify live outcomes and independent mappings; verify bad files and consent cancellation preserve bytes.
+- [ ] Navigate customize → Notifications in narrow/wide, regular/fullscreen terminals; cancel every inline field and confirmation. Verify Enter, `f` and `p` stay inside the same card and never open another menu.
+- [ ] Assign a valid local WAV with spaces via `f`, preview off/muted with `p`, enable, verify live outcomes and independent mappings; verify bad files and consent cancellation preserve bytes.
 - [ ] Mute and reload/change session, then resume without replay; confirm no probe while off unless explicitly requested.
 - [ ] Quit/reload during probe, validation and active playback: no late spawn, overlap, stale write, leaked process or delayed exit.
 - [ ] Listen to builtin/custom tones and exercise missing player, failed player and hanging player on the real host.

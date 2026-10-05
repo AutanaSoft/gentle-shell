@@ -863,7 +863,7 @@ test("packed tarball excludes retired workflow paths while source retains legacy
 		assert.ok(packed.files.some(file => file.path === "tests/package-manifest.test.ts"), "other tests remain packed");
 		for (const path of [
 			"extensions/gentle-notifications.ts",
-			"lib/notification-audio.ts", "lib/notification-events.ts", "lib/notification-policy.ts",
+			"lib/notification-audio.ts", "lib/notification-customize.ts", "lib/notification-events.ts", "lib/notification-policy.ts",
 			"lib/notification-scheduler.ts", "lib/notification-service.ts", "lib/notification-ui.ts",
 			"assets/sounds/success.wav", "assets/sounds/error.wav", "assets/sounds/attention.wav",
 			"assets/sounds/LICENSE.md", "docs/sound-notifications.md", "docs/sound-notifications-proposal.md",
