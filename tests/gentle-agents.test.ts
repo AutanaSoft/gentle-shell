@@ -234,6 +234,68 @@ function fakeContext(tui: { requestRender(): void } = fakeTui, confirmResult: (t
 	return { ctx, widget, dialogs, overlays, customCompletions, customOptions };
 }
 
+for (const scenario of ["background", "task", "append-failure", "overflow", "bytes", "replacement", "task-replacement", "unsafe-id", "no-transport"] as const) {
+	test(`explicit run work publication: ${scenario}`, async t => {
+		const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+		gentleAgents(h.pi, {}, runtime.deps);
+		await h.fire("session_start", ctx);
+		const initial = { objective: "Keep objective", work: { area: "Owner", tasks: { historical: { area: "Old" } } as Record<string, { area: string }> } };
+		if (scenario === "overflow") for (let i = 0; i < 7; i++) initial.work.tasks[`old-${i}`] = { area: "Old" };
+		if (scenario === "bytes") initial.objective = "x".repeat(1980);
+		await h.tools.get("orchestrator_session_id")!.execute("publish", { state: initial }, undefined, undefined, ctx);
+		const before = h.entries.length;
+		if (scenario === "append-failure") t.mock.method(h.pi, "appendEntry", () => { throw new Error("private credential detail"); });
+		let allocated: TaskRecord;
+		const run = t.mock.method(AgentRunner.prototype, "run", request => {
+			assert.equal(Object.hasOwn(request, "work"), false);
+			assert.equal(request.prompt, "Map");
+			allocated = { id: scenario === "unsafe-id" ? "constructor" : "actual-allocated-id", agent: "explore", label: "Map", mode: request.mode,
+				status: TASK_STATUS.COMPLETED, cwd, prompt: request.prompt, parentSessionId: request.parentSessionId,
+				createdAt: 1, startedAt: 1, endedAt: 2, model: "fixture", thinking: undefined,
+				sessionPath: null, error: null, result: "Done", lastStep: "Done", lastActivityAt: 2,
+				turns: 1, toolCalls: 0, tokens: 0, cost: 0 };
+			if (scenario === "replacement") ctx.sessionManager = { ...ctx.sessionManager };
+			return allocated;
+		});
+		t.mock.method(AgentRunner.prototype, "waitForQuery", async () => undefined);
+		t.mock.method(AgentRunner.prototype, "waitFor", async () => {
+			if (scenario === "task-replacement") ctx.sessionManager = { ...ctx.sessionManager };
+			return allocated;
+		});
+		if (scenario === "no-transport") await h.fire("session_shutdown", ctx);
+		const result = await h.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "Map",
+			mode: scenario === "task" || scenario === "task-replacement" ? "task" : "background", work: { area: "Auth" } }, undefined, undefined, ctx);
+		assert.equal(run.mock.callCount(), 1);
+		assert.equal((result.details.gentleAgents as { taskId: string }).taskId, allocated!.id);
+		assert.equal(Object.hasOwn(allocated!, "work"), false);
+		const success = scenario === "background" || scenario === "task";
+		assert.equal((result.details.workPublication as { status: string }).status, success ? "recorded" : "unavailable");
+		assert.equal(h.entries.length, before + (success || scenario === "task-replacement" ? 1 : 0));
+		assert.doesNotMatch(result.content[0].text, /private credential/);
+		if (success) {
+			const state = (h.entries.at(-1)!.data as { state: typeof initial }).state;
+			assert.equal(state.objective, "Keep objective");
+			assert.deepEqual(state.work.tasks, { historical: { area: "Old" }, "actual-allocated-id": { area: "Auth" } });
+			const unclassified = await h.tools.get("subagent_run")!.execute("plain", { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
+			assert.equal(unclassified.details.workPublication, undefined);
+			assert.equal(h.entries.length, before + 1);
+		}
+	});
+}
+
+test("invalid run work rejects before foreign consent or allocation", async t => {
+	const h = fakePi(), runtime = deps(), { ctx, dialogs } = fakeContext();
+	gentleAgents(h.pi, {}, runtime.deps);
+	await h.fire("session_start", ctx);
+	const run = t.mock.method(AgentRunner.prototype, "run", () => { throw new Error("allocation reached"); });
+	for (const work of [{}, { tasks: { guessed: { area: "Auth" } } }, { area: "bad\n" }]) {
+		await assert.rejects(h.tools.get("subagent_run")!.execute("invalid", { agent: "explore", task: "Map",
+			repository_root: "/foreign", work }, undefined, undefined, ctx), /invalid-published-state/);
+	}
+	assert.equal(run.mock.callCount(), 0);
+	assert.deepEqual(dialogs, []);
+});
+
 // Records deps.schedule calls so a test fires exactly the timers it means to;
 // unrelated runner timers stay pending.
 function recordTimers(target: Partial<AgentsDeps>) {

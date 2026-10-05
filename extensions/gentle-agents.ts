@@ -39,6 +39,7 @@ import { discoverOrchestrators } from "../lib/orchestrator-discovery.ts";
 import { consultPublishedMetadata, unavailableMetadata, type MetadataReceipt } from "../lib/orchestrator-consultation.ts";
 import { HelperCostPermission } from "../lib/orchestrator-helper-consent.ts";
 import { OrchestratorStateCache } from "../lib/orchestrator-state.ts";
+import { decodeWorkDescriptor } from "../lib/orchestrator-work.ts";
 import { OrchestratorScopeCache, type RepositoryFact } from "../lib/orchestrator-scope.ts";
 import { createRpcActivityPublisher, type RpcActivityPublisher } from "../lib/agents-rpc-publisher.ts";
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
@@ -144,6 +145,22 @@ export function agentRuntimePaths(home: string, agentHome = join(home, ".pi", "a
 	const root = join(agentHome, "gentle-agents");
 	return { sessions: join(root, "sessions"), transcripts: join(root, "transcripts") };
 }
+
+const workDescriptorSchema = {
+	type: "object", additionalProperties: false,
+	description: "Explicit non-authoritative classification, not child context. Topic requires area; limits are UTF-8 bytes. No nested tasks.",
+	properties: {
+		area: { type: "string", maxLength: 64 }, topic: { type: "string", maxLength: 64 },
+		tags: { type: "array", maxItems: 8, uniqueItems: true, items: { type: "string", maxLength: 64 } },
+		refs: { type: "array", maxItems: 8, uniqueItems: true, items: {
+			type: "object", additionalProperties: false, required: ["kind", "repository", "id"], properties: {
+				kind: { type: "string", enum: ["issue", "pr", "task"] },
+				repository: { type: "string", maxLength: 256, description: "Explicit public host/owner/repo; not a URL or inferred identity." },
+				id: { type: "string", maxLength: 256, description: "Canonical positive decimal issue/PR ID or opaque historical task ID; never a peer route." },
+			},
+		} },
+	},
+};
 
 interface ToolText {
 	content: Array<{ type: "text"; text: string }>;
@@ -1452,7 +1469,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		return request;
 	};
 
-	const launch = async (ctx: ExtensionContext, request: TaskRequest, signal?: AbortSignal): Promise<ToolText> => {
+	const launch = async (ctx: ExtensionContext, request: TaskRequest, signal?: AbortSignal, publishWork?: (id: string) => void): Promise<ToolText> => {
 		if (isSingleShotMode(ctx.mode) && request.mode === AGENT_MODE.BACKGROUND) throw new Error(SINGLE_SHOT_BACKGROUND_ERROR);
 		if (retiredSddAgent(request.agent.name)) throw new Error("Retired SDD agents cannot be dispatched.");
 
@@ -1487,6 +1504,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const foreignRequest = foreignRequests.get(request);
 		if (launched && foreignRequest) foreignTasks.set(task.id, foreignRequest);
 		ownedTaskIds.add(task.id);
+		publishWork?.(task.id);
 		publishActivity(); // Admission's summary notification precedes runtime ownership.
 		store.subscribe(task.id, () => { publishActivity(); requestRender(); });
 		if (request.mode === AGENT_MODE.BACKGROUND) return text(`Started ${task.agent} in the background as task ${task.id}. Retain that id; completion is pushed automatically. Never sleep or periodically poll subagent_status/subagent_result for completion or cache maintenance. Inspect status only at a real orchestration decision boundary; never relaunch equivalent queued/running work.`, taskDetails(task));
@@ -1568,15 +1586,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				work: { type: "object", additionalProperties: false,
 					description: "Optional historical, non-authoritative classification; topic requires area. Text plus work JSON fits 2048 UTF-8 bytes. Exact duplicate tags/refs are rejected; no ref resolution or routing.",
 					properties: {
-						area: { type: "string", maxLength: 64 }, topic: { type: "string", maxLength: 64 },
-						tags: { type: "array", maxItems: 8, uniqueItems: true, items: { type: "string", maxLength: 64 } },
-						refs: { type: "array", maxItems: 8, uniqueItems: true, items: {
-							type: "object", additionalProperties: false, required: ["kind", "repository", "id"], properties: {
-								kind: { type: "string", enum: ["issue", "pr", "task"] },
-								repository: { type: "string", maxLength: 256, description: "Explicit public host/owner/repo, not a URL or guessed identity." },
-								id: { type: "string", maxLength: 256, description: "Positive canonical decimal issue/PR ID, or opaque historical task ID; never a peer route." },
-							},
-						} },
+						...workDescriptorSchema.properties,
+						tasks: { type: "object", maxProperties: 8, propertyNames: { type: "string", maxLength: 256 },
+							additionalProperties: workDescriptorSchema,
+							description: "Exact actual owner-declared task IDs, at most 256 UTF-8 bytes; controls, surrogates and __proto__/prototype/constructor rejected. Root-only; nonempty tasks alone are valid. Replacement omitting tasks clears annotations." },
 					},
 				},
 			} }] },
@@ -1766,12 +1779,15 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				task: { type: "string", description: "What the subagent must do, self-contained." },
 				label: { type: "string", description: "Three to six words naming the work, shown on the agents card, e.g. 'map footer data sources'." },
 				context: { type: "string", description: "Optional extra context appended to the task." },
+				work: workDescriptorSchema,
 				workspace_root: { type: "string", description: "Optional canonical main or linked Git worktree within the parent's same clone only; mutually exclusive with repository_root." },
 				repository_root: { type: "string", description: "Optional canonical independent Git repository; requires direct interactive session-scoped consent before queueing; mutually exclusive with workspace_root." },
 				mode: { type: "string", enum: ["task", "background"], description: "task waits for the result (default); background returns immediately." },
 			},
 		},
 		async (params, ctx, signal) => {
+			const work = Object.hasOwn(params, "work") ? decodeWorkDescriptor(params.work) : undefined;
+			const manager = ctx.sessionManager, sessionId = manager.getSessionId();
 			if (typeof params.agent !== "string" || !params.agent.trim() || typeof params.task !== "string" || !params.task.trim() || (params.context !== undefined && typeof params.context !== "string") || (params.label !== undefined && typeof params.label !== "string")) throw new Error("Subagent dispatch requires a named agent, non-empty task and string context/label.");
 			if (params.mode !== undefined && params.mode !== AGENT_MODE.TASK && params.mode !== AGENT_MODE.BACKGROUND) throw new Error("Subagent mode must be task or background.");
 			// An empty selector names no destination: only real roots are mutually
@@ -1791,7 +1807,22 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			});
 			const workspaceRoot = typeof params.workspace_root === "string" && params.workspace_root !== "" ? params.workspace_root : undefined;
 			const repositoryRoot = typeof params.repository_root === "string" && params.repository_root !== "" ? params.repository_root : undefined;
-			return launch(ctx, await buildRequest(ctx, agent, String(params.task ?? ""), typeof params.label === "string" ? params.label : undefined, typeof params.context === "string" ? params.context : undefined, mode, undefined, workspaceRoot, signal, repositoryRoot), signal);
+			const publication: { status: "recorded" | "unavailable" } = { status: "unavailable" };
+			const current = () => ctx.sessionManager === manager && manager.getSessionId() === sessionId && !!activeTransportFor(ctx);
+			const result = await launch(ctx, await buildRequest(ctx, agent, String(params.task ?? ""), typeof params.label === "string" ? params.label : undefined, typeof params.context === "string" ? params.context : undefined, mode, undefined, workspaceRoot, signal, repositoryRoot), signal, work ? id => {
+				try {
+					if (!current()) return;
+					const state = stateCache.get(manager)?.state ?? {};
+					stateCache.publish(manager, { ...state, work: { ...state.work, tasks: { ...state.work?.tasks, [id]: work } } }, (type, data) => pi.appendEntry(type, data));
+					if (current()) publication.status = "recorded";
+				} catch { /* Optional metadata cannot invalidate an allocated task. */ }
+			} : undefined);
+			if (!work) return result;
+			if (!current()) publication.status = "unavailable";
+			const note = publication.status === "recorded"
+				? "Work recorded in local curated state; peer advertisement is best-effort."
+				: "Work publication unavailable/unknown. Do not relaunch this allocated task. Use orchestrator_session_id with a bounded replacement state and this actual task ID when the owner session is active.";
+			return { ...result, content: [...result.content, { type: "text", text: note }], details: { ...result.details, workPublication: publication } };
 		},
 	);
 

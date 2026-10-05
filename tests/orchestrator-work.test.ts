@@ -2,11 +2,55 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { decodeCuratedState, decodePublishedState, OrchestratorStateCache, ORCHESTRATOR_STATE_ENTRY } from "../lib/orchestrator-state.ts";
 
+import { decodeWorkDescriptor } from "../lib/orchestrator-work.ts";
+
 const work = { area: "Auth", topic: "Login", tags: ["Review"], refs: [
 	{ kind: "issue", repository: "github.com/Owner/Repo", id: "12" },
 ] };
 const record = (schema: number, state: unknown) => ({ schema, sessionId: "s1", recordedAt: 1,
 	cwd: "/repo", source: "owner-curated", ownerReply: false, authority: "none", state });
+
+test("task-only work is detached, bounded, root-only and replaces rather than inherits", () => {
+	const tasks = { actual: structuredClone(work) };
+	const decoded = decodeCuratedState({ work: { tasks } })!;
+	tasks.actual.area = "Changed";
+	assert.deepEqual(decoded.work?.tasks?.actual, work);
+	assert.ok(decodeCuratedState({ work: { tags: [], refs: [], tasks: { actual: work } } }));
+	assert.equal(decodePublishedState(record(2, { work: { tasks: { actual: work } } }))?.schema, 2);
+	assert.equal(decodePublishedState(record(1, { work: { tasks: { actual: work } } })), undefined);
+	assert.throws(() => decodeWorkDescriptor({ tasks: { actual: work } }));
+	for (const tasks of [{}, { actual: { tasks: { child: work } } },
+		...['__proto__', 'constructor', 'prototype', 'bad\n', '\ud800', '😀'.repeat(65)].map(id => ({ [id]: work })),
+		Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`t${i}`, { area: "A" }]))])
+		assert.throws(() => decodeCuratedState({ work: { tasks } }));
+	assert.ok(decodeCuratedState({ work: { tasks: { ['😀'.repeat(64)]: { area: "A" } } } }));
+	const manager = { getSessionId: () => "s1", getCwd: () => "/repo", getBranch: () => [] };
+	const cache = new OrchestratorStateCache();
+	cache.load(manager);
+	cache.publish(manager, { work: { tasks: { actual: work } } }, () => {});
+	cache.get(manager)!.state!.work!.tasks!.actual.tags!.push("Detached");
+	assert.deepEqual(cache.get(manager)?.state?.work?.tasks?.actual, work);
+	cache.publish(manager, { work: { area: "Owner" } }, () => {});
+	assert.equal(cache.get(manager)?.state?.work?.tasks, undefined);
+	assert.throws(() => cache.publish(manager, { work }, () => cache.load({ ...manager })), /stale/);
+	assert.equal(cache.get(manager), undefined);
+});
+
+test("reentrant append changing the same manager session preserves the new owner cache", () => {
+	let sessionId = "owner-before";
+	let branch: { type: string; customType: string; data: unknown }[] = [];
+	const manager = { getSessionId: () => sessionId, getCwd: () => "/repo", getBranch: () => branch };
+	const cache = new OrchestratorStateCache();
+	cache.load(manager);
+	assert.throws(() => cache.publish(manager, { objective: "Old owner notes", work }, () => {
+		sessionId = "owner-after";
+		branch = [{ type: "custom", customType: ORCHESTRATOR_STATE_ENTRY,
+			data: { ...record(2, { objective: "New owner notes", work }), sessionId } }];
+		cache.load(manager);
+	}), /stale-published-state/);
+	assert.equal(cache.get(manager)?.sessionId, "owner-after");
+	assert.deepEqual(cache.get(manager)?.state, { objective: "New owner notes", work });
+});
 
 test("work publication round-trips through the existing curated state API", () => {
 	assert.deepEqual(decodeCuratedState({ progress: "Recorded", work }), { progress: "Recorded", work });

@@ -94,8 +94,34 @@ An object replacement omitting `work` clears classification; `state: null` withd
 the whole record. Work uses schema 2 in the same branch entry/cache/timestamp;
 text-only records remain schema 1. Targeted list and metadata consultation readback
 carry detached work with historical `recordedAt`, owner-curated and non-authoritative.
-No refs are resolved, no launch/filter/inheritance behavior is added, and no Git,
-network or model call is needed. Helper reasoning capture remains text-only.
+No refs are resolved and no filter or inheritance behavior is added. Classification
+itself needs no Git, network or model call. Helper reasoning capture remains text-only.
+
+### Annotate an allocated task
+
+`subagent_run` accepts optional `work` containing only `area`, `topic`, `tags` and
+`refs`. It validates before launch preparation or foreign-repository consent.
+After allocation and ownership, it publishes the whole owner-curated snapshot,
+preserving existing text/classification and adding `state.work.tasks[actualTaskId]`.
+Nothing is added to the child prompt, context or task record; unclassified launches
+and `subagent_continue` do not annotate or inherit work.
+
+The curated root allows up to eight `tasks`, each a validated descriptor without
+nested tasks. Nonempty tasks alone are valid work. Keys are exact task IDs, at most
+256 UTF-8 bytes, with no controls/surrogates or `__proto__`, `prototype`, `constructor`.
+The same 2,048-byte text-plus-work and 4-KiB record bounds apply. Replacement omitting
+`tasks` clears annotations; historical declarations are never silently pruned.
+These IDs are not child session IDs or evidence of current runtime ownership;
+future search/join behavior is not implemented in this slice.
+
+The launch result retains the allocated task and includes `workPublication.status`:
+`recorded` means local curated persistence, **not guaranteed peer advertisement**.
+`unavailable` means publication is unavailable/unknown, including capacity, append,
+transport or caller replacement failures. Do not relaunch the task to retry metadata.
+When the owner session is active, use `orchestrator_session_id.state` to explicitly
+replace the bounded snapshot with the actual ID. The timestamp applies to the whole
+publication, not individual annotation freshness. Foreground waiting and cancellation
+are unchanged; caller replacement prevents a stale `recorded` result.
 
 ### Consult a published snapshot
 
