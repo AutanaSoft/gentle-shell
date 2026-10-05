@@ -135,6 +135,11 @@ gentle-shell UI/timers, the gentle-agents host, gentle-todo, runtime-metrics, ge
 - Upstream `ccd669ac` (Alan, #1731 T32) added `./nan-provider.ts` as a third curated entry, because nan models failed in children. Kept, with user approval: the frozen fallback is now three entries. Forwarded children get nan-provider from the package anyway. #1773 updates the frozen-list test and the docs to the three entries.
 - Agents/child/gentle-agents suites 545/545; check-types and runtime `--check` pass.
 
+- Post-sync RDD reviews, both `approved` with no correction and authority burned:
+  - #1772 (`review-9dfe7af2bbd8b41e`): candidate `cc781909` (tree identical to `8f5f3f0c`) against a review-only base `644cec80` = #1771 merged with main `a8ecb141`. The writer-surface and #1558 code is intact; the injection only replaces the curated entries.
+  - #1773 (`review-79c81e810edd3a47`): `242626d5` against `8f5f3f0c`. The frozen-list test bites: removing `./nan-provider.ts` from the list, or deleting the file, fails it.
+- The T7 notes above (a fallback of "exactly [child-context, child-safety]", 178/178, self-checks at `:37-50`) describe the two-entry version. Since this sync the fallback has three entries (605/605), and the helper self-checks are at `tests/child-package-entrypoints.test.ts:49-65`. `childExtensionRequest` is cited by name; its line numbers moved.
+
 ## Delivery budget
 
 As of `f384d2a1`, the branch carries 322 changed lines against origin/main in code and tests (T2), plus about 100 in this ODD document, roughly 420 in total. The forecast for T2b-T7 is about 600-800 more lines, so a single PR would exceed the 400-line budget several times over. Proposed: stacked PRs to main, each landable on its own:
