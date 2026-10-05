@@ -24,7 +24,7 @@ Do not close owner-decision coverage or duplicate ODD-file indexing/automatic ag
 - [x] Publish bounded classification with compatible persistence and regression tests.
 - [x] Annotate actual allocated owned child task IDs explicitly, without child-prompt inheritance.
 - [x] Provide bounded basic work indexing/filter queries over existing discovery.
-- [ ] Extend queries with exact related-work source joins and declared/possible match reasons.
+- [x] Extend queries with exact related-work source joins and declared/possible match reasons.
 - [ ] Wire the existing public list tool and cover SDK/search/helper capture boundaries.
 
 ## Evidence
@@ -52,7 +52,12 @@ Do not close owner-decision coverage or duplicate ODD-file indexing/automatic ag
 - Empty recipient RED broadened to all peers; GREEN preserves direct empty selection and rejects invalid query targets before reads.
 - Eight affected suites: 46 passed; type baseline 186 and runtime eight unchanged.
 - Independent basic-library verification: 254 passed, no source/index drift; public wiring and related-source mode remain separate.
-- Helper capture intentionally still excludes `work`; public search is not yet implemented.
+- Basic library independent verification: 254 passed; PR #1785, `da374c32`, 376 A+D.
+- Related-source RED rejected the new field; GREEN resolves exact source and scoped match reasons.
+- Related library: 55 regression tests passed; type baseline 186 and runtime eight unchanged.
+- Source beyond the first 64 replaces one examined peer; targeted candidate scope remains exact.
+- Source/rows/reasons share the whole 16-KiB bound; unrelated/unavailable sources never broaden to an index.
+- Independent related verification: 259 passed, no source/index drift. Public tool/SDK/helper capture still not implemented.
 
 ## Remaining
 Scoped design, meaningful RED → GREEN per runnable behavior, independent verification,
