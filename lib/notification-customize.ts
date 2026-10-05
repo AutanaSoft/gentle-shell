@@ -15,8 +15,8 @@ const HUMAN_TONES: Readonly<Record<string, string>> = Object.freeze({
 	"builtin:error": "error tone",
 	"builtin:attention": "attention tone",
 });
-/** Footer hint shared by every row that can assign its own WAV (basic groups and per-event exceptions). */
-const SOUND_ROW_HINT = "Tab panes · Enter change · f WAV · p test · Esc close";
+/** Footer hint shared by every row that can assign its own sound (basic groups and per-event exceptions). */
+const SOUND_ROW_HINT = "Tab panes · Enter change · f sound · p test · Esc close";
 
 interface GroupPlan {
 	name: string;
@@ -30,7 +30,7 @@ const GROUP_PLANS: readonly GroupPlan[] = [
 	{ name: "Attention", recommended: "builtin:attention", targets: ["agent.attention"] },
 ];
 
-/** Human basename for a local WAV reference; never leaks the absolute path or the `file:` prefix. */
+/** Human basename for a local audio reference; never leaks the absolute path or the `file:` prefix. */
 function fileBasename(ref: NotificationSound): string {
 	const path = ref !== null && ref.startsWith("file:") ? ref.slice(5) : "";
 	return path.split(/[\\/]/).pop() || path;
@@ -56,14 +56,14 @@ function groupSelectionLabel(settings: NotificationSettings, group: GroupPlan): 
 /** Preview description for the Advanced per-event rows. */
 function soundDescription(sound: NotificationSound): string {
 	if (sound === null) return "silence";
-	return sound.startsWith("builtin:") ? `${sound} · builtin tone` : `local WAV ${sound.slice(5)}`;
+	return sound.startsWith("builtin:") ? `${sound} · builtin tone` : `local sound ${fileBasename(sound)}`;
 }
 
 /**
  * Builds the Notifications category for the shared customize card. The basic
  * card exposes the global switch, process mute and three independent type
  * groups (Success/Error/Attention) that each own their included tone or a
- * local WAV, plus the `Advanced` toggle. Per-event exceptions stay folded
+ * local sound (WAV/OGG/FLAC), plus the `Advanced` toggle. Per-event exceptions stay folded
  * behind `Advanced`. Every label/preview is read-only, and every action
  * resolves the owner facade at action time: importing or rendering this module
  * never discovers a player, reads a file or writes settings. Rows use the
@@ -112,22 +112,22 @@ export function buildNotificationRows(ctx: ExtensionContext): CustomizeRow[] {
 		if (!service.preview(ctx, sound)) notify("Preview unavailable or audio busy; try again.", true);
 	};
 	/**
-	 * The only place a local WAV is read: shared by the three basic groups and the
-	 * Advanced per-event rows. Reuses the service's validated `validateFile` (regular
-	 * PCM WAV, ≤2 MiB, ≤5 s, no shell/URLs) and re-checks owner/disposal before the
+	 * The only place a local sound is read: shared by the three basic groups and the
+	 * Advanced per-event rows. Reuses the service's validated `validateFile` (WAV/OGG/FLAC,
+	 * ≤2 MiB, ≤5 s, no shell/URLs) and re-checks owner/disposal before the
 	 * single atomic write. Returns the field task so the view keeps the card busy.
 	 */
 	const chooseFileFor = async (inline: CustomizeInline, targets: readonly NotificationEvent[], prefill: string): Promise<boolean> => {
 		const expected = serviceOrNotify();
 		if (!expected) return true;
-		const path = await inline.input({ prompt: "Local WAV path (absolute, no URLs)", value: prefill });
+		const path = await inline.input({ prompt: "Local audio path (WAV/OGG/FLAC, absolute, no URLs)", value: prefill });
 		if (path === undefined) return true;
 		const sound = `file:${path}` as const;
 		if (getNotificationService() !== expected) return true;
 		const valid = await expected.validateFile(ctx, sound);
 		// A replaced owner, closed card or changed session invalidates the validated choice before any write.
 		if (!valid || inline.disposed || getNotificationService() !== expected) {
-			if (!inline.disposed && getNotificationService() === expected) notify("Select a readable regular PCM WAV (≤2 MiB, ≤5 seconds); absolute local path only.", true);
+			if (!inline.disposed && getNotificationService() === expected) notify("Select a readable local sound (WAV/OGG/FLAC, ≤2 MiB, ≤5 seconds); absolute local path only.", true);
 			return true;
 		}
 		await setTargets(inline, targets, sound);
@@ -170,8 +170,8 @@ export function buildNotificationRows(ctx: ExtensionContext): CustomizeRow[] {
 				if (!current) return { title: `${group.name} sounds`, sample: "Unavailable in this session" };
 				const selection = groupSelection(current.settings, group);
 				const detail = selection.kind === "mixed" ? `mixes several sounds across ${group.targets.length} events · expand Advanced for per-event exceptions`
-					: selection.sound === null ? "silence · Enter cycles tone or assign your own WAV with f"
-					: selection.sound.startsWith("builtin:") ? `${selectionLabel(selection.sound)} · builtin tone · f assigns your own WAV`
+					: selection.sound === null ? "silence · Enter cycles tone or assign your own sound with f"
+					: selection.sound.startsWith("builtin:") ? `${selectionLabel(selection.sound)} · builtin tone · f assigns your own sound`
 					: `${selectionLabel(selection.sound)} (own group file) · f replaces it`;
 				return { title: `${group.name} sounds · applies to ${group.targets.length} event${group.targets.length === 1 ? "" : "s"}`, sample: `${detail} · p tests the selected sound` };
 			},
@@ -219,7 +219,7 @@ export function buildNotificationRows(ctx: ExtensionContext): CustomizeRow[] {
 			label: () => { const current = state(); const sound = current?.settings.audio.events[event] ?? null; return `${event}: ${sound === null ? "silence" : sound}`; },
 			preview: () => {
 				const sound = state()?.settings.audio.events[event] ?? null;
-				return { title: `${event} · audio event`, sample: `selected: ${soundDescription(sound)} · Enter cycles silence/success/error/attention · f local WAV · p test sound` };
+				return { title: `${event} · audio event`, sample: `selected: ${soundDescription(sound)} · Enter cycles silence/success/error/attention · f local sound · p test sound` };
 			},
 			action: async inline => {
 				const service = serviceOrNotify();

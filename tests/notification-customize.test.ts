@@ -44,7 +44,7 @@ function harness(options: { malformed?: boolean; failWrite?: boolean; events?: P
 	const owner = claimNotificationOwner(() => {}, { env: {},
 		read: () => ({ settings, source: "global_file", malformed: options.malformed ?? false, readError: false, globalFile: "/config/notifications.json" }),
 		write: (next: NotificationSettings) => { writes++; if (options.failWrite) throw Error("private"); settings = next; return "/config/notifications.json"; },
-		backend: { availability: async () => { probes++; return "available"; }, play: async (_sound, _signal, permit) => { if (permit.start()) played++; } },
+		backend: { availability: async () => { probes++; return "available"; }, capabilities: async () => new Set(["wav", "ogg", "flac"] as const), play: async (_sound, _signal, permit) => { if (permit.start()) played++; } },
 	});
 	owner.attach(ctx); getNotificationService()!.setMuted(ctx, false);
 	return { ctx, owner, notes, nested, get writes() { return writes; }, get probes() { return probes; }, get played() { return played; },
@@ -210,7 +210,7 @@ async function expandAndSelect(view: VisualCustomizeView, prefix: string): Promi
 	selectControl(view, prefix);
 }
 
-test("an in-flight local WAV validation keeps busy, blocking a second field and any write until it settles", async () => {
+test("an in-flight local sound validation keeps busy, blocking a second field and any write until it settles", async () => {
 	const h = harness(); try {
 		const rows = h.rows();
 		let resolveValidation!: (value: boolean) => void;
@@ -220,7 +220,7 @@ test("an in-flight local WAV validation keeps busy, blocking a second field and 
 		await expandAndSelect(view, "agent.failed:");
 		assert.match(view.render(160).join("\n"), /agent\.failed:/);
 		view.handleInput("f");
-		assert.match(view.render(160).join("\n"), /Local WAV path/);
+		assert.match(view.render(160).join("\n"), /Local audio path/);
 		view.handleInput(WAV_FIXTURE);
 		view.handleInput("\r");
 		await tick();
@@ -229,7 +229,7 @@ test("an in-flight local WAV validation keeps busy, blocking a second field and 
 		view.handleInput("f");
 		view.handleInput("\r");
 		await tick();
-		assert.doesNotMatch(view.render(160).join("\n"), /Local WAV path/, "a second f cannot open another field while busy");
+		assert.doesNotMatch(view.render(160).join("\n"), /Local audio path/, "a second f cannot open another field while busy");
 		assert.equal(h.writes, 0, "no write before the deferred validation resolves");
 		// Resolve: a single write, then busy releases for the next edit.
 		resolveValidation(true);
@@ -237,7 +237,7 @@ test("an in-flight local WAV validation keeps busy, blocking a second field and 
 		assert.equal(h.writes, 1, "the resolved validation writes exactly once");
 		assert.equal(getNotificationService()!.getState().settings.audio.events["agent.failed"], `file:${WAV_FIXTURE}`);
 		view.handleInput("f");
-		assert.match(view.render(160).join("\n"), /Local WAV path/, "busy is released so the next edit opens a fresh field");
+		assert.match(view.render(160).join("\n"), /Local audio path/, "busy is released so the next edit opens a fresh field");
 	} finally { h.owner.retire(); }
 });
 
@@ -248,13 +248,13 @@ test("Escape cancels the inline field while the async key task is busy and relea
 		const view = customizeView(rows);
 		await expandAndSelect(view, "agent.failed:");
 		view.handleInput("f");
-		assert.match(view.render(160).join("\n"), /Local WAV path/);
+		assert.match(view.render(160).join("\n"), /Local audio path/);
 		view.handleInput("\x1b");
 		await tick(); await tick();
-		assert.doesNotMatch(view.render(160).join("\n"), /Local WAV path/, "Escape cancels the inline field");
+		assert.doesNotMatch(view.render(160).join("\n"), /Local audio path/, "Escape cancels the inline field");
 		assert.equal(h.writes, 0, "a cancelled field never validates or writes");
 		view.handleInput("f");
-		assert.match(view.render(160).join("\n"), /Local WAV path/, "busy is released after the cancelled key task");
+		assert.match(view.render(160).join("\n"), /Local audio path/, "busy is released after the cancelled key task");
 	} finally { h.owner.retire(); }
 });
 
@@ -362,14 +362,14 @@ test("Advanced folds the thirteen detailed event rows inside the same card witho
 	} finally { h.owner.retire(); }
 });
 
-test("global controls and the fold toggle advertise no WAV key while group and detail rows do", async () => {
+test("global controls and the fold toggle advertise no sound key while group and detail rows do", async () => {
 	const h = harness(); try {
 		const rows = h.rows();
 		for (const prefix of ["Audio notifications:", "Audio: unmuted", "Advanced"])
-			assert.doesNotMatch(keyhintOf(findRow(rows, prefix)), /f WAV/, `${prefix} is not a per-type file target`);
-		for (const { prefix } of GROUPS) assert.match(keyhintOf(findRow(rows, prefix)), /f WAV/, `${prefix} assigns its own WAV`);
+			assert.doesNotMatch(keyhintOf(findRow(rows, prefix)), /f sound/, `${prefix} is not a per-type file target`);
+		for (const { prefix } of GROUPS) assert.match(keyhintOf(findRow(rows, prefix)), /f sound/, `${prefix} assigns its own sound`);
 		await findRow(rows, /^Advanced/).action(fakeInline());
-		for (const prefix of ["agent.failed:", "agent.completed:"]) assert.match(keyhintOf(findRow(rows, prefix)), /f WAV/);
+		for (const prefix of ["agent.failed:", "agent.completed:"]) assert.match(keyhintOf(findRow(rows, prefix)), /f sound/);
 	} finally { h.owner.retire(); }
 });
 
@@ -579,7 +579,7 @@ test("the rendered basic card shows three independent group choices and hides pe
 		for (const { prefix } of GROUPS) assert.match(frame(), new RegExp(prefix), `${prefix} must be visible on the basic card`);
 		assert.doesNotMatch(frame(), /agent\.failed:/, "no per-event technical row is visible before Advanced");
 		selectControl(view, "Success:");
-		assert.match(frame(), /f WAV/, "the selected group advertises its own file key");
+		assert.match(frame(), /f sound/, "the selected group advertises its own file key");
 		selectControl(view, "Advanced:");
 		view.handleInput("\r");
 		await tick();
