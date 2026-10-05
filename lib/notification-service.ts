@@ -1,5 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { NotificationPlayer } from "./notification-audio.ts";
+import { NotificationPlayer, validateNotificationWav } from "./notification-audio.ts";
+import { constants } from "node:fs";
+import { open } from "node:fs/promises";
 import {
 	DEFAULT_NOTIFICATION_SETTINGS, NOTIFICATION_EVENTS, isNotificationSettings, isNotificationSound,
 	resolveNotificationSettings, restoreNotificationPreset, writeNotificationSettings,
@@ -29,6 +31,8 @@ export interface NotificationService {
 	setMuted(ctx: ExtensionContext, muted: boolean): boolean;
 	preview(ctx: ExtensionContext, sound: Exclude<NotificationSound, null>): boolean;
 	availability(ctx: ExtensionContext): Promise<"available" | "unavailable">;
+	/** Selection-time validation only; never discovers or starts a player. */
+	validateFile(ctx: ExtensionContext, sound: `file:${string}`): Promise<boolean>;
 }
 interface Holder {
 	muted: boolean;
@@ -111,7 +115,7 @@ export function claimNotificationOwner(retireRuntime: () => void, deps: Notifica
 			supportedEvents: NOTIFICATION_EVENTS.filter(event => event !== "session.shutdown") }),
 		setConfig: (candidate, settings, options = {}) => {
 			if (!allowed(candidate) || !resolution || !isNotificationSettings(settings, deps.policy?.pathFlavor)
-				|| ((resolution.malformed || resolution.readError) && !options.confirmRecovery)) return false;
+				|| ((resolution.malformed || resolution.readError) && options.confirmRecovery !== true)) return false;
 			try {
 				const snapshot = structuredClone(settings);
 				const globalFile = (deps.write ?? (value => writeNotificationSettings(value, deps.policy)))(snapshot);
@@ -128,6 +132,22 @@ export function claimNotificationOwner(retireRuntime: () => void, deps: Notifica
 		},
 		preview: (candidate, sound) => allowed(candidate) && !shared.playback && isNotificationSound(sound, deps.policy?.pathFlavor)
 			&& sound !== null && !!scheduler?.preview(sound),
+		validateFile: async (candidate, sound) => {
+			if (!allowed(candidate) || !isNotificationSound(sound) || !sound.startsWith("file:")) return false;
+			const activeScheduler = scheduler;
+			try {
+				const handle = await open(sound.slice(5), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+				try {
+					const stat = await handle.stat();
+					if (!stat.isFile() || stat.size < 44 || stat.size > 2 * 1024 * 1024) return false;
+					const bytes = Buffer.alloc(stat.size + 1);
+					const { bytesRead } = await handle.read(bytes);
+					if (bytesRead !== stat.size) return false;
+					validateNotificationWav(bytes.subarray(0, bytesRead));
+					return allowed(candidate) && scheduler === activeScheduler;
+				} finally { await handle.close(); }
+			} catch { return false; }
+		},
 		availability: async candidate => {
 			if (!allowed(candidate)) return "unavailable";
 			const activeScheduler = scheduler;
@@ -147,6 +167,7 @@ export function claimNotificationOwner(retireRuntime: () => void, deps: Notifica
 			setMuted: (candidate, muted) => live() && service.setMuted(candidate, muted),
 			preview: (candidate, sound) => live() && service.preview(candidate, sound),
 			availability: candidate => live() ? service.availability(candidate) : Promise.resolve("unavailable"),
+			validateFile: (candidate, sound) => live() ? service.validateFile(candidate, sound) : Promise.resolve(false),
 		};
 	};
 	const retire = () => {

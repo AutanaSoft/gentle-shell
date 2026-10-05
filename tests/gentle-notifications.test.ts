@@ -162,6 +162,8 @@ for (const invalid of [{ malformed: true }, { readError: true }]) test(`invalid 
 		const service = getNotificationService()!; const state = service.getState(); assert.equal(state.settings.enabled, false);
 		state.settings.enabled = true; assert.equal(service.getState().settings.enabled, false);
 		assert.equal(service.setConfig(h.ctx, { ...state.settings, enabled: true }), false); assert.equal(h.writes, 0);
+		assert.equal(service.setConfig(h.ctx, { ...state.settings, enabled: true },
+			{ confirmRecovery: "yes" as unknown as boolean }), false); assert.equal(h.writes, 0);
 		assert.equal(service.setConfig(h.ctx, { ...state.settings, enabled: true }, { confirmRecovery: true }), true);
 		assert.equal(service.restorePreset(h.ctx), true); assert.equal(service.getState().settings.enabled, true);
 		assert.equal(service.getState().supportedEvents.includes("session.shutdown"), false);
