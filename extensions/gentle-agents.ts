@@ -25,8 +25,9 @@ import { AGENT_MODE, discoverAgents, formatModelRef, loadAgentsConfig, resolveAg
 import { readSessionProfileBinding, sessionOrPinModelProfiles } from "../lib/session-profile-binding.ts";
 import { resolveBackgroundSubagentsPolicy } from "../lib/background-subagents-policy.ts";
 import { installBackgroundCacheWarming } from "../lib/background-cache-warming.ts";
-import { isFinished, TASK_EVENT, TASK_STATUS, TaskStore, type AskRequest, type TaskRecord } from "../lib/agents-protocol.ts";
-import { AgentRunner, piCommand, abortReasonText, type AskAnswer, type RunnerDeps, type TaskRequest } from "../lib/agents-runner.ts";
+import { isFinished, MISSING_TOOLS_NOTE_PREFIX, TASK_EVENT, TASK_STATUS, TaskStore, type AskRequest, type TaskRecord } from "../lib/agents-protocol.ts";
+import { AgentRunner, piCommand, abortReasonText, REQUESTED_TOOLS_ENV, type AskAnswer, type RunnerDeps, type TaskRequest } from "../lib/agents-runner.ts";
+import { parseChildPackageInjection } from "../lib/child-package-injection.ts";
 import { ChildMessenger, type IpcEndpoint } from "../lib/agents-messaging.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceRegistry, type PresenceRecord, type ReceivedNotification, type SentNotification, type SessionPresenceCandidate } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener, WindowsSessionPresenceRegistry, type WindowsSessionRegistryPhaseObserver } from "../lib/windows-session-transport.ts";
@@ -128,12 +129,13 @@ export interface AgentsDeps extends RunnerDeps {
 	childExtensionPaths?: string[];
 }
 
-// gentle-shell#1587: children do not load the gentle-pi package in the
-// isolated Gentle Shell home, so context filtering and destructive-command
-// safety are passed to every child explicitly. Missing files are omitted;
-// installations must include both entries to provide the delegated boundary.
-// gentle-shell#1731 T32: the nan provider is registered by a gentle-pi
-// extension, so children need it too or a model routed to nan/* is not found.
+// gentle-shell#1587: fallback for a parent without the launcher's package
+// injection signal (#1690), e.g. a manual `pi -e <package>` launch. Children
+// then get context filtering, destructive-command safety, and the nan
+// provider (gentle-shell#1731 T32: a model routed to nan/* is not found
+// without it). When the signal is present, children load the whole package
+// instead. This list is frozen: new child-facing behavior ships inside the
+// package, never here. Missing files are omitted.
 export function childContextExtensionPaths(exists: (path: string) => boolean = existsSync): string[] {
 	try {
 		return ["./child-context.ts", "./child-safety.ts", "./nan-provider.ts"]
@@ -142,6 +144,16 @@ export function childContextExtensionPaths(exists: (path: string) => boolean = e
 	} catch {
 		return [];
 	}
+}
+
+// #1690: when the gentle-shell launcher injected the package with -e, the
+// host env carries that exact set and every child loads it too, which already
+// includes the curated entries. Without a valid signal (declared package,
+// regular gentle-pi, malformed value) children keep the curated entries.
+function childExtensionRequest(env: NodeJS.ProcessEnv, curated: string[] | undefined): Pick<TaskRequest, "extensionPaths" | "noExtensions"> {
+	const injection = parseChildPackageInjection(env);
+	if (injection) return { extensionPaths: [...injection.extensionPaths], ...(injection.noExtensions ? { noExtensions: true } : {}) };
+	return curated && curated.length > 0 ? { extensionPaths: [...curated] } : {};
 }
 
 export function agentRuntimePaths(home: string, agentHome = join(home, ".pi", "agent")): { sessions: string; transcripts: string } {
@@ -227,6 +239,29 @@ function messageText(content: unknown): string {
 function ownedChildIpc(env: NodeJS.ProcessEnv, candidate: IpcEndpoint | undefined): IpcEndpoint | undefined {
 	if (env.GENTLE_PI_AGENTS_CHILD !== "1" || !env.GENTLE_PI_AGENTS_OWNED_IPC || !candidate || typeof candidate.send !== "function" || typeof candidate.on !== "function") return undefined;
 	return candidate;
+}
+
+// Pi drops unknown --tools names without a diagnostic (#1690), so the child
+// reports them once through the one notify the parent keeps. The check runs
+// at the first before_agent_start, not session_start: Pi runs session_start
+// handlers in extension load order, so an extension loaded after this one may
+// still register its tools there. MCP tools register later still, and entries
+// that cannot be tool names (the `"*": false` frontmatter entry) are not
+// checkable.
+function registerMissingToolsCheck(pi: ExtensionAPI, env: NodeJS.ProcessEnv): void {
+	const requested = (env[REQUESTED_TOOLS_ENV] ?? "").split(",").map((name) => name.trim())
+		.filter((name) => /^[A-Za-z0-9_.:-]+$/.test(name) && !name.startsWith("mcp__"));
+	if (requested.length === 0) return;
+	let reported = false;
+	pi.on("before_agent_start", (_event, ctx) => {
+		if (reported) return;
+		reported = true;
+		try {
+			const available = new Set(pi.getAllTools().map((tool) => tool.name));
+			const missing = [...new Set(requested.filter((name) => !available.has(name)))];
+			if (missing.length > 0) ctx.ui.notify(`${MISSING_TOOLS_NOTE_PREFIX} ${missing.join(", ")}`, "warning");
+		} catch { /* A diagnostic must never break the child's first prompt. */ }
+	});
 }
 
 function registerChildMessaging(pi: ExtensionAPI, ipc: IpcEndpoint): void {
@@ -390,6 +425,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			return;
 		}
 		if (childIpc) registerChildMessaging(pi, childIpc);
+		registerMissingToolsCheck(pi, env);
 		return;
 	}
 	if (!agentsEnabled(env)) return;
@@ -1468,7 +1504,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			thinking: profile.thinking,
 			sessionDir,
 			resumeSessionPath: resume,
-			...(deps.childExtensionPaths && deps.childExtensionPaths.length > 0 ? { extensionPaths: [...deps.childExtensionPaths] } : {}),
+			...childExtensionRequest(deps.env, deps.childExtensionPaths),
 			// A writer claims its surfaces in its canonical worktree root for its queued
 			// and running lifetime; a continuation is a new task and claims them again.
 			...(isBoundedWriter(agent.name) && surfaces ? { writerSurfaces: surfaces, writerRoot: canonicalWriterRoot(target ?? parentWorktreeRoot, foreign ? resolveSessionWorktree : deps.resolveWorktree) } : {}),

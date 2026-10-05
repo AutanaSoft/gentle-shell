@@ -15,18 +15,19 @@ import { generateUnifiedPatch, type ExtensionAPI, type ExtensionContext } from "
 import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
 import { visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { sidebarState } from "../lib/shell-sidebar.ts";
+import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection } from "../lib/child-package-injection.ts";
 import gentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceRegistry } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener } from "../lib/windows-session-transport.ts";
 import { historyDir, loadHistory, saveTask } from "../lib/agents-history.ts";
 import { STALE_COMPLETION_MS } from "../lib/agents-completion-delivery.ts";
-import { applyTaskEvent, emptyThread, TASK_EVENT, TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
+import { applyTaskEvent, emptyThread, MISSING_TOOLS_NOTE_PREFIX, TASK_EVENT, TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
 import { NativePointerScope } from "../lib/native-pointer-region.ts";
 import { PresenceCursor, PresencePublisher, listPresence, readActivity, readDiscovery } from "../lib/orchestrator-presence.ts";
 import { OrchestratorScopeCache } from "../lib/orchestrator-scope.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
-import { AgentRunner } from "../lib/agents-runner.ts";
+import { AgentRunner, REQUESTED_TOOLS_ENV } from "../lib/agents-runner.ts";
 import { bindSessionRepositoryPreparation } from "../lib/bounded-writer-admission.ts";
 import { bindSessionProfile, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
 import { CHILD_METRICS_EVENT } from "../lib/runtime-metrics-children.ts";
@@ -1576,6 +1577,68 @@ test("live-only directory traverses presence overflow, excludes expired and othe
 	await panel.opened;
 });
 
+// #1690: Pi drops unknown --tools names without a diagnostic, so the child
+// compares the runner's requested list with its own tools at the first
+// before_agent_start, after every extension's session_start has registered.
+function missingToolsChild(env: NodeJS.ProcessEnv, toolNames: string[] | (() => string[])) {
+	const child = fakePi();
+	Object.assign(child.pi, { getAllTools: () => (typeof toolNames === "function" ? toolNames() : toolNames).map((name) => ({ name })) });
+	gentleAgents(child.pi, { GENTLE_PI_AGENTS_CHILD: "1", ...env });
+	const notes: Array<{ message: string; type: unknown }> = [];
+	const ctx = { hasUI: true, ui: { notify: (message: string, type?: unknown) => notes.push({ message, type }) } } as unknown as ExtensionContext;
+	return {
+		start: () => child.fire("session_start", ctx, { type: "session_start", reason: "startup" }),
+		prompt: () => child.fire("before_agent_start", ctx, { type: "before_agent_start", prompt: "go", systemPrompt: "base", systemPromptOptions: {} }),
+		notes,
+	};
+}
+
+test("a child warns once about requested tools it does not have", async () => {
+	const child = missingToolsChild({ [REQUESTED_TOOLS_ENV]: "read,gentle_review_scope,grep,codegraph,subagent_parent_message" }, ["read", "grep", "subagent_parent_message"]);
+	await child.start();
+	assert.deepEqual(child.notes, [], "session_start runs before later extensions register their tools");
+	assert.deepEqual(await child.prompt(), [undefined], "the check never alters the prompt");
+	assert.deepEqual(child.notes, [{ message: `${MISSING_TOOLS_NOTE_PREFIX} gentle_review_scope, codegraph`, type: "warning" }]);
+	await child.start();
+	assert.deepEqual(await child.prompt(), [undefined]);
+	assert.equal(child.notes.length, 1, "later prompts and session replacements do not repeat the warning");
+});
+
+test("a child does not report a tool that a later extension registers in its own session_start", async () => {
+	const tools = ["read", "grep"];
+	const child = missingToolsChild({ [REQUESTED_TOOLS_ENV]: "read,late_tool" }, () => tools);
+	await child.start();
+	// Pi runs session_start handlers in load order; an extension loaded after
+	// gentle-agents registers late_tool only now.
+	tools.push("late_tool");
+	const results = await child.prompt();
+	assert.deepEqual(child.notes, []);
+	assert.deepEqual(results, [undefined]);
+});
+
+test("a child stays quiet when every checkable requested tool exists or nothing was requested", async () => {
+	for (const [label, env] of [
+		["all present", { [REQUESTED_TOOLS_ENV]: "read,grep,subagent_parent_message" }],
+		["MCP names register late", { [REQUESTED_TOOLS_ENV]: "read,mcp__github__search,mcp__x" }],
+		["frontmatter wildcard entries are not tool names", { [REQUESTED_TOOLS_ENV]: "read,\"*\": false,*, ," }],
+		["no requested list", {}],
+		["empty requested list", { [REQUESTED_TOOLS_ENV]: "" }],
+	] as const) {
+		const child = missingToolsChild(env, ["read", "grep", "subagent_parent_message"]);
+		await child.start();
+		const results = await child.prompt();
+		assert.ok(results.every((result) => result === undefined), label);
+		assert.deepEqual(child.notes, [], label);
+	}
+});
+
+test("the missing-tools check never throws into before_agent_start", async () => {
+	const child = missingToolsChild({ [REQUESTED_TOOLS_ENV]: "read,codegraph" }, () => { throw new Error("tool registry unavailable"); });
+	await child.start();
+	assert.deepEqual(await child.prompt(), [undefined]);
+	assert.deepEqual(child.notes, []);
+});
+
 test("retired managed SDD child envelopes deny all tools without registering a delegation host", () => {
 	for (const env of [{ GENTLE_PI_RESEARCH_TOOLS: '["read"]' }, { GENTLE_PI_RESEARCH_SELECTION: '{}' }, { GENTLE_PI_RESEARCH_ARTIFACT: '{}' }, { GENTLE_PI_SDD_REMEDIATION_PLAN: '{}' }]) {
 		const hooks = new Map<string, (event: { toolName: string }) => { block: boolean }>();
@@ -2191,7 +2254,7 @@ test("default Node spawn adapter distinguishes IPC-only and permission-capable c
 			assert.equal(captured[index]?.command, "/fixture/pi");
 			assert.deepEqual(captured[index]?.args, args);
 			assert.equal(captured[index]?.options.cwd, permissionChannel ? canonicalGitCwd : nonGitCwd);
-			assert.deepEqual(captured[index]?.options.env, { PATH: "/bin", FIXTURE: fixture, GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: ownedIpc, ...(permissionChannel ? { GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3" } : {}) });
+			assert.deepEqual(captured[index]?.options.env, { PATH: "/bin", FIXTURE: fixture, GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: ownedIpc, ...(permissionChannel ? { GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3" } : {}), [REQUESTED_TOOLS_ENV]: "read,grep,subagent_parent_message" });
 			assert.equal(captured[index]?.options.shell, undefined, "the adapter does not invoke a shell");
 			assert.equal(captured[index]?.options.windowsHide, true, "the adapter always hides a Windows console");
 			assert.equal(captured[index]?.options.detached, process.platform !== "win32", "the adapter forwards the runner's platform selection");
@@ -5428,6 +5491,41 @@ test("a writer continuation without its own section inherits the admitted surfac
 	await continued;
 	await h.fire("session_shutdown", ctx);
 	rmSync(profile, { recursive: true, force: true });
+});
+
+// #1690: the launcher's injection signal in the host env replaces the curated
+// child entries; without a valid signal children keep the curated entries.
+test("children receive the launcher's package injection instead of the curated entries", async () => {
+	const curated = ["/curated/child-context.ts", "/curated/child-safety.ts"];
+	const takeover = ["/agent/npm/node_modules/other", "/agent/extensions/a b.ts", "/pkg"];
+	const scenarios: Array<{ name: string; value: string | undefined; expected: string[] }> = [
+		{ name: "takeover", value: encodeChildPackageInjection({ noExtensions: true, extensionPaths: takeover }), expected: ["--no-extensions", ...takeover.flatMap((path) => ["--extension", path])] },
+		{ name: "package-root", value: encodeChildPackageInjection({ noExtensions: false, extensionPaths: ["/pkg"] }), expected: ["--extension", "/pkg"] },
+		{ name: "absent", value: undefined, expected: curated.flatMap((path) => ["--extension", path]) },
+		{ name: "malformed", value: JSON.stringify({ version: 1, noExtensions: true, extensionPaths: ["relative/pkg"] }), expected: curated.flatMap((path) => ["--extension", path]) },
+	];
+	for (const scenario of scenarios) {
+		const h = fakePi();
+		const runtime = deps();
+		runtime.deps.childExtensionPaths = curated;
+		runtime.deps.env = { PATH: "/bin", ...(scenario.value === undefined ? {} : { [CHILD_PACKAGE_INJECTION_ENV]: scenario.value }) };
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx } = fakeContext();
+		await h.fire("session_start", ctx);
+		try {
+			await h.tools.get("subagent_run")!.execute(`injection-${scenario.name}`, { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
+			await tick();
+			assert.equal(runtime.spawned.length, 1, scenario.name);
+			const argv = runtime.spawned[0]!;
+			const start = argv.indexOf("--session-dir") + 2;
+			assert.deepEqual(argv.slice(start, start + scenario.expected.length), scenario.expected, scenario.name);
+			assert.equal(argv[start + scenario.expected.length], "--model", `${scenario.name}: no other extension arguments`);
+			assert.equal(argv[argv.indexOf("--tools") + 1], "read,grep,subagent_parent_message", scenario.name);
+		} finally {
+			await h.fire("session_shutdown", ctx);
+			await tick();
+		}
+	}
 });
 
 // gentle-shell#1731 T4 (S2, AC6): subagent_run and subagent_continue admit a
