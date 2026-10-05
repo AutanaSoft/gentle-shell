@@ -101,6 +101,12 @@ gentle-shell UI/timers, the gentle-agents host, gentle-todo, runtime-metrics, ge
 - T1-T2 live on `fix/1690-standalone-child-package` (worktree `gentle-shell-worktrees/fix-1690-standalone-child-package`). Its RDD review of `a67bb7f5` runs from a separate native Claude Code session, and nothing else writes in that worktree while the review is open.
 - T3 onward continue on `fix/1690-child-package-forwarding` (worktree `gentle-shell-worktrees/fix-1690-child-package-forwarding`), stacked on `a67bb7f5`. If the review adds a correction commit, rebase this branch onto it before delivery.
 
+## Merge of origin/main after #1770 landed (2026-10-05)
+
+- #1770 merged as `a8ecb141`. #1772 conflicted with upstream #1558 (session routing) and the #1731 work (writer surfaces). Resolution: keep both sides. `childExtensionRequest` replaces the curated spread, and the new `writerSurfaces`/`writerRoot` request fields stay next to `noExtensions`; upstream tests sit next to the T4 test.
+- Upstream `ccd669ac` (Alan, #1731 T32) added `./nan-provider.ts` as a third curated entry, because nan models failed in children. Kept, with user approval: the frozen fallback is now three entries. Forwarded children get nan-provider from the package anyway.
+- Agents/child/gentle-agents suites 545/545; check-types and runtime `--check` pass.
+
 ## Delivery budget
 
 As of `f384d2a1`, the branch carries 322 changed lines against origin/main in code and tests (T2), plus about 100 in this ODD document, roughly 420 in total. The forecast for T2b-T7 is about 600-800 more lines, so a single PR would exceed the 400-line budget several times over. Proposed: stacked PRs to main, each landable on its own:
