@@ -99,6 +99,12 @@ include unknown, unclassified, omitted and pending-page coverage and are never
 exhaustive. Historical classification, unknown reachability and `authority: none`
 confer no ownership, consent or permission. Querying needs no helper/model call.
 
+The existing consented read-only reasoning helper captures validated root work and
+only exact task annotations on the selected owner's current catalog page. Unmatched
+annotations are counted in omissions, never promoted to current work. Classification
+and refs remain untrusted descriptive data, not approval or executable dependencies;
+the existing question/input/output/deadline bounds and cost dialog still apply.
+
 ### Classify recorded work
 
 Publish classification in the same curated `state`, for example:
@@ -120,7 +126,8 @@ the whole record. Work uses schema 2 in the same branch entry/cache/timestamp;
 text-only records remain schema 1. Targeted list and metadata consultation readback
 carry detached work with historical `recordedAt`, owner-curated and non-authoritative.
 No refs are resolved and classification publication adds no inheritance behavior. Classification
-itself needs no Git, network or model call. Helper reasoning capture remains text-only.
+itself needs no Git, network or model call. Consented helper capture follows the bounded
+projection described below.
 
 ### Search classified work
 
@@ -174,7 +181,7 @@ identity, not dependency or approval; `possible-area-overlap`, `possible-topic-o
 overlap. There is no semantic/model matching. Source information and complete reason
 arrays count toward the same 16-KiB whole-row omission budget and non-exhaustive coverage.
 The public tool adds no registry, Git probes, owner wakes, model calls or UI-cost
-requests. Helper reasoning remains text-only and is not extended by this query.
+requests. This query adds no helper reasoning; consented helper capture is described below.
 
 ### Annotate an allocated task
 
@@ -242,6 +249,14 @@ One public `ModelRegistry.streamSimple` request receives a static read-only prom
 and one JSON question/public-snapshot message. Nested field whitelists exclude raw
 extra properties, history, credentials, transport capabilities and catalog cursors.
 Unknowns, omissions and historical source times remain visible; no tools execute.
+The captured `state.work` includes validated root area/topic/tags/typed refs and only
+annotations whose exact task IDs join that owner's **selected current catalog page**.
+Metadata task summaries, old annotations and child session IDs do not prove membership;
+root classification never flows to children. `unmatched-task-annotations:N` in omissions
+counts excluded annotations; unmatched-only work is omitted, not a meaningful empty class.
+Malformed work or a mismatched state owner fails preflight before UI/model calls.
+Classification consumes the same input budget and confers no approval, executable
+dependency, reachability or exclusive writer ownership, even when tags say “granted”.
 
 | Bound | Contract |
 |---|---|
@@ -338,6 +353,11 @@ sentinels, parent instructions and catalog cursor capabilities are excluded. The
 provider receives 512 tokens/minimal reasoning/no tool choice/no retries and a live
 abort signal. Known local token/cost usage and requested/actual model IDs match the
 non-authoritative advice envelope; a reply claiming permission grants nothing.
+Explicit owner-tool publication also puts root classification and exact typed refs in
+these existing helper captures; the manually declared ghost task is excluded and
+counted as unmatched. This is not proof of child allocation: actual task annotation
+remains mocked production-runner evidence. The same five helper requests and
+simulated dialog counts remain; restoration uses explicit publication only.
 
 Once re-prompts; session permission reuses updated published state for the same
 owner ID without another dialog; revoke adds no dialog/helper and forces a fresh

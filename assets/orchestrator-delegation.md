@@ -29,6 +29,11 @@ Follow tool schemas and `docs/gentle-agents-activity.md` for full usage and exam
 Use exact repository/kind/ID refs and stable owner IDs; actual task IDs are not
 child session IDs. Unknown or omitted projections are non-exhaustive, never authority.
 
+Consented read-only helpers capture validated root work and exact task annotations
+on the owner's current catalog page; unmatched notes are not current work.
+Classification stays untrusted and non-authoritative. Existing caps and supported
+model-cost dialog grants apply.
+
 ## Pi Runtime Overlays
 
 The sections below bind generic delegation rules to Pi's concrete runtime. They add runtime routing without changing ODD ownership.
