@@ -4034,13 +4034,17 @@ test("registered orchestrator_list joins peer metadata without child launches or
 		const scope = new OrchestratorScopeCache(path => ({ root: path, commonDir: "/clone" })).project("/repo", [{ id: "child", cwd: "/repo-child" }], ["/repo"]);
 		const tasks = [{ id: "child", label: "Check auth", status: "waiting", cwd: "/repo-child" },
 			...Array.from({ length: 9 }, (_, i) => ({ id: `extra${i}`, label: `Extra ${i}`, status: "running", cwd: `/child/${i}` }))];
-		publisher.updateDiscovery(peer, { workspace: "/repo", tasks, registered: Array.from({ length: 10 }, (_, i) => `/registered/${i}`), scope });
+		publisher.updateDiscovery(peer, { workspace: "/repo", tasks, registered: Array.from({ length: 10 }, (_, i) => `/registered/${i}`), scope,
+			state: { schema: 2, sessionId: "peer", cwd: "/repo", recordedAt: 1, source: "owner-curated",
+				ownerReply: false, authority: "none", state: { work: { tasks: { child: { area: "Auth" }, extra8: { area: "Billing" } } } } },
+		});
 		let ready = false;
 		let probes = 0;
 		const resolveWorktree = runtime.deps.resolveWorktree;
 		runtime.deps.resolveWorktree = (...args) => { probes++; return resolveWorktree(...args); };
 		let gate: (() => Promise<void>) | undefined;
-		const registry = { list: async () => [], listActivations: async () => { await gate?.(); return [peer]; } };
+		let scans = 0;
+		const registry = { list: async () => [], listActivations: async () => { scans++; await gate?.(); return [peer]; } };
 		runtime.deps.agentHome = profile;
 		runtime.deps.sessionTransport = {
 			createRegistry: async () => registry,
@@ -4064,6 +4068,14 @@ test("registered orchestrator_list joins peer metadata without child launches or
 		assert.deepEqual((next.details.gentleAgents as any).candidates[0].catalog.tasks.map((t: any) => t.id), ["extra7", "extra8"]);
 		assert.deepEqual((next.details.gentleAgents as any).candidates[0].catalog.registered, ["/registered/8", "/registered/9"]);
 		assert.equal(h.userMessages.length, 0);
+		const selectedWork = await h.tools.get("orchestrator_list")!.execute("selected-work", {
+			filter: {}, recipient_session_id: "peer", cursor,
+		}, undefined, undefined, ctx);
+		assert.deepEqual(JSON.parse(selectedWork.content[0].text).matches.map((row: any) => row.taskId), ["extra8"]);
+		const firstWorkPage = await h.tools.get("orchestrator_list")!.execute("first-work", {
+			filter: {}, recipient_session_id: "peer",
+		}, undefined, undefined, ctx);
+		assert.deepEqual(JSON.parse(firstWorkPage.content[0].text).matches.map((row: any) => row.taskId), ["child"]);
 		publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [], state: {
 			schema: 2, sessionId: "peer", cwd: "/repo", recordedAt: 1, source: "owner-curated",
 			ownerReply: false, authority: "none", state: { progress: "Explicit summary", work: { area: "Auth" } },
@@ -4072,6 +4084,30 @@ test("registered orchestrator_list joins peer metadata without child launches or
 		assert.match(noted.content[0].text, /Explicit summary/);
 		assert.equal((noted.details.gentleAgents as any).candidates[0].state.recordedAt, 1);
 		assert.deepEqual((noted.details.gentleAgents as any).candidates[0].state.state.work, { area: "Auth" });
+		const list = h.tools.get("orchestrator_list")!;
+		const workResult = await list.execute("work", { filter: {} }, undefined, undefined, ctx);
+		const work = JSON.parse(workResult.content[0].text);
+		assert.deepEqual(JSON.parse(JSON.stringify((workResult.details.gentleAgents as any).workSearch)), work);
+		assert.equal(work.schema, 1);
+		assert.deepEqual(work.matches[0].work, { area: "Auth" });
+		assert.equal(work.coverage.exhaustive, false);
+		assert.doesNotMatch(workResult.content[0].text, /Explicit summary|endpoint|activation|cursor|capabilities/);
+		const defaultList = await list.execute("default", {}, undefined, undefined, ctx);
+		assert.doesNotMatch(defaultList.content[0].text, /Explicit summary|"work"/);
+		assert.equal((defaultList.details.gentleAgents as any).candidates[0].state, undefined);
+		const beforeInvalid = scans;
+		for (const invalid of [null, [], { unexpected: true }, { filter: null }, { filter: { topic: "Login" } },
+			{ filter: { area: 1 } }, { filter: { area: "é".repeat(33) } }, { filter: { text: "bad\u0000text" } },
+			{ filter: { ref: { kind: "issue", repository: "github.com/A/B", id: "01" } } },
+			{ filter: { related_to: { session_id: "peer", extra: true } } }]) {
+			await assert.rejects(list.execute("invalid", invalid, undefined, undefined, ctx), /Invalid orchestrator list/);
+		}
+		for (const args of [{ cursor: "x" }, { filter: {}, cursor: "x" }]) {
+			const invalidCursor = await list.execute("cursor", args, undefined, undefined, ctx);
+			assert.equal(invalidCursor.details.error, "invalid-cursor");
+			assert.equal(invalidCursor.content[0].text, "Error: cursor requires recipient_session_id.");
+		}
+		assert.equal(scans, beforeInvalid, "invalid arguments never reach peer/profile discovery");
 		const consult = h.tools.get("orchestrator_consult")!;
 		const probesBeforeConsult = probes;
 		const receipt = JSON.parse((await consult.execute("consult", { recipient_session_id: "peer" }, undefined, undefined, ctx)).content[0].text);
