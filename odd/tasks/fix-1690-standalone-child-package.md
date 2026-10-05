@@ -129,6 +129,12 @@ gentle-shell UI/timers, the gentle-agents host, gentle-todo, runtime-metrics, ge
   - PR4 polish `8a40d5f4..172aaddd` (`review-238aba2660e2a7fd`): no findings.
 - Line numbers cited in this document refer to the pre-rebase code.
 
+## Merge of origin/main after #1770 landed (2026-10-05)
+
+- #1770 merged as `a8ecb141`. #1772 conflicted with upstream #1558 (session routing) and the #1731 work (writer surfaces). Resolution: keep both sides. `childExtensionRequest` replaces the curated spread, and the new `writerSurfaces`/`writerRoot` request fields stay next to `noExtensions`; upstream tests sit next to the T4 test.
+- Upstream `ccd669ac` (Alan, #1731 T32) added `./nan-provider.ts` as a third curated entry, because nan models failed in children. Kept, with user approval: the frozen fallback is now three entries. Forwarded children get nan-provider from the package anyway. #1773 updates the frozen-list test and the docs to the three entries.
+- Agents/child/gentle-agents suites 545/545; check-types and runtime `--check` pass.
+
 ## Delivery budget
 
 As of `f384d2a1`, the branch carries 322 changed lines against origin/main in code and tests (T2), plus about 100 in this ODD document, roughly 420 in total. The forecast for T2b-T7 is about 600-800 more lines, so a single PR would exceed the 400-line budget several times over. Proposed: stacked PRs to main, each landable on its own:
