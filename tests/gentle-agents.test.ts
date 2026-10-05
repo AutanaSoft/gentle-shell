@@ -421,15 +421,17 @@ test("cache warming follows actual Gentle Agents ownership and completion lifecy
 	await decide(undefined);
 });
 
-const PRINT_BACKGROUND_ERROR = "Background subagents are unavailable in print mode: pi -p exits before a parent session can receive results. Use task mode, RPC mode, or interactive Pi.";
+// `pi -p` and `pi --mode json` share pi's one-shot runner: it disposes the
+// runtime once the prompt returns, so neither can receive a background result.
+const SINGLE_SHOT_BACKGROUND_ERROR = "Background subagents are unavailable in single-shot modes: pi -p and pi --mode json exit before a parent session can receive results. Use task mode, RPC mode, or interactive Pi.";
 
-for (const continuation of [false, true]) {
-	test(`print mode rejects background ${continuation ? "continuation" : "launch"} before allocating a task`, async (t) => {
+for (const hostMode of ["print", "json"] as const) for (const continuation of [false, true]) {
+	test(`${hostMode} mode rejects background ${continuation ? "continuation" : "launch"} before allocating a task`, async (t) => {
 		const h = fakePi();
 		const runtime = deps();
 		gentleAgents(h.pi, {}, runtime.deps);
 		const { ctx } = fakeContext();
-		Object.assign(ctx, { mode: "print", hasUI: false });
+		Object.assign(ctx, { mode: hostMode, hasUI: false });
 		await h.fire("session_start", ctx);
 		let taskId: string | undefined;
 		if (continuation) {
@@ -448,7 +450,7 @@ for (const continuation of [false, true]) {
 		const tool = h.tools.get(continuation ? "subagent_continue" : "subagent_run")!;
 		await assert.rejects(tool.execute("denied", continuation
 			? { task_id: taskId, prompt: "Follow up", mode: "background" }
-			: { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx), { message: PRINT_BACKGROUND_ERROR });
+			: { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx), { message: SINGLE_SHOT_BACKGROUND_ERROR });
 		await tick();
 		assert.equal(run.mock.callCount(), 0, "rejection must precede runner task ID allocation");
 		assert.equal(runtime.spawned.length, spawnedBefore, "no child spawned");
@@ -458,8 +460,9 @@ for (const continuation of [false, true]) {
 	});
 }
 
-for (const mode of ["print", "tui", "rpc"] as const) {
-	test(`${mode} preserves ${mode === "print" ? "bounded task" : "background"} execution`, async () => {
+for (const mode of ["print", "json", "tui", "rpc"] as const) {
+	const singleShot = mode === "print" || mode === "json";
+	test(`${mode} preserves ${singleShot ? "bounded task" : "background"} execution`, async () => {
 		const h = fakePi();
 		const runtime = deps();
 		gentleAgents(h.pi, {}, runtime.deps);
@@ -467,17 +470,17 @@ for (const mode of ["print", "tui", "rpc"] as const) {
 		Object.assign(ctx, { mode, hasUI: mode === "tui" });
 		await h.fire("session_start", ctx);
 		let resolved = false;
-		const pending = h.tools.get("subagent_run")!.execute("control", { agent: "explore", task: "Map", mode: mode === "print" ? "task" : "background" }, undefined, undefined, ctx).then(result => { resolved = true; return result; });
+		const pending = h.tools.get("subagent_run")!.execute("control", { agent: "explore", task: "Map", mode: singleShot ? "task" : "background" }, undefined, undefined, ctx).then(result => { resolved = true; return result; });
 		await tick();
 		assert.equal(runtime.spawned.length, 1);
-		assert.equal(resolved, mode !== "print", "only task mode waits for completion");
+		assert.equal(resolved, !singleShot, "only task mode waits for completion");
 		runtime.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "mapped" }] }] });
 		runtime.children[0].emit({ type: "agent_settled" });
 		const result = await pending;
-		if (mode === "print") assert.match(result.content[0].text, /mapped/);
 		const taskId = (result.details.gentleAgents as { taskId: string }).taskId;
 		assert.ok(taskId);
-		if (mode !== "print") {
+		if (singleShot) assert.equal(result.content[0].text, `Subagent explore (task ${taskId}, "Map") finished.\n\nmapped`, "the task result names its real id for subagent_continue");
+		if (!singleShot) {
 			await tick();
 			assert.match((await h.tools.get("subagent_status")!.execute("status", { task_id: taskId }, undefined, undefined, ctx)).content[0].text, /completed · background/);
 			assert.equal(h.sent.length, 1, "settlement delivers exactly one completion");
@@ -732,7 +735,7 @@ test("first handoff failure keeps ordinary completion, later failure retains yie
 	firstHarness.children[0].message({ id: "q1", kind: "query", message: "q" });
 	firstHarness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "ordinary" }], stopReason: "stop" }] });
 	firstHarness.children[0].emit({ type: "agent_settled" });
-	assert.equal((await ordinary).content[0].text, "ordinary");
+	assert.match((await ordinary).content[0].text, /^Subagent explore \(task [^,]+, "fail handoff"\) finished\.\n\nordinary$/);
 
 	const second = fakePi();
 	const secondHarness = deps();
@@ -3113,7 +3116,9 @@ test("subagent_list_agents and subagent_run in task mode launch a child with the
 	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "lib has three agent files." }] }] });
 	harness.children[0].emit({ type: "agent_settled" });
 	const result = await running;
-	assert.equal(result.content[0].text, "lib has three agent files.");
+	const runId = (result.details.gentleAgents as { taskId: string }).taskId;
+	assert.equal(result.content[0].text, `Subagent explore (task ${runId}, "map lib modules") finished.\n\nlib has three agent files.`, "the model sees the real task id and label, not only details");
+	assert.deepEqual(tools.get("subagent_run")!.renderResult(result as Parameters<Registered["renderResult"]>[0], { expanded: false }, plainTheme).render(80).map((line) => line.trimEnd()), ["lib has three agent files."], "the collapsed card still leads with the answer");
 	assert.equal((result.details.gentleAgents as { status: string }).status, "completed");
 	assert.match(widget()![1], /✓  explore  map lib modules/);
 	const orphan = tools.get("subagent_run")!.execute("c9", { agent: "explore", task: "Orphan", mode: "background" }, undefined, undefined, ctx);
@@ -3219,7 +3224,8 @@ test("background runs return at once; status, result, send_message, cancel, and 
 	await tick();
 	harness.children[1].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Summary." }] }] });
 	harness.children[1].emit({ type: "agent_settled" });
-	assert.equal((await resumed).content[0].text, "Summary.");
+	const summary = await resumed;
+	assert.equal(summary.content[0].text, `Subagent explore (task ${(summary.details.gentleAgents as { taskId: string }).taskId}, "Now summarize") finished.\n\nSummary.`);
 	assert.match((await tools.get("subagent_cancel")!.execute("c9", { task_id: id }, undefined, undefined, ctx)).content[0].text, /not running/);
 	assert.match((await tools.get("subagent_status")!.execute("c10", { task_id: "nope" }, undefined, undefined, ctx)).content[0].text, /Error: no task nope/);
 	// gentle-shell#1713: a guessed id ("1") must point back to real ids.
@@ -5236,7 +5242,10 @@ test("issue #1162: task-mode subagent_run includes question directly in waiting 
 test("children receive context and safety extensions, and missing files are omitted", async () => {
 	const expected = join(dirname(fileURLToPath(import.meta.url)), "..", "extensions", "child-context.ts");
 	const safety = join(dirname(fileURLToPath(import.meta.url)), "..", "extensions", "child-safety.ts");
-	assert.deepEqual(childContextExtensionPaths(), [resolve(expected), resolve(safety)]);
+	// gentle-shell#1731 T32: the nan provider is registered by a gentle-pi
+	// extension, so a child routed to nan/* could not resolve its model.
+	const nanProvider = join(dirname(fileURLToPath(import.meta.url)), "..", "extensions", "nan-provider.ts");
+	assert.deepEqual(childContextExtensionPaths(), [resolve(expected), resolve(safety), resolve(nanProvider)]);
 	assert.deepEqual(childContextExtensionPaths(() => false), [], "a missing extension file fails safe to no --extension");
 	const extensionArguments = (args: string[]) => args.filter((_, index) => args[index - 1] === "--extension");
 	for (const scenario of ["present", "missing"] as const) {
@@ -5250,7 +5259,7 @@ test("children receive context and safety extensions, and missing files are omit
 			await h.tools.get("subagent_run")!.execute(`child-context-${scenario}`, { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
 			await tick();
 			assert.equal(runtime.spawned.length, 1);
-			assert.deepEqual(extensionArguments(runtime.spawned[0]!), scenario === "present" ? [resolve(expected), resolve(safety)] : []);
+			assert.deepEqual(extensionArguments(runtime.spawned[0]!), scenario === "present" ? [resolve(expected), resolve(safety), resolve(nanProvider)] : []);
 		} finally {
 			await h.fire("session_shutdown", ctx);
 			await tick();
@@ -5287,4 +5296,95 @@ test("a writer continuation without its own section inherits the admitted surfac
 	await continued;
 	await h.fire("session_shutdown", ctx);
 	rmSync(profile, { recursive: true, force: true });
+});
+
+// gentle-shell#1731 T4 (S2, AC6): subagent_run and subagent_continue admit a
+// writer only while no live writer in the same worktree claims an overlapping
+// `## Allowed edit surfaces` entry; read-only agents are never registered.
+test("parallel writers are admitted only with disjoint Allowed edit surfaces end to end", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	const profile = mkdtempSync(join(tmpdir(), "gentle-agents-parallel-writers-"));
+	mkdirSync(join(profile, "agents"), { recursive: true });
+	writeFileSync(join(profile, "agents", "gentle-ai-worker.md"), readFileSync(new URL("../assets/agents/gentle-ai-worker.md", import.meta.url)));
+	writeFileSync(join(profile, "agents", "explore.md"), "---\ndescription: maps things\ntools: [read, grep]\n---\nYou map things.");
+	writeFileSync(join(profile, "subagents.json"), JSON.stringify({ max_concurrency: 5, model_profiles: { "gentle-ai-worker": { model: "openai/gpt-4o", effort: "high" } } }));
+	const env: NodeJS.ProcessEnv = {};
+	gentleAgents(h.pi, env, { ...runtime.deps, env, agentHome: profile });
+	const { ctx } = fakeContext();
+	await h.fire("session_start", ctx);
+	const scoped = (surface: string) => `Write it.\n\n## Allowed edit surfaces\n${surface}\n\n## Return\nReport`;
+	const run = (agent: string, task: string) => h.tools.get("subagent_run")!.execute("run", { agent, task, mode: "background" }, undefined, undefined, ctx);
+	const taskId = (result: { details: Record<string, unknown> }) => (result.details.gentleAgents as { taskId: string }).taskId;
+	const finish = async (child: FakeChild, id: string) => {
+		child.emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] });
+		child.emit({ type: "agent_settled" });
+		for (let attempt = 0; attempt < 40; attempt++) {
+			const status = await h.tools.get("subagent_status")!.execute("status", { task_id: id }, undefined, undefined, ctx);
+			if ((status.details.gentleAgents as { status?: string } | undefined)?.status === TASK_STATUS.COMPLETED) return;
+			await tick();
+		}
+		assert.fail(`task ${id} never completed`);
+	};
+	try {
+		const app = taskId(await run("gentle-ai-worker", scoped("src/app.ts")));
+		const other = taskId(await run("gentle-ai-worker", scoped("`src/other.ts`")));
+		await tick();
+		assert.equal(runtime.children.length, 2, "disjoint writers run concurrently");
+		await assert.rejects(run("gentle-ai-worker", scoped("src/*.ts")), (error: Error) => {
+			assert.match(error.message, new RegExp(`task ${app}`));
+			assert.match(error.message, new RegExp(`task ${other}`));
+			assert.match(error.message, /`src\/\*\.ts` overlaps `src\/app\.ts`/);
+			return true;
+		});
+		await run("explore", "Map src/app.ts and src/other.ts");
+		await tick();
+		assert.equal(runtime.children.length, 3, "read-only agents are never blocked by live writers");
+		await finish(runtime.children[0], app);
+		// The continuation inherits src/app.ts and is admitted again only while no
+		// live writer claims an overlapping entry.
+		await assert.rejects(run("gentle-ai-worker", scoped("src/**")), new RegExp(`task ${other}`), "src/** still overlaps the live src/other.ts writer");
+		const blocking = taskId(await run("gentle-ai-worker", scoped("src/app.ts")));
+		await assert.rejects(h.tools.get("subagent_continue")!.execute("follow", { task_id: app, prompt: "Continue.", mode: "background" }, undefined, undefined, ctx), new RegExp(`task ${blocking}`));
+		await finish(runtime.children[3], blocking);
+		await h.tools.get("subagent_continue")!.execute("follow", { task_id: app, prompt: "Continue.", mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		assert.equal(runtime.children.length, 5, "the continuation is admitted once its surfaces are free");
+	} finally {
+		await h.fire("session_shutdown", ctx);
+		rmSync(profile, { recursive: true, force: true });
+	}
+});
+
+// Second verify A1: writers claim surfaces under the canonical worktree root,
+// so a writer spawned in the session's subdirectory cwd and one sent to the
+// worktree root through workspace_root are compared.
+test("a subdirectory session cwd and workspace_root of the same worktree share one writer key", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	const profile = mkdtempSync(join(tmpdir(), "gentle-agents-writer-root-"));
+	mkdirSync(join(profile, "agents"), { recursive: true });
+	writeFileSync(join(profile, "agents", "gentle-ai-worker.md"), readFileSync(new URL("../assets/agents/gentle-ai-worker.md", import.meta.url)));
+	writeFileSync(join(profile, "subagents.json"), JSON.stringify({ max_concurrency: 5, model_profiles: { "gentle-ai-worker": { model: "openai/gpt-4o", effort: "high" } } }));
+	const sub = join(cwd, "sub");
+	mkdirSync(sub, { recursive: true });
+	// Git semantics: any path inside the project resolves to the project root.
+	const resolveWorktree = (path: string, base: string) => {
+		const target = resolve(base, path);
+		return { root: target === cwd || target.startsWith(`${cwd}${sep}`) ? cwd : target, commonDir: "/fixture/common" };
+	};
+	const env: NodeJS.ProcessEnv = {};
+	gentleAgents(h.pi, env, { ...runtime.deps, resolveWorktree, env, agentHome: profile });
+	const { ctx } = fakeContext();
+	Object.assign(ctx, { cwd: sub, sessionManager: { getSessionId: () => "s1", getCwd: () => sub, getEntries: () => [], getBranch: () => [] } });
+	await h.fire("session_start", ctx);
+	const task = "Write it.\n\n## Allowed edit surfaces\nsrc/app.ts\n\n## Return\nReport";
+	try {
+		const first = await h.tools.get("subagent_run")!.execute("run", { agent: "gentle-ai-worker", task, mode: "background" }, undefined, undefined, ctx);
+		const firstId = (first.details.gentleAgents as { taskId: string }).taskId;
+		await assert.rejects(h.tools.get("subagent_run")!.execute("run", { agent: "gentle-ai-worker", task, workspace_root: cwd, mode: "background" }, undefined, undefined, ctx), new RegExp(`task ${firstId}`));
+	} finally {
+		await h.fire("session_shutdown", ctx);
+		rmSync(profile, { recursive: true, force: true });
+	}
 });

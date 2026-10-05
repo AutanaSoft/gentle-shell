@@ -1441,7 +1441,7 @@ test("gentle-ai-worker packages the exact scoped writer contract", () => {
 	const testDiscipline = readMarkdownSection(source, "Test discipline");
 	assert.match(testDiscipline, /Apply the ODD test-first policy by default for behavior changes with applicable runnable deterministic tests and a clear expected outcome/);
 	assert.match(testDiscipline, /Test presence alone does not establish applicability; no TUI toggle or per-task chat choice is needed/);
-	assert.match(testDiscipline, /RED[\s\S]*GREEN[\s\S]*TRIANGULATE[\s\S]*REFACTOR/);
+	assert.match(testDiscipline, /RED[\s\S]*GREEN[\s\S]*PRESERVE[\s\S]*REFACTOR/);
 	assert.match(testDiscipline, /no meaningful RED[\s\S]*proportionate ordinary functional or structural verification/);
 	assert.match(testDiscipline, /Never claim RED\/GREEN evidence that was not observed/);
 	assert.match(
