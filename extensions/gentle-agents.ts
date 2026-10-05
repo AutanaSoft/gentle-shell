@@ -22,6 +22,7 @@ import { resolveVisualSettings } from "../lib/visual-customization-policy.ts";
 import { createCompletionQueue } from "../lib/agents-completion-delivery.ts";
 import { createAgentMessageQueue, type PendingAgentMessage } from "../lib/agents-message-delivery.ts";
 import { AGENT_MODE, discoverAgents, formatModelRef, loadAgentsConfig, resolveAgentProfile, withPinnedModelProfiles, type AgentDefinition, type AgentMode } from "../lib/agents-config.ts";
+import { readSessionProfileBinding, sessionOrPinModelProfiles } from "../lib/session-profile-binding.ts";
 import { resolveBackgroundSubagentsPolicy } from "../lib/background-subagents-policy.ts";
 import { installBackgroundCacheWarming } from "../lib/background-cache-warming.ts";
 import { isFinished, TASK_EVENT, TASK_STATUS, TaskStore, type AskRequest, type TaskRecord } from "../lib/agents-protocol.ts";
@@ -50,8 +51,8 @@ import { AGENTS_GLYPH, renderAgentsCard, widgetExpiryMs, widgetRows } from "../l
 import { CARD_TONE, renderCard } from "../lib/shell-card.ts";
 import { openInExternalEditor } from "./gentle-shell.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
-import { resolveAgentHomeDirectory, resolvePinnedAgentProfile } from "../lib/agent-model-resolution.ts";
-import { resolveUnversionedProjectProfile } from "../lib/agent-profile-pin.ts";
+import { resolveAgentHomeDirectory } from "../lib/agent-model-resolution.ts";
+import { resolveProfilePin, resolveUnversionedProjectProfile } from "../lib/agent-profile-pin.ts";
 import { allowedEditSurfaces, inheritAllowedEditSurfaces, isBoundedWriter, isDevelopmentSurface, isGenericBoundedWriter, prepareBoundSessionRepository, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sessionRepositoryAuthority } from "../lib/bounded-writer-admission.ts";
 import { CHILD_METRICS_EVENT, CHILD_METRICS_REVOKED, childEvent, launchSelection, type LaunchSelection } from "../lib/runtime-metrics-children.ts";
 import { runtimeMetricsEnvAllows, type RuntimeMetricsPolicyDeps } from "../lib/runtime-metrics-policy.ts";
@@ -1347,10 +1348,22 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (isGenericBoundedWriter(agent.name) && !current()) throw new Error("Writer session Git authority changed before admission.");
 		let admittedModel: string | undefined;
 		const surfaces = allowedEditSurfaces(prompt, context);
+		// gentle-shell#1064 slice 2: the binding is read once per task request,
+		// before admission, so the admitted model and the launch routing resolve
+		// the same session layer and can never disagree about it (#1558: a bound
+		// session used to kill its own non-git writer mid-preparation because
+		// admission still read only the pin/global layers).
+		const sessionBinding = readSessionProfileBinding(ctx.sessionManager.getSessionId());
 		if (!resume && isGenericBoundedWriter(agent.name) && surfaces?.some(isDevelopmentSurface) && !deps.resolveWorktree(originalCwd, originalCwd) && repositoryRoot === undefined) {
 			const root = safeBootstrapDirectory(originalCwd);
 			if (!root || (workspaceRoot !== undefined && (!isAbsolute(workspaceRoot) || safeBootstrapDirectory(workspaceRoot) !== root))) throw new Error("Writer bootstrap requires the original safe project root.");
-			const config = withPinnedModelProfiles(loadAgentsConfig(roots(ctx)), resolveUnversionedProjectProfile(root, gentlePiConfigHome(deps.env))?.modelProfiles);
+			const config = withPinnedModelProfiles(
+				loadAgentsConfig(roots(ctx)),
+				sessionOrPinModelProfiles(
+					sessionBinding?.modelProfiles,
+					resolveUnversionedProjectProfile(root, gentlePiConfigHome(deps.env))?.modelProfiles,
+				),
+			);
 			const model = resolveAgentProfile(agent, config).model ?? ctx.model;
 			const catalogModel = model?.provider ? ctx.modelRegistry?.find(model.provider, model.id) : ctx.modelRegistry?.getAll().find(candidate => candidate.id === model?.id);
 			if (!catalogModel) throw new Error("Writer bootstrap requires a valid effective model in this session's catalog.");
@@ -1395,12 +1408,23 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const pinIdentity: WorktreeResolver = foreign ? resolveSessionWorktree : target !== undefined && parentIdentity !== undefined && target === parentIdentity.root
 			? () => parentIdentity
 			: deps.resolveWorktree;
-		const profile = resolvePinnedAgentProfile(agent, {
-			roots: roots(ctx),
-			pinCwd: target ?? parentCwd,
-			configHome: gentlePiConfigHome(deps.env),
-			resolveWorktree: pinIdentity,
-		});
+		// gentle-shell#1064 slice 1: a parent-session profile binding outranks the
+		// pin layers for launches from that session (`session → p → P → global`),
+		// with the same wholesale-replacement contract as the pin. The binding is
+		// resolved here, at task-request creation, so queued and running children
+		// keep the routing frozen into their requests even if the session rebinds.
+		const config = withPinnedModelProfiles(
+			loadAgentsConfig(roots(ctx)),
+			sessionOrPinModelProfiles(
+				sessionBinding?.modelProfiles,
+				resolveProfilePin({
+					cwd: target ?? parentCwd,
+					configHome: gentlePiConfigHome(deps.env),
+					resolveWorktree: pinIdentity,
+				})?.modelProfiles,
+			),
+		);
+		const profile = resolveAgentProfile(agent, config);
 		if (admittedModel !== undefined) {
 			const model = profile.model ?? ctx.model;
 			const catalogModel = model?.provider ? ctx.modelRegistry?.find(model.provider, model.id) : ctx.modelRegistry?.getAll().find(candidate => candidate.id === model?.id);

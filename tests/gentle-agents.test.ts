@@ -28,6 +28,7 @@ import { stripAnsi } from "../lib/terminal-theme.ts";
 import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
 import { AgentRunner } from "../lib/agents-runner.ts";
 import { bindSessionRepositoryPreparation } from "../lib/bounded-writer-admission.ts";
+import { bindSessionProfile, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
 import { CHILD_METRICS_EVENT } from "../lib/runtime-metrics-children.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 // The card style defaults to float; these assertions pin the outlined (neon)
@@ -2795,6 +2796,52 @@ for (const scenario of ["implicit-worker", "explicit-worker", "implicit-gentle-a
 	});
 }
 
+// gentle-shell#1558 (barbatdev review): the non-git writer admission and the
+// launch path must resolve the same model. Before the session-binding layer,
+// both read pin/global only; with a binding present the launch resolves it
+// first while admission still read the declaration, so a bound session killed
+// its own writer mid-preparation with a false "profile or session changed".
+test("a session binding keeps writer admission and launch resolution in agreement", async t => {
+	t.after(() => resetSessionProfileBindingsForTesting());
+	const fixture = realpathSync(mkdtempSync(join(root, "writer-session-binding-")));
+	const project = join(fixture, "project");
+	const fixtureHome = join(fixture, "home");
+	const definitions = join(fixtureHome, ".pi", "agent", "agents");
+	mkdirSync(definitions, { recursive: true });
+	mkdirSync(project);
+	writeFileSync(join(definitions, "worker.md"), "---\ndescription: fixture\nmodel: offline/good\ntools: [read]\n---\nFixture");
+	// The unversioned project declaration routes the writer at one model and the
+	// session binding at another: only agreement between the two resolutions can
+	// let this launch through, and both must pick the binding's model.
+	mkdirSync(join(project, ".pi", "gentle-ai"), { recursive: true });
+	writeFileSync(join(project, ".pi", "gentle-ai", "profile.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profile_pin", version: 1, profile: "declared" }));
+	const configHome = join(fixture, "config");
+	mkdirSync(configHome, { recursive: true });
+	writeFileSync(join(configHome, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, profiles: { declared: { worker: { model: "offline/pinned-good" } }, bound: { worker: { model: "offline/bound-good" } } } }));
+	bindSessionProfile("s1", "bound", { worker: { model: "offline/bound-good" } });
+	const h = fakePi();
+	const runtime = deps();
+	runtime.deps.home = fixtureHome;
+	runtime.deps.env!.GENTLE_PI_CONFIG_HOME = configHome;
+	runtime.deps.resolveWorktree = resolveSessionWorktree;
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	Object.assign(ctx, { cwd: project, modelRegistry: { find: (_provider: string, model: string) => ({ provider: "offline", id: model }) } });
+	ctx.sessionManager.getCwd = () => project;
+	await h.fire("session_start", ctx);
+	const unbind = bindSessionRepositoryPreparation(ctx.sessionManager, project, async (_root, current) => {
+		if (!current()) return false;
+		execFileSync("git", ["init", "--quiet", project], { env: { PATH: process.env.PATH, HOME: fixtureHome, GIT_CONFIG_NOSYSTEM: "1" }, stdio: "pipe" });
+		return true;
+	}, () => true);
+	try {
+		await h.tools.get("subagent_run")!.execute("session-binding-admission", { agent: "worker", task: "Implement source\n## Allowed edit surfaces\nsrc/app.ts\n## Return\nReport", mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		assert.equal(runtime.children.length, 1, "the bound session's writer launches instead of dying as a false profile/session drift");
+		assert.ok(runtime.spawned[0]?.includes("offline/bound-good"), "admission and launch both resolve the binding ahead of the project declaration");
+	} finally { unbind(); await h.fire("session_shutdown", ctx); await tick(); }
+});
+
 for (const explicit of [false, true]) {
 	test(`same manager and ID after bootstrap permit ${explicit ? "explicit" : "implicit"} launch registration`, async () => {
 		const h = fakePi();
@@ -3056,6 +3103,55 @@ test("a stale or unreadable pin degrades to the global routing instead of failin
 	assert.equal(await launchPinned(base), "openai-codex/gpt-5.6-terra:low");
 	writeFileSync(base.localPinPath, "{ not json\n");
 	assert.equal(await launchPinned(base), "openai-codex/gpt-5.6-terra:low");
+});
+
+// gentle-shell#1558 (barbatdev review): the two registered launch-seam gaps.
+// The pure helpers were covered, but the real subagent_run seam had no
+// committed test for the session layer.
+test("a session binding outranks the repository pin at the launch seam", async t => {
+	t.after(() => resetSessionProfileBindingsForTesting());
+	const base = pinFixture("session-over-pin");
+	base.writeStore({
+		pinned: { explore: { model: "openai/alpha", thinking: "minimal" } },
+		bound: { explore: { model: "openai/beta" } },
+	});
+	base.writePin("pinned");
+	// fakeContext's session id is "s1"; the binding is process state, so it is
+	// bound before the launch and reset by t.after so later pin tests stay pure.
+	bindSessionProfile("s1", "bound", { explore: { model: "openai/beta" } });
+	assert.equal(await launchPinned(base), "openai/beta:high", "the session binding wins over a winning repository pin");
+});
+
+test("a queued launch keeps the session routing frozen across a rebind", async t => {
+	t.after(() => resetSessionProfileBindingsForTesting());
+	const base = pinFixture("queue-freeze");
+	base.writeStore({
+		first: { explore: { model: "openai/alpha", thinking: "minimal" } },
+		second: { explore: { model: "openai/beta" } },
+	});
+	bindSessionProfile("s1", "first", { explore: { model: "openai/alpha", thinking: "minimal" } });
+	const harness = deps();
+	harness.deps.resolveWorktree = () => ({ root: base.root, commonDir: base.commonDir });
+	harness.deps.env = { PATH: "/bin", GENTLE_PI_CONFIG_HOME: base.configHome };
+	const { pi, tools, fire } = fakePi();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	try {
+		const model = (args: string[]) => args[args.indexOf("--model") + 1];
+		// The first launch freezes first's routing into its task request and its
+		// spawned child. Rebinding the session must leave that request untouched;
+		// only a request created afterwards resolves the new binding.
+		await tools.get("subagent_run")!.execute("freeze-1", { agent: "explore", task: "Map first", mode: "background" }, undefined, undefined, ctx);
+		bindSessionProfile("s1", "second", { explore: { model: "openai/beta" } });
+		await tools.get("subagent_run")!.execute("freeze-2", { agent: "explore", task: "Map second", mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		assert.equal(model(harness.spawned[0]), "openai/alpha:minimal", "the request created before the rebind keeps its frozen routing");
+		assert.equal(model(harness.spawned[1]), "openai/beta:high", "only requests created after the rebind resolve the new binding");
+	} finally {
+		await fire("session_shutdown", ctx);
+		await tick();
+	}
 });
 
 test("agentsEnabled and agentsCollapseKey read their flags and stay off inside a child", () => {

@@ -3957,7 +3957,7 @@ class ProfilesPanel implements OverlayComponent {
 	private refreshListItems(): void {
 		// Keep the list instance (and its pointer observer) alive while refreshing the
 		// mutable item records that NativeChoiceList already holds by reference.
-		for (const item of buildProfileListItems(this.file, evaluateProfilePin(this.pinStatus, this.file.profiles).winner?.profile)) {
+		for (const item of buildProfileListItems(this.file, evaluateProfilePin(this.pinStatus, this.file.profiles).winner?.profile, this.sessionBoundName)) {
 			const current = this.listItems.find((candidate) => candidate.id === item.id);
 			if (current) Object.assign(current, item);
 		}
@@ -4836,7 +4836,10 @@ async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): 
 			file,
 			name,
 			profileSnapshotFrom(
-				readEffectiveModelConfig(ctx.cwd),
+				// The snapshot captures the same routing the panel shows as current,
+				// so a session binding outranks the shared layers here too.
+				readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.modelProfiles
+					?? readEffectiveModelConfig(ctx.cwd),
 				readOrchestratorSettings(orchestratorSettingsPath()),
 			),
 		);
@@ -4846,10 +4849,17 @@ async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): 
 	};
 	let selectedName: string | undefined;
 	const sessionBoundName = () => readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.name;
+	// The panel's "Current routing (effective)" table shows what this session's
+	// launches resolve right now, and a session binding outranks every shared
+	// layer, so a bound session reads its snapshot as the current routing while an
+	// unbound session keeps reading the effective config exactly as before.
+	const currentRoutingForPanel = async () =>
+		readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.modelProfiles
+		?? await readEffectiveModelConfigAsync(ctx.cwd);
 	let result = await showProfilesPanel(
 		ctx,
 		file,
-		await readEffectiveModelConfigAsync(ctx.cwd),
+		await currentRoutingForPanel(),
 		selectedName,
 		saveSnapshot,
 		undefined,
@@ -4862,7 +4872,7 @@ async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): 
 		result = await showProfilesPanel(
 			ctx,
 			file,
-			await readEffectiveModelConfigAsync(ctx.cwd),
+			await currentRoutingForPanel(),
 			selectedName,
 			saveSnapshot,
 			report.status,
