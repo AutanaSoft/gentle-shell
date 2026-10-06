@@ -1,101 +1,167 @@
-// Background jobs: pure condition core.
+// Background jobs.
 //
 // A background job runs a shell command while the parent keeps working or
-// stays idle. The parent is woken once when the job exits, and at most once
-// more per optional condition: the first complete output line matching a
-// pattern, or a stretch of silence. The watch below decides those conditions
-// from output chunks and clock values only; it owns no timers, processes, or
-// I/O, so every boundary is unit-testable against a fake clock.
+// stays idle, so waiting on CI, a build, or a server never costs a sleep loop
+// or a subagent. A wait condition lives inside the command itself (for
+// example `until grep -q ready log; do sleep 1; done` or
+// `gh run watch <id> --exit-status`): the job's exit is the notification.
+//
+// The registry owns live jobs and reports each job's own exit exactly once
+// through `onSettled`. A stopped job reports nothing: whoever stopped it
+// already knows. Execution goes through Pi's own shell operations
+// (`createLocalBashOperations`), so the configured shell, the command
+// transport, process groups, and process-tree kill match native Bash.
+
+import { createWriteStream, type WriteStream } from "node:fs";
+import { join } from "node:path";
 
 /** Lines kept for the exit notice and job listings. */
 export const TAIL_LINES = 20;
+/** Running jobs allowed at once across the process. */
+export const MAX_RUNNING_JOBS = 25;
 
-export interface JobConditions {
-	/** Wake once on the first complete output line matching this pattern. */
-	match?: RegExp;
-	/** Wake once after this many milliseconds without output. */
-	silenceMs?: number;
-}
-
-export type JobEvent = { kind: "match"; line: string } | { kind: "silence"; silentMs: number };
-
-export interface JobWatch {
-	/** Feeds output; returns the conditions that fired on this chunk. */
-	push(text: string, now: number): JobEvent[];
-	/** Ends the output: a trailing partial line counts as complete. */
-	end(): JobEvent[];
-	/** Clock value at which silence fires, or undefined when it cannot. */
-	silenceDeadline(): number | undefined;
-	checkSilence(now: number): JobEvent[];
-	/** The last TAIL_LINES complete lines. */
-	tail(): string[];
-}
-
-export function createJobWatch(conditions: JobConditions, startedAt: number): JobWatch {
+/** Collects the last TAIL_LINES lines of a stream of output chunks. */
+export function createOutputTail() {
+	const complete: string[] = [];
 	let partial = "";
-	let lastOutputAt = startedAt;
-	let matched = conditions.match === undefined;
-	let silenced = conditions.silenceMs === undefined || conditions.silenceMs <= 0;
-	let ended = false;
-	const lines: string[] = [];
+	const clean = (line: string) => (line.endsWith("\r") ? line.slice(0, -1) : line);
+	return {
+		push(text: string) {
+			const parts = (partial + text).split("\n");
+			partial = parts.pop() ?? "";
+			for (const part of parts) {
+				complete.push(clean(part));
+				if (complete.length > TAIL_LINES) complete.shift();
+			}
+		},
+		lines(): string[] {
+			const all = partial.length > 0 ? [...complete, clean(partial)] : [...complete];
+			return all.slice(-TAIL_LINES);
+		},
+	};
+}
 
-	const takeLine = (raw: string, events: JobEvent[]) => {
-		const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
-		lines.push(line);
-		if (lines.length > TAIL_LINES) lines.shift();
-		if (!matched && conditions.match!.test(line)) {
-			matched = true;
-			events.push({ kind: "match", line });
+/** The subset of Pi's `BashOperations` a job needs. */
+export interface JobExecOperations {
+	exec(command: string, cwd: string, options: { onData: (data: Buffer) => void; signal?: AbortSignal }): Promise<{ exitCode: number | null }>;
+}
+
+export type JobStatus = "running" | "exited" | "stopped" | "failed";
+
+export interface JobRecord {
+	readonly id: string;
+	readonly label: string;
+	readonly command: string;
+	readonly cwd: string;
+	readonly ownerSessionId: string;
+	readonly outputPath: string;
+	readonly startedAt: number;
+	status: JobStatus;
+	exitCode?: number | null;
+	error?: string;
+	endedAt?: number;
+	/** Last output lines; refreshed until the job ends. */
+	tail: string[];
+}
+
+export interface JobStartRequest {
+	command: string;
+	cwd: string;
+	ownerSessionId: string;
+	label?: string;
+}
+
+export interface JobRegistryDeps {
+	/** Directory receiving one `<id>.log` file per job. */
+	outputDir: string;
+	now(): number;
+	/** Resolved at start so a changed shell setting applies to the next job. */
+	shell(): { operations: JobExecOperations; commandPrefix?: string };
+	/** Called once when a job ends on its own (exited or failed), never for a stop. */
+	onSettled(job: JobRecord): void;
+}
+
+export function createJobRegistry(deps: JobRegistryDeps) {
+	const jobs = new Map<string, JobRecord>();
+	const aborts = new Map<string, AbortController>();
+	let counter = 0;
+
+	const running = () => [...jobs.values()].filter((job) => job.status === "running").length;
+
+	const finish = async (job: JobRecord, output: WriteStream, update: () => void) => {
+		update();
+		await new Promise<void>((resolve) => output.end(resolve));
+		aborts.delete(job.id);
+	};
+
+	const start = (request: JobStartRequest): JobRecord => {
+		if (running() >= MAX_RUNNING_JOBS) {
+			throw new Error(`${MAX_RUNNING_JOBS} background jobs are already running; stop one with job_stop first.`);
 		}
+		const { operations, commandPrefix } = deps.shell();
+		const id = `job-${++counter}`;
+		const job: JobRecord = {
+			id,
+			label: request.label?.trim() || request.command,
+			command: request.command,
+			cwd: request.cwd,
+			ownerSessionId: request.ownerSessionId,
+			outputPath: join(deps.outputDir, `${id}.log`),
+			startedAt: deps.now(),
+			status: "running",
+			tail: [],
+		};
+		const output = createWriteStream(job.outputPath);
+		output.on("error", () => { /* A lost log must not crash the session; the tail survives. */ });
+		const tail = createOutputTail();
+		const abort = new AbortController();
+		jobs.set(id, job);
+		aborts.set(id, abort);
+		const execCommand = commandPrefix ? `${commandPrefix}\n${request.command}` : request.command;
+		const onData = (data: Buffer) => {
+			output.write(data);
+			tail.push(data.toString("utf8"));
+			job.tail = tail.lines();
+		};
+		operations.exec(execCommand, request.cwd, { onData, signal: abort.signal }).then(
+			({ exitCode }) => finish(job, output, () => {
+				if (job.status !== "running") return;
+				job.status = "exited";
+				job.exitCode = exitCode;
+				job.endedAt = deps.now();
+			}),
+			(error: unknown) => finish(job, output, () => {
+				if (job.status !== "running") return;
+				job.status = "failed";
+				job.error = error instanceof Error ? error.message : String(error);
+				job.endedAt = deps.now();
+			}),
+		).then(() => {
+			if (job.status === "exited" || job.status === "failed") deps.onSettled(job);
+		});
+		return job;
+	};
+
+	const stop = (id: string): JobRecord | undefined => {
+		const job = jobs.get(id);
+		if (!job) return undefined;
+		if (job.status === "running") {
+			job.status = "stopped";
+			job.endedAt = deps.now();
+			aborts.get(id)?.abort();
+		}
+		return job;
 	};
 
 	return {
-		push(text, now) {
-			const events: JobEvent[] = [];
-			if (ended || text.length === 0) return events;
-			lastOutputAt = now;
-			const parts = (partial + text).split("\n");
-			partial = parts.pop() ?? "";
-			for (const part of parts) takeLine(part, events);
-			return events;
-		},
-		end() {
-			const events: JobEvent[] = [];
-			if (ended) return events;
-			ended = true;
-			silenced = true;
-			if (partial.length > 0) takeLine(partial, events);
-			partial = "";
-			return events;
-		},
-		silenceDeadline() {
-			return silenced ? undefined : lastOutputAt + conditions.silenceMs!;
-		},
-		checkSilence(now) {
-			if (silenced || now - lastOutputAt < conditions.silenceMs!) return [];
-			silenced = true;
-			return [{ kind: "silence", silentMs: now - lastOutputAt }];
-		},
-		tail() {
-			return [...lines];
-		},
+		start,
+		stop,
+		get: (id: string) => jobs.get(id),
+		/** Jobs in start order, optionally only those one session owns. */
+		list: (ownerSessionId?: string) => [...jobs.values()].filter((job) => ownerSessionId === undefined || job.ownerSessionId === ownerSessionId),
+		running,
+		stopAll: () => { for (const id of jobs.keys()) stop(id); },
 	};
 }
 
-/**
- * Compiles a model-supplied pattern. The g and y flags make `test` stateful
- * across calls (lastIndex), which would skip matches, so they are dropped.
- */
-export function compileJobMatch(pattern: string, flags: string | undefined): RegExp {
-	try {
-		return new RegExp(pattern, (flags ?? "").replace(/[gy]/g, ""));
-	} catch (error) {
-		throw new Error(`Invalid match pattern: ${error instanceof Error ? error.message : String(error)}`);
-	}
-}
-
-/** Keeps only lines matching `filter`; without one, returns the text unchanged. */
-export function filterOutputLines(text: string, filter: RegExp | undefined): string {
-	if (!filter) return text;
-	return text.split("\n").filter((line) => line.length > 0 && filter.test(line)).map((line) => `${line}\n`).join("");
-}
+export type JobRegistry = ReturnType<typeof createJobRegistry>;

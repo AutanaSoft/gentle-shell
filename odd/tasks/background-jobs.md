@@ -1,30 +1,36 @@
 # Background jobs — native background command monitoring
 
 Branch: `feat/background-jobs`. Related: gentle-shell#1171 (orchestrator invents `sleep` to wait).
-References: Claude Code background Bash (`run_in_background`, `BashOutput`, `KillShell`, completion notice) and `@ksankar/pi-monitor` (wake once on exit / match / silence, no polling).
+References: Claude Code background Bash (`run_in_background`, task notification, `TaskStop`, `Monitor`) and `@ksankar/pi-monitor`.
 
 ## Specs
 
 - S1 — Problem, verbatim (L1): "quiero que agreguemos algo nativo a gentle shell para monitorizar ejecuciones en background, ahora mismo o gastamos un sub agente o el orquestador se queda esperando tontamente cno un sleep, ej: a que termine un ci."
-- S2 — Shape, verbatim (L2, L3): "algo como esto https://pi.dev/packages/@ksankar/pi-monitor?name=background+monitor" and "como lo que tiene claude code".
-- S3 — `bg_bash` starts a shell command in the background and returns a job id immediately; the model turn is not blocked and no tokens are spent while waiting.
-- S4 — When the job exits on its own, the parent session is notified exactly once (exit code or signal, last output lines, log file path), through the same no-polling parent delivery used for background subagent completions (steer into a running turn, or store + wake when idle).
-- S5 — Optional `match` (regex, optional `flags`) wakes the parent once on the first complete output line that matches; optional `silenceSeconds` wakes it once when the job produces no output for that long. Neither stops the job (it keeps running, as in Claude Code).
-- S6 — `bg_output` returns output produced since the previous read of that job (optional regex filter on lines), plus job status.
-- S7 — `bg_kill` stops the job's whole process tree; a killed job sends no exit notice. `bg_list` lists jobs with status.
-- S8 — Jobs live in memory, are owned by the starting session, are capped (25 running), and are killed on session shutdown. Output goes to a temp log file.
-- S9 — Human surface: `/jobs` command and a footer count of running jobs. Docs and orchestrator guidance tell the model to use `bg_bash` instead of `sleep` loops or a subagent to wait.
+- S2 — Shape, verbatim (L3, L5): "como lo que tiene claude code"; "Para gentle-shell, el mapeo mínimo sería: un flag `background` en la herramienta de shell que retorne un id, un registro de procesos vivos en el runtime de la sesión, y un hook en el loop de agente que, al terminar el proceso, encole un mensaje sintético y dispare un turno nuevo. El `Monitor` por líneas es una segunda etapa opcional sobre la misma infraestructura."
+- S3 — `bash_background` runs a command with Pi's own shell execution (configured `shellPath` and `shellCommandPrefix`, process group, tree kill) and returns a job id and output file path immediately; the turn is not blocked. It is a sibling tool, not a `bash` override (L6).
+- S4 — When the job exits, the parent is notified exactly once with a synthetic message (job id, label, command, exit code, duration, last output lines, output path) through the gentle-agents parent delivery router: steer into a running turn, or store + wake an idle parent. No polling.
+- S5 — Wait conditions live inside the command (L5): "si querés esperar una condición, la condición se mete DENTRO del comando backgrounded", e.g. `until grep -q "Ready in" dev.log; do sleep 0.5; done` or `gh run watch <id> --exit-status`. The exit is the notification.
+- S6 — stdout and stderr go to the output file, not the context; the model reads it with `read`.
+- S7 — `job_stop` kills the job's whole process tree; a stopped job sends no exit notice. `job_list` lists the session's jobs with status.
+- S8 — Jobs live in memory, are owned by the starting session, are capped at 25 running, and are killed on session shutdown.
+- S9 — Human surface, verbatim (L7): "tendriamos que tener un modal como el de /gentle:agents para ver todos los procesos de monitoreo que hay para esta sesion"; plus a footer count of running jobs. Docs and orchestrator guidance tell the model to use `bash_background` instead of `sleep` loops or a subagent to wait.
+- S10 — Stage 2, optional, needs a user decision before starting: `monitor`, one event per stdout line, 200 ms batching, mandatory timeout (max 30 min), auto-kill on event flood.
 
 ## Tasks
 
-- T1 — S5, S6: pure core (line splitting, match, silence, incremental read cursor, tail) in `lib/background-jobs.ts`; inline; commit pending.
-- T2 — S3, S7, S8: process runner (process group spawn, log file, tree kill, cap, shutdown cleanup); inline; commit pending.
-- T3 — S3-S8: tools `bg_bash`/`bg_output`/`bg_kill`/`bg_list` wired into the gentle-agents parent delivery router; inline; commit pending.
+- T1 — S4: output tail core (line splitting, last lines) in `lib/background-jobs.ts`; inline; commit `848fb9c3e` (superseded scope), rework pending.
+- T2 — S3, S6, S7, S8: job registry on Pi `createLocalBashOperations` (output file, stop, cap, shutdown); inline; commit pending.
+- T3 — S3-S8: tools `bash_background`/`job_stop`/`job_list` wired into the gentle-agents parent delivery router; inline; commit pending.
 - T4 — S9: `/jobs`, footer count, docs, orchestrator guidance; inline; commit pending.
+- T5 — S10: `monitor`; blocked on user decision.
 
 ## Log
 
 - L1 (user): "quiero que agreguemos algo nativo a gentle shell para monitorizar ejecuciones en background, ahora mismo o gastamos un sub agente o el orquestador se queda esperando tontamente cno un sleep, ej: a que termine un ci."
 - L2 (user, scope choice): "algo como esto https://pi.dev/packages/@ksankar/pi-monitor?name=background+monitor"
 - L3 (user): "como lo que tiene claude code"
-- L4 (decision, orchestrator): build natively (no third-party package) to reuse the gentle-agents parent delivery router. Claude Code semantics for lifetime (job keeps running after match/silence; exit always notifies unless killed); pi-monitor conditions (match, silence). `CheckLater` out of scope for v1.
+- L4 (decision, orchestrator): build natively (no third-party package) to reuse the gentle-agents parent delivery router. `CheckLater` out of scope.
+- L5 (user, pasted Claude Code analysis): three pieces — `Bash` with `run_in_background` (one notification on exit, output to file, synthetic user message re-invokes the model, conditions inside the command), `Monitor` (one event per stdout line, mandatory timeout max 30 min, 200 ms batching, killed on flood), `TaskStop`. "Para gentle-shell, el mapeo mínimo sería: un flag `background` en la herramienta de shell que retorne un id, un registro de procesos vivos en el runtime de la sesión, y un hook en el loop de agente que, al terminar el proceso, encole un mensaje sintético y dispare un turno nuevo. El `Monitor` por líneas es una segunda etapa opcional sobre la misma infraestructura."
+- L5 consequences: S3-S7 rewritten (pi-monitor `match`/`silence` and `bg_output` dropped; conditions go inside the command); S10 added as optional stage 2; T1 reopened to shrink the core.
+- L6 (evidence): native `bash` must not be re-registered — commit `68080ea1f` removed the quiet-tools Bash override because it lost configured `shellPath`/`shellCommandPrefix` on Windows, and Pi rejects duplicate `bash` registrations from other tool-card packages. Pi exports `createLocalBashOperations({ shellPath })` (same executor as native bash: shell resolution, stdin transport, detached group, tree kill on abort, tracked PIDs) and `SettingsManager` (`getShellPath`, `getShellCommandPrefix`).
+- L7 (user): "tendriamos que tener un modal como el de /gentle:agents para ver todos los procesos de monitoreo que hay para esta sesion" — S9 rewritten, T4 scope.
