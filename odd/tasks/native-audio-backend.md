@@ -912,3 +912,51 @@ these fixes; **no source implementation until the parent's explicit follow-up**.
 - **Optional read-only evidence (no audio).** Real WSL `NativeWindowsPlayer.probe()` → available/caps `wav`, no PlaySync/audio, proving the fixed PowerShell interop/`-EncodedCommand`. A **previous** builtin .NET `SoundPlayer` experiment was manually heard (primitive, pre-integrated-adapter); old WSL Pulse **NO ×3**; new WSL route **not physically played**; macOS/native-Windows hosts unavailable, fakes prepared. Kept distinct, no confusion.
 - **MEDIUM interop-cancel residual (non-audio).** Own PowerShell fixed 8 s sleep, same exe/flags/env scrub; read-only own-PID `GetProcess` (own PID only) saw child ALIVE pre-kill; child SIGKILL in 3 tests; Node `close` 2–1951 ms then Windows own PID **DEAD** immediately/+1 s, all 3. No lingering process, no `taskkill`/global/user kills. Reduces uncertainty, does **not** prove `SoundPlayer` thread cancel on all WSL hosts; **no production change** and no universal audio-cancellation claim.
 - **N5 [x].** Functional verification is the current full run, **not** a historical fix. Optional manual listens (Node 22, native Windows, macOS, owned WSL new adapter) not blocking. Historical full-N5 **244** proven preexisting (1/3; **582** inconclusive) remains a flaker risk, **not fixed**; audio was not enabled by this work; user 5.58 s `[archivo de audio local anonimizado]` still rejected by the unchanged ≤5 s limit, no crop. macOS builtin `afplay` is platform-prepared only (no compiled CoreAudio). R8 claims no physical listen support but prepared without device evidence, as required.
+
+### L14 — Windows private-snapshot play: bounded bytes → memory `SoundPlayer` (bugfix)
+
+- **Symptom (parent-relayed, not re-observed here).** After P3 default routing, two
+  Windows/WSL-interop users played the *same* original sound: user A heard it, user
+  B did not; the API reported `played:true` for both, with the same
+  `NativeWindowsPlayer`, effective flags and env, and byte-identical originals. The
+  precise WinMM cause is **unproven**; only the private-snapshot file branch is
+  implicated. No real audio was captured during this fix.
+- **Scope.** Only `lib/notification-audio-windows.ts`,
+  `tests/notification-audio-windows.test.ts` and this entry. The private snapshot,
+  its ownership/cleanup, the play gate, the child env, the schema/IPC, routing, the
+  UI, the other backends and the `<=5 s`/`2 MiB` limits are unchanged; the user
+  original is never played directly and no permission is modified.
+- **Fix.** The fixed play script keeps `FromBase64String` as its **only** dynamic
+  value (path still opaque), but now reads the snapshot into bounded bytes and plays
+  them through a `MemoryStream`-backed `SoundPlayer`, forcing the documented memory
+  branch instead of the file-URI one. Script ~31 source lines: pre-init
+  `$file`/`$memory`/`$player`; `[IO.File]::Open(...,Read,Read)`; `$file.Length`
+  guarded `44..2097152` **before** `[byte[]]::new([int]$count)`; an exact-length read
+  loop that throws on a zero/short read and a `ReadByte() -ne -1` growth guard;
+  `$file.Close()` **before** playback; `[IO.MemoryStream]::new($raw)` →
+  `[System.Media.SoundPlayer]::new($memory)` → explicit `.Load()` then `.PlaySync()`;
+  success printed only after `PlaySync`; every error prints the same schema-valid
+  `played:false` line; `finally` disposes player, memory and (unclosed) file. No
+  `.ps1`, `Add-Type`, reflection, interop compile or new binary.
+- **TDD (strict).** RED **before** production: the new decoded-script test failed on
+  the pristine script (`New-Object System.Media.SoundPlayer $path`) →
+  `tests/notification-audio-windows.test.ts` **28 tests, 27 pass / 1 fail**, exit 1.
+  GREEN after the source → **28/28, exit 0**. TRIANGULATE: the same test drives a
+  hostile path (`'; Start-Process; whoami`) and asserts one opaque base64 literal,
+  `[byte[]]::new` after the size guard, `$file.Close()` before `.Load()`/`PlaySync`,
+  no `New-Object`, and player/memory/file disposal. Existing 27 source-shape cases
+  were kept valid (the pre-playback release uses `.Close()`, so the first
+  `.Dispose(` stays inside `finally`).
+- **Validation (direct Node; no `pnpm`, no full suite, no physical play).** windows
+  **28/28**; `tests/*notification*.test.ts` **225/225** (was 224);
+  `package-manifest` **58/58**; `check-types` **186, no regressions**; runtime **8**;
+  `verify-package-files` **180 files / 69 pins**; `git diff --check` clean. No real
+  PowerShell probe/play, snapshot read or `PlaySync` ran from the tests (all IO
+  injected); no new full-suite claim.
+- **Physical status: NOT PROVEN.** The memory-branch change is prepared only; it is
+  un-heard until a fresh user-permitted listen. The earlier WSL new-adapter route
+  remains not physically played. Same-candidate full-suite coverage is the prior
+  L13 4993 run, not a new claim.
+- **Cost (honest).** source **+31/-2** (`lib/notification-audio-windows.ts`), tests
+  **+39** (`tests/notification-audio-windows.test.ts`), plus this entry — inside the
+  ~35–50 source / ~80 test / ~35 ODD forecast, no security golf.
