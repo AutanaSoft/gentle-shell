@@ -4220,6 +4220,19 @@ async function switchLiveOrchestrator(ctx: ExtensionContext, live: LiveSession, 
 	return `\nThis session now runs on ${label} · ${entry.thinking}.`;
 }
 
+/**
+ * The live session's orchestrator entry, when a model is running. `s` captures
+ * what the session actually runs rather than the default new sessions would
+ * get from settings.json; an unreadable thinking level still snapshots the
+ * model, just without a thinking claim.
+ */
+function liveOrchestratorSnapshot(ctx: ExtensionContext, live: LiveSession): OrchestratorSettingsReadResult | undefined {
+	if (ctx.model === undefined || typeof ctx.model.provider !== "string" || typeof ctx.model.id !== "string") return undefined;
+	let thinking: unknown;
+	try { thinking = live.getThinkingLevel(); } catch { thinking = undefined; }
+	return { status: "valid", entry: { model: `${ctx.model.provider}/${ctx.model.id}`, thinking: isThinkingLevel(thinking) ? thinking : undefined } };
+}
+
 function profileSnapshotFrom(
 	current: AgentModelConfig,
 	settings: OrchestratorSettingsReadResult,
@@ -4841,7 +4854,11 @@ async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): 
 				// so a session binding outranks the shared layers here too.
 				readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.modelProfiles
 					?? readEffectiveModelConfig(ctx.cwd),
-				readOrchestratorSettings(orchestratorSettingsPath()),
+				// The orchestrator follows the same honesty rule: capture what the
+				// session actually runs (ctx.model plus the live thinking level)
+				// when a live model exists; settings.json defaults stand in only
+				// when it does not (LCubero's finding on #1064).
+				liveOrchestratorSnapshot(ctx, live) ?? readOrchestratorSettings(orchestratorSettingsPath()),
 			),
 		);
 		writeProfilesFileSync(path, next);

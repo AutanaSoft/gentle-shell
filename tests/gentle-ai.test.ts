@@ -2833,6 +2833,32 @@ test("s snapshots current routing in place without applying or reopening the pro
 	assert.match(renderComponent(firstPanel!), /Snapshot saved; live routing unchanged\. Profile "a-target" saved from current routing\./);
 });
 
+test("s snapshots the live session's orchestrator over the settings defaults", async (t) => {
+	const { fixture, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	writeStore({
+		"a-target": {},
+		"z-active": { worker: { model: "openai/beta" } },
+	}, "z-active");
+	// The session runs live on openai/omega at low effort while settings.json still
+	// defaults to nan/deepseek-v4-flash at high: the snapshot must capture the
+	// session the user is actually in, not the default new sessions would get.
+	fixture.setLiveModel("openai", "omega", "low");
+	const settingsBefore = readFileSync(settingsPath, "utf8");
+	fixture.onInput((panel) => {
+		panel.handleInput("s");
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	const store = JSON.parse(readFileSync(join(fixture.configHome, "profiles.json"), "utf8"));
+	assert.deepEqual(
+		store.profiles["a-target"].orchestrator,
+		{ model: "openai/omega", thinking: "low" },
+		"the orchestrator entry comes from the live session, not settings.json",
+	);
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore, "settings are untouched");
+});
+
 // /gentle:models can finish with `u`: the global save `ctrl+s` performs, followed
 // by the snapshot `/gentle:profiles` performs with `s` on the current profile.
 function pickWorkerModelThenUpdateProfile(panel: RoutingConsumerPanel): void {
