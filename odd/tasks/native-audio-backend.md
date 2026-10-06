@@ -1,20 +1,20 @@
-# Native notification audio backend — own Node Pulse client (ODD planning)
+# Native notification audio backend — own Node Pulse client
 
 Locator: `odd/tasks/native-audio-backend.md`
 Worktree: `/home/egdev/proyectos/gentle-shell-native-audio` (gitdir linked to
 `/home/egdev/proyectos/gentle-shell/.git/worktrees/gentle-shell-native-audio`)
 Branch: `feat/native-notification-audio`, base `9a1f8a75` (clean tree; real
 `node_modules` retained as ignored linked entries, no install performed).
+N0 plan committed at **`9282b002`** (399 lines). **N1a is now in progress on top
+of that commit** and stays unchecked until the parent commits it.
 
-**Status: PLANNING ONLY.** This document is the sole artifact of this turn. No
-production code, tests, runtime generation, assets, dependency, package, or
-global-config write happened. Implementation is deferred to parent follow-up.
-This turn also **read** the locally downloaded official PulseAudio **v17.0**
-references (read-only, hashes verified) and replaced the former "upstream
-unread" blocker with the verified protocol appendix in
-`## Protocol references` / `## Protocol appendix`. The **L2 independent
-document verification** then returned three substantive corrections (B1–B3,
-see the Log); all are applied here.
+**Status: IMPLEMENTATION STARTED (N1a).** The protocol appendix below was read
+from the locally downloaded official PulseAudio **v17.0** references (read-only,
+hashes verified) and corrected by the **L2 independent document verification**
+(B1–B3, see the Log). N1a implements the pure tagstruct/frame codec only:
+`lib/notification-pulse-protocol.ts` + `tests/notification-pulse-protocol.test.ts`.
+No socket, cookie, stream, backend integration, process, runtime generation,
+dependency, package, or global-config write happened. RED/GREEN are logged in L3.
 
 ## Objective
 
@@ -253,8 +253,8 @@ only; **no probe evidence exists yet**.
 
 | Unit | Intent | Candidate paths | Forecast (authored) | Acceptance / focused checks |
 |---|---|---|---|---|
-| **N0** | This plan. | `odd/tasks/native-audio-backend.md` | 220–280 (docs) | Specs → Tasks → Log; measured baseline; no code. RED/GREEN N/A. |
-| **N1a** | Tagged tagstruct codec + bounded fake frames (no socket, no server). | `lib/notification-pulse-protocol.ts`, `tests/notification-pulse-protocol.test.ts` | ≤400 | Round-trip encode/decode of the verified tags (`u32`, `u8`, `string`, `arbitrary`, `boolean`, `usec`, `sample_spec`, `cvolume`, `proplist`); command+tag prefix; bounded small frames; malformed/truncated fields fail closed. Unknown sample-format enum values may remain and block **N2**, not N1a. |
+| **N0** | This plan, committed `9282b002` (399 lines). | `odd/tasks/native-audio-backend.md` | 399 observed (docs) | Specs → Tasks → Log; measured baseline; L2 verification corrections (B1–B3) applied. RED/GREEN N/A. |
+| **N1a** | Tagged tagstruct codec + bounded fake frames (no socket, no server). **IN PROGRESS — local GREEN, awaiting parent commit.** | `lib/notification-pulse-protocol.ts` (305), `tests/notification-pulse-protocol.test.ts` (213) | ≤400 forecast; **518 observed** | Round-trip encode/decode of the verified tags (`u32`, `u8`, `string`, `arbitrary`, `boolean`, `usec`, `sample_spec`, `cvolume`, `proplist`); command+tag prefix; bounded small frames; malformed/truncated fields fail closed. Unknown sample-format enum values may remain and block **N2**, not N1a. |
 | **N1b** | Client transport: Unix connect, AUTH (v13/256-byte cookie/no-SHM), SET_CLIENT_NAME, GET_SERVER_INFO/default-sink. Real **read-only** probe (no stream/sample). | `lib/notification-pulse-client.ts`, `tests/notification-pulse-client.test.ts`; docs appendix update | ≤400 | Fake-server tests plus, separately, a real read-only probe against the local socket that returns server info without opening a stream; ERROR/REPLY/timeout/interspersed handling; cookie absent → 256 zero bytes → peer-credential or fail closed. |
 | **N2** | PCM flow + DRAIN + DELETE + cancel against a **fake Unix server, no audio**. | `lib/notification-pulse-stream.ts` (or client additions), `tests/notification-pulse-stream.test.ts`, fake-server fixture | ≤400 | CreatePlayback (v13 layout) → write frames → drain → delete; `missing` requested-bytes honored; 24-bit/format mapping resolved; cancel/socket-close; backpressure; malformed/oversized frame; error and timeout paths. |
 | **N3** | Standalone worker + generated JS runtime + resource/pack limits (generated slice accounted separately). | `lib/notification-audio-native.ts` (worker entry), `scripts/build-runtime-modules.mjs` (add sources), generated `runtime/*.mjs`, `scripts/verify-package-files.mjs` (required paths), `tests/notification-audio-native.test.ts` | ≤300 authored | Worker runs standalone under `process.execPath`; generator/`runtime/`/`requiredPaths` reconcile; snapshot revalidate → stream → delete; SIGKILL timeout/settle-on-close. Authored source/tests stay under cap; generated bytes and runtime count (8 → 11–12) are reported as their own measured numbers. |
@@ -397,3 +397,31 @@ else fail. Still DOCS ONLY: no tests, code, source execution, audio, server
 connect, global config, or cookie content read. Passive doc close; ~399 lines,
 within the 400 planning allowance (no shrink/code-golf). N1a is ready after
 these fixes; **no source implementation until the parent's explicit follow-up**.
+
+### L3 — N1a codec: RED before source, GREEN, triangulation
+
+- Route: single writer, focused. Surfaces: `lib/notification-pulse-protocol.ts`,
+  `tests/notification-pulse-protocol.test.ts`, this doc.
+- **RED observed before any production source**: `node --experimental-strip-types
+  --test tests/notification-pulse-protocol.test.ts` → exit 1, `ERR_MODULE_NOT_FOUND`
+  for `lib/notification-pulse-protocol.ts`, 0 pass / 1 fail. The test file was
+  written first and the module did not exist (honest first-creation RED).
+- **GREEN**: the same command after the pure module → 16/16, exit 0.
+- **TRIANGULATE**: added memblock nonzero-offset/seek, binary proplist value,
+  encoder oversize/channel rejection, empty push → **19/19, exit 0**.
+- **Surrounding (proportionate, no full suite)**: `node --experimental-strip-types
+  --test tests/*notification*.test.ts` → 141/141 pass, exit 0.
+  `node scripts/check-types.mjs` → exit 0, **186 recorded diagnostics, no
+  regressions**, 12 pairs improved (baseline 186 unchanged; no `--update`).
+  `git diff --check` clean.
+- **IO zero**: the module is pure — no `node:fs`/`node:net`/timers/process/spawn;
+  the tests touch no fs, network, clock, or process.
+- **Cost (honest overage)**: source 305 + tests 213 = **518 authored lines**, over
+  the 350–400 forecast by ~118–168; cohesive golden vectors and the full verified
+  primitive set, deliberately not code-golfed. Reported before any extra scope.
+- API delivered for N1b/N2: `NATIVE_PROTOCOL_VERSION`, `CONTROL_CHANNEL`,
+  `PulseCommand`, `MAX_CONTROL_PAYLOAD`, `MAX_FRAMES_PER_PUSH`,
+  `boundedPulseTagWriter/Reader`, `encodePulseFrame`, `boundedPulseFrameDecoder`
+  (readable generic errors, no values echoed).
+- N1a stays **unchecked** until the parent commits it. Next: **N1b** (client
+  transport, AUTH, real read-only probe), not started.
