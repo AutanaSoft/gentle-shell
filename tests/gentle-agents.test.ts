@@ -5919,3 +5919,66 @@ test("/gentle:jobs opens this session's jobs overlay, stops the selected job, an
 		jobs.cleanup();
 	}
 });
+
+test("a job exit notice whose forwarding throws while the parent is idle is retried after the bounded grace", async () => {
+	const { pi, tools, fire, sent, userMessages } = fakePi();
+	const harness = deps();
+	const timers = recordTimers(harness.deps);
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...harness.deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		await tools.get("bash_background")!.execute("b1", { command: "make ci" }, undefined, undefined, ctx);
+		const sendMessage = pi.sendMessage;
+		Object.assign(pi, { sendMessage: () => { throw new Error("host busy"); } });
+		jobs.runs[0]!.exit(0);
+		await jobIo();
+		assert.equal(sent.length, 0);
+		assert.equal(userMessages.length, 0);
+		Object.assign(pi, { sendMessage });
+		// No turn boundary is coming for an idle parent, so the retry is a timer.
+		assert.equal(timers.run(PARENT_WAKE_GRACE_MS), 1, "one bounded retry flush is armed");
+		await tick();
+		const notices = sent.filter((entry) => entry.message.customType === "gentle-jobs.notice");
+		assert.equal(notices.length, 1, "the requeued notice reaches the idle parent");
+		assert.match(String(notices[0]!.message.content), /job-1 \("make ci"\) exited with code 0/);
+		assert.equal(userMessages.length, 1, "and the idle parent is woken for it");
+		assert.equal(timers.run(PARENT_WAKE_GRACE_MS), 1);
+		await tick();
+		assert.equal(sent.length, 1, "a successful retry never delivers the notice twice");
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
+
+for (const boundary of ["session_compact", "session_compact_failed"] as const) {
+	test(`a parent compacting outside an agent run holds a job exit notice until ${boundary}, then wakes it`, async () => {
+		const { pi, tools, fire, sent, userMessages, delivery, setIdle } = fakePi();
+		const harness = deps();
+		const timers = recordTimers(harness.deps);
+		const jobs = fakeJobShell();
+		gentleAgents(pi, {}, { ...harness.deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+		const { ctx } = fakeContext();
+		try {
+			await fire("session_start", ctx);
+			await tools.get("bash_background")!.execute("b1", { command: "make ci" }, undefined, undefined, ctx);
+			setIdle(false);
+			jobs.runs[0]!.exit(1);
+			await jobIo();
+			assert.equal(sent.length, 0, "no direct custom-message turn starts while the parent compacts");
+			assert.equal(userMessages.length, 0, "no wake is sent while the parent compacts");
+			await fire(boundary, ctx);
+			assert.equal(sent.length, 0, "the boundary handler runs before Pi leaves the compacting state");
+			setIdle(true);
+			assert.equal(timers.run(0), 1, "one deferred flush is scheduled for the compaction boundary");
+			await tick();
+			assert.deepEqual(sent.map((entry) => entry.options), [{ triggerTurn: false }], "the held notice is stored without a direct turn");
+			assert.deepEqual(delivery, ["custom:gentle-jobs.notice", "user"], "one wake follows the held notice");
+		} finally {
+			await fire("session_shutdown", ctx);
+			jobs.cleanup();
+		}
+	});
+}

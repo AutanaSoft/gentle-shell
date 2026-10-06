@@ -1051,16 +1051,14 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		deliveryRetries = 0;
 	};
 
-	// A completion settles into our queue. An idle parent flushes right away so
-	// the wake-up behavior is unchanged; a busy parent flushes at the next turn
-	// boundary, and the steer mode injects it before that turn's next LLM call
-	// instead of parking it behind the whole run.
 	// The footer counts this session's running jobs; nothing shows at zero.
 	const refreshJobStatus = () => {
 		const running = jobs.list(activeSessionId() ?? "").filter((job) => job.status === "running").length;
 		try { parentCtx?.ui.setStatus(JOBS_STATUS_KEY, running === 0 ? undefined : `${JOB_GLYPH} ${running} job${running === 1 ? "" : "s"}`); } catch { /* Status is cosmetic. */ }
 	};
 
+	// A job exit settles like a completion below: flushed at once for an idle
+	// parent, at the next turn boundary for a busy one.
 	const settleJob = (job: JobRecord) => {
 		jobNotices.push(job);
 		refreshJobStatus();
@@ -1068,6 +1066,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (activeAgentRuns === 0) flushAll();
 	};
 
+	// A completion settles into our queue. An idle parent flushes right away so
+	// the wake-up behavior is unchanged; a busy parent flushes at the next turn
+	// boundary, and the steer mode injects it before that turn's next LLM call
+	// instead of parking it behind the whole run.
 	const settleCompletion = (task: TaskRecord) => {
 		messages.invalidateTask(task.id);
 		completions.enqueue(task, deps.now());
