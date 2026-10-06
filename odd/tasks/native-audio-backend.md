@@ -817,3 +817,46 @@ these fixes; **no source implementation until the parent's explicit follow-up**.
   rewritten. The new untracked files remain unassessed by me (no review,
   commit or subagent was run). The parent stages and obtains a fresh independent
   HIGH assessment over the new process boundary **before** any local commit.
+
+### L11 — P2 WSL Windows-interop derivation (same adapter, still unwired)
+
+- **Scope.** P2 extends the P1 `lib/notification-audio-windows.ts` adapter to the
+  derived WSL Windows-interop target. HEAD `0c6eaea6`; only the same two files
+  plus this ODD entry changed. No routing change: the adapter stays **inactive by
+  default** until P3, and no physical play/probe ran (all IO injected, direct Node).
+- **Detection (pure, no IO).** `supportsTarget()` returns true for `win32` and for
+  `linux` with a valid `WSL_DISTRO_NAME` plus a `/run/WSL/*_interop` `WSL_INTEROP`
+  (`isWslTarget`). Missing distro, relative/malformed/traversal interop paths and
+  invalid distro names fail closed before any IO; `darwin` and plain Linux stay
+  unsupported.
+- **Fixed host and env.** WSL spawns the fixed trusted literal
+  `WSL_WINDOWS_POWERSHELL_EXE = /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe`
+  via the default `/mnt/c` automount; `PATH`, `SystemRoot`, `windir` and injected
+  executables cannot redirect it and no WSL path translator is spawned. A
+  non-`/mnt/c` mount/custom root fails closed at the `probe()` access check. The
+  child env is the P1 allowlist with `SystemRoot`/`windir` forced plus only
+  `WSL_INTEROP`/`WSL_DISTRO_NAME`; `PATH`, `WSLENV`, snapshots and credentials drop.
+- **Snapshot mapping.** `play()` validates a POSIX-absolute snapshot
+  (`isWslPosixAbsolutePath`): control bytes, backslashes, colons, `//` and
+  `.`/`..` segments are denied, and an externally supplied UNC is never admitted.
+  `toWslUncPath(distro, path)` maps it purely to one `\\wsl.localhost\<distro>\...`
+  UNC value bounded at 4096; conversion happens before the single gate and the
+  final fixed PowerShell spawn. `isWindowsAbsolutePath()` is unchanged and still
+  rejects every UNC path.
+- **RED/GREEN (TDD active).** RED before the source: the new imports did not exist
+  → `node --experimental-strip-types --test tests/notification-audio-windows.test.ts`
+  → **0 pass / 1 fail** (module export failure). GREEN after the source: the same
+  command → **27/27, exit 0** (19 P1 + 8 new WSL tests). A source guard proves no
+  path-translator token exists and no routing import cycle was added.
+- **Validation (direct Node, no pnpm, no physical audio).** windows suite 27/27;
+  `notification-audio + native + windows` → **60/60**; `tests/*notification*.test.ts`
+  → **221/221** (was 213); `package-manifest` → **58/58**; `verify-package-files`
+  → **180 files / 69 pins**, runtime **8**; `check-types` → **186, no regressions**;
+  `git diff --check` clean. No real PowerShell probe, snapshot read or physical
+  play ran (all IO injected).
+- **Cost.** Actual **+301/-23** lines across the two files (source +145/-23,
+  tests +179) plus this entry — marginally over the ≤300 P2 forecast; recorded
+  honestly, no security golf.
+- **State.** Default routing unchanged and still **INACTIVE**; N5 stays
+  **[ ] BLOCKED** and untouched. Not committed here: the parent owns staging,
+  the independent final High-risk verification, and P3 routing wiring.

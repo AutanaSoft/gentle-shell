@@ -6,12 +6,17 @@
  * PowerShell host with a fixed, trusted `-EncodedCommand` script and a scrubbed
  * environment. The snapshot path is never interpolated into the command: it is
  * base64-encoded and decoded inside the script, so no snapshot byte can become
- * command text. Windows only; macOS/Linux never spawn. The adapter is not wired
- * into routing yet (P3), so there is no physical-playback claim for P1.
+ * command text. Native Windows and the derived WSL Windows-interop target only;
+ * plain macOS/Linux never spawn. The adapter is not wired into routing yet (P3),
+ * so there is no physical-playback claim here.
  *
- * P2 seam: `supportsTarget()` will additionally accept the derived WSL Windows
- * interop target, and `isWindowsAbsolutePath()` will admit the single derived
- * WSL `\\wsl$`/`\\wsl.localhost` UNC form. Both are intentionally denied for P1.
+ * P2 (implemented): `supportsTarget()` also accepts the WSL Windows-interop
+ * target (Linux platform + a valid `WSL_DISTRO_NAME` + `/run/WSL/*_interop`).
+ * The fixed host is `/mnt/c/.../powershell.exe`, never resolved through `PATH`,
+ * `SystemRoot` or a runtime WSL path translation; a non-`/mnt/c` mount fails closed.
+ * `play()` maps the validated POSIX snapshot to the single derived
+ * `\\wsl.localhost\<distro>\...` UNC form; an externally supplied UNC path is
+ * never admitted and `isWindowsAbsolutePath()` still rejects every UNC path.
  */
 import { spawn } from "node:child_process";
 import type { EventEmitter } from "node:events";
@@ -30,6 +35,21 @@ export const NATIVE_WINDOWS_SCHEMA = "gentle.audio.windows/v1";
 export const FIXED_WINDOWS_POWERSHELL_EXE = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
 /** P1 supports only the default system root; a non-default root fails closed. */
 const FIXED_WINDOWS_ROOT = "C:\\Windows";
+/**
+ * Trusted WSL interop host: the fixed Windows PowerShell reached through the
+ * default `/mnt/c` automount. Like the native literal it is a trust anchor, never
+ * derived from `PATH`, an injected executable or a runtime WSL path translation. A
+ * non-`/mnt/c` mount or a custom Windows root is not reachable here and fails
+ * closed at the `probe()` access check (documented P2 limitation).
+ */
+export const WSL_WINDOWS_POWERSHELL_EXE = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
+/** Fixed UNC host that maps a WSL distro filesystem into the Windows namespace. */
+export const WSL_UNC_HOST = "wsl.localhost";
+const WSL_INTEROP_PREFIX = "/run/WSL/";
+const WSL_INTEROP_SUFFIX = "_interop";
+/** Characters Windows forbids in a UNC share/distro component. */
+const RESERVED_COMPONENT = /[<>:"/\\|?*]/;
+const CONTROL_BYTES = /[\u0000-\u001f\u007f]/;
 const FIXED_FLAGS = ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"] as const;
 /** Windows runtime vars only; PATH, NODE_OPTIONS/NODE_PATH, debug and credentials are dropped. */
 const WINDOWS_ENV_ALLOWLIST = ["TEMP", "TMP", "USERPROFILE", "USERNAME", "USERDOMAIN", "HOMEDRIVE", "HOMEPATH"] as const;
@@ -97,6 +117,8 @@ export interface NativeWindowsOptions {
 
 interface Envelope { schema?: unknown; ok?: unknown; available?: unknown; formats?: unknown; played?: unknown; }
 interface RunResult { readonly stdout: string; readonly stderr: string; readonly aborted: boolean; readonly timedOut: boolean; readonly code: number | null; readonly overflowed: boolean; }
+/** The native Windows host or the derived WSL Windows-interop host; nothing else is supported. */
+type ResolvedTarget = { readonly kind: "win32" } | { readonly kind: "wsl"; readonly distro: string };
 
 /** Normalize a stream chunk to bytes so the byte cap and the unicode-safe decode stay exact. */
 function toBuffer(chunk: unknown): Buffer {
@@ -125,9 +147,60 @@ function parseEnvelope(stdout: string): Envelope | undefined {
 }
 
 /**
- * Only a drive-absolute Windows path reaches the fixed script. URI schemes,
- * drive-relative paths, UNC shares, control bytes and alternate data streams are
- * denied for P1. The single P2 WSL UNC exception is not admitted here.
+ * A distro/UNC component may be Unicode and contain spaces, but never the
+ * reserved set, control bytes or the `.`/`..` traversal names.
+ */
+function isValidUncComponent(value: unknown): value is string {
+	if (typeof value !== "string" || value.length === 0 || value.length > 256) return false;
+	if (value === "." || value === "..") return false;
+	return !CONTROL_BYTES.test(value) && !RESERVED_COMPONENT.test(value);
+}
+
+/** `/run/WSL/<id>_interop`, absolute and traversal-free; the real path is never logged. */
+function isSafeWslInteropPath(value: unknown): value is string {
+	if (typeof value !== "string" || !value.startsWith(WSL_INTEROP_PREFIX) || !value.endsWith(WSL_INTEROP_SUFFIX)) return false;
+	if (value.length > MAX_SNAPSHOT_PATH) return false;
+	if (CONTROL_BYTES.test(value) || /[\s\\:]/.test(value)) return false;
+	if (value.includes("//")) return false;
+	for (const segment of value.split("/")) if (segment === "." || segment === "..") return false;
+	return true;
+}
+
+/** Pure WSL Windows-interop detection: a valid distro name plus the interop socket path. No IO. */
+export function isWslTarget(env: NodeJS.ProcessEnv): boolean {
+	return isValidUncComponent(env.WSL_DISTRO_NAME) && isSafeWslInteropPath(env.WSL_INTEROP);
+}
+
+/**
+ * A WSL snapshot must be a POSIX-absolute, privately owned path. Control bytes,
+ * backslashes, colons (drive/alternate-stream/URI), ambiguous `//` and `.`/`..`
+ * traversal segments are denied so the later UNC mapping cannot cross the distro
+ * share or smuggle in a Windows drive path.
+ */
+export function isWslPosixAbsolutePath(value: unknown): value is string {
+	if (typeof value !== "string" || value.length === 0 || value.length > MAX_SNAPSHOT_PATH) return false;
+	if (!value.startsWith("/")) return false;
+	if (CONTROL_BYTES.test(value) || /[\\:]/.test(value)) return false;
+	if (value.includes("//")) return false;
+	for (const segment of value.split("/")) if (segment === "." || segment === "..") return false;
+	return true;
+}
+
+/**
+ * Pure mapping to the single derived UNC form `\\wsl.localhost\<distro>\...`.
+ * The caller supplies a validated POSIX snapshot, never an externally provided
+ * UNC path, and the distro name is re-validated as a UNC component.
+ */
+export function toWslUncPath(distro: unknown, posixPath: unknown): string | undefined {
+	if (!isValidUncComponent(distro) || !isWslPosixAbsolutePath(posixPath)) return undefined;
+	const unc = `\\\\${WSL_UNC_HOST}\\${distro}\\${posixPath.slice(1).split("/").join("\\")}`;
+	return unc.length <= MAX_SNAPSHOT_PATH ? unc : undefined;
+}
+
+/**
+ * Only a drive-absolute Windows path reaches the native script. URI schemes,
+ * drive-relative paths, control bytes, alternate data streams and every UNC
+ * share are denied; WSL snapshots are POSIX paths mapped by `toWslUncPath`.
  */
 export function isWindowsAbsolutePath(value: unknown): value is string {
 	if (typeof value !== "string" || value.length === 0 || value.length > MAX_SNAPSHOT_PATH) return false;
@@ -156,35 +229,55 @@ export class NativeWindowsPlayer {
 		this.clearTimer = options.clearTimeout ?? (handle => clearTimeout(handle as ReturnType<typeof setTimeout>));
 	}
 
-	supportsTarget(): boolean { return (this.options.platform ?? process.platform) === "win32"; }
+	supportsTarget(): boolean { return this.resolveTarget() !== undefined; }
 	getNativeFormats(): readonly ("wav")[] { return this.formats; }
+
+	/** Pure, IO-free target resolution from the injected platform/env. */
+	private resolveTarget(): ResolvedTarget | undefined {
+		const platform = this.options.platform ?? process.platform;
+		if (platform === "win32") return { kind: "win32" };
+		const source = this.options.env ?? process.env;
+		if (platform === "linux" && isWslTarget(source)) return { kind: "wsl", distro: source.WSL_DISTRO_NAME! };
+		return undefined;
+	}
+
+	/** Fixed trust anchor per target: the native literal or the fixed `/mnt/c` interop literal. */
+	private executablePath(target: ResolvedTarget): string {
+		return target.kind === "wsl" ? WSL_WINDOWS_POWERSHELL_EXE : FIXED_WINDOWS_POWERSHELL_EXE;
+	}
 
 	/**
 	 * Child env is a fixed allowlist: only Windows runtime/localization vars
 	 * survive, `SystemRoot`/`windir` are forced to the trusted default root, and
 	 * PATH, NODE_OPTIONS/NODE_PATH, debug overlays and every credential are
-	 * dropped. No snapshot is passed through the environment (WSL interop would
-	 * drop it), so the base64-in-argv design needs no `WSLENV` entry.
+	 * dropped. The WSL interop target adds only `WSL_INTEROP`/`WSL_DISTRO_NAME`,
+	 * which a scrubbed child needs so the Windows process can reach `/init`. No
+	 * snapshot travels through the environment, so no `WSLENV` entry is needed or
+	 * preserved.
 	 */
-	private childEnv(): NodeJS.ProcessEnv {
+	private childEnv(target: ResolvedTarget): NodeJS.ProcessEnv {
 		const source = this.options.env ?? process.env;
 		const env: NodeJS.ProcessEnv = {};
 		for (const key of WINDOWS_ENV_ALLOWLIST)
 			if (source[key] !== undefined) env[key] = source[key];
 		env.SystemRoot = FIXED_WINDOWS_ROOT;
 		env.windir = FIXED_WINDOWS_ROOT;
+		if (target.kind === "wsl") {
+			env.WSL_INTEROP = source.WSL_INTEROP;
+			env.WSL_DISTRO_NAME = source.WSL_DISTRO_NAME;
+		}
 		return env;
 	}
 
 	/** Spawns synchronously; resolves ONLY on the child `close` event (never exit/error/kill). */
-	private run(mode: "probe" | "play", snapshot: string | undefined, signal: AbortSignal | undefined, timeoutMs: number): Promise<RunResult> {
+	private run(mode: "probe" | "play", target: ResolvedTarget, snapshot: string | undefined, signal: AbortSignal | undefined, timeoutMs: number): Promise<RunResult> {
 		return new Promise<RunResult>((resolve, reject) => {
 			const script = mode === "probe" ? PROBE_SCRIPT : playScript(Buffer.from(snapshot!, "utf8").toString("base64"));
 			const args = [...FIXED_FLAGS, Buffer.from(script, "utf16le").toString("base64")];
 			let child: NativeWindowsChild;
 			try {
-				child = (this.options.spawn ?? defaultSpawn)(FIXED_WINDOWS_POWERSHELL_EXE, args, {
-					shell: false, windowsHide: true, detached: false, stdio: ["ignore", "pipe", "pipe"], env: this.childEnv(),
+				child = (this.options.spawn ?? defaultSpawn)(this.executablePath(target), args, {
+					shell: false, windowsHide: true, detached: false, stdio: ["ignore", "pipe", "pipe"], env: this.childEnv(target),
 				});
 			} catch { reject(privateFailure()); return; }
 			let stdoutChunks: Buffer[] = []; let stderrChunks: Buffer[] = [];
@@ -231,15 +324,17 @@ export class NativeWindowsPlayer {
 
 	/** Explicit, read-only availability check: fixed host access, then one fixed probe script. Never throws. */
 	async probe(signal?: AbortSignal): Promise<NativeWindowsProbeResult> {
-		if (!this.supportsTarget() || signal?.aborted) { this.formats = []; return { available: false, formats: [] }; }
+		const target = this.resolveTarget();
+		if (target === undefined || signal?.aborted) { this.formats = []; return { available: false, formats: [] }; }
+		const executable = this.executablePath(target);
 		let available = false;
 		try {
-			available = this.options.executableAvailable ? await this.options.executableAvailable(FIXED_WINDOWS_POWERSHELL_EXE)
-				: await access(FIXED_WINDOWS_POWERSHELL_EXE, constants.X_OK).then(() => true);
+			available = this.options.executableAvailable ? await this.options.executableAvailable(executable)
+				: await access(executable, constants.X_OK).then(() => true);
 		} catch { available = false; }
 		if (!available || signal?.aborted) { this.formats = []; return { available: false, formats: [] }; }
 		let result: RunResult;
-		try { result = await this.run("probe", undefined, signal, this.options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS); }
+		try { result = await this.run("probe", target, undefined, signal, this.options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS); }
 		catch { this.formats = []; return { available: false, formats: [] }; }
 		const parsed = result.aborted || result.timedOut || result.overflowed || result.code !== 0
 			? { available: false, formats: [] as const }
@@ -250,14 +345,18 @@ export class NativeWindowsPlayer {
 
 	/** `gate` (permit or predicate) runs synchronously before spawn; false means no child at all. */
 	async play(snapshot: string, signal?: AbortSignal, gate?: (() => boolean) | { permit(): boolean }): Promise<void> {
-		if (!this.supportsTarget()) throw new Error("Native Windows: unsupported platform");
+		const target = this.resolveTarget();
+		if (target === undefined) throw new Error("Native Windows: unsupported platform");
 		if (signal?.aborted) throw abortError();
-		// The path must be validated before it can be embedded in the fixed script.
-		if (!isWindowsAbsolutePath(snapshot)) throw new Error("Native Windows: invalid snapshot");
+		// Pure conversion/validation before the gate: posix -> derived UNC for WSL, drive-absolute for native.
+		const prepared = target.kind === "wsl"
+			? toWslUncPath(target.distro, snapshot)
+			: (isWindowsAbsolutePath(snapshot) ? snapshot : undefined);
+		if (prepared === undefined) throw new Error("Native Windows: invalid snapshot");
 		const permitted = typeof gate === "function" ? gate() : gate?.permit();
 		if (permitted === false) throw new NativePulseNotPermittedError();
 		let result: RunResult;
-		try { result = await this.run("play", snapshot, signal, this.options.playTimeoutMs ?? DEFAULT_PLAY_TIMEOUT_MS); }
+		try { result = await this.run("play", target, prepared, signal, this.options.playTimeoutMs ?? DEFAULT_PLAY_TIMEOUT_MS); }
 		catch { throw privateFailure(); }
 		if (result.aborted) throw abortError();
 		if (result.overflowed || result.timedOut || result.code !== 0) throw privateFailure();

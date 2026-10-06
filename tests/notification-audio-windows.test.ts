@@ -7,7 +7,11 @@ import {
 	FIXED_WINDOWS_POWERSHELL_EXE,
 	NATIVE_WINDOWS_SCHEMA,
 	NativeWindowsPlayer,
+	WSL_WINDOWS_POWERSHELL_EXE,
 	isWindowsAbsolutePath,
+	isWslPosixAbsolutePath,
+	isWslTarget,
+	toWslUncPath,
 	type NativeWindowsOptions,
 	type NativeWindowsSpawnOptions,
 } from "../lib/notification-audio-windows.ts";
@@ -24,6 +28,11 @@ class FakeChild extends EventEmitter {
 	readonly stderr = new EventEmitter();
 	readonly kills: string[] = [];
 	kill(signal: string): boolean { this.kills.push(signal); return true; }
+}
+
+const WSL_ENV: NodeJS.ProcessEnv = { WSL_DISTRO_NAME: "Ubuntu", WSL_INTEROP: "/run/WSL/4242_interop" };
+function wslRecorder(env: NodeJS.ProcessEnv = WSL_ENV) {
+	return recorder("linux", { env });
 }
 
 function recorder(platform = "win32", overrides: Partial<NativeWindowsOptions> = {}) {
@@ -336,11 +345,181 @@ test("the fixed play script disposes the SoundPlayer in a finally block", async 
 	await playing;
 });
 
+test("wsl interop target is lazy, supports via linux env, and selects the fixed mounted host", async () => {
+	const { player, spawned, children, executableChecks } = wslRecorder();
+	assert.deepEqual(player.getNativeFormats(), []);
+	assert.equal(player.supportsTarget(), true);
+	assert.deepEqual(spawned, []); // construction and support checks stay IO-free
+	assert.deepEqual(executableChecks, []);
+	const probing = player.probe();
+	await flush();
+	assert.deepEqual(executableChecks, [WSL_WINDOWS_POWERSHELL_EXE]);
+	assert.equal(spawned.length, 1);
+	assert.equal(spawned[0]!.executable, WSL_WINDOWS_POWERSHELL_EXE);
+	assert.deepEqual(spawned[0]!.options.stdio, ["ignore", "pipe", "pipe"]);
+	assert.deepEqual(player.getNativeFormats(), []); // never cached before a validated probe
+	children[0]!.stdout.emit("data", probeOk());
+	children[0]!.emit("close", 0);
+	assert.deepEqual(await probing, { available: true, formats: ["wav"] });
+	assert.deepEqual(player.getNativeFormats(), ["wav"]);
+});
+
+test("wsl detection fails closed for a missing distro, bad interop path or invalid name", async () => {
+	const cases: NodeJS.ProcessEnv[] = [
+		{},
+		{ WSL_DISTRO_NAME: "Ubuntu" },
+		{ WSL_INTEROP: "/run/WSL/1_interop" },
+		{ WSL_DISTRO_NAME: "", WSL_INTEROP: "/run/WSL/1_interop" },
+		{ WSL_DISTRO_NAME: ".", WSL_INTEROP: "/run/WSL/1_interop" },
+		{ WSL_DISTRO_NAME: "..", WSL_INTEROP: "/run/WSL/1_interop" },
+		{ WSL_DISTRO_NAME: "a/b", WSL_INTEROP: "/run/WSL/1_interop" },
+		{ WSL_DISTRO_NAME: "a:b", WSL_INTEROP: "/run/WSL/1_interop" },
+		{ WSL_DISTRO_NAME: "Ubuntu", WSL_INTEROP: "relative_interop" },
+		{ WSL_DISTRO_NAME: "Ubuntu", WSL_INTEROP: "/tmp/1_interop" },
+		{ WSL_DISTRO_NAME: "Ubuntu", WSL_INTEROP: "/run/WSL/1" },
+		{ WSL_DISTRO_NAME: "Ubuntu", WSL_INTEROP: "/run/WSL/../1_interop" },
+		{ WSL_DISTRO_NAME: "Ubuntu", WSL_INTEROP: "/run/WSL//1_interop" },
+	];
+	for (const env of cases) {
+		assert.equal(isWslTarget(env), false, JSON.stringify(env));
+		const { player, spawned, children, executableChecks } = wslRecorder(env);
+		assert.equal(player.supportsTarget(), false);
+		assert.deepEqual(await player.probe(), { available: false, formats: [] });
+		assert.deepEqual(executableChecks, []);
+		assert.equal(spawned.length, 0);
+		await assert.rejects(player.play("/tmp/sound.wav"), /Native Windows/);
+		assert.equal(spawned.length, 0);
+		assert.equal(children.length, 0);
+	}
+	for (const platform of ["darwin", "freebsd"]) {
+		assert.equal(recorder(platform, { env: WSL_ENV }).player.supportsTarget(), false, platform);
+	}
+	assert.equal(isWslTarget(WSL_ENV), true);
+});
+
+test("wsl play maps one POSIX snapshot to a single encoded UNC path without interpolating data", async () => {
+	const distro = "Ubuntu 22.04 \u00f1";
+	const snapshot = "/tmp/gentle-1/\u00f1 'quote' $x `y`; sound.wav";
+	const { player, spawned, children } = wslRecorder({ WSL_DISTRO_NAME: distro, WSL_INTEROP: "/run/WSL/7_interop" });
+	const playing = player.play(snapshot);
+	assert.equal(spawned.length, 1);
+	const encoded = spawned[0]!.args[4]!;
+	assert.match(encoded, /^[A-Za-z0-9+/=]+$/);
+	const script = decodeCommand(encoded);
+	const embedded = script.match(/FromBase64String\('([^']*)'\)/)?.[1];
+	assert.ok(embedded, "the play script must decode one embedded base64 literal");
+	const decoded = Buffer.from(embedded!, "base64").toString("utf8");
+	assert.equal(decoded, toWslUncPath(distro, snapshot));
+	assert.equal(decoded, `\\\\wsl.localhost\\${distro}\\tmp\\gentle-1\\\u00f1 'quote' $x \`y\`; sound.wav`);
+	assert.ok(!script.includes(snapshot), "the raw POSIX snapshot must never appear in the command");
+	assert.ok(!/whoami|Start-Process/.test(script), "no snapshot byte may become command text");
+	children[0]!.stdout.emit("data", playOk());
+	children[0]!.emit("close", 0);
+	await playing;
+});
+
+test("wsl snapshot validation rejects relative, traversal, drive, URI and externally supplied UNC paths", async () => {
+	const invalid: Array<string> = [
+		"tmp/sound.wav", "/tmp/../etc/x.wav", "/tmp/./x.wav", "/tmp//x.wav", "/tmp/x.wav/..",
+		"C:\\Temp\\x.wav", "\\\\wsl.localhost\\Ubuntu\\tmp\\x.wav", "//wsl.localhost/Ubuntu/tmp/x.wav",
+		"file:///tmp/x.wav", "/tmp/a:b.wav", "/tmp/a\\b.wav", "/tmp/a\u0000b.wav", "https://example.com/x.wav", "",
+	];
+	for (const path of invalid) {
+		assert.equal(isWslPosixAbsolutePath(path), false, path);
+		const { player, spawned, children } = wslRecorder();
+		await assert.rejects(player.play(path), /Native Windows/);
+		assert.equal(spawned.length, 0);
+		assert.equal(children.length, 0);
+	}
+	assert.equal(isWslPosixAbsolutePath("/tmp/sound.wav"), true);
+	assert.equal(toWslUncPath("Ubuntu", "/" + "a".repeat(4096)), undefined, "the mapped UNC path must respect the 4096 byte bound");
+	const oversized = wslRecorder();
+	await assert.rejects(oversized.player.play("/" + "a".repeat(4096)), /Native Windows/);
+	assert.equal(oversized.spawned.length, 0);
+});
+
+test("native windows drive validation is unchanged and never admits a WSL UNC path", async () => {
+	assert.equal(isWindowsAbsolutePath("C:\\"), true);
+	assert.equal(isWindowsAbsolutePath("C:\\Users\\u\\x.wav"), true);
+	assert.equal(isWindowsAbsolutePath("\\\\wsl.localhost\\Ubuntu\\tmp\\x.wav"), false);
+	assert.equal(isWindowsAbsolutePath("\\\\wsl$\\Ubuntu\\tmp\\x.wav"), false);
+	assert.equal(isWindowsAbsolutePath("/tmp/x.wav"), false);
+	const { player, spawned } = recorder();
+	await assert.rejects(player.play("\\\\wsl.localhost\\Ubuntu\\tmp\\x.wav"), /Native Windows/);
+	assert.equal(spawned.length, 0);
+});
+
+test("a WSL false permit performs no IO and the gate runs once before a close-settled spawn", async () => {
+	const denied = wslRecorder();
+	await assert.rejects(denied.player.play("/tmp/sound.wav", undefined, () => false), (error: Error) => error.name === "NativePulseNotPermittedError");
+	assert.equal(denied.spawned.length, 0);
+	const { player, spawned, children } = wslRecorder();
+	let calls = 0;
+	const playing = player.play("/tmp/sound.wav", undefined, () => { calls += 1; return true; });
+	assert.equal(calls, 1);
+	assert.equal(spawned.length, 1);
+	let settled = false; void playing.then(() => { settled = true; });
+	children[0]!.emit("exit", 0);
+	await flush();
+	assert.equal(settled, false, "play must settle only on close");
+	children[0]!.stdout.emit("data", playOk());
+	children[0]!.emit("close", 0);
+	await playing;
+	assert.equal(calls, 1);
+});
+
+test("wsl child env keeps only the interop pair and cannot redirect the fixed host", async () => {
+	const captured: Array<{ executable: string; env: NodeJS.ProcessEnv }> = [];
+	const player = new NativeWindowsPlayer({
+		platform: "linux",
+		env: {
+			WSL_DISTRO_NAME: "Ubuntu", WSL_INTEROP: "/run/WSL/9_interop",
+			SystemRoot: "D:\\Hostile", windir: "D:\\Hostile", PATH: "/evil", WSLENV: "GENTLE_AUDIO_SNAPSHOT",
+			GENTLE_AUDIO_SNAPSHOT: "/tmp/leak.wav", OPENAI_API_KEY: "sk", NODE_OPTIONS: "--inspect",
+			TEMP: "/tmp", USERPROFILE: "C:\\Users\\u",
+		},
+		executableAvailable: async () => true,
+		spawn: (executable, _args, options) => { captured.push({ executable, env: options.env }); return new FakeChild(); },
+	});
+	void player.probe();
+	await flush();
+	assert.equal(captured[0]!.executable, WSL_WINDOWS_POWERSHELL_EXE);
+	const env = captured[0]!.env;
+	assert.equal(env.SystemRoot, "C:\\Windows");
+	assert.equal(env.windir, "C:\\Windows");
+	assert.equal(env.WSL_INTEROP, "/run/WSL/9_interop");
+	assert.equal(env.WSL_DISTRO_NAME, "Ubuntu");
+	assert.equal(env.TEMP, "/tmp");
+	assert.equal(env.USERPROFILE, "C:\\Users\\u");
+	for (const drop of ["PATH", "WSLENV", "GENTLE_AUDIO_SNAPSHOT", "OPENAI_API_KEY", "NODE_OPTIONS"])
+		assert.equal(env[drop], undefined, drop);
+});
+
+test("wsl probe denies and an aborted wsl play is inert without spawning", async () => {
+	const deniedSpawned: number[] = [];
+	const denied = new NativeWindowsPlayer({
+		platform: "linux", env: WSL_ENV,
+		executableAvailable: async () => false,
+		spawn: () => { deniedSpawned.push(1); throw new Error("must not spawn"); },
+	});
+	assert.deepEqual(await denied.probe(), { available: false, formats: [] });
+	assert.deepEqual(denied.getNativeFormats(), []);
+	assert.deepEqual(deniedSpawned, []);
+	const { player, spawned, children } = wslRecorder();
+	const controller = new AbortController(); controller.abort();
+	let calls = 0;
+	await assert.rejects(player.play("/tmp/sound.wav", controller.signal, () => { calls += 1; return true; }), /Native Windows/);
+	assert.equal(calls, 0);
+	assert.equal(spawned.length, 0);
+	assert.equal(children.length, 0);
+});
+
 test("windows adapter source stays free of SDK, addon, script resource and audio imports", () => {
 	const source = readFileSync(join(process.cwd(), "lib", "notification-audio-windows.ts"), "utf8");
 	assert.doesNotMatch(source, /@earendil-works/);
 	assert.doesNotMatch(source, /\.ps1|ExecutionPolicy/);
 	assert.doesNotMatch(source, /\.node["']|native\//);
 	assert.doesNotMatch(source, /postinstall|installer|download/i);
+	assert.doesNotMatch(source, /wslpath/i, "the fixed host must never be resolved through a WSL path translator");
 	assert.doesNotMatch(source, /from\s+["']\.\/notification-audio\.ts["']/, "no production import cycle with the routing module");
 });
