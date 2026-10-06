@@ -12,10 +12,14 @@ N0 plan committed at **`9282b002`** [x] (399 lines); N1a codec committed at
 **`b2bdee09`** [x] (518 authored lines); N1b client committed at **`7ea3e15a`**
 [x] (684 authored lines); N2 stream committed at **`597e4d27`** [x] (525 authored
 lines); N3 bridge+worker committed at **`e368e74a`** [x] (~489 authored lines);
-N4 routing+docs committed by the parent at **`7f1b87ac`** [x]. **N5 is [ ]
-BLOCKED — not done.**
+N4 routing+docs committed by the parent at **`7f1b87ac`** [x]. **N5 is [x]**
+(functionally verified at L13). P1 Windows adapter committed at **`0c6eaea6`**
+[x]; P2 WSL Windows-interop derivation at **`57fbe506`** [x]; P3 default routing
+at **`fe8d8fc3`** [x] (current HEAD). The historical L9 whole-suite **BLOCKED**
+result is preserved as history, superseded by the L13 current-candidate run.
 
-**Status: CROSS-PLATFORM PREPARED (P3 DEFAULT ROUTING), N5 BLOCKED.** The
+**Status: CROSS-PLATFORM PREPARED (P3 DEFAULT ROUTING), N5 FUNCTIONALLY
+VERIFIED.** The
 protocol appendix below was read from the locally downloaded official
 PulseAudio **v17.0** references (read-only, hashes verified) and corrected by the
 **L2 independent document verification** (B1–B3, see the Log). N1a is the pure
@@ -30,7 +34,8 @@ the lazy Linux-only bridge (`lib/notification-audio-native.ts`) and the owned
 are unchanged). N4 integrates routing: on Linux the native WAV backend is
 preferred with the CLI retained as the OGG/FLAC fallback, capabilities are
 aggregated, the scheduler permit is called once, and no real audio is played.
-RED/GREEN are in L3/L4/L5/L6/L7 and L12; N5 closure evidence is in L8/L9.
+RED/GREEN are in L3/L4/L5/L6/L7 and L12; N5 closure evidence is in L8/L9
+(historical, superseded) and L13 (current).
 **No physical playback is claimed; the WSL and native Windows `SoundPlayer`
 routes and the macOS `afplay` route are prepared, and none has audible
 evidence.** The P3 default-routing wiring is in L12.
@@ -40,16 +45,21 @@ evidence.** The P3 default-routing wiring is in L12.
 Give Gentle Shell's existing notification audio an opt-in, dependency-free
 **native Linux/WSLg backend**: a minimal PulseAudio-wire v13 client written in
 our own Node code (built-in `node:net` Unix socket), replacing the external CLI
-player only where the native path is proven. macOS (CoreAudio) and Windows
-(WASAPI) are planned later in phases with owned precompiled helpers. The native
-path must never shadow the working external OGG/FLAC backend or overstate
-physical support.
+player only where the native path is proven. Cross-platform targets are now
+**prepared** using only included system output: Windows PowerShell `SoundPlayer`
+(direct and via the WSL `/mnt/c` interop host `C:\Windows`) and the macOS
+`afplay` CLI, with no compiled CoreAudio/WASAPI helper and no installer. There
+is **no universal-support claim**: a non-default Windows root and a missing
+`/mnt/c` mount fail closed to the trusted external/CLI fallback. The native path
+must never shadow the working external OGG/FLAC backend or overstate physical
+support.
 
 ## Approval log (parent-relayed, not independently re-confirmed here)
 
 - User: **"go"** to proceed.
-- Phasing answer: **"IN PHASES"** — Linux/macOS/Windows staged; this turn starts
-  Linux/WSLg, others planned/pending, never claimed as supported.
+- Phasing answer: **"IN PHASES"** — Linux/macOS/Windows staged; this turn started
+  Linux/WSLg. (Superseded by L10: all three platforms are now prepared without a
+  physical-evidence requirement, never claimed as universally supported.)
 - Package answer: **"CLIENTE PROPIO SIN NUEVOS PAQUETES"** — own client, no new
   packages, no `pulseaudio.js` dependency, no new npm, no CLI player/system
   library install, no global config/activation, no physical play claim, no push
@@ -88,14 +98,17 @@ physical support.
 | R5 | Worker spawn overlap, leak, orphan, or lingering process | Reuse existing `permit.start()` **synchronous** gate immediately before spawn with no await; parent SIGKILL timeout 6000 ms; settle only on `close` + cleanup; single-flight reservation in the owner. |
 | R6 | Packaging/binary creep (Addon, prebuilt, postinstall download, ABI) | Pure Node in the owned source worker `lib/notification-pulse-worker.ts` (`process.execPath`, built-in type stripping, engine `node >=22.19.0`): **no generated `runtime/*.mjs`**, runtime stays **8**. No Addon, binary, ABI, compiler or audio install step; the pre-existing npm `postinstall` Go step is unchanged and the audio work adds no new dependency. `verify-package-files.mjs` keeps runtime/sources/requiredPaths in sync. |
 | R7 | WSLg path divergence | Resolve `/run/user/<uid>/pulse/native` first, then `/mnt/wslg/runtime-dir/pulse/native`; missing socket → unavailable → fallback preserved. |
-| R8 | Physical-support overreach | Linux/WSLg first with a real read-only probe; macOS/Windows remain planned/pending; no "supported" claim without manual physical evidence. |
+| R8 | Physical-support overreach | Linux/WSLg, Windows (direct + WSL interop) and macOS are prepared by default (P3); only Linux/WSLg has a real read-only probe. Non-default Windows roots / missing `/mnt/c` fail closed; no "supported"/universal claim, and no physical-evidence requirement without manual listening. |
 | R9 | Regression of 9a1 (`878`-restored) UI or OGG/FLAC behavior | Preserve the six-control basic card and existing validators/fallback verbatim; changes limited to routing/lifecycle and additive native capability. |
 | R10 | Bulk/protocol sprawl and code golf | Minimal v13 subset only (AUTH, SET_CLIENT_NAME, GET_SERVER_INFO/default-sink probe, CREATE_PLAYBACK_STREAM, PLAYBACK_STREAM writes, DRAIN, DELETE); small appendix; ~400-line advisory per unit with tests kept with behavior. |
 
 ## Specs
 
-- **S1 — Scope and authorization.** Now **implemented for Linux/WSLg (N1a–N4)**;
-  macOS/Windows remain phased and planned only. Own Node client. Forbidden: new
+- **S1 — Scope and authorization.** Now **implemented/prepared for Linux/WSLg
+  (N1a–N4), Windows (`0c6eaea6`), the derived WSL Windows-interop target
+  (`57fbe506`) and macOS `afplay`; default routing at `fe8d8fc3`.** Prepared
+  without physical evidence and without any universal-support claim. Own Node
+  client. Forbidden: new
   packages, `pulseaudio.js` dependency, new npm, CLI player/system library
   install, global config/activation, physical-play claim, push/PR. The parent
   commits locally per unit and owns review; the delegated writer's
@@ -140,11 +153,13 @@ physical support.
   zero bytes and rely on the local Unix peer credential (`SO_PEERCRED`
   `uid == getuid()`) for authorization. If the server rejects
   (`PA_COMMAND_ERROR`/`PA_ERR_ACCESS`), fail closed to the external backend.
-- **S11 — Platform phases.** Linux/WSLg implementation and a real read-only
-  probe are in scope for the first phases. macOS CoreAudio / Windows WASAPI use
-  owned precompiled helpers and require CI minimum OS/arches, signing, supply
-  chain, and future physical testing; no PowerShell, no installers, no newly
-  claimed physical support.
+- **S11 — Platform phases.** Linux/WSLg, Windows (direct and WSL
+  Windows-interop) and macOS are all **prepared** now; only Linux/WSLg has a real
+  read-only probe. Windows uses the included PowerShell `SoundPlayer` from the
+  fixed `C:\Windows` host (never `PATH`/config-redirected); macOS uses the
+  included `afplay` CLI. No compiled CoreAudio/WASAPI helper, no installer, no
+  new dependency, and no newly claimed physical support; physical listening is
+  future optional work.
 - **S12 — Budget and evidence discipline.** Forecast **~1,350–1,600 authored
   lines total** (code + tests + runtime pack checks + docs; vendor 0), no code
   golf. Units N0–N5, ~400 advisory cap, tests stay with the behavior they
@@ -285,7 +300,7 @@ only; **no probe evidence exists yet**.
 | **N2** | PCM flow + DRAIN + DELETE + cancel against a **fake Unix server, no audio**. **[x] committed `597e4d27`.** | `lib/notification-pulse-stream.ts` (212), `tests/notification-pulse-stream.test.ts` (275), `lib/notification-pulse-client.ts` (+38) | ≤600 forecast; **525 observed** | Strict WAV parse/mapping; CREATE v13 golden wire; REQUEST-driven aligned PCM memblocks; early/coalesced/unknown REQUEST; mismatched spec; budget/abort/backpressure; DRAIN+DELETE acks; bounded per-request deadline. |
 | **N3** | Bridge + standalone worker via owned `process.execPath` + fixed flags (source `.ts`, **no generated runtime**). **[x] committed `e368e74a`.** | `lib/notification-audio-native.ts` (149), `lib/notification-pulse-worker.ts` (66), `tests/notification-audio-native.test.ts` (246), `scripts/verify-package-files.mjs` (+5), `tests/package-manifest.test.ts` (+~28) | ≤400–600 forecast; **~489 observed** | Lazy no-IO bridge; Linux-only; scrubbed child env; bounded stdout/stderr; JSON `gentle.audio.pulse/v1`; SIGKILL once + settle on close; probe unavailable / play generic reject; real fake-socket worker probe (no CREATE) + fake PCM play (no OS audio); verifier 179. |
 | **N4** | Native-first Linux routing + CLI fallback + docs. **[x] committed `7f1b87ac` (parent).** | `lib/notification-audio.ts` (~130 changed), `lib/notification-audio-native.ts` (+20), tests `notification-audio`/`native`/`pulse-stream` (+~152), `README.md`, `docs/sound-notifications.md` | ~500 allowance; **~327 changed** | Aggregate capabilities; native WAV preferred, CLI OGG/FLAC retained; format validated before backend choice; native error never retries CLI; gate called once; all old tests inject a fake native (no real audio); 194 notif / 86 focused. |
-| **N5** | Default full / typecheck / package offline functional closure. **BLOCKED — not done.** | docs + closure records only | 60–120 | Final focal suites green (L9); `check-types` **186** no regressions; runtime **8**; verifier **179/69**; focused `package-manifest` **57**. Blocked by two whole-suite failures (L9 `history-session-scan`; only :244 confirmed at baseline) left unrepaired pending explicit user approval; no full installed packed-package E2E was run. |
+| **N5** | Default full / typecheck / package offline functional closure. **[x] functionally verified at L13** (historical L9 BLOCKED preserved as history, not rewritten). | docs + closure records only | 60–120 | Current candidate `env pnpm_config_verify_deps_before_run=false npm_config_verify_deps_before_run=false node scripts/run-test-suite.mjs` → **exit 0: unit 4993 total / 4959 pass / 0 fail / 34 skip**, provider-contract and runtime harness PASS (L13). `check-types` **186** no regressions; runtime **8**; verifier **180/69**; focused `package-manifest` **58**; writer focal **224** + Windows **27** + audio **25** + native **11** (combined **63**). The ordinary installed packed-package `test:packed-package` E2E was **NOT run** (no install). Historical `history-session-scan` L9 failure preserved as history. |
 
 Dependencies: **N1a → N1b → N2 → N3 → N4 → N5**; N0 precedes all. Each unit
 is independently committed by the **parent** after its focused checks pass. If a
@@ -687,7 +702,8 @@ these fixes; **no source implementation until the parent's explicit follow-up**.
   overruns are recorded above and an independent High-risk verifier ran. This
   is not a claim the initial line forecast was met. Local node/local-process scope; the native-
   audio UI toggle stayed inactive/off, so existing scheduler guards are unaffected.
-- **Open / BLOCKED.** **N5 stays [ ] BLOCKED — not done**: awaiting explicit user
+- **Open / BLOCKED (historical — superseded by L13).** **N5 stayed [ ] BLOCKED
+  at this point**: awaiting explicit user
   approval to repair the two historical-suite failures (optional), and any
   physical `<=5 s` WAV playback test needs explicit permission, not assumed. The
   already-authorized `[archivo de audio local anonimizado]` (5.58 s) stays rejected by the unchanged limit —
@@ -881,7 +897,18 @@ these fixes; **no source implementation until the parent's explicit follow-up**.
 - **Routing.** `discover()` no longer hardcodes the Linux platform guard; it gates the native probe on `this.native.supportsTarget()`, so win32/WSL probe the Windows adapter and macOS/plain Linux behave as before. A WSL Windows that is unsupported, has no `/mnt/c` host, or fails its read-only probe yields no native capability and the trusted Linux CLI fallback runs **before** any playback — there is no automatic Pulse fallback on WSL (the known silent Pulse path is avoided). A native play error is still never retried through the CLI. The `isNotificationSound` flavor in `play()` is now `win32` when `(options.platform ?? process.platform) === "win32"`, else `posix`, so a `file:C:\...` sound validates on the native Windows route.
 - **RED/GREEN (TDD active).** RED observed before the production change: the new test file import failed (`does not provide an export named 'createDefaultNotificationBackend'`) → `tests/notification-audio.test.ts` **0 pass / 1 fail**, exit 1. GREEN after the source: the same command → **25/25, exit 0** (22 previous + 3 new: pure factory selection; win32 native route through the fake PowerShell host; macOS `afplay` WAV+FLAC).
 - **Validation (direct Node, no `pnpm`, no physical audio).** `notification-audio + native + windows` → **63/63** (was 60). `tests/*notification*.test.ts` → **224/224** (was 221; policy/UI/service/customize roles unchanged). `tests/package-manifest.test.ts` → **58/58**. `node scripts/verify-package-files.mjs` → **180 files / 69 pins**, runtime **8**. `node scripts/check-types.mjs` → **186, no regressions**. `git diff --check` clean. No real PowerShell probe, no snapshot read, no Pulse stream and no OS audio ran (all IO injected).
-- **Preserved blockers.** N5 stays **[ ] BLOCKED**: the historical `history-session-scan` **244** is a confirmed pre-existing base failure and the **582** stays inconclusive; neither was re-run, retried to green, suppressed or rewritten here. The metadata incident stands — `pnpm` was not invoked.
+- **Preserved blockers (historical — superseded by L13).** At this point N5 stayed **[ ] BLOCKED**: the historical `history-session-scan` **244** is a confirmed pre-existing base failure and the **582** stays inconclusive; neither was re-run, retried to green, suppressed or rewritten here. The metadata incident stands — `pnpm` was not invoked.
 - **Cost (honest).** P3 changed lines are counted in `git diff --stat` (source + tests + docs + this entry), forecast ≤300–400 and kept inside it; security/path tests were not golfed. The whole cross-phase outlay is **P1 = 753** + **P2 = 367** = **1120 changed lines**, already above the 600–900 forecast; recorded honestly rather than trimmed.
 - **Boundaries.** No behavior outside the audio route changed; no config/audio-enable/default-preview/after-play/folder/role guard was added. The owner remains the parent TUI only; unused additional-child-mode sources are unchanged.
 - **State.** Not committed here: the parent owns staging, the mandatory final High-risk verifier over `25e6b775..candidate`, and any P3 commit.
+
+### L13 — Final independent HIGH verification + current-candidate closure (N5 [x])
+
+- **Range/label (honest).** `25e6b775..fe8d8fc3` = **9 files, +1261/-16 → 1277 diff lines**; sum of per-commit diff lines **P1 753 + P2 367 + P3 207 = 1327** (overlaps on shared surfaces) → correct label **TOTAL range**. Forecast **600–900 NOT met** — observed, not trimmed. Not misrepresented as the 1277 entire feature; Node/Pulse work between `9a1f8a75` and `25e6b775` belongs to the preceding implementation range.
+- **Independent HIGH.** Required independent final HIGH read-only assessment over the added range fulfilled. No native RDD receipt/approval: managed assets outdated, sync **NOT RUN** → **no approved flag, no Lens-clean claim**. Residual **Medium** interop cancellation uncertainty was narrowed by the non-audio diagnostic below; **Low** stderr flooding remains byte-bounded under the 6000 ms timeout. Neither establishes audible support.
+- **Current candidate (NEW).** `env pnpm_config_verify_deps_before_run=false npm_config_verify_deps_before_run=false node scripts/run-test-suite.mjs` → **exit 0, all PASS**: unit **4993 / 4959 pass / 0 fail / 34 skip**; provider-contract + runtime harness PASS. Both guards parse false (no implicit install); sibling `node_modules`/store fingerprints unchanged, no new global or local Go cache, L9 incident artifact preserved. Includes `package-manifest` **58** and all notification tests. Writer focal **224** + Windows **27** + audio **25** + native **11** (**63**) are writer observations, not an independent rerun. Parent fresh: `check-types` **186** no regressions, runtime **8**, verifier **180/69**, candidate green.
+- **Packed-package E2E: NOT RUN** (no install); offline pack **58** inside the full run is positive. Engine logical `22.19`, only Node **24** ran; other hosts never needed, per the user-authorized absence.
+- **Supersession.** L13 supersedes the L9 whole-suite RED and the L12 “N5 BLOCKED” as current status, leaving both verbatim as history; **not** a silent clock fix and **not** a same-candidate retry — a fresh candidate at a later HEAD.
+- **Optional read-only evidence (no audio).** Real WSL `NativeWindowsPlayer.probe()` → available/caps `wav`, no PlaySync/audio, proving the fixed PowerShell interop/`-EncodedCommand`. A **previous** builtin .NET `SoundPlayer` experiment was manually heard (primitive, pre-integrated-adapter); old WSL Pulse **NO ×3**; new WSL route **not physically played**; macOS/native-Windows hosts unavailable, fakes prepared. Kept distinct, no confusion.
+- **MEDIUM interop-cancel residual (non-audio).** Own PowerShell fixed 8 s sleep, same exe/flags/env scrub; read-only own-PID `GetProcess` (own PID only) saw child ALIVE pre-kill; child SIGKILL in 3 tests; Node `close` 2–1951 ms then Windows own PID **DEAD** immediately/+1 s, all 3. No lingering process, no `taskkill`/global/user kills. Reduces uncertainty, does **not** prove `SoundPlayer` thread cancel on all WSL hosts; **no production change** and no universal audio-cancellation claim.
+- **N5 [x].** Functional verification is the current full run, **not** a historical fix. Optional manual listens (Node 22, native Windows, macOS, owned WSL new adapter) not blocking. Historical full-N5 **244** proven preexisting (1/3; **582** inconclusive) remains a flaker risk, **not fixed**; audio was not enabled by this work; user 5.58 s `[archivo de audio local anonimizado]` still rejected by the unchanged ≤5 s limit, no crop. macOS builtin `afplay` is platform-prepared only (no compiled CoreAudio). R8 claims no physical listen support but prepared without device evidence, as required.
