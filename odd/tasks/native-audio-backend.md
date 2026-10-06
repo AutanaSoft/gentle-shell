@@ -915,12 +915,12 @@ these fixes; **no source implementation until the parent's explicit follow-up**.
 
 ### L14 — Windows private-snapshot play: bounded bytes → memory `SoundPlayer` (bugfix)
 
-- **Symptom (parent-relayed, not re-observed here).** After P3 default routing, two
-  Windows/WSL-interop users played the *same* original sound: user A heard it, user
-  B did not; the API reported `played:true` for both, with the same
-  `NativeWindowsPlayer`, effective flags and env, and byte-identical originals. The
-  precise WinMM cause is **unproven**; only the private-snapshot file branch is
-  implicated. No real audio was captured during this fix.
+- **Symptom (parent-relayed, not re-observed by the writer).** One user heard
+  test 1 (original file) but not test 2 (private copy), repeated through the same
+  `NativeWindowsPlayer`, script and environment with byte-identical WAV data.
+  Both tests were executed by the parent agent in the same session, not by two
+  users. The precise WinMM cause is **unproven**; the filename/private-snapshot
+  playback branch is implicated. No additional sound ran during this fix.
 - **Scope.** Only `lib/notification-audio-windows.ts`,
   `tests/notification-audio-windows.test.ts` and this entry. The private snapshot,
   its ownership/cleanup, the play gate, the child env, the schema/IPC, routing, the
@@ -953,10 +953,22 @@ these fixes; **no source implementation until the parent's explicit follow-up**.
   `verify-package-files` **180 files / 69 pins**; `git diff --check` clean. No real
   PowerShell probe/play, snapshot read or `PlaySync` ran from the tests (all IO
   injected); no new full-suite claim.
-- **Physical status: NOT PROVEN.** The memory-branch change is prepared only; it is
-  un-heard until a fresh user-permitted listen. The earlier WSL new-adapter route
-  remains not physically played. Same-candidate full-suite coverage is the prior
-  L13 4993 run, not a new claim.
+- **Physical status: NOT PROVEN for this patch.** The earlier file-based
+  integrated route was played and the user reported no sound from the private
+  copy. The new memory branch has not been played; it awaits a fresh authorized
+  listen. The L13 4993-test full run covered the preceding candidate, not this
+  changed script; current checks are the focused validations above.
 - **Cost (honest).** source **+31/-2** (`lib/notification-audio-windows.ts`), tests
   **+39** (`tests/notification-audio-windows.test.ts`), plus this entry — inside the
-  ~35–50 source / ~80 test / ~35 ODD forecast, no security golf.
+  source/test forecast was met; the ODD entry exceeded its ~35-line forecast.
+  No security golf.
+- **Independent non-audio execution.** A verifier captured the actual encoded
+  script and scrubbed environment via a fake child, replaced exactly one
+  `PlaySync()` line with `MEMORY_LOAD_COMPLETED`, asserted that no playback call
+  remained, then ran that variant on real Windows PowerShell. A private
+  0700-directory/0600-file WAV (13272 bytes) opened, loaded through MemoryStream
+  and disposed successfully. A 7-byte input failed the size guard, emitted
+  `played:false` and never reached the marker. These checks validate real syntax,
+  overloads and loading, not audible output. The verifier also reproduced
+  27-pass/1-fail RED on an isolated old-module copy and 28/28 GREEN on this patch.
+- **Local patch commit.** `c398aadd`; no global settings, installs or restarts.
