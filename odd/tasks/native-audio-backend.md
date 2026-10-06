@@ -693,3 +693,127 @@ these fixes; **no source implementation until the parent's explicit follow-up**.
   no crop. macOS CoreAudio / Windows WASAPI, Node 22 physical, and manual
   listening remain current/future phases as documented. Final verification
   history is **BLOCKED**; no whole-task "done" is claimed.
+
+### L10 — P1 Windows WAV adapter (standalone, not routed); cross-platform scope authorized
+
+- **New user authorization (parent-relayed, not independently re-confirmed here).**
+  The user explicitly authorized preparing **WSL + Windows native + macOS** —
+  all three phased platforms are to be *implemented and prepared*; **no physical
+  evidence is required** for a phase to be prepared, and none was claimed. The
+  P1/P2/P3 outlook is now **~600–900 authored lines** in review units of ~400,
+  with an independent final High-risk verifier over the full added range
+  afterwards. No new packages, no audio-system install, no compiler, no runtime
+  download, no Go, no scripts, no global config, no source-original edits, and no
+  other worktree. All physical playback remains **forbidden** in this scope.
+- **Prior context preserved.** HEAD `25e6b775`. The N5 whole-suite closure stays
+  **[ ] BLOCKED**: the historical `history-session-scan` 244 is a confirmed
+  pre-existing base failure and the 582 remains inconclusive; neither was
+  re-run or rewritten here. The metadata incident stands: **`pnpm` is never
+  invoked again**. The real ignored `node_modules` module farm is available with
+  no installs; every command below is direct Node.
+- **Deliverable.** `lib/notification-audio-windows.ts` — a **standalone**,
+  dependency-free Windows WAV adapter that is **not wired into routing** (P1 is
+  deliberately inactive by default; routing follows the parent in P3). It exposes
+  the same structural `NativeAudioBackend` surface as the Linux bridge
+  (`supportsTarget()`, `probe(signal?)`, `getNativeFormats()`,
+  `play(snapshot, signal?, gate?)`) without importing the routing type, so no
+  `audio -> windows` cycle exists. Class name is the descriptive
+  `NativeWindowsPlayer` (not the generic `NativePulse*`).
+- **Trust model.** The executable is the trusted fixed literal
+  `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`; `SystemRoot`,
+  `windir`, `PATH` and config can never redirect it, and a non-default Windows
+  root fails closed (honest P1 limitation). This literal intentionally duplicates
+  `lib/windows-session-transport.ts` rather than importing that SDK-heavy module.
+  Flags are fixed `-NoLogo -NoProfile -NonInteractive -EncodedCommand`; no `.ps1`
+  resource, no `ExecutionPolicy` change, no side effects, no native addon.
+- **Injection safety.** The snapshot must be a drive-absolute Windows path; URIs,
+  drive-relative paths, UNC shares, alternate data streams and control/NUL bytes
+  are denied before any spawn (the P2 WSL `\\wsl$` UNC exception is a documented
+  seam, not admitted here). The only dynamic value in the command is the
+  snapshot encoded as **base64 of its UTF-8 bytes**; the fixed script decodes it
+  at runtime, so apostrophes, backticks, `$`, quotes and semicolons can never
+  become PowerShell syntax. The child env is a fixed Windows allowlist with
+  `SystemRoot`/`windir` forced to `C:\Windows`; PATH, `NODE_OPTIONS`/`NODE_PATH`,
+  debug overlays and all credentials are dropped. No snapshot travels through the
+  environment, so no `WSLENV` entry is needed for the P2 WSL interop path.
+- **Process contract.** Spawn is `shell:false`, `windowsHide:true`,
+  `detached:false`, stdio `["ignore","pipe","pipe"]`; stdout is bounded at 1024
+  and stderr at 4096; single SIGKILL on abort/timeout; the promise settles
+  **only** on `close` (never `exit`/`error`/`kill`); a synchronous spawn throw
+  rejects privately with no pending child; a non-zero close or a malformed,
+  multiline or oversized envelope fails with a generic error that never leaks the
+  private snapshot path. `probe` (~1200 ms) is read-only and never throws;
+  `play` (6000 ms) calls the scheduler gate synchronously before the final spawn.
+- **RED/GREEN (TDD active).** RED observed **before** the module existed:
+  `node --experimental-strip-types --test tests/notification-audio-windows.test.ts`
+  → `ERR_MODULE_NOT_FOUND`, **0 pass / 1 fail**. GREEN after the module:
+  the same command → **15/15 pass, exit 0**.
+- **Validation (direct Node, no `pnpm`, no physical play).**
+  `tests/notification-audio-windows.test.ts` → 15/15.
+  `tests/notification-audio.test.ts tests/notification-audio-native.test.ts
+  tests/notification-audio-windows.test.ts` → **48/48**.
+  `tests/*notification*.test.ts` → **209/209** (was 194). `test/package-manifest.test.ts`
+  → **58/58** (was 57). `node scripts/verify-package-files.mjs` → **180 files /
+  69 pins** (was 179), runtime still 8, no generated module added.
+  `node scripts/check-types.mjs` → **186, no regressions**. `git diff --check`
+  clean. No physical playback, no real PowerShell probe and no snapshot read ran
+  from the tests (all IO is injected).
+- **Cost.** P1 adds one source module (~235 lines) + one test file (~275 lines) +
+  one verifier path + a package-manifest assertion and one ODD entry — inside the
+  P1 ≤~400-diff-line forecast before the second production module; no code golf,
+  no security shortcut.
+- **Current default: INACTIVE.** `native-audio-backend` routing still prefers the
+  Linux native WAV bridge and the CLI fallback; the Windows adapter is exported
+  but unreferenced by `NotificationPlayer`. **Next:** P2 WSL derivation
+  (`supportsTarget` + the single WSL UNC allowance), then P3 parent-owned routing,
+  then the independent final High-risk verifier. No future phase is claimed here.
+
+### L10b — Parent readback correction to P1 (RED before fix, same unit)
+
+- **Parent readback** of L10 found **2 concrete P1 defects** plus one disposal gap;
+  all were fixed in the same P1 surfaces with **RED observed before the fix**.
+  No source outside `lib/notification-audio-windows.ts`,
+  `tests/notification-audio-windows.test.ts` and this ODD file changed; no real
+  probe/play, no `pnpm`, no codegraph, no audio integration (P3 still unwired).
+- **Bug 1 — probe ignored the exit code.** `probe()` accepted a valid
+  `{ok:true,available:true,formats:["wav"]}` envelope even when PowerShell closed
+  nonzero, so a failed process could advertise the backend. **RED**: a new fake
+  test emitting the ready JSON with `close 1` expected
+  `{available:false, formats:[]}` and failed. **Fix**: `probe()` now rejects on
+  `result.code !== 0` (as well as abort/timeout/overflow).
+- **Bug 2 — stdout growth was unbounded and overflow was not recorded.** The old
+  `stdout += String(chunk)` grew past the 1024 cap; an overflow triggered a kill
+  but a subsequent `close 0` still let `trim()` accept the buffered valid JSON,
+  for both probe and play. **RED**: new fake tests emitting valid ready/played
+  JSON plus >1024 bytes of whitespace (in multiple large chunks) expected
+  `available:false` / a generic play rejection on `close 0`, and asserted exactly
+  one SIGKILL; both failed. **Fix**: stdout/stderr are now bounded **byte**
+  buffers (`toBuffer`, `subarray` before storing, byte counters — not JS UTF-16
+  string length); overflow is a **sticky** `RunResult.overflowed`; the sticky flag
+  is checked before every parse, so `probe` always returns unavailable and `play`
+  throws the private generic failure regardless of `close 0` or a still-valid or
+  truncated payload. Kill stays single. stderr is capped by byte slice and stays
+  unsurfaced.
+- **Bug 3 — `SoundPlayer` was never disposed.** The fixed play script now
+  pre-initializes `$player = $null` and disposes it in an explicit `finally`
+  (`if ($null -ne $player) { $player.Dispose() }`) after success/catch, with no
+  extra stdout event. **RED**: a new decoded-script test required `.Dispose`
+  inside `finally` and failed. The script still has **base64 as its only dynamic
+  value**, so the injection surface is unchanged.
+- **RED/GREEN (this correction).** RED **before** the source fix: the four new
+  tests failed on the **15-pass / 4-fail** run (`19 tests`, exit 1). GREEN after
+  the fix: `tests/notification-audio-windows.test.ts` → **19/19, exit 0**.
+- **Validation after the fix (direct Node).** New windows suite **19/19**;
+  `notification-audio + native + windows` → **52/52**; `tests/*notification*.test.ts`
+  → **213/213** (was 209); `package-manifest` → **58/58**; `verify-package-files`
+  → **180 files / 69 pins**, runtime **8**; `check-types` → **186, no regressions**;
+  `git diff --check` clean. No physical audio, real probe, snapshot read, `pnpm`,
+  or full suite ran.
+- **Cost.** P1 grows to roughly **335 source + ~345 test** authored lines
+  (~680 total) — still over the ≤~400 P1 forecast; recorded honestly, with no
+  security golf. The parent readback correction adds ~50 test lines + ~70 source
+  lines in the same unit.
+- **State.** Existing **N5 stays [ ] BLOCKED** and unchanged; L9 history is not
+  rewritten. The new untracked files remain unassessed by me (no review,
+  commit or subagent was run). The parent stages and obtains a fresh independent
+  HIGH assessment over the new process boundary **before** any local commit.

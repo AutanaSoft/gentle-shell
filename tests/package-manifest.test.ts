@@ -870,6 +870,20 @@ test("native pulse audio ships owned TypeScript sources without new dependencies
 	}
 });
 
+test("native windows audio ships an owned encoded-command adapter without scripts or dependencies", () => {
+	const manifest = readPackageJson();
+	const verifier = readFileSync(join(PACKAGE_ROOT, "scripts", "verify-package-files.mjs"), "utf8");
+	const path = "lib/notification-audio-windows.ts";
+	assert.ok(existsSync(join(PACKAGE_ROOT, path)), `${path} must exist`);
+	assert.ok(verifier.includes(`"${path}"`), `${path} must be a required package resource`);
+	for (const dependency of Object.keys(manifest.dependencies ?? {})) assert.doesNotMatch(dependency, /audio|sound|windows|powershell|native/i, dependency);
+	for (const script of Object.keys(manifest.scripts ?? {})) assert.doesNotMatch(script, /windows:build|powershell|audio:install/i, script);
+	const source = readFileSync(join(PACKAGE_ROOT, path), "utf8");
+	assert.match(source, /-EncodedCommand/, "the adapter must drive the trusted built-in PowerShell host with an encoded command");
+	assert.doesNotMatch(source, /\.ps1|ExecutionPolicy|\.node["']|addon/i, path);
+	assert.doesNotMatch(source, /postinstall|installer|download/i, path);
+});
+
 test("packed tarball excludes retired workflow paths while source retains legacy migration proof", () => {
 	const fixture = "tests/fixtures/legacy/sdd-research-v2.5.0.md";
 	assert.ok(existsSync(join(PACKAGE_ROOT, fixture)), "the historical source fixture must remain available to migration tests");
@@ -891,6 +905,7 @@ test("packed tarball excludes retired workflow paths while source retains legacy
 			"assets/sounds/LICENSE.md", "docs/sound-notifications.md", "docs/sound-notifications-proposal.md",
 			"lib/notification-pulse-protocol.ts", "lib/notification-pulse-client.ts", "lib/notification-pulse-stream.ts",
 			"lib/notification-audio-native.ts", "lib/notification-pulse-worker.ts",
+			"lib/notification-audio-windows.ts",
 			"scripts/npm-pack-result.mjs",
 		]) {
 			assert.ok(packed.files.some(file => file.path === path), `${path} must be packed`);
