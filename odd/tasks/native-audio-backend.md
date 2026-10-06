@@ -972,3 +972,59 @@ these fixes; **no source implementation until the parent's explicit follow-up**.
   overloads and loading, not audible output. The verifier also reproduced
   27-pass/1-fail RED on an isolated old-module copy and 28/28 GREEN on this patch.
 - **Local patch commit.** `c398aadd`; no global settings, installs or restarts.
+
+### L15 — Isolated modal preview run by the parent (GUI observations parent-attributed)
+- **Prior physical case (unchanged, narrow).** The user's "¡se escuchó!" confirms
+  the **WSL Windows private-snapshot `MemoryStream` `SoundPlayer`** route once
+  (`c398aadd`, L14); one Success case only — no Error/Attention, plain WSLg
+  Pulse, macOS/Windows-host or Node 22 claim. The writer heard/ran nothing.
+- **Parent ran the trusted MAIN with no role-guard override:** new Herdr pane
+  `wK:pA` (`audio-modal-check`), isolated `mktemp -d /tmp/gentle-audio-modal.*`
+  config/agent dirs, `GENTLE_PI_CONFIG_HOME`/`GENTLE_PI_AGENT_HOME`,
+  `pi --no-extensions --session $TMP/agent/modal-session.jsonl -e
+  <abs>/extensions/gentle-notifications.ts -e <abs>/extensions/gentle-shell.ts`.
+  The empty temp config uses real defaults (no speculative schema written).
+- **Observed by the parent (not the writer).** `/gentle:customize` shows six basic
+  rows: Off / Unmuted / Success `success` / Error `error` / Attention `attention`
+  / Advanced folded; Enter on Mute observed muted, Enter restored unmuted,
+  notifications **OFF throughout**; footers `applies 2/3/1 events`, `f assign / p test`.
+- **Attempted previews via pasted `p`, once each (3 total) — NOT effective
+  previews:** Success 3/6, Error 4/6, Attention 5/6, but Herdr send-text emits
+  bracketed paste and the modal's `matchesKey('p')` never consumed it
+  (later-discovered testing-method defect). Audibility not established.
+- **Scope limits.** Mute was UI-state only — no physical-mute or auto-event
+  verification; assignment cycling not independently tested.
+- **Global config unchanged:** `~/.pi/gentle-ai/notifications.json` sha256
+  `fc7d458ae0665e114a10c4314a21a389c56b0414f2e21bac677464247ae82fec`; `wK:p9`
+  untouched. No further tests, sounds, panes, source edits or commits.
+
+### L16 — Direct-route listen confirmed; corrected modal re-run (parent)
+- **User "si a los 3" (parent-relayed).** Confirms a physical DIRECT default
+  `NotificationPlayer` → `NativeWindowsPlayer` private snapshot → `MemoryStream`
+  `SoundPlayer` once each for Success/Error/Attention, `starts 1`/completed;
+  authorization separate. Narrow WSL only, **not** modal proof; widens the L15
+  Success-only prior case.
+- **Old `wK:pA`** had closed by the next read; no actor inferred.
+- **User "vamos" authorized the real modal test.** Parent created a NEW trusted
+  MAIN `wK:pB` (`wK:t8` Audio check) with a fresh isolated temp
+  `/tmp/gentle-audio-modal.UWbfTZ/config`+`agent`, `GENTLE_PI_CONFIG_HOME`/
+  `GENTLE_PI_AGENT_HOME` and a temporary `--no-extensions` session plus explicit
+  `-e gentle-notifications` + `gentle-shell` (same pattern as L15, not re-listed).
+  Roles not overridden; child silent. Modal: six basic, default Off, unmuted,
+  3 presets, Advanced folded.
+- **Actual `p` (send-keys) once each, 3 s wait each:** Success 3/6, Error 4/6,
+  Attention 5/6. Sampled screens showed no busy/unavailable/error text, but there
+  is no success receipt/IPC capture and **physical audibility of this new modal
+  is pending user confirmation**; no other tones allowed.
+- **Explicit preview bypasses enabled/mute by design;** mute only affects
+  automatic events and the prior UI toggle only. No extra UI edits, global prefs
+  or source changes; global `notifications.json` sha256 unchanged (`fc7d…82fec`,
+  same as L15). Observations are parent relayed; the writer heard/ran nothing.
+
+### L17 — Modal preview audibility confirmed by user (parent-relayed)
+- **User "si" (parent-relayed)** to "¿Se han oído Success→Error→Attention esta vez?" AFTER the real MAIN modal
+  send-keys `p` test in `wK:pB` (L16); supersedes **only** L16's pending physical-audibility note for those
+  three previews, L16 otherwise intact. Narrow WSL / current equipment / 3 builtins: real modal PASS via
+  private snapshot `MemoryStream` `SoundPlayer`; automatic notifications stayed **OFF** and global prefs
+  unchanged in that test. No new sounds authorized. No native Windows host, macOS, Node 22, independent
+  assignment/file/Advanced, or manual automatic mute claim. Writer heard/ran nothing.
