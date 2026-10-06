@@ -16,7 +16,8 @@ import { join, resolve, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createLocalBashOperations, keyHint, SettingsManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createJobRegistry, type JobExecOperations, type JobRecord } from "../lib/background-jobs.ts";
-import { JOB_NOTICE_TYPE, jobNoticeText, registerBackgroundJobTools } from "../lib/background-jobs-tools.ts";
+import { JOB_GLYPH, JOB_NOTICE_TYPE, jobNoticeText, registerBackgroundJobTools } from "../lib/background-jobs-tools.ts";
+import { JobsView } from "../lib/jobs-view.ts";
 import { Text, type TUI } from "@earendil-works/pi-tui";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
 import { VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
@@ -67,6 +68,8 @@ import { runtimeMetricsEnvAllows, type RuntimeMetricsPolicyDeps } from "../lib/r
 
 export const AGENTS_WIDGET_KEY = "gentle-agents";
 export const AGENTS_COMMAND_NAME = "gentle:agents";
+export const JOBS_COMMAND_NAME = "gentle:jobs";
+const JOBS_STATUS_KEY = "gentle-jobs";
 export const AGENTS_RESULT_TYPE = "gentle-agents.result";
 export const AGENTS_MESSAGE_TYPE = "gentle-agents.message";
 export const AGENTS_ORCHESTRATOR_MESSAGE_TYPE = "gentle-agents.orchestrator-message";
@@ -1052,8 +1055,15 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// the wake-up behavior is unchanged; a busy parent flushes at the next turn
 	// boundary, and the steer mode injects it before that turn's next LLM call
 	// instead of parking it behind the whole run.
+	// The footer counts this session's running jobs; nothing shows at zero.
+	const refreshJobStatus = () => {
+		const running = jobs.list(activeSessionId() ?? "").filter((job) => job.status === "running").length;
+		try { parentCtx?.ui.setStatus(JOBS_STATUS_KEY, running === 0 ? undefined : `${JOB_GLYPH} ${running} job${running === 1 ? "" : "s"}`); } catch { /* Status is cosmetic. */ }
+	};
+
 	const settleJob = (job: JobRecord) => {
 		jobNotices.push(job);
+		refreshJobStatus();
 		requestRender();
 		if (activeAgentRuns === 0) flushAll();
 	};
@@ -1201,7 +1211,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		},
 	});
 
-	registerBackgroundJobTools(pi, { registry: jobs, sessionId: (ctx) => ctx.sessionManager.getSessionId() ?? "", now: deps.now, onChange: requestRender });
+	registerBackgroundJobTools(pi, { registry: jobs, sessionId: (ctx) => ctx.sessionManager.getSessionId() ?? "", now: deps.now, onChange: () => { refreshJobStatus(); requestRender(); } });
 
 	pi.registerMessageRenderer(AGENTS_MESSAGE_TYPE, (message, options, theme) => {
 		const details = (message.details as { gentleAgents?: { taskId?: unknown; agent?: unknown } } | undefined)?.gentleAgents;
@@ -2083,6 +2093,30 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		});
 	}
 
+	pi.registerCommand(JOBS_COMMAND_NAME, {
+		description: "Show this session's background jobs (bash_background): status, command, output tail; s stops the selected job.",
+		handler: async (_args, ctx) => {
+			if (!ctx.hasUI) return;
+			if (ctx.mode !== "tui") {
+				ctx.ui.notify("The jobs overlay requires TUI mode.", "warning");
+				return;
+			}
+			let view: JobsView | undefined;
+			await ctx.ui.custom<null>((tui, theme, _keybindings, done) => {
+				const close = withOverlayRepaint(tui, done);
+				view = new JobsView({
+					theme,
+					rows: () => Math.max(0, tui.terminal.rows),
+					jobs: () => jobs.list(ctx.sessionManager.getSessionId() ?? ""),
+					now: () => deps.now(),
+					onStop: (job) => { jobs.stop(job.id); refreshJobStatus(); },
+					onClose: () => close(null),
+					requestRender: () => tui.requestRender(),
+				});
+				return view;
+			}, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0, anchor: "center" } }).finally(() => view?.dispose());
+		},
+	});
 	pi.registerCommand(AGENTS_COMMAND_NAME, {
 		description: "Show this session's active subagents; a lists open orchestrators in this profile. Peer threads are read-only; o opens a local task's transcript in $EDITOR.",
 		handler: async (_args, ctx) => openOverlay(ctx),
@@ -2164,6 +2198,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// Jobs never outlive their session: a stopped job sends no notice.
 		jobs.stopAll();
 		jobNotices.length = 0;
+		refreshJobStatus();
 		activeAgentRuns = 0;
 		resetParentDelivery(undefined);
 		presence?.dispose();

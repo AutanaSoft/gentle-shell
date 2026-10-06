@@ -5887,3 +5887,31 @@ test("job_list and job_stop cover this session's jobs; stopped jobs send no noti
 		jobs.cleanup();
 	}
 });
+
+test("/gentle:jobs opens this session's jobs overlay, stops the selected job, and the footer counts running jobs", async () => {
+	const { pi, tools, commands, fire } = fakePi();
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...deps().deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx, overlays } = fakeContext();
+	const statuses: Array<string | undefined> = [];
+	Object.assign(ctx.ui, { setStatus: (key: string, value: string | undefined) => { if (key === "gentle-jobs") statuses.push(value); } });
+	try {
+		await fire("session_start", ctx);
+		await tools.get("bash_background")!.execute("b1", { command: "gh run watch 42 --exit-status", label: "CI" }, undefined, undefined, ctx);
+		assert.equal(statuses.at(-1), "⧗ 1 job");
+		const opened = commands.get("gentle:jobs")!.handler("", ctx);
+		await tick();
+		const view = overlays.at(-1)!;
+		const screen = view.render(100).map(stripAnsi).join("\n");
+		assert.match(screen, /Jobs · 1 running · 0 finished/);
+		assert.match(screen, /gh run watch 42 --exit-status/);
+		view.handleInput("s");
+		assert.equal(jobs.runs[0]!.signal?.aborted, true, "s stops the selected job");
+		assert.equal(statuses.at(-1), undefined, "the footer count clears when nothing runs");
+		view.handleInput("q");
+		await opened;
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
