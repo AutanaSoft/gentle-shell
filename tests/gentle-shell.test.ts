@@ -30,6 +30,7 @@ import { listVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
+import { CARD_CONTENT, cardContent, resolveCardContent, setCardContent } from "../lib/card-content-policy.ts";
 
 
 // Vim fixtures claim the installed pi-tui release, which the adapter gate
@@ -2887,7 +2888,7 @@ test("customize Cards rows persist the card style and switch live conversation c
 	const pending = commands.get("gentle:customize")!.handler("", ctx);
 	await overlayReady;
 	assert.ok(findCustomizeRow(ui, "Card style: float (current)"));
-	assert.match(ui.overlayView!.render(90).join("\n"), /Cards · 2\/2/);
+	assert.match(ui.overlayView!.render(90).join("\n"), /Cards · 2\/4/);
 	assert.ok(findCustomizeRow(ui, "Card style: neon"));
 	assert.ok(!ui.overlayView!.render(90).some((line) => line.includes("▸ Card style: neon (current)")), "neon is not current without a saved preference");
 	assert.equal(existsSync(join(home, "card-style.json")), false, "highlighting never applies");
@@ -2908,6 +2909,34 @@ test("customize Cards rows persist the card style and switch live conversation c
 	await customizeAction(ui, "Card style: float");
 	assert.equal(resolveCardStyle({ gentlePiConfigHome: home }).style, "float");
 	assert.equal(cardStyle(), CARD_STYLE.FLOAT);
+	ui.overlayView!.handleInput("\x1b"); await pending;
+});
+
+test("customize Cards rows persist the card content level and switch the live quiet tools", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const previous = cardContent();
+	t.after(() => setCardContent(previous));
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	assert.equal(cardContent(), CARD_CONTENT.MINIMAL, "no preference file means minimal");
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	assert.ok(findCustomizeRow(ui, "Card content: default"));
+	assert.ok(findCustomizeRow(ui, "Card content: minimal (current)"));
+	assert.ok(!ui.overlayView!.render(90).some((line) => line.includes("▸ Card content: default (current)")), "default is not current without a saved preference");
+	assert.match(ui.overlayView!.render(90).join("\n"), /Preview · Cards · content minimal/);
+	assert.equal(existsSync(join(home, "card-content.json")), false, "highlighting never applies");
+	await customizeAction(ui, "Card content: default");
+	await new Promise<void>(resolve => setImmediate(resolve));
+	assert.equal(resolveCardContent({ gentlePiConfigHome: home }).content, "default");
+	assert.equal(cardContent(), CARD_CONTENT.DEFAULT, "the live slot follows the choice");
+	assert.match(ui.notices.at(-1)!, /Card content: default/);
+	assert.ok(findCustomizeRow(ui, "Card content: default (current)"));
+	assert.ok(findCustomizeRow(ui, "Card content: minimal"));
+	await customizeAction(ui, "Card content: minimal");
+	assert.equal(resolveCardContent({ gentlePiConfigHome: home }).content, "minimal");
+	assert.equal(cardContent(), CARD_CONTENT.MINIMAL);
 	ui.overlayView!.handleInput("\x1b"); await pending;
 });
 
