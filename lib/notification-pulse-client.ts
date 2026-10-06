@@ -24,6 +24,7 @@ import {
 } from "./notification-pulse-protocol.ts";
 
 export const DEFAULT_REQUEST_TIMEOUT_MS = 900;
+export const MAX_REQUEST_TIMEOUT_MS = 6000;
 export const MAX_PENDING_REQUESTS = 32;
 export const PULSE_COOKIE_BYTES = 256;
 
@@ -35,6 +36,7 @@ export class PulseCookieError extends Error {
 }
 
 function abortError(): Error { const error = new Error("Pulse client: aborted"); error.name = "AbortError"; return error; }
+function unrefTimer(handle: ReturnType<typeof setTimeout> | number): void { (handle as { unref?: () => void }).unref?.(); }
 
 /** Absolute literal only: no URLs, TCP, lists, CWD/`~`/env expansion, spaces, commas, NUL or control chars. */
 function hasControlOrSeparator(value: string): boolean {
@@ -105,6 +107,8 @@ export interface PulseClientOptions {
 	cookie?: Buffer;
 	connectTimeoutMs?: number;
 	requestTimeoutMs?: number;
+	setTimeout?: (callback: () => void, ms: number) => ReturnType<typeof setTimeout> | number;
+	clearTimeout?: (handle: ReturnType<typeof setTimeout> | number) => void;
 }
 export interface PulseProbeResult { readonly available: boolean; readonly formats: readonly ("wav")[]; }
 export interface PulseServerInfo {
@@ -128,8 +132,15 @@ export class PulseClient {
 	private closing = false;
 	private negotiatedVersion?: number;
 	private info?: PulseServerInfo;
+	private readonly setTimer: (callback: () => void, ms: number) => ReturnType<typeof setTimeout> | number;
+	private readonly clearTimer: (handle: ReturnType<typeof setTimeout> | number) => void;
+	private readonly sendWaiters = new Set<(error: Error) => void>();
 
-	constructor(options: PulseClientOptions = {}) { this.options = { ...options }; }
+	constructor(options: PulseClientOptions = {}) {
+		this.options = { ...options };
+		this.setTimer = options.setTimeout ?? ((callback, ms) => setTimeout(callback, ms));
+		this.clearTimer = options.clearTimeout ?? (handle => clearTimeout(handle as ReturnType<typeof setTimeout>));
+	}
 
 	get protocolVersion(): number | undefined { return this.negotiatedVersion; }
 	get serverDetails(): PulseServerInfo | undefined { return this.info; }
@@ -150,12 +161,12 @@ export class PulseClient {
 		try {
 			await new Promise<void>((resolve, reject) => {
 				let settled = false;
-				function cleanup() { clearTimeout(timer); socket.off("connect", onConnect); socket.off("error", onError); signal?.removeEventListener("abort", onAbort); }
+				const cleanup = () => { this.clearTimer(timer); socket.off("connect", onConnect); socket.off("error", onError); signal?.removeEventListener("abort", onAbort); };
 				const onConnect = () => { if (!settled) { settled = true; cleanup(); resolve(); } };
 				const onError = () => { if (!settled) { settled = true; cleanup(); reject(new Error("Pulse client: connection failed")); } };
 				const onAbort = () => { if (!settled) { settled = true; cleanup(); socket.destroy(); reject(abortError()); } };
-				const timer = setTimeout(() => { if (!settled) { settled = true; cleanup(); socket.destroy(); reject(new Error("Pulse client: connection timed out")); } }, this.options.connectTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
-				timer.unref?.();
+				const timer = this.setTimer(() => { if (!settled) { settled = true; cleanup(); socket.destroy(); reject(new Error("Pulse client: connection timed out")); } }, this.options.connectTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
+				unrefTimer(timer);
 				socket.once("connect", onConnect); socket.once("error", onError);
 				signal?.addEventListener("abort", onAbort, { once: true });
 				if (signal?.aborted) onAbort();
@@ -212,10 +223,13 @@ export class PulseClient {
 		this.pending.clear();
 		for (const pending of pendings) { pending.cleanup(); pending.reject(error); }
 		this.listeners.clear();
+		const waiters = [...this.sendWaiters];
+		this.sendWaiters.clear();
+		for (const rejectWaiter of waiters) rejectWaiter(error);
 		if (this.socket && !this.closing && !this.socket.destroyed) this.socket.destroy();
 	}
 
-	request(command: number, args: Buffer | PulseTagWriter, signal?: AbortSignal): Promise<PulseTagReader> {
+	request(command: number, args: Buffer | PulseTagWriter, signal?: AbortSignal, timeoutMs?: number): Promise<PulseTagReader> {
 		if (this.failed) return Promise.reject(this.failed);
 		if (!this.socket || this.closing || this.closed) return Promise.reject(new Error("Pulse client: not connected"));
 		if (this.pending.size >= MAX_PENDING_REQUESTS) return Promise.reject(new Error("Pulse client: too many pending requests"));
@@ -228,17 +242,18 @@ export class PulseClient {
 		const socket = this.socket;
 		return new Promise<PulseTagReader>((resolve, reject) => {
 			if (signal?.aborted) { reject(abortError()); return; }
-			let timer: ReturnType<typeof setTimeout>;
+			let timer: ReturnType<typeof setTimeout> | number;
 			const onAbort = () => { const pending = this.take(tag); pending?.reject(abortError()); };
 			const pending: PendingRequest = {
 				resolve, reject,
-				cleanup: () => { clearTimeout(timer); signal?.removeEventListener("abort", onAbort); },
+				cleanup: () => { this.clearTimer(timer); signal?.removeEventListener("abort", onAbort); },
 			};
-			timer = setTimeout(() => {
+			const bounded = Math.min(timeoutMs ?? this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS, MAX_REQUEST_TIMEOUT_MS);
+			timer = this.setTimer(() => {
 				const active = this.take(tag);
 				if (active) { active.reject(new Error("Pulse client: request timed out")); this.fail(new Error("Pulse client: request timed out")); }
-			}, this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
-			timer.unref?.();
+			}, bounded);
+			unrefTimer(timer);
 			this.pending.set(tag, pending);
 			signal?.addEventListener("abort", onAbort, { once: true });
 			try { socket.write(encodePulseFrame({ channel: CONTROL_CHANNEL, offset: 0n, flags: 0 }, payload)); }
@@ -246,10 +261,30 @@ export class PulseClient {
 		});
 	}
 
-	/** Reserved for N2 PCM writes; sends a raw memblock frame on a stream channel. */
-	sendDataFrame(channel: number, payload: Uint8Array): void {
-		if (!this.socket || this.closing || this.closed) throw new Error("Pulse client: not connected");
-		this.socket.write(encodePulseFrame({ channel, offset: 0n, flags: 0 }, payload));
+	/** Reserved for N2 PCM writes; resolves once queued/drained or rejects on timeout/abort/close. */
+	sendDataFrame(channel: number, payload: Uint8Array, signal?: AbortSignal, timeoutMs?: number): Promise<void> {
+		if (this.failed) return Promise.reject(this.failed);
+		if (!this.socket || this.closing || this.closed) return Promise.reject(new Error("Pulse client: not connected"));
+		let encoded: Buffer;
+		try { encoded = encodePulseFrame({ channel, offset: 0n, flags: 0 }, payload); }
+		catch (error) { return Promise.reject(error as Error); }
+		const socket = this.socket;
+		if (socket.write(encoded)) return Promise.resolve();
+		return new Promise<void>((resolve, reject) => {
+			let settled = false;
+			const bounded = Math.min(timeoutMs ?? this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS, MAX_REQUEST_TIMEOUT_MS);
+			const finish = (error?: Error) => { if (settled) return; settled = true; cleanup(); if (error) reject(error); else resolve(); };
+			const onDrain = () => finish();
+			const onAbort = () => finish(abortError());
+			const waiter = (error: Error) => finish(error);
+			const timer = this.setTimer(() => finish(new Error("Pulse client: send timed out")), bounded);
+			unrefTimer(timer);
+			const cleanup = () => { this.clearTimer(timer); socket.off("drain", onDrain); this.sendWaiters.delete(waiter); signal?.removeEventListener("abort", onAbort); };
+			this.sendWaiters.add(waiter);
+			socket.once("drain", onDrain);
+			signal?.addEventListener("abort", onAbort, { once: true });
+			if (signal?.aborted) onAbort();
+		});
 	}
 
 	/** AUTH v13 with the given 256-byte cookie (zero bytes when no cookie exists), then SET_CLIENT_NAME. */
@@ -319,6 +354,9 @@ export class PulseClient {
 		this.pending.clear();
 		for (const pending of pendings) { pending.cleanup(); pending.reject(new Error("Pulse client: closed")); }
 		this.listeners.clear();
+		const waiters = [...this.sendWaiters];
+		this.sendWaiters.clear();
+		for (const rejectWaiter of waiters) rejectWaiter(new Error("Pulse client: closed"));
 		this.failed ??= new Error("Pulse client: closed");
 		const socket = this.socket;
 		this.socket = undefined;
