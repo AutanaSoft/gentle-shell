@@ -3,8 +3,10 @@ import { EventEmitter } from "node:events";
 import { constants } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { NotificationPlayer, validateNotificationAudio, validateNotificationFlac, validateNotificationOgg, validateNotificationWav, type AudioIO } from "../lib/notification-audio.ts";
+import { NotificationPlayer, createDefaultNotificationBackend, validateNotificationAudio, validateNotificationFlac, validateNotificationOgg, validateNotificationWav, type AudioIO } from "../lib/notification-audio.ts";
 import type { NativeAudioBackend } from "../lib/notification-audio.ts";
+import { NativePulsePlayer } from "../lib/notification-audio-native.ts";
+import { FIXED_WINDOWS_POWERSHELL_EXE, NATIVE_WINDOWS_SCHEMA, NativeWindowsPlayer } from "../lib/notification-audio-windows.ts";
 import { NotificationScheduler } from "../lib/notification-scheduler.ts";
 import { DEFAULT_NOTIFICATION_SETTINGS } from "../lib/notification-policy.ts";
 
@@ -370,4 +372,127 @@ test("abort before discovery performs no probe, read or play", async () => {
 	assert.equal(native.snapshots.length, 0);
 	assert.equal(f.writes.length, 0);
 	assert.equal(f.calls.length, 0);
+});
+
+/** The default factory must select a prepared target from platform/env alone, with no probe or spawn. */
+test("default factory selects the prepared target purely and lazily without probing", () => {
+	const wslEnv = { WSL_DISTRO_NAME: "Ubuntu", WSL_INTEROP: "/run/WSL/4242_interop" };
+	const win = createDefaultNotificationBackend("win32", {});
+	assert.ok(win instanceof NativeWindowsPlayer);
+	assert.ok(!(win instanceof NativePulsePlayer));
+	assert.equal(win.supportsTarget(), true);
+	assert.deepEqual(win.getNativeFormats(), []);
+	const wsl = createDefaultNotificationBackend("linux", wslEnv);
+	assert.ok(wsl instanceof NativeWindowsPlayer);
+	assert.ok(!(wsl instanceof NativePulsePlayer));
+	assert.equal(wsl.supportsTarget(), true);
+	assert.deepEqual(wsl.getNativeFormats(), []);
+	const linux = createDefaultNotificationBackend("linux", {});
+	assert.ok(linux instanceof NativePulsePlayer);
+	assert.ok(!(linux instanceof NativeWindowsPlayer));
+	assert.equal(linux.supportsTarget(), true);
+	assert.deepEqual(linux.getNativeFormats(), []);
+	// A WSL-looking env is not enough: a non-/mnt-c interop path, a bad distro name
+	// or a missing half must stay on the local Pulse class, never the Windows host.
+	const denied: Array<Record<string, string>> = [
+		{ WSL_DISTRO_NAME: "Ubuntu", WSL_INTEROP: "/tmp/4242_interop" },
+		{ WSL_DISTRO_NAME: "Ubuntu", WSL_INTEROP: "4242_interop" },
+		{ WSL_DISTRO_NAME: "Ubuntu", WSL_INTEROP: "/run/WSL/../4242_interop" },
+		{ WSL_DISTRO_NAME: "bad:name", WSL_INTEROP: "/run/WSL/4242_interop" },
+		{ WSL_INTEROP: "/run/WSL/4242_interop" },
+		{ WSL_DISTRO_NAME: "Ubuntu" },
+	];
+	for (const env of denied) {
+		const backend = createDefaultNotificationBackend("linux", env);
+		assert.ok(backend instanceof NativePulsePlayer, JSON.stringify(env));
+		assert.ok(!(backend instanceof NativeWindowsPlayer), JSON.stringify(env));
+		assert.deepEqual(backend.getNativeFormats(), []);
+	}
+	// macOS has no owned native yet: even with WSL-like env it stays on the local class
+	// (supportsTarget false) so the legacy /usr/bin/afplay path owns playback.
+	const mac = createDefaultNotificationBackend("darwin", wslEnv);
+	assert.ok(mac instanceof NativePulsePlayer);
+	assert.equal(mac.supportsTarget(), false);
+});
+
+const WINDOWS_PROBE_ENVELOPE = JSON.stringify({ schema: NATIVE_WINDOWS_SCHEMA, ok: true, available: true, formats: ["wav"] });
+const WINDOWS_PLAY_ENVELOPE = JSON.stringify({ schema: NATIVE_WINDOWS_SCHEMA, ok: true, played: true });
+class WindowsChild extends EventEmitter {
+	readonly stdout = new EventEmitter();
+	readonly stderr = new EventEmitter();
+	readonly kills: string[] = [];
+	kill(signal: string): boolean { this.kills.push(signal); return true; }
+}
+/** Real Windows adapter with fully injected IO: no child process, no filesystem, no PowerShell. */
+function windowsNativePlayer() {
+	const children: WindowsChild[] = [];
+	const spawned: Array<{ executable: string; args: string[]; options: unknown }> = [];
+	const native = new NativeWindowsPlayer({
+		platform: "win32",
+		env: { TEMP: "C:\\Temp" },
+		executableAvailable: async () => true,
+		spawn: (executable, args, options) => { spawned.push({ executable, args, options }); const child = new WindowsChild(); children.push(child); return child; },
+		setTimeout: () => 1, clearTimeout: () => {},
+	});
+	return { native, children, spawned };
+}
+
+test("win32 native route plays a custom Windows WAV through the fake PowerShell host", async () => {
+	const { native, children, spawned } = windowsNativePlayer();
+	const cleaned: string[] = []; const writes: Array<{ path: string; bytes: Buffer; mode: number }> = [];
+	const bytes = wav();
+	const io: AudioIO = {
+		open: async (_path, flags) => {
+			assert.ok(flags & constants.O_NOFOLLOW); assert.ok(flags & constants.O_NONBLOCK);
+			return { stat: async () => ({ isFile: () => true, size: bytes.length }),
+				read: async buffer => { bytes.copy(buffer); return { bytesRead: bytes.length }; }, close: async () => {} };
+		},
+		mkdtemp: async () => "C:\\Temp\\gentle-notification-1", chmod: async () => {},
+		writeFile: async (path, data, options) => { writes.push({ path, bytes: data, mode: options.mode }); },
+		unlink: async path => { cleaned.push(path); }, rmdir: async path => { cleaned.push(path); },
+	};
+	let cliSpawns = 0;
+	const player = new NotificationPlayer({ platform: "win32", io, tempRoot: "C:\\Temp", builtinRoot: "C:\\builtins", native,
+		executableAvailable: async () => false, spawn: () => { cliSpawns++; throw new Error("no CLI on win32"); },
+		setTimeout: () => 1, clearTimeout: () => {} });
+	const availability = player.availability();
+	await tick();
+	assert.equal(children.length, 1);
+	children[0]!.stdout.emit("data", WINDOWS_PROBE_ENVELOPE);
+	children[0]!.emit("close", 0);
+	assert.equal(await availability, "available");
+	assert.deepEqual([...(await player.capabilities())], ["wav"]);
+	let permits = 0;
+	const playing = player.play("file:C:\\audio.wav", new AbortController().signal, { start: () => { permits++; return true; } });
+	await tick();
+	assert.equal(children.length, 2);
+	assert.equal(permits, 1);
+	const call = spawned[1]!;
+	assert.equal(call.executable, FIXED_WINDOWS_POWERSHELL_EXE);
+	assert.deepEqual(call.args.slice(0, 4), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"]);
+	const script = Buffer.from(call.args[4]!, "base64").toString("utf16le");
+	const embedded = script.match(/FromBase64String\('([^']*)'\)/)?.[1];
+	assert.equal(Buffer.from(embedded!, "base64").toString("utf8"), "C:\\Temp\\gentle-notification-1/sound.wav");
+	assert.ok(!script.includes("C:\\audio.wav"));
+	children[1]!.stdout.emit("data", WINDOWS_PLAY_ENVELOPE);
+	children[1]!.emit("close", 0);
+	await playing;
+	// The snapshot carries the validated WAV bytes; no Unix I/O and no CLI fallback ran.
+	assert.deepEqual(writes[0]!.bytes, wav());
+	assert.equal(writes[0]!.mode, 0o600);
+	assert.equal(cleaned.length, 2);
+	assert.equal(cliSpawns, 0);
+});
+
+test("macOS keeps the trusted afplay CLI for WAV and FLAC, never the Windows host", async () => {
+	for (const [bytes, extension] of [[wav(), "wav"], [flac(), "flac"]] as const) {
+		const backend = createDefaultNotificationBackend("darwin", { WSL_DISTRO_NAME: "Ubuntu", WSL_INTEROP: "/run/WSL/1_interop" });
+		const f = fixture("darwin", backend);
+		f.setBytes(bytes);
+		let done = false; const p = f.play().then(() => { done = true; }); await tick();
+		assert.equal(f.calls.length, 1);
+		assert.equal(f.calls[0]!.executable, "/usr/bin/afplay");
+		assert.equal(f.calls[0]!.args[0], `/private/audio ; literal/sound.${extension}`);
+		f.child.emit("close", 0); await p; assert.equal(done, true);
+	}
 });

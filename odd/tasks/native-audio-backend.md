@@ -15,7 +15,7 @@ lines); N3 bridge+worker committed at **`e368e74a`** [x] (~489 authored lines);
 N4 routing+docs committed by the parent at **`7f1b87ac`** [x]. **N5 is [ ]
 BLOCKED — not done.**
 
-**Status: LINUX/WSLg IMPLEMENTED, READ-ONLY VERIFIED, N5 BLOCKED.** The
+**Status: CROSS-PLATFORM PREPARED (P3 DEFAULT ROUTING), N5 BLOCKED.** The
 protocol appendix below was read from the locally downloaded official
 PulseAudio **v17.0** references (read-only, hashes verified) and corrected by the
 **L2 independent document verification** (B1–B3, see the Log). N1a is the pure
@@ -30,9 +30,10 @@ the lazy Linux-only bridge (`lib/notification-audio-native.ts`) and the owned
 are unchanged). N4 integrates routing: on Linux the native WAV backend is
 preferred with the CLI retained as the OGG/FLAC fallback, capabilities are
 aggregated, the scheduler permit is called once, and no real audio is played.
-RED/GREEN are in L3/L4/L5/L6/L7; N5 closure evidence is in L8/L9. **No physical
-playback is claimed; macOS CoreAudio and Windows WASAPI remain phased and
-unimplemented.**
+RED/GREEN are in L3/L4/L5/L6/L7 and L12; N5 closure evidence is in L8/L9.
+**No physical playback is claimed; the WSL and native Windows `SoundPlayer`
+routes and the macOS `afplay` route are prepared, and none has audible
+evidence.** The P3 default-routing wiring is in L12.
 
 ## Objective
 
@@ -860,3 +861,27 @@ these fixes; **no source implementation until the parent's explicit follow-up**.
 - **State.** Default routing unchanged and still **INACTIVE**; N5 stays
   **[ ] BLOCKED** and untouched. Not committed here: the parent owns staging,
   the independent final High-risk verification, and P3 routing wiring.
+  *(Superseded by L12: P3 makes these adapters the default route for their
+  targets.)*
+
+### L12 — P3 default routing: prepared adapters selected by pure platform/env
+
+- **Scope.** P3 wires the P1/P2 Windows adapter and the N3 Linux bridge into the
+  default `NotificationPlayer` route. HEAD `57fbe506`; only the P3 surfaces below
+  changed. No new source file, no new package, no player/library install, no
+  compiler, no bundled Swift/C, no audio sample, no global config, no restart.
+- **Status: cross-platform PREPARED.** Native Windows, the derived WSL
+  Windows-interop target, plain Linux Pulse, and the macOS `afplay` CLI are all
+  prepared and selected by default. **No physical-evidence requirement** applies
+  to a prepared phase and none is claimed. Source `NativePulse` on Linux remains
+  physically un-heard; the earlier WSLg read-only **DIRECT Sound primitive**
+  probe (AUTH + server-info, no CREATE/samples) still stands and is not upgraded
+  to a physical claim.
+- **API.** `lib/notification-audio.ts` now exports `createDefaultNotificationBackend(platform = process.platform, env = process.env)`. Pure and IO-free: it constructs a `NativeWindowsPlayer({platform, env})` and returns it only when its pure `supportsTarget()` is true (`win32`, or `linux` with a valid WSL interop env), otherwise it returns `NativePulsePlayer({platform, env})` (plain Linux; macOS with `supportsTarget()` false so `afplay` owns playback). Construction does no probe/access/spawn/read. `options.native` still overrides entirely.
+- **Routing.** `discover()` no longer hardcodes the Linux platform guard; it gates the native probe on `this.native.supportsTarget()`, so win32/WSL probe the Windows adapter and macOS/plain Linux behave as before. A WSL Windows that is unsupported, has no `/mnt/c` host, or fails its read-only probe yields no native capability and the trusted Linux CLI fallback runs **before** any playback — there is no automatic Pulse fallback on WSL (the known silent Pulse path is avoided). A native play error is still never retried through the CLI. The `isNotificationSound` flavor in `play()` is now `win32` when `(options.platform ?? process.platform) === "win32"`, else `posix`, so a `file:C:\...` sound validates on the native Windows route.
+- **RED/GREEN (TDD active).** RED observed before the production change: the new test file import failed (`does not provide an export named 'createDefaultNotificationBackend'`) → `tests/notification-audio.test.ts` **0 pass / 1 fail**, exit 1. GREEN after the source: the same command → **25/25, exit 0** (22 previous + 3 new: pure factory selection; win32 native route through the fake PowerShell host; macOS `afplay` WAV+FLAC).
+- **Validation (direct Node, no `pnpm`, no physical audio).** `notification-audio + native + windows` → **63/63** (was 60). `tests/*notification*.test.ts` → **224/224** (was 221; policy/UI/service/customize roles unchanged). `tests/package-manifest.test.ts` → **58/58**. `node scripts/verify-package-files.mjs` → **180 files / 69 pins**, runtime **8**. `node scripts/check-types.mjs` → **186, no regressions**. `git diff --check` clean. No real PowerShell probe, no snapshot read, no Pulse stream and no OS audio ran (all IO injected).
+- **Preserved blockers.** N5 stays **[ ] BLOCKED**: the historical `history-session-scan` **244** is a confirmed pre-existing base failure and the **582** stays inconclusive; neither was re-run, retried to green, suppressed or rewritten here. The metadata incident stands — `pnpm` was not invoked.
+- **Cost (honest).** P3 changed lines are counted in `git diff --stat` (source + tests + docs + this entry), forecast ≤300–400 and kept inside it; security/path tests were not golfed. The whole cross-phase outlay is **P1 = 753** + **P2 = 367** = **1120 changed lines**, already above the 600–900 forecast; recorded honestly rather than trimmed.
+- **Boundaries.** No behavior outside the audio route changed; no config/audio-enable/default-preview/after-play/folder/role guard was added. The owner remains the parent TUI only; unused additional-child-mode sources are unchanged.
+- **State.** Not committed here: the parent owns staging, the mandatory final High-risk verifier over `25e6b775..candidate`, and any P3 commit.
