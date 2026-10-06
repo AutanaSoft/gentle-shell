@@ -47,7 +47,7 @@ function setup(commandPrefix?: string) {
 	const settled: JobRecord[] = [];
 	let clock = 1000;
 	const registry = createJobRegistry({
-		outputDir: dir,
+		outputDir: () => dir,
 		now: () => clock,
 		shell: () => ({ operations: fake.operations, commandPrefix }),
 		onSettled: (job) => settled.push(job),
@@ -148,7 +148,7 @@ test("a real shell job runs through Pi's bash operations and reports its exit co
 	const dir = mkdtempSync(join(tmpdir(), "gentle-jobs-real-"));
 	try {
 		const done = new Promise<JobRecord>((resolve) => {
-			const registry = createJobRegistry({ outputDir: dir, now: Date.now, shell: () => ({ operations: createLocalBashOperations() }), onSettled: resolve });
+			const registry = createJobRegistry({ outputDir: () => dir, now: Date.now, shell: () => ({ operations: createLocalBashOperations() }), onSettled: resolve });
 			registry.start({ command: "echo one; echo two >&2; exit 3", cwd: dir, ownerSessionId: "s1" });
 		});
 		const job = await done;

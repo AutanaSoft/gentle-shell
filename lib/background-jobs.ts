@@ -15,6 +15,15 @@
 import { createWriteStream, type WriteStream } from "node:fs";
 import { join } from "node:path";
 
+/** The background sibling of Pi's native `bash` tool. */
+export const BASH_BACKGROUND_TOOL = "bash_background";
+/**
+ * Tools whose `command` input runs in a shell. Command guards (confirmation,
+ * YOLO, child safety) must cover every one of them, or the background tool
+ * would bypass them.
+ */
+export const SHELL_COMMAND_TOOLS: ReadonlySet<string> = new Set(["bash", BASH_BACKGROUND_TOOL]);
+
 /** Lines kept for the exit notice and job listings. */
 export const TAIL_LINES = 20;
 /** Running jobs allowed at once across the process. */
@@ -72,11 +81,11 @@ export interface JobStartRequest {
 }
 
 export interface JobRegistryDeps {
-	/** Directory receiving one `<id>.log` file per job. */
-	outputDir: string;
+	/** Directory receiving one `<id>.log` file per job; read at each start. */
+	outputDir(): string;
 	now(): number;
-	/** Resolved at start so a changed shell setting applies to the next job. */
-	shell(): { operations: JobExecOperations; commandPrefix?: string };
+	/** Resolved at each start so a changed shell setting applies to the next job. */
+	shell(cwd: string): { operations: JobExecOperations; commandPrefix?: string };
 	/** Called once when a job ends on its own (exited or failed), never for a stop. */
 	onSettled(job: JobRecord): void;
 }
@@ -98,7 +107,7 @@ export function createJobRegistry(deps: JobRegistryDeps) {
 		if (running() >= MAX_RUNNING_JOBS) {
 			throw new Error(`${MAX_RUNNING_JOBS} background jobs are already running; stop one with job_stop first.`);
 		}
-		const { operations, commandPrefix } = deps.shell();
+		const { operations, commandPrefix } = deps.shell(request.cwd);
 		const id = `job-${++counter}`;
 		const job: JobRecord = {
 			id,
@@ -106,7 +115,7 @@ export function createJobRegistry(deps: JobRegistryDeps) {
 			command: request.command,
 			cwd: request.cwd,
 			ownerSessionId: request.ownerSessionId,
-			outputPath: join(deps.outputDir, `${id}.log`),
+			outputPath: join(deps.outputDir(), `${id}.log`),
 			startedAt: deps.now(),
 			status: "running",
 			tail: [],

@@ -8,13 +8,15 @@ import { SESSION_WORKTREE_ENTRY, SESSION_WORKTREE_CHANGED, SessionWorktreeRegist
 import { canonicalWriterRoot } from "../lib/writer-surfaces.ts";
 import { ForeignTargetGrants } from "../lib/foreign-target-grants.ts";
 import { MESSAGING_REASON_MAX_UTF8_BYTES, MESSAGING_REASON_MIN_CHARACTERS, normalizeMessagingReason, SessionMessagingGrants } from "../lib/session-messaging-grants.ts";
-import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import { join, resolve, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
-import { keyHint, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createLocalBashOperations, keyHint, SettingsManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createJobRegistry, type JobExecOperations, type JobRecord } from "../lib/background-jobs.ts";
+import { JOB_NOTICE_TYPE, jobNoticeText, registerBackgroundJobTools } from "../lib/background-jobs-tools.ts";
 import { Text, type TUI } from "@earendil-works/pi-tui";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
 import { VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
@@ -132,6 +134,10 @@ export interface AgentsDeps extends RunnerDeps {
 	metricsSchedule?: RunnerDeps["schedule"];
 	// Extensions every child loads with --extension (gentle-shell#1587).
 	childExtensionPaths?: string[];
+	/** Shell for background jobs; defaults to Pi's configured Bash. */
+	jobShell?: (cwd: string) => { operations: JobExecOperations; commandPrefix?: string };
+	/** Directory for background job output; defaults to a private temp dir. */
+	jobOutputDir?: () => string;
 }
 
 // gentle-shell#1587: fallback for a parent without the launcher's package
@@ -705,6 +711,17 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// conversation.
 	const completions = createCompletionQueue<TaskRecord>();
 	const messages = createAgentMessageQueue();
+	const jobNotices: JobRecord[] = [];
+	let jobOutputDir: string | undefined;
+	const jobs = createJobRegistry({
+		outputDir: deps.jobOutputDir ?? (() => (jobOutputDir ??= mkdtempSync(join(os.tmpdir(), "gentle-jobs-")))),
+		now: deps.now,
+		shell: deps.jobShell ?? ((cwd) => {
+			const settings = SettingsManager.create(cwd, agentHome);
+			return { operations: createLocalBashOperations({ shellPath: settings.getShellPath() }), commandPrefix: settings.getShellCommandPrefix() };
+		}),
+		onSettled: (job) => settleJob(job),
+	});
 	let activeAgentRuns = 0;
 	// ExtensionAPI has no idle probe; ctx.isIdle() is the only one. It is live
 	// and also reports compaction, which activeAgentRuns cannot see. The
@@ -976,9 +993,30 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		}
 	};
 
+	// A background job's exit notice rides the same router as a completion. It
+	// is compact (no full output), so it has no stale form; a failed forward
+	// requeues it like a completion does.
+	const flushJobNotices = () => {
+		const route = deliveryRoute(false);
+		if (!route) return;
+		const failed: JobRecord[] = [];
+		for (const job of jobNotices.splice(0)) {
+			if (activeSessionId() !== job.ownerSessionId) continue;
+			try {
+				sendToParent({ customType: JOB_NOTICE_TYPE, content: jobNoticeText(job), display: true, details: { gentleJobs: { jobId: job.id, label: job.label, status: job.status, exitCode: job.exitCode ?? null, outputPath: job.outputPath } } }, route);
+			} catch {
+				failed.push(job);
+			}
+		}
+		if (failed.length === 0) return;
+		jobNotices.unshift(...failed);
+		if (route === "idle") armDeliveryRetry();
+	};
+
 	const flushAll = () => {
 		flushMessages();
 		flushCompletions();
+		flushJobNotices();
 		// A wake left owed by an earlier held or expired attempt is retried here.
 		requestWake();
 	};
@@ -1014,6 +1052,12 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// the wake-up behavior is unchanged; a busy parent flushes at the next turn
 	// boundary, and the steer mode injects it before that turn's next LLM call
 	// instead of parking it behind the whole run.
+	const settleJob = (job: JobRecord) => {
+		jobNotices.push(job);
+		requestRender();
+		if (activeAgentRuns === 0) flushAll();
+	};
+
 	const settleCompletion = (task: TaskRecord) => {
 		messages.invalidateTask(task.id);
 		completions.enqueue(task, deps.now());
@@ -1156,6 +1200,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			} catch { /* Best-effort completion bookkeeping cannot strand runner waiters. */ }
 		},
 	});
+
+	registerBackgroundJobTools(pi, { registry: jobs, sessionId: (ctx) => ctx.sessionManager.getSessionId() ?? "", now: deps.now, onChange: requestRender });
 
 	pi.registerMessageRenderer(AGENTS_MESSAGE_TYPE, (message, options, theme) => {
 		const details = (message.details as { gentleAgents?: { taskId?: unknown; agent?: unknown } } | undefined)?.gentleAgents;
@@ -2066,6 +2112,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// queue so nothing pending from another session can replay here.
 		completions.dropAll();
 		messages.dropAll();
+		jobNotices.length = 0;
 		resetParentDelivery(ctx);
 		presence?.dispose();
 		registryFor(ctx);
@@ -2114,6 +2161,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.on("session_shutdown", async () => {
 		completions.dropAll();
 		messages.dropAll();
+		// Jobs never outlive their session: a stopped job sends no notice.
+		jobs.stopAll();
+		jobNotices.length = 0;
 		activeAgentRuns = 0;
 		resetParentDelivery(undefined);
 		presence?.dispose();
