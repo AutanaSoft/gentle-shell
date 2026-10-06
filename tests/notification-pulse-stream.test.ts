@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { PulseClient } from "../lib/notification-pulse-client.ts";
+import { boundedPulseTagReader, boundedPulseTagWriter } from "../lib/notification-pulse-protocol.ts";
 import { parsePulseWav, playPulseWav } from "../lib/notification-pulse-stream.ts";
 
 // --- independent golden encoders (deliberately NOT the production codec) ---
@@ -272,4 +273,24 @@ test("sendDataFrame returns a promise for backpressure and closes asynchronously
 		await client.sendDataFrame(5, Buffer.from([3, 4]));
 		await client.close();
 	} finally { await server.close(); }
+});
+
+test("more than 32 coalesced early REQUESTs fail closed before any PCM", async () => {
+	type Listener = (command: number, reader: ReturnType<typeof boundedPulseTagReader>) => void;
+	const listeners = new Set<Listener>();
+	const requestReader = (index: number, bytes: number) => boundedPulseTagReader(boundedPulseTagWriter().u32(index).u32(bytes).finish());
+	const createReply = boundedPulseTagWriter().u32(7).u32(8).u32(0).u32(0).u32(0).u32(0).u32(0)
+		.sampleSpec({ format: 3, channels: 1, rate: 8000 }).channelMap([0]).u32(0).string(null).boolean(false).usec(0n).finish();
+	const sent: Buffer[] = [];
+	const client = {
+		onEvent: (listener: Listener) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+		request: async (command: number) => {
+			if (command === 3) for (let index = 0; index < 33; index++) for (const listener of listeners) listener(61, requestReader(7, 1));
+			return boundedPulseTagReader(createReply);
+		},
+		sendDataFrame: async (_channel: number, payload: Uint8Array) => { sent.push(Buffer.from(payload)); },
+		close: async () => {},
+	} as unknown as PulseClient;
+	await assert.rejects(playPulseWav(wav(16, 1, 8000, 64), undefined, { client }), /early|too many/);
+	assert.deepEqual(sent, []);
 });

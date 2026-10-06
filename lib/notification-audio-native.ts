@@ -49,6 +49,11 @@ export interface NativePulseOptions {
 interface Envelope { schema?: unknown; ok?: unknown; available?: unknown; formats?: unknown; played?: unknown; }
 interface RunResult { readonly stdout: string; readonly stderr: string; readonly aborted: boolean; readonly timedOut: boolean; }
 
+/** Distinct from other native failures so the owner can treat a false permit as "not started". */
+export class NativePulseNotPermittedError extends Error {
+	constructor() { super("Native pulse: playback not permitted"); this.name = "NativePulseNotPermittedError"; }
+}
+
 function unrefTimer(handle: ReturnType<typeof setTimeout> | number): void { (handle as { unref?: () => void }).unref?.(); }
 function abortError(): Error { const error = new Error("Native pulse: aborted"); error.name = "AbortError"; return error; }
 function defaultSpawn(executable: string, args: string[], options: NativePulseSpawnOptions): NativePulseChild {
@@ -84,10 +89,17 @@ export class NativePulsePlayer {
 
 	private workerPath(): string { return this.options.workerPath ?? fileURLToPath(NATIVE_PULSE_WORKER_URL); }
 
-	/** Child env is scrubbed of debug overlays; Pulse Unix vars survive for the worker. */
+	/**
+	 * Child env is an allowlist: only Pulse Unix/runtime/localization vars survive;
+	 * API keys, cloud credentials, debug overlays, NODE_OPTIONS/NODE_PATH and PATH
+	 * are dropped. process.execPath and the snapshot are absolute and TCP is denied,
+	 * so no PATH resolution is needed.
+	 */
 	private childEnv(): NodeJS.ProcessEnv {
-		const env = { ...(this.options.env ?? process.env) };
-		delete env.NODE_OPTIONS; delete env.NODE_PATH; delete env.DEBUG;
+		const source = this.options.env ?? process.env;
+		const env: NodeJS.ProcessEnv = {};
+		for (const key of ["HOME", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "PULSE_SERVER", "PULSE_COOKIE", "LANG", "LC_ALL", "LC_CTYPE"])
+			if (source[key] !== undefined) env[key] = source[key];
 		env.NODE_NO_WARNINGS = "1";
 		env.GENTLE_PI_AGENTS_CHILD = "1";
 		return env;
@@ -140,7 +152,7 @@ export class NativePulsePlayer {
 		if (!this.supportsTarget()) throw new Error("Native pulse: unsupported platform");
 		if (signal?.aborted) throw abortError();
 		const permitted = typeof gate === "function" ? gate() : gate?.permit();
-		if (permitted === false) throw new Error("Native pulse: playback not permitted");
+		if (permitted === false) throw new NativePulseNotPermittedError();
 		const result = await this.run("play", snapshot, signal, this.options.playTimeoutMs ?? DEFAULT_PLAY_TIMEOUT_MS);
 		if (result.aborted) throw abortError();
 		const envelope = parseEnvelope(result.stdout);

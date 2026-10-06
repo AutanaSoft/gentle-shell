@@ -207,6 +207,23 @@ test("bridge and worker import no SDK, UI, or addon surface", () => {
 	}
 });
 
+test("child environment is an allowlist: Pulse vars kept, credentials and debug dropped", async () => {
+	const captured: NodeJS.ProcessEnv[] = [];
+	const player = new NativePulsePlayer({
+		platform: "linux",
+		spawn: (_executable, _args, options) => { captured.push(options.env); return new FakeChild(); },
+		env: { PULSE_SERVER: "unix:/s", PULSE_COOKIE: "/c", XDG_RUNTIME_DIR: "/r", XDG_CONFIG_HOME: "/cfg", HOME: "/h", LANG: "C",
+			OPENAI_API_KEY: "sk", ANTHROPIC_API_KEY: "x", AWS_SECRET_ACCESS_KEY: "y", NODE_OPTIONS: "--inspect", NODE_PATH: "/n", DEBUG: "*", PATH: "/bin" },
+	});
+	void player.probe();
+	const env = captured[0]!;
+	assert.equal(env.PULSE_SERVER, "unix:/s"); assert.equal(env.PULSE_COOKIE, "/c");
+	assert.equal(env.XDG_RUNTIME_DIR, "/r"); assert.equal(env.XDG_CONFIG_HOME, "/cfg"); assert.equal(env.HOME, "/h"); assert.equal(env.LANG, "C");
+	for (const drop of ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AWS_SECRET_ACCESS_KEY", "NODE_OPTIONS", "NODE_PATH", "DEBUG", "PATH"])
+		assert.equal(env[drop], undefined, drop);
+	assert.equal(env.NODE_NO_WARNINGS, "1"); assert.equal(env.GENTLE_PI_AGENTS_CHILD, "1");
+});
+
 test("real worker probe against a fake Unix socket authenticates without CREATE", async () => {
 	const server = await startFakeServer();
 	try {
