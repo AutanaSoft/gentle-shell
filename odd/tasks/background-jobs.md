@@ -18,10 +18,10 @@ References: Claude Code background Bash (`run_in_background`, task notification,
 
 ## Tasks
 
-- T1 — S4: output tail core (line splitting, last lines) in `lib/background-jobs.ts`; inline; commit `848fb9c3e` (superseded scope), rework pending.
-- T2 — S3, S6, S7, S8: job registry on Pi `createLocalBashOperations` (output file, stop, cap, shutdown); inline; commit pending.
-- T3 — S3-S8: tools `bash_background`/`job_stop`/`job_list` wired into the gentle-agents parent delivery router; inline; commit pending.
-- T4 — S9: `/jobs`, footer count, docs, orchestrator guidance; inline; commit pending.
+- T1 — S4: output tail core in `lib/background-jobs.ts`; inline; done, commits `848fb9c3e` (superseded scope), `bb9b3a258`.
+- T2 — S3, S6, S7, S8: job registry on Pi `createLocalBashOperations` (output file, stop, cap); inline; done, commit `bb9b3a258`.
+- T3 — S3-S8: tools `bash_background`/`job_stop`/`job_list` wired into the gentle-agents parent delivery router, shell guards cover `bash_background`; inline; done, commit 4d266722d.
+- T4 — S9: `/gentle:jobs` overlay, footer count, palette entry, docs, orchestrator guidance; inline; done, commit 6eb41231f.
 - T5 — S10: `monitor`; blocked on user decision.
 
 ## Log
@@ -34,3 +34,5 @@ References: Claude Code background Bash (`run_in_background`, task notification,
 - L5 consequences: S3-S7 rewritten (pi-monitor `match`/`silence` and `bg_output` dropped; conditions go inside the command); S10 added as optional stage 2; T1 reopened to shrink the core.
 - L6 (evidence): native `bash` must not be re-registered — commit `68080ea1f` removed the quiet-tools Bash override because it lost configured `shellPath`/`shellCommandPrefix` on Windows, and Pi rejects duplicate `bash` registrations from other tool-card packages. Pi exports `createLocalBashOperations({ shellPath })` (same executor as native bash: shell resolution, stdin transport, detached group, tree kill on abort, tracked PIDs) and `SettingsManager` (`getShellPath`, `getShellCommandPrefix`).
 - L7 (user): "tendriamos que tener un modal como el de /gentle:agents para ver todos los procesos de monitoreo que hay para esta sesion" — S9 rewritten, T4 scope.
+- L8 (user): "todo en un pr con size exception perdon que no dije nada" — one PR for the whole feature with a size exception; no chained PRs.
+- L9 (evidence): `pnpm test` all three stages pass (unit 5039 tests incl. new), `check-types` no regressions, `check:runtime-modules` and `verify-package-files` pass. `orchestrator-delegation.md` guidance compacted to one line to stay under its 20,500 B budget (20,479 B).
