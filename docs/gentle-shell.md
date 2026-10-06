@@ -257,7 +257,12 @@ Three things keep the list current, which a static tool description cannot:
 
 - `write` replaces the whole list in one call, so the model rewrites the plan instead of patching it; `add`, `update`, `clear`, and `list` remain for single moves.
 - Every turn's system prompt carries the open tasks and the rules: in_progress before starting, done right after finishing, update before ending the turn.
-- A list that goes two turns untouched while tasks stay open turns amber with `stale · N turns`, and the prompt says so, so the model brings it up to date.
+- A list that goes two turns untouched while pending or in-progress tasks remain turns amber with `stale · N turns`, and the prompt says so, so the model brings it up to date.
+
+Tasks are `pending` (`○`), `in_progress` (`◐`), `blocked` (`⊘`), `done` (`✓`), or `dropped` (`✕`):
+
+- `blocked` is open work that waits on something outside the list, such as an admin, another team, or an authorization. It requires a note naming what it waits for, shown next to the title (`⊘ Deploy the cleanup job · waiting for an admin`). Blocked tasks keep the list open, but they never make it stale, and the collapsed card skips them for the next task.
+- `dropped` marks a task a change of plan made obsolete. It renders dim without strikethrough, leaves the `done of total` count, and does not count as open, so a list whose remaining tasks are all `done` or `dropped` is finished. `cancelled`, `canceled`, and `abandoned` are accepted as aliases.
 
 A finished list stays on screen for the turn it finished in and clears at the next. `ctrl+shift+t` collapses the card to the task in progress (`GENTLE_PI_TODO_KEY` rebinds it, `off` disables it); `GENTLE_PI_TODO=0` disables the tool and the card.
 
