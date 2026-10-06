@@ -32,7 +32,9 @@ export function jobOutcome(job: JobRecord): string {
 /** Model-facing exit notice: everything needed to act without polling. */
 export function jobNoticeText(job: JobRecord): string {
 	const duration = job.endedAt === undefined ? "" : ` after ${formatJobDuration(job.endedAt - job.startedAt)}`;
-	const lines = [`Background job ${quoted(job)} ${jobOutcome(job)}${duration}.`, `Command: ${job.command}`];
+	// Only a human stops a job without the agent knowing (job_stop sends no notice).
+	const outcome = job.status === "stopped" ? "was stopped by the user" : jobOutcome(job);
+	const lines = [`Background job ${quoted(job)} ${outcome}${duration}.`, `Command: ${job.command}`];
 	if (job.tail.length > 0) lines.push("Last output:", ...job.tail);
 	else lines.push("No output.");
 	lines.push(`Full output: ${job.outputPath} (read it with the read tool if you need more).`);

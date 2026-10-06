@@ -252,7 +252,7 @@ until curl -sf localhost:3000/health; do sleep 1; done     # server is up
 ```
 
 - Jobs run through Pi's own Bash execution: your configured `shellPath` and `shellCommandPrefix`, a process group per job, and process-tree kill. `bash_background` is a separate tool; native `bash` is unchanged.
-- The exit notice uses the same delivery as background subagent results: it is steered into a running turn at the next turn boundary, or stored and wakes an idle session. A job stopped with `job_stop` sends no notice.
+- The exit notice uses the same delivery as background subagent results: it is steered into a running turn at the next turn boundary, or stored and wakes an idle session. A job the agent stops with `job_stop` sends no notice; one you stop from `/gentle:jobs` is reported to the agent as stopped by the user.
 - stdout and stderr go to a temp file (`gentle-jobs-*/job-N.log`), never into the context; the agent reads it with `read` when it needs more than the tail.
 - `bash_background` passes through the same command confirmation, YOLO waiver, and child safety guards as `bash`.
 - Jobs live in memory, belong to the session that started them, and are stopped when the session shuts down. At most 25 run at once.

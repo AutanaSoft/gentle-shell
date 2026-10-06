@@ -2109,7 +2109,12 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					rows: () => Math.max(0, tui.terminal.rows),
 					jobs: () => jobs.list(ctx.sessionManager.getSessionId() ?? ""),
 					now: () => deps.now(),
-					onStop: (job) => { jobs.stop(job.id); refreshJobStatus(); },
+					// The agent was promised a notice, so a human stop is reported;
+					// a job_stop needs none because the agent itself stopped it.
+					onStop: (job) => {
+						const stopped = jobs.stop(job.id);
+						if (stopped) settleJob(stopped);
+					},
 					onClose: () => close(null),
 					requestRender: () => tui.requestRender(),
 				});

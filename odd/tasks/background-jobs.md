@@ -11,7 +11,7 @@ References: Claude Code background Bash (`run_in_background`, task notification,
 - S4 — When the job exits, the parent is notified exactly once with a synthetic message (job id, label, command, exit code, duration, last output lines, output path) through the gentle-agents parent delivery router: steer into a running turn, or store + wake an idle parent. No polling.
 - S5 — Wait conditions live inside the command (L5): "si querés esperar una condición, la condición se mete DENTRO del comando backgrounded", e.g. `until grep -q "Ready in" dev.log; do sleep 0.5; done` or `gh run watch <id> --exit-status`. The exit is the notification.
 - S6 — stdout and stderr go to the output file, not the context; the model reads it with `read`.
-- S7 — `job_stop` kills the job's whole process tree; a stopped job sends no exit notice. `job_list` lists the session's jobs with status.
+- S7 — `job_stop` kills the job's whole process tree and sends no exit notice (the agent stopped it). A job a human stops from `/gentle:jobs` is reported once ("stopped by the user"), because the agent was promised a notice (L10). `job_list` lists the session's jobs with status.
 - S8 — Jobs live in memory, are owned by the starting session, are capped at 25 running, and are killed on session shutdown.
 - S9 — Human surface, verbatim (L7): "tendriamos que tener un modal como el de /gentle:agents para ver todos los procesos de monitoreo que hay para esta sesion"; plus a footer count of running jobs. Docs and orchestrator guidance tell the model to use `bash_background` instead of `sleep` loops or a subagent to wait.
 - S10 — Stage 2, optional, needs a user decision before starting: `monitor`, one event per stdout line, 200 ms batching, mandatory timeout (max 30 min), auto-kill on event flood.
@@ -36,3 +36,4 @@ References: Claude Code background Bash (`run_in_background`, task notification,
 - L7 (user): "tendriamos que tener un modal como el de /gentle:agents para ver todos los procesos de monitoreo que hay para esta sesion" — S9 rewritten, T4 scope.
 - L8 (user): "todo en un pr con size exception perdon que no dije nada" — one PR for the whole feature with a size exception; no chained PRs.
 - L9 (evidence): `pnpm test` all three stages pass (unit 5039 tests incl. new), `check-types` no regressions, `check:runtime-modules` and `verify-package-files` pass. `orchestrator-delegation.md` guidance compacted to one line to stay under its 20,500 B budget (20,479 B).
+- L10 (evidence, gentle-ai-verify): S3-S9 pass, no guard bypass; real-shell smoke kills the whole tree. Defect found: a human stop from the overlay left the agent waiting for a notice that never came. S7 rewritten; fixed with a "stopped by the user" notice.

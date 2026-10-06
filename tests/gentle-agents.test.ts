@@ -5889,7 +5889,7 @@ test("job_list and job_stop cover this session's jobs; stopped jobs send no noti
 });
 
 test("/gentle:jobs opens this session's jobs overlay, stops the selected job, and the footer counts running jobs", async () => {
-	const { pi, tools, commands, fire } = fakePi();
+	const { pi, tools, commands, fire, sent } = fakePi();
 	const jobs = fakeJobShell();
 	gentleAgents(pi, {}, { ...deps().deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
 	const { ctx, overlays } = fakeContext();
@@ -5908,6 +5908,10 @@ test("/gentle:jobs opens this session's jobs overlay, stops the selected job, an
 		view.handleInput("s");
 		assert.equal(jobs.runs[0]!.signal?.aborted, true, "s stops the selected job");
 		assert.equal(statuses.at(-1), undefined, "the footer count clears when nothing runs");
+		await jobIo();
+		const notices = sent.filter((entry) => entry.message.customType === "gentle-jobs.notice");
+		assert.equal(notices.length, 1, "the agent was told it would be notified, so a human stop is reported once");
+		assert.match(String(notices[0]!.message.content), /job-1 \("CI"\) was stopped by the user/);
 		view.handleInput("q");
 		await opened;
 	} finally {
