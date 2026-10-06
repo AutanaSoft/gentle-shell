@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { gentlePiConfigHome } from "./agent-home.ts";
 
 // The conversation card content level chosen in Gentle → Customize. `default`
-// keeps the quiet tools' result previews; `minimal` draws read, write and bash
-// cards as the command alone. A missing file means minimal (the modern look);
+// keeps the quiet tools' result previews; `minimal` draws every quiet tool
+// card as the command alone. A missing file means minimal (the modern look);
 // a malformed or unreadable one also reads as minimal, and the writer refuses
 // to replace it so a hand edit is never lost. There is no environment override.
 export const CARD_CONTENT_SCHEMA = "gentle-pi.card-content/v1";

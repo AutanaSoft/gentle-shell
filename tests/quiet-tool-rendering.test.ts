@@ -316,37 +316,50 @@ test("quiet tool rendering uses bounded previews while preserving search summari
 	const { pi, tools } = createPi();
 	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
 
-	const read = renderToString(
-		tools.get("read").renderResult(textResult("first line\nsecond line"), { expanded: false, isPartial: false }, passthroughTheme, {}),
-	);
-	const bash = renderToString(
-		tools.get("bash").renderResult(textResult("stdout line\nstderr line"), { expanded: false, isPartial: false }, passthroughTheme, { args: { command: "printf output" } }),
-	);
-	// Read and bash cards show only the command while collapsed; the expand
-	// key reveals their full text.
-	assert.equal(read, "");
-	assert.equal(bash, "");
+	// Every quiet tool card shows only the command while collapsed under the
+	// minimal Card content preference; the expand key reveals the full text.
+	for (const [tool, args] of [
+		["read", {}],
+		["bash", { command: "printf output" }],
+		["grep", { pattern: "match", path: "src" }],
+		["find", { pattern: "*.ts", path: "src" }],
+		["ls", { path: "src" }],
+		["edit", { path: "src/a.ts", edits: [] }],
+		["write", { path: "src/a.ts", content: "body" }],
+	] as const) {
+		assert.equal(renderToString(
+			tools.get(tool).renderResult(textResult("first line\nsecond line"), { expanded: false, isPartial: false }, passthroughTheme, { args }),
+		), "", `${tool}: only the command while collapsed`);
+	}
 	assert.match(renderToString(tools.get("read").renderResult(textResult("first line\nsecond line"), { expanded: true, isPartial: false }, passthroughTheme, {})), /first line\nsecond line/);
 	assert.match(renderToString(tools.get("bash").renderResult(textResult("stdout line\nstderr line"), { expanded: true, isPartial: false }, passthroughTheme, { args: { command: "printf output" } })), /stdout line\nstderr line/);
 	// The expand key rides the call card's top rule, never the result body.
 	const configuredHint = keyHint("app.tools.expand", "to expand");
-	assert.ok(!read.includes(configuredHint));
-	assert.ok(!bash.includes(configuredHint));
+	assert.ok(!renderToString(
+		tools.get("read").renderResult(textResult("first line\nsecond line"), { expanded: false, isPartial: false }, passthroughTheme, {}),
+	).includes(configuredHint));
 
-	for (const [tool, text, label] of [
-		["grep", "src/a.ts:1:match\nsrc/b.ts:2:match", "2 matches"],
-		["find", "src/a.ts\nsrc/b.ts", "2 files"],
-		["ls", "file-a.ts\nfile-b.ts", "2 entries"],
-	] as const) {
-		const collapsed = renderToString(
-			tools.get(tool).renderResult(textResult(text), { expanded: false, isPartial: false }, passthroughTheme, {}),
-		);
-		const expanded = renderToString(
-			tools.get(tool).renderResult(textResult(text), { expanded: true, isPartial: false }, passthroughTheme, {}),
-		);
-		assert.match(collapsed, new RegExp(label));
-		assert.match(collapsed, /src\/a\.ts|file-a\.ts/);
-		assert.match(expanded, new RegExp(text.split("\n")[1]!));
+	// The search summaries are default-preference behavior: the minimal level
+	// keeps them behind the expand key.
+	setCardContent(CARD_CONTENT.DEFAULT);
+	try {
+		for (const [tool, text, label] of [
+			["grep", "src/a.ts:1:match\nsrc/b.ts:2:match", "2 matches"],
+			["find", "src/a.ts\nsrc/b.ts", "2 files"],
+			["ls", "file-a.ts\nfile-b.ts", "2 entries"],
+		] as const) {
+			const collapsed = renderToString(
+				tools.get(tool).renderResult(textResult(text), { expanded: false, isPartial: false }, passthroughTheme, {}),
+			);
+			const expanded = renderToString(
+				tools.get(tool).renderResult(textResult(text), { expanded: true, isPartial: false }, passthroughTheme, {}),
+			);
+			assert.match(collapsed, new RegExp(label));
+			assert.match(collapsed, /src\/a\.ts|file-a\.ts/);
+			assert.match(expanded, new RegExp(text.split("\n")[1]!));
+		}
+	} finally {
+		setCardContent(CARD_CONTENT.MINIMAL);
 	}
 });
 
@@ -388,9 +401,9 @@ test("quiet search and placeholder summaries preserve exact-result behavior", as
 		["grep", "no-context output counts every non-empty row", "grep", "src/a.ts:1:match\nsrc/b.ts:2:match", {}, " → 2 matches", undefined, /2 matches/, undefined, 1],
 		["exact", "current empty-directory marker", "ls", "(empty directory)", {}, "", undefined, /^$/, /entries|to expand/, 0],
 		["exact", "legacy empty-directory marker", "ls", "Directory is empty", {}, "", undefined, /^$/, /entries|to expand/, 0],
-		["exact", "no-output marker", "bash", "(no output)", { command: "true" }, "\n(no output)", undefined, /^$/, /to expand/, 0],
+		["exact", "no-output marker", "bash", "(no output)", { command: "true" }, "\n(no output)", undefined, /\(no output\)/, /to expand/, 0],
 		["collision", "empty-directory marker with a real entry", "ls", lsCollisionText, {}, " → 2 entries", `\n${lsCollisionText}`, /2 entries[\s\S]*real-entry\.txt/, undefined, 1],
-		["collision", "no-output marker with real output", "bash", bashCollisionText, { command: "printf output" }, `\n${bashCollisionText}`, `\n${bashCollisionText}`, /^$/, undefined, 1],
+		["collision", "no-output marker with real output", "bash", bashCollisionText, { command: "printf output" }, `\n${bashCollisionText}`, `\n${bashCollisionText}`, /real output/, undefined, 1],
 	] as const;
 	assert.equal(cases.length, 7);
 
@@ -401,10 +414,18 @@ test("quiet search and placeholder summaries preserve exact-result behavior", as
 		assert.ok(tool, `${name}: missing ${toolName} renderer`);
 		assert.equal(formatToolResultOutput(toolName, result, { expanded: false, args }), collapsed, name);
 		if (expanded !== undefined) assert.equal(formatToolResultOutput(toolName, result, { expanded: true, args }), expanded, `${name} expanded output`);
-		const output = renderToolResult(tool, result, { expanded: false, isPartial: false }, { args });
-		assert.match(output, rendered, name);
-		if (forbidden) assert.doesNotMatch(output, forbidden, name);
-		assert.equal(output.split(hint).length - 1, 0, `${name}: the expand key rides the call card, not the result`);
+		// Minimal command-only cards hide every summary behind the expand key.
+		assert.equal(renderToolResult(tool, result, { expanded: false, isPartial: false }, { args }), "", `${name}: minimal renders only the command`);
+		// The summaries themselves are default-preference behavior.
+		setCardContent(CARD_CONTENT.DEFAULT);
+		try {
+			const output = renderToolResult(tool, result, { expanded: false, isPartial: false }, { args });
+			assert.match(output, rendered, name);
+			if (forbidden) assert.doesNotMatch(output, forbidden, name);
+			assert.equal(output.split(hint).length - 1, 0, `${name}: the expand key rides the call card, not the result`);
+		} finally {
+			setCardContent(CARD_CONTENT.MINIMAL);
+		}
 	};
 
 	for (const [section, count] of [["grep", 2], ["exact", 3], ["collision", 2]] as const) await t.test(section, () => {
@@ -1035,13 +1056,17 @@ test("quiet tool rendering call rows show tool calls without result output", () 
 	assert.match(grepCall, /grep \/needle\/ in src \(\*\.ts\)/);
     });
 
-test("read, write and bash cards show only the command while collapsed and stay expandable", () => {
+test("every quiet tool card shows only the command while collapsed and stays expandable", () => {
 	const tools = registeredQuietTools();
 	const finished = { isPartial: false, executionStarted: true };
 	const cases: Array<[string, Record<string, unknown>, string, string]> = [
 		["read", { path: "a.ts" }, "first line\nsecond line", "first line"],
 		["write", { path: "b.ts", content: "body" }, "Successfully wrote 4 bytes", "Successfully wrote 4 bytes"],
 		["bash", { command: "printf hi" }, "hi\nthere", "there"],
+		["grep", { pattern: "needle", path: "src" }, "src/a.ts:1:needle", "src/a.ts:1:needle"],
+		["find", { pattern: "*.ts", path: "src" }, "src/a.ts\nsrc/b.ts", "src/b.ts"],
+		["ls", { path: "src" }, "file-a.ts\nfile-b.ts", "file-b.ts"],
+		["edit", { path: "file.ts", edits: [] }, "Applied edits", "Applied edits"],
 	];
 	for (const [name, args, output, visible] of cases) {
 		const tool = tools.get(name);
@@ -1198,29 +1223,43 @@ test("quiet tool rendering bounds completed previews, errors, and edit/write sum
 	for (const [toolName, text] of [
 		["read", "read one\nread two\nread three\nread four"],
 		["bash", "bash one\nbash two\nbash three\nbash four"],
+		["grep", "src/a.ts:1:match"],
+		["find", "src/a.ts"],
+		["ls", "file-a.ts"],
+		["edit", "applied"],
+		["write", "Successfully wrote 4 bytes"],
 	] as const) {
 		const rendered = renderToolResult(tools.get(toolName), textResult(text), { expanded: false, isPartial: false }, toolName === "bash" ? { args: { command: "printf output" } } : {});
 		assert.equal(rendered, "", `${toolName}: only the command while collapsed`);
 		assert.doesNotMatch(rendered, /to expand/);
 	}
 
-	for (const toolName of ["read", "bash", "write"] as const) {
+	for (const toolName of ["read", "bash", "write", "grep", "find", "ls", "edit"] as const) {
 		const rendered = renderToolResult(tools.get(toolName), textResult("error one\nerror two\nerror three\nerror four"), { expanded: false, isPartial: false, isError: true }, toolName === "bash" ? { args: { command: "false" } } : {});
 		assert.equal(rendered, "", `${toolName}: collapsed errors stay behind the expand key`);
 		assert.doesNotMatch(rendered, /to expand/);
 	}
-	for (const toolName of ["grep", "find", "ls", "edit"] as const) {
-		const rendered = renderToolResult(tools.get(toolName), textResult("error one\nerror two\nerror three\nerror four"), { expanded: false, isPartial: false, isError: true }, {});
-		assert.doesNotMatch(rendered, /error one/);
-		assert.match(rendered, /error two\nerror three\nerror four/);
-		assert.doesNotMatch(rendered, /to expand/);
-	}
 
-	const edit = renderToolResult(tools.get("edit"), textResult("Applied", { diff: "@@\n-old\n+new" }), { expanded: false, isPartial: false }, { args: { path: "file.ts", edits: [] } });
-	const write = renderToolResult(tools.get("write"), textResult("Successfully wrote 4 bytes\nbody"), { expanded: false, isPartial: false }, { args: { path: "file.ts", content: "body" } });
-	assert.match(edit, /\+1 \/ -1/);
-	assert.match(edit, /-old[\s\S]*\+new/);
-	assert.equal(write, "");
+	// Bounded error tails and edit/write summaries are default-preference
+	// behavior; the minimal level keeps them behind the expand key.
+	setCardContent(CARD_CONTENT.DEFAULT);
+	try {
+		for (const toolName of ["grep", "find", "ls", "edit"] as const) {
+			const rendered = renderToolResult(tools.get(toolName), textResult("error one\nerror two\nerror three\nerror four"), { expanded: false, isPartial: false, isError: true }, {});
+			assert.doesNotMatch(rendered, /error one/);
+			assert.match(rendered, /error two\nerror three\nerror four/);
+			assert.doesNotMatch(rendered, /to expand/);
+		}
+
+		const edit = renderToolResult(tools.get("edit"), textResult("Applied", { diff: "@@\n-old\n+new" }), { expanded: false, isPartial: false }, { args: { path: "file.ts", edits: [] } });
+		const write = renderToolResult(tools.get("write"), textResult("Successfully wrote 4 bytes\nbody"), { expanded: false, isPartial: false }, { args: { path: "file.ts", content: "body" } });
+		assert.match(edit, /\+1 \/ -1/);
+		assert.match(edit, /-old[\s\S]*\+new/);
+		assert.match(write, /wrote 4 bytes/);
+	} finally {
+		setCardContent(CARD_CONTENT.MINIMAL);
+	}
+	assert.equal(renderToolResult(tools.get("write"), textResult("Successfully wrote 4 bytes\nbody"), { expanded: false, isPartial: false }, { args: { path: "file.ts", content: "body" } }), "", "write stays command-only under minimal");
 	assert.match(formatToolResultOutput("write", textResult("Successfully wrote 4 bytes\nbody") as any, { expanded: false }), /wrote 4 bytes/);
 	assert.doesNotMatch(formatToolResultOutput("write", textResult("Successfully wrote 4 bytes\nbody") as any, { expanded: false }), /body/);
 });
@@ -1475,9 +1514,7 @@ test("six quiet cards and standalone Bash fixture retain distinct identity and b
 		assert.match(header, /to expand/);
 		const value = textResult("useful row\nsecond row", name === "edit" ? { diff: "-before\n+after" } : undefined);
 		const body = frameLines(tool.renderResult(value, { expanded: false, isPartial: false }, passthroughTheme, ctx), 120).join("\n");
-		const showsResult = name === "grep" || name === "find" || name === "ls" || name === "edit";
-		if (showsResult) assert.match(body, name === "edit" ? /before|after/ : /useful row/);
-		else assert.match(body, /^╰─+╯$/, `${name} shows only the command while collapsed`);
+		assert.match(body, /^╰─+╯$/, `${name} shows only the command while collapsed`);
 		for (const width of [0, 1, 2, 3, 4, 5, 6, 7, 8, 24]) {
 			const rows = frameLines(tool.renderResult(textResult("界e\u0301🌹".repeat(80)), { expanded: false, isPartial: false }, passthroughTheme, ctx), width);
 			assert.ok(rows.length <= 4);
@@ -1611,24 +1648,31 @@ test("float quiet cards render the call and result as one panel with a single se
 	const grep = tools.get("grep");
 	const context = routineRenderContext({ args: { pattern: "needle", path: "src" }, isPartial: false, executionStarted: true });
 	const width = 60;
-	const rows = withFloatCards(() => [
-		...grep.renderCall({ pattern: "needle", path: "src" }, floatToolTheme, context).render(width),
-		...grep.renderResult(textResult("src/a.ts:1:needle"), { expanded: false, isPartial: false }, floatToolTheme, context).render(width),
-	]);
-	const plain = rows.map(stripAnsi);
-	for (const line of rows) {
-		assert.equal(visibleWidth(line), width);
-		assert.ok(line.startsWith(" \x1b[48;5;22m"), JSON.stringify(line));
-		assert.ok(line.endsWith("\x1b[49m "), JSON.stringify(line));
+	// The result body row is default-preference behavior; the minimal level
+	// keeps it behind the expand key.
+	setCardContent(CARD_CONTENT.DEFAULT);
+	try {
+		const rows = withFloatCards(() => [
+			...grep.renderCall({ pattern: "needle", path: "src" }, floatToolTheme, context).render(width),
+			...grep.renderResult(textResult("src/a.ts:1:needle"), { expanded: false, isPartial: false }, floatToolTheme, context).render(width),
+		]);
+		const plain = rows.map(stripAnsi);
+		for (const line of rows) {
+			assert.equal(visibleWidth(line), width);
+			assert.ok(line.startsWith(" \x1b[48;5;22m"), JSON.stringify(line));
+			assert.ok(line.endsWith("\x1b[49m "), JSON.stringify(line));
+		}
+		assert.doesNotMatch(plain.join("\n"), /[╭╮╰╯│─]/);
+		assert.match(plain[0]!, /^ ▎ +$/);
+		assert.match(plain[1]!, /^ ▎ ⌕ grep \/needle\/ in src +.*to expand {4}$/);
+		assert.match(plain[2]!, /^ ▎ +$/);
+		assert.match(plain[3]!, /^ ▎ {2}→ 1 matches/);
+		assert.match(plain.at(-1)!, /^ ▎ +$/);
+		assert.equal(plain.length, 6);
+		assert.equal(plain[1]!.indexOf("⌕"), plain[4]!.indexOf("src/a.ts"), "the glyph starts in the body text column");
+	} finally {
+		setCardContent(CARD_CONTENT.MINIMAL);
 	}
-	assert.doesNotMatch(plain.join("\n"), /[╭╮╰╯│─]/);
-	assert.match(plain[0]!, /^ ▎ +$/);
-	assert.match(plain[1]!, /^ ▎ ⌕ grep \/needle\/ in src +.*to expand {4}$/);
-	assert.match(plain[2]!, /^ ▎ +$/);
-	assert.match(plain[3]!, /^ ▎ {2}→ 1 matches/);
-	assert.match(plain.at(-1)!, /^ ▎ +$/);
-	assert.equal(plain.length, 6);
-	assert.equal(plain[1]!.indexOf("⌕"), plain[4]!.indexOf("src/a.ts"), "the glyph starts in the body text column");
 });
 
 test("float quiet cards close a running call as one panel and add no separator without result rows", () => {

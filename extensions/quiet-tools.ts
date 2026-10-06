@@ -60,7 +60,7 @@ const COLLAPSED_COUNT_LABELS: Partial<Record<QuietToolName, string>> = {
 // Cards that show only the command while the Card content preference is
 // minimal: their results stay one expand key away and never add rows to the
 // transcript view.
-const COMMAND_ONLY_TOOLS: ReadonlySet<QuietToolName> = new Set(["read", "write", "bash"]);
+const COMMAND_ONLY_TOOLS: ReadonlySet<QuietToolName> = new Set(["read", "bash", "grep", "find", "ls", "edit", "write"]);
 
 const COLLAPSED_TAIL_LINE_LIMIT = 10;
 const PREVIEW_LINE_LIMIT = 3;
@@ -742,9 +742,9 @@ export function createQuietToolRenderer(
 			}
 			const resultTone = toolTone(options.isPartial === true, isError);
 			const carded = (component: () => Component): Component => new ToolCardBody(component, resultTone, theme);
-			// Under the minimal Card content preference, read, write and bash draw
+			// Under the minimal Card content preference, every quiet tool draws
 			// the command alone while collapsed; the expand key still reveals
-			// their full result. The default preference keeps the result previews.
+			// the full result. The default preference keeps the result previews.
 			if (COMMAND_ONLY_TOOLS.has(toolName) && !options.expanded && cardContent() === CARD_CONTENT.MINIMAL) {
 				return carded(() => new Text("", 0, 0));
 			}
