@@ -24,7 +24,7 @@ export async function openNotificationPanel(ctx: ExtensionContext): Promise<void
 		if (!service || path === undefined) return undefined;
 		const sound = `file:${path}` as const;
 		if (!isNotificationSound(sound) || !await service.validateFile(ctx, sound)) {
-			if (fresh(expected)) notify("Select a readable regular PCM WAV (≤2 MiB, ≤5 seconds); absolute local path only.", true);
+			if (fresh(expected)) notify("Select a readable regular PCM WAV (≤2 MiB, ≤10 seconds); absolute local path only.", true);
 			return undefined;
 		}
 		return fresh(expected) ? sound : undefined;

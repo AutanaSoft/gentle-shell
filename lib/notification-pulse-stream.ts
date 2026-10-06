@@ -23,7 +23,8 @@ import {
 } from "./notification-pulse-protocol.ts";
 
 export const MAX_PCM_CHUNK = 64 * 1024;
-export const DEFAULT_PLAYBACK_BUDGET_MS = 6000;
+/** 10 s maximum validated duration plus a 1 s termination margin; the DRAIN ack can wait for the full sound. */
+export const DEFAULT_PLAYBACK_BUDGET_MS = 11000;
 export const MAX_EARLY_REQUESTS = 32;
 const PA_INVALID_INDEX = 0xffffffff;
 const PA_VOLUME_NORM = 0x10000;

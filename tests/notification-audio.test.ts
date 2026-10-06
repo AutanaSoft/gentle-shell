@@ -95,7 +95,7 @@ function fixture(platform = "linux", native: NativeAudioBackend = unavailableNat
 	let detect: (() => Promise<boolean>) | undefined; let availablePaths: string[] | undefined;
 	let spawnError = false; let writeError = false; let cleanupError = false;
 	let duringRead: (() => void) | undefined;
-	let timeout: (() => void) | undefined; let cleared = 0;
+	let timeout: (() => void) | undefined; let timeoutMs = 0; let cleared = 0;
 	const io: AudioIO = {
 		open: async (_path, flags) => {
 			assert.ok(flags & constants.O_NOFOLLOW); assert.ok(flags & constants.O_NONBLOCK);
@@ -109,11 +109,11 @@ function fixture(platform = "linux", native: NativeAudioBackend = unavailableNat
 	const player = new NotificationPlayer({ platform, io, tempRoot: "/private", builtinRoot: "/builtins", native,
 		executableAvailable: async path => { probes.push(path); return availablePaths ? availablePaths.includes(path) : (detect ? detect() : available); },
 		spawn: (executable, args, options) => { if (spawnError) throw Error("spawn"); calls.push({ executable, args, options }); return child; },
-		setTimeout: fn => { timeout = fn; return 1; }, clearTimeout: () => { cleared++; },
+		setTimeout: (fn, ms) => { timeout = fn; timeoutMs = ms; return 1; }, clearTimeout: () => { cleared++; },
 	});
 	const signal = new AbortController(); let permits = 0;
 	const play = (allow = true) => player.play("file:/input/a ; &(b).wav", signal.signal, { start: () => { permits++; return allow; } });
-	return { player, child, calls, probes, cleaned, writes, signal, play, timeout: () => timeout!(), cleared: () => cleared,
+	return { player, child, calls, probes, cleaned, writes, signal, play, timeout: () => timeout!(), timeoutMs: () => timeoutMs, cleared: () => cleared,
 		permits: () => permits, setAvailable: (v: boolean) => { available = v; }, setDetect: (v: () => Promise<boolean>) => { detect = v; },
 		setAvailablePaths: (paths: string[]) => { availablePaths = paths; },
 		setBytes: (v: Buffer) => { bytes = v; size = v.length; }, setRegular: () => { regular = false; },
@@ -123,7 +123,7 @@ function fixture(platform = "linux", native: NativeAudioBackend = unavailableNat
 
 test("WAV content and coherent PCM limits, not filename extension", () => {
 	assert.equal(validateNotificationWav(wav()), 100);
-	assert.equal(validateNotificationWav(wav(40000)), 5000);
+	assert.equal(validateNotificationWav(wav(80000)), 10000);
 	const mutations = [
 		(b: Buffer) => b.write("NOPE"), (b: Buffer) => b.write("MP3!", 8),
 		(b: Buffer) => b.writeUInt32LE(1, 4), (b: Buffer) => b.writeUInt16LE(3, 20),
@@ -133,7 +133,25 @@ test("WAV content and coherent PCM limits, not filename extension", () => {
 		(b: Buffer) => b.writeUInt32LE(1, 40), (b: Buffer) => b.writeUInt32LE(0, 40),
 	];
 	for (const mutate of mutations) { const b = wav(); mutate(b); assert.throws(() => validateNotificationWav(b)); }
-	for (const b of [wav().subarray(0, 43), wav(40001), Buffer.alloc(2 * 1024 * 1024 + 1)]) assert.throws(() => validateNotificationWav(b));
+	for (const b of [wav().subarray(0, 43), wav(80001), Buffer.alloc(2 * 1024 * 1024 + 1)]) assert.throws(() => validateNotificationWav(b));
+});
+
+test("10 s is the exact validated boundary for WAV/OGG/FLAC and the old 5.58 s file is now accepted", () => {
+	// Exact 10 s is accepted for every current container (WAV PCM duration is also enforced internally).
+	assert.equal(validateNotificationWav(wav(80000)), 10000);
+	assert.deepEqual(validateNotificationAudio(oggVorbis(8000, 80000)), { format: "ogg", durationMs: 10000 });
+	assert.deepEqual(validateNotificationAudio(oggOpus(312, 312 + 48000 * 10)), { format: "ogg", durationMs: 10000 });
+	assert.deepEqual(validateNotificationAudio(flac(8000, 80000)), { format: "flac", durationMs: 10000 });
+	// The previously rejected 5.58 s equivalent now validates for each container, without cropping.
+	assert.equal(validateNotificationWav(wav(44640)), 5580);
+	assert.deepEqual(validateNotificationAudio(oggVorbis(8000, 44640)), { format: "ogg", durationMs: 5580 });
+	assert.deepEqual(validateNotificationAudio(flac(8000, 44640)), { format: "flac", durationMs: 5580 });
+	// One representable unit past 10 s is rejected; the 2 MiB ceiling stays independent.
+	assert.throws(() => validateNotificationWav(wav(80001)), /Invalid notification WAV/);
+	for (const long of [oggVorbis(8000, 80001), oggOpus(312, 312 + 48000 * 10 + 1), flac(8000, 80001)])
+		assert.throws(() => validateNotificationAudio(long), /exceeds 10 seconds|Invalid notification/);
+	const huge = Buffer.alloc(2 * 1024 * 1024 + 1); huge.write("RIFF"); huge.write("WAVE", 8);
+	assert.throws(() => validateNotificationWav(huge), /Invalid notification WAV/);
 });
 
 test("RIFF chunk padding, duplicates and bounds are validated", () => {
@@ -161,9 +179,9 @@ test("content detection rejects other containers, unknown Ogg codecs, malformed 
 		assert.throws(() => validateNotificationAudio(other), /Unsupported notification audio format/);
 	const unsupported = Buffer.concat([oggPage(0x02, 0, Buffer.from("Xcodec!!", "ascii"), 0), oggPage(0x00, 1000, Buffer.alloc(0), 1)]);
 	assert.throws(() => validateNotificationAudio(unsupported), /Invalid notification OGG/);
-	// Duration is decoded per format and then rejected by the shared 5 s guard.
-	for (const long of [flac(8000, 8000 * 6), oggVorbis(8000, 8000 * 6), oggOpus(312, 312 + 48000 * 6)])
-		assert.throws(() => validateNotificationAudio(long), /exceeds 5 seconds|Invalid notification/);
+	// Duration is decoded per format and then rejected by the shared 10 s guard.
+	for (const long of [flac(8000, 8000 * 11), oggVorbis(8000, 8000 * 11), oggOpus(312, 312 + 48000 * 11)])
+		assert.throws(() => validateNotificationAudio(long), /exceeds 10 seconds|Invalid notification/);
 	// Size is bounded for every container, even before parsing.
 	const hugeOgg = Buffer.alloc(2 * 1024 * 1024 + 1); hugeOgg.write("OggS", 0);
 	const hugeFlac = Buffer.alloc(2 * 1024 * 1024 + 1); hugeFlac.write("fLaC", 0);
@@ -350,6 +368,16 @@ test("a native play error never retries the CLI", async () => {
 	assert.equal(native.snapshots.length, 1);
 	assert.equal(f.calls.length, 0);
 	assert.equal(f.cleaned.length, 2);
+});
+
+test("default CLI play deadline is 11 s, one second past the accepted 10 s maximum", async () => {
+	const f = fixture(); let done = false;
+	const p = f.play().then(() => { done = true; }); await tick();
+	assert.equal(f.calls.length, 1);
+	assert.equal(f.timeoutMs(), 11000);
+	assert.ok(f.timeoutMs() > 10000, "the CLI deadline must outlive the accepted 10 s file");
+	assert.equal(done, false);
+	f.child.emit("close", 0); await p; assert.equal(done, true);
 });
 
 test("native gate false starts once, spawns nothing and preserves cleanup", async () => {

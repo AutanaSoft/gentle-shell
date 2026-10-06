@@ -1028,3 +1028,58 @@ these fixes; **no source implementation until the parent's explicit follow-up**.
   private snapshot `MemoryStream` `SoundPlayer`; automatic notifications stayed **OFF** and global prefs
   unchanged in that test. No new sounds authorized. No native Windows host, macOS, Node 22, independent
   assignment/file/Advanced, or manual automatic mute claim. Writer heard/ran nothing.
+
+### L18 — 10 s own-sound limit (5 s → 10 s); play deadlines 6000 → 11000 ms
+
+- **Authorization.** User explicitly asked to raise the limit to 10 seconds for
+  own notification sound files ("aumenta el límite a 10 segundos"). Builtin
+  defaults, the 2 MiB ceiling, the no-follow/private-snapshot flow and every probe
+  deadline are unchanged. L1–L17 keep their historical 5 s statements verbatim;
+  `docs/sound-notifications.md` and `README.md` are the current authoritative 10 s
+  sources. The original `docs/sound-notifications-proposal.md` is not rewritten.
+- **Duration limit.** `MAX_DURATION_MS = 10000` in `lib/notification-audio.ts`;
+  `validateNotificationWav` and the shared `validateNotificationAudio` guard reject
+  `> 10000` ("Notification audio exceeds 10 seconds"). WAV/OGG/FLAC share the
+  decoded-duration guard; exact 10 s is accepted and one unit past is rejected.
+- **Deadlines (10 s + 1 s margin).** Playback watchdog 6000 → 11000 ms in the CLI
+  (`PLAYBACK_TIMEOUT_MS`), the native Pulse bridge and Windows adapter
+  (`DEFAULT_PLAY_TIMEOUT_MS`), the Pulse stream budget
+  (`DEFAULT_PLAYBACK_BUDGET_MS`) and the per-request/DRAIN cap
+  (`MAX_REQUEST_TIMEOUT_MS`). Probe deadlines (1200/900 ms) are unchanged; no
+  unbounded deadline was introduced.
+- **RED observed before source.** Focused tests written first.
+  `node --experimental-strip-types --test tests/notification-audio.test.ts` →
+  **23 pass / 4 fail**; the boundary test failed `TypeError: Invalid notification
+  WAV` at the unchanged 5 s limit and the CLI deadline test failed `6000 !== 11000`.
+  `notification-pulse-stream` → **13/2** (`parsePulseWav` boundary + default drain
+  deadline `true !== false`); `notification-audio-native` and
+  `notification-audio-windows` each failed the default deadline `6000 !== 11000`.
+- **GREEN after source.** `notification-audio + native + windows + pulse-stream +
+  pulse-client + pulse-protocol + customize` → **160/160, exit 0** (was 155).
+  `tests/*notification*.test.ts` → **230/230** (was 225). `node scripts/check-types.mjs`
+  → exit 0, **186 recorded diagnostics, no regressions**. `git diff --check` clean.
+- **Coverage kept.** New tests assert exact-10-s accepted / >10-s rejected per
+  container, the previously rejected 5.58 s equivalent now accepted (no crop), the
+  2 MiB ceiling retained, and a default 11000 ms play/drain deadline that outlives
+  the 10 s maximum for the CLI, native bridge, Windows adapter and Pulse drain.
+  Existing security/lifecycle tests (no-follow private snapshot, PCM structure,
+  gate-once, native-failure-never-retries-CLI, truthful capabilities) are unchanged
+  and green.
+- **No physical audio.** All tests inject a fake child/socket/clock; no real Pulse
+  stream, PowerShell host or `PlaySync` occurred and no physical
+  audibility is claimed. No package, dependency, runtime module or global config
+  changed.
+- **Stale UI string superseded (message-only).** The deprecated, unwired
+  `openNotificationPanel` fallback still advertised `≤5 seconds`;
+  `lib/notification-ui.ts` now says `≤10 seconds`. No behavior/validation change:
+  the panel delegates to `service.validateFile` (already 10 s + 2 MiB +
+  `O_NOFOLLOW`) and `tests/gentle-shell.test.ts` still asserts the extension never
+  imports `notification-ui.ts`. The current `/gentle:customize` path
+  (`lib/notification-customize.ts`) was already 10 s.
+- **Author source validated read-only (no playback).** `[ruta local anonimizada]`
+  opened `O_RDONLY|O_NOFOLLOW|O_NONBLOCK`, bounded ≤2 MiB, one read → regular file,
+  `985352` bytes, pure `validateNotificationAudio` → `wav`, `5580` ms (5.58 s):
+  now **accepted** after the 5 s→10 s raise (previously rejected). No crop, no
+  play, no probe, no snapshot, no capability assumption (pure codec only). SHA-256
+  `b7477a1e52f73df449c126f05a872c276b16471b2874a4c30bb660a8506aef43` and mtime
+  unchanged before/after. No audibility is claimed.

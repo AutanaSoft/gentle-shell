@@ -60,7 +60,8 @@ const MAX_STDOUT = 1024;
 const MAX_STDERR = 4096;
 const MAX_SNAPSHOT_PATH = 4096;
 const DEFAULT_PROBE_TIMEOUT_MS = 1200;
-const DEFAULT_PLAY_TIMEOUT_MS = 6000;
+/** 10 s maximum validated duration plus a 1 s termination margin; must outlive every accepted sound. */
+const DEFAULT_PLAY_TIMEOUT_MS = 11000;
 
 /** A fixed probe script: it only proves the .NET SoundPlayer type is loadable and prints one line. */
 const PROBE_SCRIPT = [

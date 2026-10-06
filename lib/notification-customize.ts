@@ -114,7 +114,7 @@ export function buildNotificationRows(ctx: ExtensionContext): CustomizeRow[] {
 	/**
 	 * The only place a local sound is read: shared by the three basic groups and the
 	 * Advanced per-event rows. Reuses the service's validated `validateFile` (WAV/OGG/FLAC,
-	 * ≤2 MiB, ≤5 s, no shell/URLs) and re-checks owner/disposal before the
+	 * ≤2 MiB, ≤10 s, no shell/URLs) and re-checks owner/disposal before the
 	 * single atomic write. Returns the field task so the view keeps the card busy.
 	 */
 	const chooseFileFor = async (inline: CustomizeInline, targets: readonly NotificationEvent[], prefill: string): Promise<boolean> => {
@@ -127,7 +127,7 @@ export function buildNotificationRows(ctx: ExtensionContext): CustomizeRow[] {
 		const valid = await expected.validateFile(ctx, sound);
 		// A replaced owner, closed card or changed session invalidates the validated choice before any write.
 		if (!valid || inline.disposed || getNotificationService() !== expected) {
-			if (!inline.disposed && getNotificationService() === expected) notify("Select a readable local sound (WAV/OGG/FLAC, ≤2 MiB, ≤5 seconds); absolute local path only.", true);
+			if (!inline.disposed && getNotificationService() === expected) notify("Select a readable local sound (WAV/OGG/FLAC, ≤2 MiB, ≤10 seconds); absolute local path only.", true);
 			return true;
 		}
 		await setTargets(inline, targets, sound);

@@ -24,7 +24,8 @@ import {
 } from "./notification-pulse-protocol.ts";
 
 export const DEFAULT_REQUEST_TIMEOUT_MS = 900;
-export const MAX_REQUEST_TIMEOUT_MS = 6000;
+/** Cap for one control request/DRAIN: 10 s maximum validated duration plus a 1 s termination margin. */
+export const MAX_REQUEST_TIMEOUT_MS = 11000;
 export const MAX_PENDING_REQUESTS = 32;
 export const PULSE_COOKIE_BYTES = 256;
 

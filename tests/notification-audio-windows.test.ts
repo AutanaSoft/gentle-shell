@@ -236,6 +236,23 @@ test("timeout and abort SIGKILL once and settle only on close", async () => {
 	await assert.rejects(playing, /aborted|Native Windows/);
 });
 
+test("default play deadline is 11000 ms and outlives the accepted 10 s maximum", async () => {
+	let scheduledMs = 0; let fire: (() => void) | undefined;
+	const { player, children } = recorder("win32", {
+		setTimeout: (callback, ms) => { scheduledMs = ms; fire = callback; return 1; },
+		clearTimeout: () => {},
+	});
+	const playing = player.play("C:\\Temp\\sound.wav", undefined, () => true);
+	assert.equal(children.length, 1);
+	assert.equal(scheduledMs, 11000);
+	assert.ok(scheduledMs > 10000, "the Windows adapter must outlive the accepted 10 s file");
+	assert.deepEqual(children[0]!.kills, []);
+	fire!();
+	assert.deepEqual(children[0]!.kills, ["SIGKILL"]);
+	children[0]!.emit("close", 0);
+	await assert.rejects(playing, /Native Windows/);
+});
+
 test("a synchronous spawn failure rejects privately without pending children", async () => {
 	const player = new NativeWindowsPlayer({
 		platform: "win32",

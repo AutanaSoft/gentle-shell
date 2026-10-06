@@ -185,6 +185,23 @@ test("timeout and abort SIGKILL once and settle only on close", async () => {
 	await assert.rejects(playing, /aborted|Native pulse/);
 });
 
+test("default play deadline is 11000 ms and outlives the accepted 10 s maximum", async () => {
+	let scheduledMs = 0; let fire: (() => void) | undefined;
+	const { player, children } = recorder("linux", {
+		setTimeout: (callback, ms) => { scheduledMs = ms; fire = callback; return 1; },
+		clearTimeout: () => {},
+	});
+	const playing = player.play("/tmp/s.wav", undefined, () => true);
+	assert.equal(children.length, 1);
+	assert.equal(scheduledMs, 11000);
+	assert.ok(scheduledMs > 10000, "the native bridge must outlive the accepted 10 s file");
+	assert.deepEqual(children[0]!.kills, []);
+	fire!();
+	assert.deepEqual(children[0]!.kills, ["SIGKILL"]);
+	children[0]!.emit("close");
+	await assert.rejects(playing, /Native pulse/);
+});
+
 test("probe never throws for offline/malformed IPC while play rejects and cleans", async () => {
 	const { player, children } = recorder();
 	const probing = player.probe();
