@@ -133,6 +133,7 @@ export function createMonitorController(deps: MonitorControllerDeps) {
 			};
 			job = deps.registry.start({ ...rest, kind: "monitor", onLine });
 			job.events = 0;
+			job.timeoutSeconds = timeoutSeconds;
 			const started = job;
 			active.set(started.id, { batcher, cancelTimeout: deps.schedule(() => stopFor(started, "timeout"), timeoutSeconds * 1000) });
 			return started;

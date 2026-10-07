@@ -55,10 +55,12 @@ export function monitorEventsText(job: JobRecord, batch: MonitorBatch): string {
 /** Model-facing notice for a monitor the harness stopped. */
 export function monitorStoppedText(job: JobRecord, reason: MonitorStopReason): string {
 	const events = plural(job.events ?? 0, "event");
+	const output = `Full output: ${job.outputPath}`;
 	if (reason === "timeout") {
-		return `Monitor ${quoted(job)} reached its timeout after ${events} and was stopped. Start a new monitor if you still need to watch it.`;
+		const limit = job.timeoutSeconds === undefined ? "its timeout" : `its ${job.timeoutSeconds}s timeout`;
+		return `Monitor ${quoted(job)} reached ${limit} after ${events} and was stopped. Start a new monitor if you still need to watch it.\n${output}`;
 	}
-	return `Monitor ${quoted(job)} was stopped: it printed more than ${MONITOR_FLOOD_LINES} lines within ${MONITOR_FLOOD_WINDOW_MS / 1000}s (${events}). Narrow the command's filter before watching it again.`;
+	return `Monitor ${quoted(job)} was stopped: it printed more than ${MONITOR_FLOOD_LINES} lines within ${MONITOR_FLOOD_WINDOW_MS / 1000}s (${events}). Narrow the command's filter before watching it again.\n${output}`;
 }
 
 function listLine(job: JobRecord, now: number): string {

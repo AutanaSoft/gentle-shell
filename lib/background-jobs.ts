@@ -94,6 +94,8 @@ export interface JobRecord {
 	tail: string[];
 	/** Monitor only: output lines reported as events so far. */
 	events?: number;
+	/** Monitor only: the mandatory timeout it was started with. */
+	timeoutSeconds?: number;
 }
 
 export interface JobStartRequest {
