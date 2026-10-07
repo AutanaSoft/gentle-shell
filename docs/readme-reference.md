@@ -417,6 +417,10 @@ For an interactive isolated-home launch inside Herdr, `gentle-shell` explicitly 
 
 Automatic loading requires `HERDR_ENV=1`, a nonempty `HERDR_PANE_ID`, an existing Unix socket at `HERDR_SOCKET_PATH`, and terminal stdin/stdout. It is skipped for `--no-extensions`/`-ne`, print/JSON/RPC modes (including interactive RPC hosts), export/model listing, package commands, and Gentle Agents children. `--mode text` still permits an interactive TUI. Linked and explicit custom homes keep their own resource policy; use normal Pi discovery or an explicit `-e` there. An absent or unreadable bridge is nonfatal. User-supplied extension paths remain unchanged, including under `--no-extensions`; this automatic bridge is not added on top of that opt-out.
 
+### Herdr native working detection
+
+Outside Herdr, the petal prompt frame replaces Pi's standard loader row. Inside a Herdr pane (`HERDR_ENV=1`, root sessions only), Gentle Shell keeps Pi's native `⠋ Working...` row visible, because Herdr's native Pi manifest detects activity from that row and otherwise reports idle during real runs. Pi shows the row only while the agent is working, so no local `pi.toml` override is needed.
+
 ### Herdr blocker events
 
 The Gentle AI adapter projects native `gentle-pi:ask-user-question:blocked`, legacy `rpiv:ask-user:blocked`, choice blockers, and guarded confirmations into one balanced `herdr:blocked` interval. It emits one activation when blocking begins and one release after the last source clears, retaining the initial generic label without relabel pulses. Native and legacy questionnaires are tracked independently; duplicate or malformed source events are ignored. Questionnaire answers, prompts, and commands are not included in the projection. This adapter emits local events; transport availability is a separate concern.
