@@ -93,7 +93,7 @@ function fixture(platform = "linux", native: NativeAudioBackend = unavailableNat
 	const probes: string[] = []; const cleaned: string[] = []; const writes: Array<{ path: string; bytes: Buffer; mode: number }> = [];
 	let bytes: Buffer = wav(); let regular = true; let size = bytes.length; let available = true;
 	let detect: (() => Promise<boolean>) | undefined; let availablePaths: string[] | undefined;
-	let spawnError = false; let writeError = false; let cleanupError = false;
+	let spawnError = false; let writeError = false; let cleanupError = false; let rmdirError = false;
 	let duringRead: (() => void) | undefined;
 	let timeout: (() => void) | undefined; let timeoutMs = 0; let cleared = 0;
 	const io: AudioIO = {
@@ -104,7 +104,8 @@ function fixture(platform = "linux", native: NativeAudioBackend = unavailableNat
 		},
 		mkdtemp: async () => "/private/audio ; literal", chmod: async (_path, mode) => { assert.equal(mode, 0o700); },
 		writeFile: async (path, data, options) => { if (writeError) throw Error("write"); writes.push({ path, bytes: data, mode: options.mode }); },
-		unlink: async path => { cleaned.push(path); if (cleanupError) throw Error("cleanup"); }, rmdir: async path => { cleaned.push(path); },
+		unlink: async path => { cleaned.push(path); if (cleanupError) throw Error("cleanup"); },
+		rmdir: async path => { cleaned.push(path); if (rmdirError) throw Error("rmdir"); },
 	};
 	const player = new NotificationPlayer({ platform, io, tempRoot: "/private", builtinRoot: "/builtins", native,
 		executableAvailable: async path => { probes.push(path); return availablePaths ? availablePaths.includes(path) : (detect ? detect() : available); },
@@ -118,7 +119,7 @@ function fixture(platform = "linux", native: NativeAudioBackend = unavailableNat
 		setAvailablePaths: (paths: string[]) => { availablePaths = paths; },
 		setBytes: (v: Buffer) => { bytes = v; size = v.length; }, setRegular: () => { regular = false; },
 		setSize: (v: number) => { size = v; }, failSpawn: () => { spawnError = true; }, failWrite: () => { writeError = true; },
-		failCleanup: () => { cleanupError = true; }, onRead: (fn: () => void) => { duringRead = fn; } };
+		failCleanup: () => { cleanupError = true; }, failRmdir: () => { rmdirError = true; }, onRead: (fn: () => void) => { duringRead = fn; } };
 }
 
 test("WAV content and coherent PCM limits, not filename extension", () => {
@@ -295,6 +296,27 @@ test("filesystem failures and synchronous spawn failure always clean snapshot", 
 	for (const sound of ["file:https://example.org/a.wav", "file:relative.wav", "builtin:other"]) {
 		const f = fixture(); await assert.rejects(f.player.play(sound as "file:relative.wav", f.signal.signal, { start: () => true })); assert.equal(f.calls.length, 0);
 	}
+});
+
+test("cleanup failures never mask playback errors and surface on every exit path", async () => {
+	const breaks = [(f: ReturnType<typeof fixture>) => f.failCleanup(), (f: ReturnType<typeof fixture>) => f.failRmdir()];
+	for (const breakCleanup of breaks) {
+		// Successful playback: the cleanup failure is the only error.
+		const ok = fixture(); breakCleanup(ok); const p = ok.play(); await tick(); ok.child.emit("close", 0);
+		await assert.rejects(p, /Audio snapshot cleanup failed/); assert.equal(ok.cleaned.length, 2);
+		// Failed playback: the process error wins over the cleanup error.
+		const bad = fixture(); breakCleanup(bad); const q = bad.play(); await tick(); bad.child.emit("close", 3);
+		await assert.rejects(q, /Audio process failed/); assert.equal(bad.cleaned.length, 2);
+		// Denied permit returns early, yet the cleanup failure still surfaces.
+		const denied = fixture(); breakCleanup(denied);
+		await assert.rejects(denied.play(false), /Audio snapshot cleanup failed/); assert.equal(denied.calls.length, 0);
+	}
+});
+
+test("process failure message carries bounded stderr", async () => {
+	const f = fixture(); const p = f.play(); await tick();
+	f.child.stderr.emit("data", Buffer.from("ALSA lib: no such device\n")); f.child.emit("close", 1);
+	await assert.rejects(p, /Audio process failed: ALSA lib: no such device/);
 });
 
 test("scheduler reservation does not overlap aborted child still awaiting close", async () => {

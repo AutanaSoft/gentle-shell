@@ -257,7 +257,8 @@ export class NotificationPlayer {
 		if (!useNative && !executable) throw new Error("Notification audio: no backend supports the format");
 		const directory = await this.io.mkdtemp(join(this.options.tempRoot ?? tmpdir(), "gentle-notification-"));
 		const snapshot = join(directory, `sound.${format}`);
-		try {
+		// Early returns below leave this inner function only; the cleanup verdict is decided after it.
+		const playSnapshot = async (): Promise<void> => {
 			await this.io.chmod(directory, 0o700);
 			await this.io.writeFile(snapshot, bytes, { mode: 0o600, flag: "wx" });
 			if (signal.aborted) return;
@@ -271,11 +272,16 @@ export class NotificationPlayer {
 				if (!permit.start()) return;
 				await this.run(executable!, snapshot, signal);
 			}
-		} finally {
+		};
+		let cleanupFailed = false;
+		try { await playSnapshot(); } finally {
+			// Cleanup failures never replace a playback error; they surface only when playback itself succeeded.
 			try { await this.io.unlink(snapshot); } catch (error) {
-				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("Audio snapshot cleanup failed");
-			} finally { await this.io.rmdir(directory); }
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") cleanupFailed = true;
+			}
+			try { await this.io.rmdir(directory); } catch { cleanupFailed = true; }
 		}
+		if (cleanupFailed) throw new Error("Audio snapshot cleanup failed");
 	}
 	private async readSource(source: string): Promise<{ bytes: Buffer; format: NotificationAudioFormat }> {
 		const handle = await this.io.open(source, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -313,9 +319,11 @@ export class NotificationPlayer {
 			child.once("close", (code: number | null) => {
 				(this.options.clearTimeout ?? clearTimeout)(timer);
 				signal.removeEventListener("abort", kill); child.removeListener("error", error);
-				child.stderr?.removeListener("data", capture); stderr = Buffer.alloc(0);
+				child.stderr?.removeListener("data", capture);
+				const detail = stderr.toString("utf8").trim(); stderr = Buffer.alloc(0);
 				if (signal.aborted) resolve();
-				else if (timedOut || failed || code !== 0) reject(new Error(timedOut ? "Audio playback timed out" : "Audio process failed"));
+				else if (timedOut) reject(new Error("Audio playback timed out"));
+				else if (failed || code !== 0) reject(new Error(detail ? `Audio process failed: ${detail}` : "Audio process failed"));
 				else resolve();
 			});
 			if (signal.aborted) kill();

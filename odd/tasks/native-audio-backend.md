@@ -1,8 +1,8 @@
 # Native notification audio backend — own Node Pulse client
 
 Locator: `odd/tasks/native-audio-backend.md`
-Worktree: `/home/egdev/proyectos/gentle-shell-native-audio` (gitdir linked to
-`/home/egdev/proyectos/gentle-shell/.git/worktrees/gentle-shell-native-audio`)
+Worktree: `../gentle-shell-native-audio` (linked worktree of the main clone,
+sibling of the repository root)
 Branch: `feat/native-notification-audio`, base `9a1f8a75`. Worktree setup did
 **no install of its own** (real `node_modules` retained as ignored linked
 entries). The later **N5 verification incident** separately auto-installed an

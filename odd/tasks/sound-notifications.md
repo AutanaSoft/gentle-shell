@@ -1,6 +1,6 @@
 # Notificaciones sonoras nativas — planificación ODD
 Objetivo: ejecutar el alcance completo opt-in de la [propuesta preservada](../../docs/sound-notifications-proposal.md); planificación inicial completada; ejecución secuencial autorizada por el usuario.
-Branch: `feat/sound-notifications`; worktree: `/home/egdev/proyectos/gentle-shell-sound-notifications`; entrega elegida: «Por unidades revisables (recomendado)», commits LOCALES realizados por unidad con tests, sin push/PR.
+Branch: `feat/sound-notifications`; worktree: `../gentle-shell-sound-notifications` (hermano del clon principal); entrega elegida: «Por unidades revisables (recomendado)», commits LOCALES realizados por unidad con tests, sin push/PR.
 Runner ejecutado: `node --experimental-strip-types --test tests/*notification*.test.ts` + tests afectados; forecast inicial: 1700–1800 líneas autoradas totales; ajustado SN-6: 2138–2238 (adiciones + eliminaciones de código/tests, excluidos generados; L5/L6/L9; documentación inventariada aparte).
 
 ## Specs
@@ -78,7 +78,7 @@ Suma inicial: 1700–1800; ajustada tras SN-2: 1799–1919 líneas, tests inclui
 ### L2 — Autorización global y límites históricos del turno inicial
 
 Usuario eligió «Por unidades revisables (recomendado)»; alcance entero, commits LOCALES futuros por unidad con tests juntos, sin push/PR. Instrucción puntual inicial, ahora histórica: «Escribe SOLO planificación ODD y copia propuesta; no implementación todavía.» y «No review, subagentes ni commits.» Esa restricción fue del primer turno y no revoca la autorización global; la delegación actual ejecuta SOLO SN-1 sin delegación adicional, review ni commits.
-El worktree ya existe en la ruta del encabezado y el árbol inicial estaba limpio; no se creó otro. Propuesta fuente: `/home/egdev/proyectos/gentle-shell/docs/sound-notifications-proposal.md`, solo lectura; texto preservado en copia y estado actualizado mediante apéndice enlazado.
+El worktree ya existe en la ruta del encabezado y el árbol inicial estaba limpio; no se creó otro. Propuesta fuente: `docs/sound-notifications-proposal.md` (en el clon principal), solo lectura; texto preservado en copia y estado actualizado mediante apéndice enlazado.
 Normas leídas: `assets/orchestrator-tracking.md`, `assets/orchestrator-memory.md` y skill cognitive-doc-design. Se mantiene orden Specs → Tasks → Log; route inline por prohibición actual de subagentes. No se infiere estrategia de PR ni consentimiento de review de la elección de commits locales.
 
 ### L3 — Evidencia y siguiente paso
@@ -174,7 +174,7 @@ Verificador independiente sobre candidato final: `node --experimental-strip-type
 
 Commit SN7 `63e71bc8`; total observado antes de este cierre documental: 34 archivos, +2814/-11 frente a `a87192ee` (incluye propuesta preservada y bitácora ODD, no solo código). Forecast inicial subestimó pruebas de lifecycle y documentación; el desglose L4–L12 preserva coste real, sin recortar tests. SN5 excede heurística ~400 por matriz lifecycle acoplada; SN6 se dividió en panel y hookup/docs. Sin push ni PR.
 
-Review nativa no disponible: INSPECT devolvió `managed_assets_outdated`. Continuación emitida, NO ejecutada: `/home/egdev/proyectos/gentle-ai/gentle-ai sync --agent pi`. No se modificó entorno global ni se creó lineage. ASSESS final SN7: medium, writer large, self-verification suficiente; se hizo además verificación independiente. No equivale a cierre nativo aprobado. Manuales SN8, lanes SDK/Windows y reproducción real quedan pendientes. Engram mirror y proyección son responsabilidad del parent.
+Review nativa no disponible: INSPECT devolvió `managed_assets_outdated`. Continuación emitida, NO ejecutada: `gentle-ai sync --agent pi` (binario del clon local de gentle-ai). No se modificó entorno global ni se creó lineage. ASSESS final SN7: medium, writer large, self-verification suficiente; se hizo además verificación independiente. No equivale a cierre nativo aprobado. Manuales SN8, lanes SDK/Windows y reproducción real quedan pendientes. Engram mirror y proyección son responsabilidad del parent.
 
 ### L14 — SN-9: notificaciones de audio directas en la tarjeta
 
@@ -270,7 +270,7 @@ Verificador independiente READ ONLY, árbol/index inmutables antes/después: UNA
 
 Smoke real `sound-check` (`wK:p9`): `/reload` observado, `/gentle:customize` abierto tras esperar su título; Notifications muestra ocho controles con Success/Error/Attention distintos y Advanced plegado. `f` en Success abre el campo WAV dentro de la misma tarjeta; Esc cancela, audio permanece off y el parent no guarda archivo ni ejecuta preview. La nueva recarga del preview humano corregido en L21 queda diferida: al revisar la instancia, el usuario tiene otra pregunta abierta sobre formatos de audio/filas. No se envían Escape, respuesta ni reload para no interrumpirla. Aceptación humana/escucha y plataformas siguen SN-8, no declaradas verificadas.
 
-Review nativa no disponible: INSPECT fresco `managed_assets_outdated`; continuación exacta `/home/egdev/proyectos/gentle-ai/gentle-ai sync --agent pi` NO ejecutada (cambiaría assets globales). ASSESS final medium/writer large/runtime, outcome unavailable, risk-gated self-verification; no native closure ni aprobación inferida. Continuación de ASSESS sin reinterpretar: `gentle-ai review status --cwd=/home/egdev/proyectos/gentle-shell-sound-notifications --contract=gentle-ai.review-integration/v2 --next-transition=true`. Verificación independiente adicional ya registrada; no sustituye aprobación nativa.
+Review nativa no disponible: INSPECT fresco `managed_assets_outdated`; continuación exacta `gentle-ai sync --agent pi` (binario del clon local de gentle-ai) NO ejecutada (cambiaría assets globales). ASSESS final medium/writer large/runtime, outcome unavailable, risk-gated self-verification; no native closure ni aprobación inferida. Continuación de ASSESS sin reinterpretar: `gentle-ai review status --cwd=../gentle-shell-sound-notifications --contract=gentle-ai.review-integration/v2 --next-transition=true`. Verificación independiente adicional ya registrada; no sustituye aprobación nativa.
 
 ### L23 — Ajuste de usuario: quitar disponibilidad/restore y ampliar formatos de sonido
 
