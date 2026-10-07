@@ -74,21 +74,50 @@ const PROBE_SCRIPT = [
 	"}",
 ].join("\n");
 
-/** A fixed play script whose only dynamic value is a base64 string literal, decoded at runtime. */
+/**
+ * A fixed play script whose only dynamic value is a base64 string literal,
+ * decoded at runtime. The decoded path is never command text. The snapshot is
+ * read into a bounded byte buffer, the file handle is released before playback,
+ * and the bytes are played through a `MemoryStream`-backed `SoundPlayer`.
+ * Forcing the memory constructor is deliberate: the file-URI
+ * `SoundPlayer(string)` path reaches a WinMM `PlaySound(fileName)` branch that
+ * can report success without audible output, while the memory constructor drives
+ * the documented in-memory branch. Every failure prints the same schema-valid
+ * `played:false` line; no raw path byte enters the command.
+ */
 function playScript(encodedPath: string): string {
 	return [
 		"$ErrorActionPreference = 'Stop'",
+		"$file = $null",
+		"$memory = $null",
 		"$player = $null",
 		"try {",
 		`  $bytes = [Convert]::FromBase64String('${encodedPath}')`,
 		"  $path = [Text.Encoding]::UTF8.GetString($bytes)",
-		"  $player = New-Object System.Media.SoundPlayer $path",
+		"  $file = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)",
+		"  $count = $file.Length",
+		"  if ($count -lt 44 -or $count -gt 2097152) { throw 'snapshot size' }",
+		"  $raw = [byte[]]::new([int]$count)",
+		"  $read = 0",
+		"  while ($read -lt $count) {",
+		"    $step = $file.Read($raw, $read, $count - $read)",
+		"    if ($step -le 0) { throw 'snapshot short read' }",
+		"    $read += $step",
+		"  }",
+		"  if ($file.ReadByte() -ne -1) { throw 'snapshot grew' }",
+		"  $file.Close()",
+		"  $file = $null",
+		"  $memory = [IO.MemoryStream]::new($raw)",
+		"  $player = [System.Media.SoundPlayer]::new($memory)",
+		"  $player.Load()",
 		"  $player.PlaySync()",
 		`  [Console]::Out.WriteLine('{"schema":"${NATIVE_WINDOWS_SCHEMA}","ok":true,"played":true}')`,
 		"} catch {",
 		`  [Console]::Out.WriteLine('{"schema":"${NATIVE_WINDOWS_SCHEMA}","ok":false,"played":false}')`,
 		"} finally {",
 		"  if ($null -ne $player) { $player.Dispose() }",
+		"  if ($null -ne $memory) { $memory.Dispose() }",
+		"  if ($null -ne $file) { $file.Dispose() }",
 		"}",
 	].join("\n");
 }

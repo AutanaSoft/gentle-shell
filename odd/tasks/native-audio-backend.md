@@ -912,3 +912,119 @@ these fixes; **no source implementation until the parent's explicit follow-up**.
 - **Optional read-only evidence (no audio).** Real WSL `NativeWindowsPlayer.probe()` → available/caps `wav`, no PlaySync/audio, proving the fixed PowerShell interop/`-EncodedCommand`. A **previous** builtin .NET `SoundPlayer` experiment was manually heard (primitive, pre-integrated-adapter); old WSL Pulse **NO ×3**; new WSL route **not physically played**; macOS/native-Windows hosts unavailable, fakes prepared. Kept distinct, no confusion.
 - **MEDIUM interop-cancel residual (non-audio).** Own PowerShell fixed 8 s sleep, same exe/flags/env scrub; read-only own-PID `GetProcess` (own PID only) saw child ALIVE pre-kill; child SIGKILL in 3 tests; Node `close` 2–1951 ms then Windows own PID **DEAD** immediately/+1 s, all 3. No lingering process, no `taskkill`/global/user kills. Reduces uncertainty, does **not** prove `SoundPlayer` thread cancel on all WSL hosts; **no production change** and no universal audio-cancellation claim.
 - **N5 [x].** Functional verification is the current full run, **not** a historical fix. Optional manual listens (Node 22, native Windows, macOS, owned WSL new adapter) not blocking. Historical full-N5 **244** proven preexisting (1/3; **582** inconclusive) remains a flaker risk, **not fixed**; audio was not enabled by this work; user 5.58 s `[archivo de audio local anonimizado]` still rejected by the unchanged ≤5 s limit, no crop. macOS builtin `afplay` is platform-prepared only (no compiled CoreAudio). R8 claims no physical listen support but prepared without device evidence, as required.
+
+### L14 — Windows private-snapshot play: bounded bytes → memory `SoundPlayer` (bugfix)
+
+- **Symptom (parent-relayed, not re-observed by the writer).** One user heard
+  test 1 (original file) but not test 2 (private copy), repeated through the same
+  `NativeWindowsPlayer`, script and environment with byte-identical WAV data.
+  Both tests were executed by the parent agent in the same session, not by two
+  users. The precise WinMM cause is **unproven**; the filename/private-snapshot
+  playback branch is implicated. No additional sound ran during this fix.
+- **Scope.** Only `lib/notification-audio-windows.ts`,
+  `tests/notification-audio-windows.test.ts` and this entry. The private snapshot,
+  its ownership/cleanup, the play gate, the child env, the schema/IPC, routing, the
+  UI, the other backends and the `<=5 s`/`2 MiB` limits are unchanged; the user
+  original is never played directly and no permission is modified.
+- **Fix.** The fixed play script keeps `FromBase64String` as its **only** dynamic
+  value (path still opaque), but now reads the snapshot into bounded bytes and plays
+  them through a `MemoryStream`-backed `SoundPlayer`, forcing the documented memory
+  branch instead of the file-URI one. Script ~31 source lines: pre-init
+  `$file`/`$memory`/`$player`; `[IO.File]::Open(...,Read,Read)`; `$file.Length`
+  guarded `44..2097152` **before** `[byte[]]::new([int]$count)`; an exact-length read
+  loop that throws on a zero/short read and a `ReadByte() -ne -1` growth guard;
+  `$file.Close()` **before** playback; `[IO.MemoryStream]::new($raw)` →
+  `[System.Media.SoundPlayer]::new($memory)` → explicit `.Load()` then `.PlaySync()`;
+  success printed only after `PlaySync`; every error prints the same schema-valid
+  `played:false` line; `finally` disposes player, memory and (unclosed) file. No
+  `.ps1`, `Add-Type`, reflection, interop compile or new binary.
+- **TDD (strict).** RED **before** production: the new decoded-script test failed on
+  the pristine script (`New-Object System.Media.SoundPlayer $path`) →
+  `tests/notification-audio-windows.test.ts` **28 tests, 27 pass / 1 fail**, exit 1.
+  GREEN after the source → **28/28, exit 0**. TRIANGULATE: the same test drives a
+  hostile path (`'; Start-Process; whoami`) and asserts one opaque base64 literal,
+  `[byte[]]::new` after the size guard, `$file.Close()` before `.Load()`/`PlaySync`,
+  no `New-Object`, and player/memory/file disposal. Existing 27 source-shape cases
+  were kept valid (the pre-playback release uses `.Close()`, so the first
+  `.Dispose(` stays inside `finally`).
+- **Validation (direct Node; no `pnpm`, no full suite, no physical play).** windows
+  **28/28**; `tests/*notification*.test.ts` **225/225** (was 224);
+  `package-manifest` **58/58**; `check-types` **186, no regressions**; runtime **8**;
+  `verify-package-files` **180 files / 69 pins**; `git diff --check` clean. No real
+  PowerShell probe/play, snapshot read or `PlaySync` ran from the tests (all IO
+  injected); no new full-suite claim.
+- **Physical status: NOT PROVEN for this patch.** The earlier file-based
+  integrated route was played and the user reported no sound from the private
+  copy. The new memory branch has not been played; it awaits a fresh authorized
+  listen. The L13 4993-test full run covered the preceding candidate, not this
+  changed script; current checks are the focused validations above.
+- **Cost (honest).** source **+31/-2** (`lib/notification-audio-windows.ts`), tests
+  **+39** (`tests/notification-audio-windows.test.ts`), plus this entry — inside the
+  source/test forecast was met; the ODD entry exceeded its ~35-line forecast.
+  No security golf.
+- **Independent non-audio execution.** A verifier captured the actual encoded
+  script and scrubbed environment via a fake child, replaced exactly one
+  `PlaySync()` line with `MEMORY_LOAD_COMPLETED`, asserted that no playback call
+  remained, then ran that variant on real Windows PowerShell. A private
+  0700-directory/0600-file WAV (13272 bytes) opened, loaded through MemoryStream
+  and disposed successfully. A 7-byte input failed the size guard, emitted
+  `played:false` and never reached the marker. These checks validate real syntax,
+  overloads and loading, not audible output. The verifier also reproduced
+  27-pass/1-fail RED on an isolated old-module copy and 28/28 GREEN on this patch.
+- **Local patch commit.** `c398aadd`; no global settings, installs or restarts.
+
+### L15 — Isolated modal preview run by the parent (GUI observations parent-attributed)
+- **Prior physical case (unchanged, narrow).** The user's "¡se escuchó!" confirms
+  the **WSL Windows private-snapshot `MemoryStream` `SoundPlayer`** route once
+  (`c398aadd`, L14); one Success case only — no Error/Attention, plain WSLg
+  Pulse, macOS/Windows-host or Node 22 claim. The writer heard/ran nothing.
+- **Parent ran the trusted MAIN with no role-guard override:** new Herdr pane
+  `wK:pA` (`audio-modal-check`), isolated `mktemp -d /tmp/gentle-audio-modal.*`
+  config/agent dirs, `GENTLE_PI_CONFIG_HOME`/`GENTLE_PI_AGENT_HOME`,
+  `pi --no-extensions --session $TMP/agent/modal-session.jsonl -e
+  <abs>/extensions/gentle-notifications.ts -e <abs>/extensions/gentle-shell.ts`.
+  The empty temp config uses real defaults (no speculative schema written).
+- **Observed by the parent (not the writer).** `/gentle:customize` shows six basic
+  rows: Off / Unmuted / Success `success` / Error `error` / Attention `attention`
+  / Advanced folded; Enter on Mute observed muted, Enter restored unmuted,
+  notifications **OFF throughout**; footers `applies 2/3/1 events`, `f assign / p test`.
+- **Attempted previews via pasted `p`, once each (3 total) — NOT effective
+  previews:** Success 3/6, Error 4/6, Attention 5/6, but Herdr send-text emits
+  bracketed paste and the modal's `matchesKey('p')` never consumed it
+  (later-discovered testing-method defect). Audibility not established.
+- **Scope limits.** Mute was UI-state only — no physical-mute or auto-event
+  verification; assignment cycling not independently tested.
+- **Global config unchanged:** `~/.pi/gentle-ai/notifications.json` sha256
+  `fc7d458ae0665e114a10c4314a21a389c56b0414f2e21bac677464247ae82fec`; `wK:p9`
+  untouched. No further tests, sounds, panes, source edits or commits.
+
+### L16 — Direct-route listen confirmed; corrected modal re-run (parent)
+- **User "si a los 3" (parent-relayed).** Confirms a physical DIRECT default
+  `NotificationPlayer` → `NativeWindowsPlayer` private snapshot → `MemoryStream`
+  `SoundPlayer` once each for Success/Error/Attention, `starts 1`/completed;
+  authorization separate. Narrow WSL only, **not** modal proof; widens the L15
+  Success-only prior case.
+- **Old `wK:pA`** had closed by the next read; no actor inferred.
+- **User "vamos" authorized the real modal test.** Parent created a NEW trusted
+  MAIN `wK:pB` (`wK:t8` Audio check) with a fresh isolated temp
+  `/tmp/gentle-audio-modal.UWbfTZ/config`+`agent`, `GENTLE_PI_CONFIG_HOME`/
+  `GENTLE_PI_AGENT_HOME` and a temporary `--no-extensions` session plus explicit
+  `-e gentle-notifications` + `gentle-shell` (same pattern as L15, not re-listed).
+  Roles not overridden; child silent. Modal: six basic, default Off, unmuted,
+  3 presets, Advanced folded.
+- **Actual `p` (send-keys) once each, 3 s wait each:** Success 3/6, Error 4/6,
+  Attention 5/6. Sampled screens showed no busy/unavailable/error text, but there
+  is no success receipt/IPC capture and **physical audibility of this new modal
+  is pending user confirmation**; no other tones allowed.
+- **Explicit preview bypasses enabled/mute by design;** mute only affects
+  automatic events and the prior UI toggle only. No extra UI edits, global prefs
+  or source changes; global `notifications.json` sha256 unchanged (`fc7d…82fec`,
+  same as L15). Observations are parent relayed; the writer heard/ran nothing.
+
+### L17 — Modal preview audibility confirmed by user (parent-relayed)
+- **User "si" (parent-relayed)** to "¿Se han oído Success→Error→Attention esta vez?" AFTER the real MAIN modal
+  send-keys `p` test in `wK:pB` (L16); supersedes **only** L16's pending physical-audibility note for those
+  three previews, L16 otherwise intact. Narrow WSL / current equipment / 3 builtins: real modal PASS via
+  private snapshot `MemoryStream` `SoundPlayer`; automatic notifications stayed **OFF** and global prefs
+  unchanged in that test. No new sounds authorized. No native Windows host, macOS, Node 22, independent
+  assignment/file/Advanced, or manual automatic mute claim. Writer heard/ran nothing.

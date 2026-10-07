@@ -345,6 +345,45 @@ test("the fixed play script disposes the SoundPlayer in a finally block", async 
 	await playing;
 });
 
+test("the fixed play script plays bounded snapshot bytes from memory, never the file path", async () => {
+	const hostile = "C:\\Temp\\a'; Start-Process calc; $x=`whoami`; #.wav";
+	const { player, spawned, children } = recorder();
+	const playing = player.play(hostile);
+	const script = decodeCommand(spawned[0]!.args[4]!);
+	// the snapshot is opened read-only/shared-read, never through a file-URI SoundPlayer ctor
+	assert.match(script, /\[IO\.File\]::Open\(\$path, \[IO\.FileMode\]::Open, \[IO\.FileAccess\]::Read, \[IO\.FileShare\]::Read\)/);
+	assert.match(script, /\$count = \$file\.Length/);
+	// the 2 MiB bound must be checked before any byte buffer is allocated or read
+	const sizeIndex = script.indexOf("2097152");
+	const allocIndex = script.indexOf("[byte[]]::new(");
+	const readIndex = script.indexOf("$file.Read(");
+	assert.ok(sizeIndex !== -1 && allocIndex !== -1 && readIndex !== -1, "size guard, allocation and read must exist");
+	assert.ok(sizeIndex < allocIndex && sizeIndex < readIndex, "the size bound must precede allocation and read");
+	// a full-length read loop rejects a short read and detects a file that grew
+	assert.match(script, /while \(\$read -lt \$count\)/);
+	assert.match(script, /\$file\.ReadByte\(\) -ne -1/);
+	// the SoundPlayer is built from the MemoryStream, never the path/string overload
+	assert.match(script, /\[IO\.MemoryStream\]::new\(/);
+	assert.match(script, /\[System\.Media\.SoundPlayer\]::new\(\$memory\)/);
+	assert.ok(!script.includes("New-Object"), "the SoundPlayer must not use the ambiguous file-path New-Object form");
+	assert.ok(!/SoundPlayer[ (]+\$path/.test(script), "the path must never reach the SoundPlayer constructor");
+	// the file lock is released before playback and every resource is disposed
+	const closeIndex = script.indexOf("$file.Close()");
+	const loadIndex = script.indexOf("$player.Load()");
+	const playIndex = script.indexOf("$player.PlaySync()");
+	assert.ok(closeIndex !== -1 && closeIndex < playIndex, "the file must close before PlaySync");
+	assert.ok(loadIndex !== -1 && loadIndex < playIndex, "the memory snapshot must be validated with Load before PlaySync");
+	assert.match(script, /\$memory\.Dispose\(\)/);
+	assert.match(script, /\$file\.Dispose\(\)/);
+	// hostile bytes still only reach PowerShell as one opaque base64 literal
+	const embedded = script.match(/FromBase64String\('([^']*)'\)/)?.[1];
+	assert.equal(Buffer.from(embedded!, "base64").toString("utf8"), hostile);
+	assert.ok(!script.includes("whoami") && !script.includes("Start-Process") && !script.includes(hostile));
+	children[0]!.stdout.emit("data", playOk());
+	children[0]!.emit("close", 0);
+	await playing;
+});
+
 test("wsl interop target is lazy, supports via linux env, and selects the fixed mounted host", async () => {
 	const { player, spawned, children, executableChecks } = wslRecorder();
 	assert.deepEqual(player.getNativeFormats(), []);
