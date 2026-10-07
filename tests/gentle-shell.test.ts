@@ -2833,29 +2833,49 @@ async function customizeAction(ui: FakeUi, label: string): Promise<void> {
 	assert.ok(ui.notices.length > notices, `action did not finish: ${label}`);
 }
 
-test("customize Notifications opens dedicated panel after overlay closes, no visual writer or new command", async (t) => {
+test("customize Notifications applies audio controls directly in the same overlay, without nested menus or visual writes", async (t) => {
 	const home = scopedDoubleEscCancelConfigHome(t);
 	const { pi, commands } = fakePi();
 	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home }); // Shell loads BEFORE owner.
 	const child = process.env.GENTLE_PI_AGENTS_CHILD;
 	process.env.GENTLE_PI_AGENTS_CHILD = "0";
 	t.after(() => { if (child === undefined) delete process.env.GENTLE_PI_AGENTS_CHILD; else process.env.GENTLE_PI_AGENTS_CHILD = child; });
-	const menus: string[] = [];
-	const { ctx, ui, overlayReady } = fakeContext({ select: async title => { menus.push(title); return undefined; } });
-	const owner = claimNotificationOwner(() => {}, { env: {}, read: () => ({ settings: structuredClone(DEFAULT_NOTIFICATION_SETTINGS),
-		source: "default", globalFile: join(home, "notifications.json"), malformed: false, readError: false }) });
+	let nested = 0; let writes = 0;
+	const { ctx, ui, overlayReady } = fakeContext({ select: async () => { nested++; return undefined; } });
+	const uiSpies = ctx.ui as unknown as Record<string, unknown>;
+	uiSpies.input = async () => { nested++; return undefined; };
+	uiSpies.confirm = async () => { nested++; return false; };
+	const owner = claimNotificationOwner(() => {}, { env: {},
+		read: () => ({ settings: structuredClone(DEFAULT_NOTIFICATION_SETTINGS), source: "default", globalFile: join(home, "notifications.json"), malformed: false, readError: false }),
+		write: () => { writes++; return join(home, "notifications.json"); } });
 	owner.attach(ctx); t.after(() => owner.retire());
-	const pending = commands.get("gentle:customize")!.handler("", ctx); await overlayReady;
+	let settled = false;
+	const pending = commands.get("gentle:customize")!.handler("", ctx).then(() => { settled = true; });
+	await overlayReady;
 	try {
-		assert.ok(findCustomizeRow(ui, "Notification settings"));
-		assert.match(ui.overlayView!.render(90).join("\n"), /Notifications/);
-		assert.deepEqual(menus, []);
-		ui.overlayView!.handleInput("\r"); await new Promise<void>(resolve => setImmediate(resolve));
-		assert.match(menus[0] ?? "", /^Notifications/);
+		assert.ok(findCustomizeRow(ui, "Audio notifications: off"), "global switch is a direct row");
+		assert.ok(findCustomizeRow(ui, "Audio: unmuted"), "mute is a direct row");
+		assert.ok(findCustomizeRow(ui, "Audio availability: check"), "availability is a direct row");
+		assert.match(ui.overlayView!.render(90).join("\n"), /Audio notifications/);
+		assert.equal(settled, false, "the overlay never closes to open a panel");
+		const notices = ui.notices.length;
+		assert.ok(findCustomizeRow(ui, "agent.failed:"));
+		ui.overlayView!.handleInput("\r");
+		for (let attempt = 0; attempt < 100 && ui.notices.length === notices; attempt++) await new Promise<void>((resolve) => setTimeout(resolve, 5));
+		assert.ok(ui.notices.length > notices, "direct Enter action finished");
+		assert.equal(writes, 1);
+		assert.match(ui.overlayView!.render(90).join("\n"), /agent\.failed: builtin:attention/);
+		assert.equal(nested, 0, "no ctx.ui.select/input/confirm anywhere in the flow");
+		assert.equal(settled, false, "the notification action never closed the customize overlay");
 		assert.equal(existsSync(join(home, "visual.json")), false);
-		assert.equal(existsSync(join(home, "notifications.json")), false);
-		assert.equal([...commands.keys()].some(name => /notification/.test(name)), false);
+		assert.equal(existsSync(join(home, "notifications.json")), false, "stubbed write left no file");
 	} finally { ui.closeOverlay?.(); await pending; }
+});
+
+test("production customize never wires the legacy notification panel", () => {
+	const source = readFileSync(new URL("../extensions/gentle-shell.ts", import.meta.url), "utf8");
+	assert.doesNotMatch(source, /openNotificationPanel|notification-ui\.ts/);
+	assert.match(source, /buildNotificationRows/);
 });
 
 test("customize Editor rows preview global preference without applying until Enter or Space", async (t) => {
@@ -3171,7 +3191,7 @@ test("customize Vim reports a persistence error without changing the live prompt
 	chmodSync(home, 0o500);
 	try {
 		await customizeAction(ui, "Vim: enable");
-		assert.match(ui.notices.at(-1)!, /Visual customization:/);
+		assert.match(ui.notices.at(-1)!, /Customization:/);
 		assert.equal(editor.effectiveVimPolicy, "off");
 		assert.equal(resolveVimPolicy({ gentlePiConfigHome: home }).policy, "off");
 	} finally {

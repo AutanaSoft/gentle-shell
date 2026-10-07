@@ -190,9 +190,9 @@ Extension commands are only useful if you can find them. `alt+k` opens a curated
 
 ---
 
-### Sound notifications — opt-in
+### Audio notifications — opt-in
 
-Open `/gentle:customize` → **Notifications** → **Notification settings** to enable audio, assign builtin/local WAV sounds by event, preview, or mute this process. Audio starts off; RPC and children stay silent. Linux/macOS adapters await manual listening verification; Windows playback is unavailable. [Usage, limits and verification →](docs/sound-notifications.md)
+Open `/gentle:customize` → **Notifications** (the card header reads **Audio notifications**) and configure audio directly in the same two-column card, with no nested menu. Enter toggles the master switch or cycles an event through silence/success/error/attention, `f` assigns a literal absolute local WAV to the highlighted event, `p` previews its assigned sound, and the restore row returns the recommended event mappings while preserving the on/off switch. Audio starts off; RPC and children stay silent. Linux/macOS adapters await manual listening verification; Windows playback is unavailable. [Usage, limits and verification →](docs/sound-notifications.md)
 
 ### Also in the box
 

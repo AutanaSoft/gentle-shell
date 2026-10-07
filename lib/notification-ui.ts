@@ -2,7 +2,11 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { BUILTIN_NOTIFICATION_IDS, isNotificationSound, type NotificationEvent, type NotificationSettings, type NotificationSound } from "./notification-policy.ts";
 import { getNotificationService, notificationContextAllowed, type NotificationService } from "./notification-service.ts";
 
-/** Native dialogs, outside the transcript. No owner creation, commands or visual-store writes. */
+/**
+ * Native dialogs, outside the transcript. No owner creation, commands or visual-store writes.
+ * @deprecated Superseded by the direct rows in `lib/notification-customize.ts`; kept as an
+ * unused test-covered fallback, not wired into `/gentle:customize` anymore.
+ */
 export async function openNotificationPanel(ctx: ExtensionContext): Promise<void> {
 	if (!ctx.hasUI || !notificationContextAllowed(ctx)) return;
 	const fresh = (expected: NotificationService) => {

@@ -153,9 +153,9 @@ otherwise `herdr` from `PATH`, without a shell.
 | **Verified native runtime**    | The current source checkout provisions the exact package-local Gentle AI v4.0.0 runtime: signed, SHA-256-pinned release archives on Darwin/Linux and a Go SumDB-verified source build on Windows x64/arm64. It validates package-local integrity and rejects PATH, global, sibling, symlink, and mode fallbacks. |
 | **Runtime safety**             | Blocks destructive shell commands, asks for confirmation for sensitive operations, and blocks direct read/write/edit access to sensitive paths. |
 
-## Sound notifications
+## Audio notifications
 
-Audio is off by default. `/gentle:customize` → **Notifications** → **Notification settings** opens a dedicated native-dialog panel, separate from visual settings and profiles, with global enable/disable, origin/event mapping, builtin or validated absolute local WAV, explicit preview, process mute/resume, lazy availability probe and preset restore. Preview does not enable or save automatic audio; restore preserves enabled. Invalid/unreadable configuration requires fresh explicit replacement confirmation. RPC (including interactive hosts) and children remain silent. Linux/macOS listening and manual lifecycle verification are pending; Windows audio is unavailable. See [sound notifications](sound-notifications.md) for the complete schema, defaults, file security, retention costs and manual matrix.
+Audio is off by default. `/gentle:customize` → **Notifications** shows audio controls directly in the same customization modal, separate from visual settings and profiles: global enable/disable, per-event mapping, builtin or validated absolute local WAV, explicit preview, process mute/resume, lazy availability probe and preset restore. Enter cycles an event's sound; `f` edits its local WAV path inline and `p` previews it. Preview does not enable or save automatic audio; restore preserves enabled. Invalid/unreadable configuration requires fresh explicit replacement confirmation. RPC (including interactive hosts) and children remain silent. Linux/macOS listening and manual lifecycle verification are pending; Windows audio is unavailable. See [sound notifications](sound-notifications.md) for the complete schema, defaults, file security, retention costs and manual matrix.
 
 ## Native pointer regions
 
