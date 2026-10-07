@@ -178,3 +178,17 @@ test("a timeout that fires after the command already exited reports nothing; the
 		assert.deepEqual(h.notices, [{ job, kind: "events", batch: { lines: ["last line"], omitted: 0 } }], "its pending line still arrives");
 	} finally { h.controller.cancelAll(); h.cleanup(); }
 });
+
+test("stopped notices name the timeout or flood limit and where the full output is", async () => {
+	const { monitorStoppedText } = await import("../lib/background-jobs-tools.ts");
+	const h = monitorHarness();
+	try {
+		const job = h.controller.start({ command: "tail -f log", cwd: "/repo", ownerSessionId: "s1", label: "log", timeoutSeconds: 30 });
+		h.advance(30_000);
+		const timeout = monitorStoppedText(job, "timeout");
+		assert.match(timeout, /reached its 30s timeout after 0 events/);
+		assert.ok(timeout.includes(`Full output: ${job.outputPath}`));
+		const flood = monitorStoppedText(job, "flood");
+		assert.ok(flood.includes(`Full output: ${job.outputPath}`));
+	} finally { h.controller.cancelAll(); h.cleanup(); }
+});
