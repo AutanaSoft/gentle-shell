@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { isNotificationSound, type NotificationSound } from "./notification-policy.ts";
 import type { PlaybackPermit } from "./notification-scheduler.ts";
 import { NativePulseNotPermittedError, NativePulsePlayer } from "./notification-audio-native.ts";
+import { NativeWindowsPlayer } from "./notification-audio-windows.ts";
 
 const MAX_BYTES = 2 * 1024 * 1024;
 const PLAYBACK_TIMEOUT_MS = 6000;
@@ -132,6 +133,22 @@ function canonicalFormats(formats: readonly NotificationAudioFormat[]): readonly
 	return CANONICAL_FORMATS.filter(format => formats.includes(format));
 }
 
+/**
+ * Pure, IO-free default backend selection. Native Windows (`win32`) and the
+ * derived WSL Windows-interop target (`linux` plus a valid interop env) take the
+ * bounded Windows adapter; every other platform stays on the local Pulse bridge,
+ * whose `supportsTarget()` is false on macOS so the legacy `/usr/bin/afplay` CLI
+ * still owns playback. Construction performs no probe, access, spawn or read; a
+ * caller may still inject `options.native` to override this choice entirely.
+ */
+export function createDefaultNotificationBackend(
+	platform: string = process.platform,
+	env: NodeJS.ProcessEnv = process.env,
+): NativeAudioBackend {
+	const windows = new NativeWindowsPlayer({ platform, env });
+	return windows.supportsTarget() ? windows : new NativePulsePlayer({ platform, env });
+}
+
 /** Typed seam over the owned native bridge (lazy: no IO until an explicit probe/play). */
 export interface NativeAudioBackend {
 	supportsTarget(): boolean;
@@ -184,7 +201,7 @@ export class NotificationPlayer {
 	constructor(options: AudioOptions = {}) {
 		this.options = options;
 		this.io = options.io ?? defaultIO;
-		this.native = options.native ?? new NativePulsePlayer({ platform: options.platform });
+		this.native = options.native ?? createDefaultNotificationBackend(options.platform);
 	}
 	async availability(): Promise<"available" | "unavailable"> {
 		const discovered = await this.discover();
@@ -201,7 +218,7 @@ export class NotificationPlayer {
 		return this.discovery ??= (async () => {
 			const platform = this.options.platform ?? process.platform;
 			let native: readonly NotificationAudioFormat[] = [];
-			if (platform === "linux" && this.native.supportsTarget()) {
+			if (this.native.supportsTarget()) {
 				try { const probed = await this.native.probe(); if (probed.available) native = canonicalFormats(probed.formats); }
 				catch { native = []; }
 			}
@@ -227,7 +244,8 @@ export class NotificationPlayer {
 		if (signal.aborted) return;
 		// No usable backend: preserve the old behavior of no read, snapshot or spawn.
 		if (discovered.native.length === 0 && !discovered.system) return;
-		if (!isNotificationSound(sound, "posix")) throw new TypeError("Invalid notification sound");
+		const flavor = (this.options.platform ?? process.platform) === "win32" ? "win32" : "posix";
+		if (!isNotificationSound(sound, flavor)) throw new TypeError("Invalid notification sound");
 		const source = sound.startsWith("file:") ? sound.slice(5)
 			: join(this.options.builtinRoot ?? fileURLToPath(new URL("../assets/sounds/", import.meta.url)), `${sound.slice(8)}.wav`);
 		const { bytes, format } = await this.readSource(source);

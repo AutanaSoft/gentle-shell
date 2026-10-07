@@ -7,8 +7,11 @@
  * environment. The snapshot path is never interpolated into the command: it is
  * base64-encoded and decoded inside the script, so no snapshot byte can become
  * command text. Native Windows and the derived WSL Windows-interop target only;
- * plain macOS/Linux never spawn. The adapter is not wired into routing yet (P3),
- * so there is no physical-playback claim here.
+ * plain macOS/Linux never spawn. It is now the default native route: the pure,
+ * IO-free `createDefaultNotificationBackend` selects it for `win32` and for a
+ * `linux` process with a valid WSL interop env (P3), and a validated WSL
+ * snapshot is mapped to the derived `\\wsl.localhost\<distro>\...` UNC. No
+ * physical playback is claimed here.
  *
  * P2 (implemented): `supportsTarget()` also accepts the WSL Windows-interop
  * target (Linux platform + a valid `WSL_DISTRO_NAME` + `/run/WSL/*_interop`).
