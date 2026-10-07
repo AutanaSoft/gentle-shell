@@ -108,6 +108,22 @@ test("a multibyte character split across output chunks reaches the tail intact",
 	} finally { cleanup(); }
 });
 
+test("onLine receives each complete output line across chunks, and the last partial line at exit", async () => {
+	const { fake, registry, cleanup } = setup();
+	try {
+		const lines: string[] = [];
+		const job = registry.start({ command: "watch", cwd: "/repo", ownerSessionId: "s1", kind: "monitor", onLine: (line) => lines.push(line) });
+		assert.equal(job.kind, "monitor");
+		fake.runs[0]!.onData(Buffer.from("check lint: pa"));
+		fake.runs[0]!.onData(Buffer.from("ss\r\ncheck test: fail\nlast"));
+		assert.deepEqual(lines, ["check lint: pass", "check test: fail"]);
+		fake.runs[0]!.resolve(0);
+		await settle();
+		assert.deepEqual(lines, ["check lint: pass", "check test: fail", "last"]);
+		assert.equal(registry.start({ command: "x", cwd: "/repo", ownerSessionId: "s1" }).kind, "command");
+	} finally { cleanup(); }
+});
+
 test("stopAll resolves only after every job's log file is closed", async () => {
 	const { registry, cleanup } = setup();
 	try {

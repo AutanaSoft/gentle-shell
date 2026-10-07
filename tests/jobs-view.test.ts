@@ -9,6 +9,7 @@ const theme = { fg: (_role: string, text: string) => text };
 
 function job(overrides: Partial<JobRecord> & Pick<JobRecord, "id">): JobRecord {
 	return {
+		kind: "command",
 		label: overrides.id,
 		command: `run ${overrides.id}`,
 		cwd: "/repo",

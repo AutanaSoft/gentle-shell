@@ -6,7 +6,10 @@
 // CI check as it finishes). Lines arriving close together share one notice,
 // each notice is bounded, and a stream that floods is stopped instead of
 // burning the agent's turns. This module owns no timers or processes: the
-// caller flushes MONITOR_BATCH_MS after a line opens a batch.
+// caller flushes MONITOR_BATCH_MS after a line opens a batch. The controller
+// below wires it to a job registry with an injected scheduler.
+
+import type { JobRecord, JobRegistry, JobStartRequest } from "./background-jobs.ts";
 
 /** Lines arriving within this window share one notice. */
 export const MONITOR_BATCH_MS = 200;
@@ -64,3 +67,85 @@ export function mergeMonitorBatches(first: MonitorBatch, second: MonitorBatch): 
 		omitted: first.omitted + second.omitted + Math.max(0, second.lines.length - room),
 	};
 }
+
+export type MonitorStopReason = "timeout" | "flood";
+
+export type MonitorNotice =
+	| { job: JobRecord; kind: "events"; batch: MonitorBatch }
+	| { job: JobRecord; kind: "stopped"; reason: MonitorStopReason };
+
+export interface MonitorControllerDeps {
+	registry: JobRegistry;
+	schedule(fn: () => void, ms: number): () => void;
+	now(): number;
+	/** Hands one notice to the parent delivery router. */
+	deliver(notice: MonitorNotice): void;
+}
+
+export interface MonitorStartRequest extends Omit<JobStartRequest, "kind" | "onLine"> {
+	/** Mandatory: the monitor is stopped after this many seconds (1-1800). */
+	timeoutSeconds: number;
+}
+
+export function createMonitorController(deps: MonitorControllerDeps) {
+	const active = new Map<string, { batcher: ReturnType<typeof createEventBatcher>; cancelFlush?: () => void; cancelTimeout: () => void }>();
+
+	const flush = (job: JobRecord) => {
+		const state = active.get(job.id);
+		if (!state) return;
+		state.cancelFlush?.();
+		state.cancelFlush = undefined;
+		const batch = state.batcher.flush();
+		if (batch) deps.deliver({ job, kind: "events", batch });
+	};
+	const cancel = (id: string) => {
+		const state = active.get(id);
+		if (!state) return;
+		state.cancelFlush?.();
+		state.cancelTimeout();
+		active.delete(id);
+	};
+	const stopFor = (job: JobRecord, reason: MonitorStopReason) => {
+		flush(job);
+		cancel(job.id);
+		deps.registry.stop(job.id);
+		deps.deliver({ job, kind: "stopped", reason });
+	};
+
+	return {
+		start(request: MonitorStartRequest): JobRecord {
+			const { timeoutSeconds, ...rest } = request;
+			if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > MONITOR_MAX_TIMEOUT_SECONDS) {
+				throw new Error(`timeout_seconds must be a whole number from 1 to ${MONITOR_MAX_TIMEOUT_SECONDS}.`);
+			}
+			const batcher = createEventBatcher();
+			let job: JobRecord | undefined;
+			const onLine = (line: string) => {
+				const state = job && active.get(job.id);
+				// A stopped or finished monitor reports nothing more.
+				if (!job || !state || job.status !== "running") return;
+				const { opensBatch, flood } = batcher.pushLine(line, deps.now());
+				job.events = batcher.total();
+				if (flood) return stopFor(job, "flood");
+				if (opensBatch) state.cancelFlush = deps.schedule(() => job && flush(job), MONITOR_BATCH_MS);
+			};
+			job = deps.registry.start({ ...rest, kind: "monitor", onLine });
+			job.events = 0;
+			const started = job;
+			active.set(started.id, { batcher, cancelTimeout: deps.schedule(() => stopFor(started, "timeout"), timeoutSeconds * 1000) });
+			return started;
+		},
+		/** The job ended on its own: deliver its pending lines before the exit notice. */
+		finish(job: JobRecord) {
+			flush(job);
+			cancel(job.id);
+		},
+		/** Stopped by job_stop or a human: drop its timers and pending lines. */
+		cancel,
+		cancelAll() {
+			for (const id of [...active.keys()]) cancel(id);
+		},
+	};
+}
+
+export type MonitorController = ReturnType<typeof createMonitorController>;

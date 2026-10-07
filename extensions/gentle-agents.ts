@@ -16,7 +16,8 @@ import { join, resolve, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createLocalBashOperations, keyHint, SettingsManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createJobRegistry, type JobExecOperations, type JobRecord } from "../lib/background-jobs.ts";
-import { JOB_GLYPH, JOB_NOTICE_TYPE, jobNoticeText, registerBackgroundJobTools } from "../lib/background-jobs-tools.ts";
+import { JOB_GLYPH, JOB_NOTICE_TYPE, jobDetails, jobNoticeText, monitorEventsText, monitorStoppedText, registerBackgroundJobTools } from "../lib/background-jobs-tools.ts";
+import { createMonitorController, mergeMonitorBatches, type MonitorNotice } from "../lib/background-monitor.ts";
 import { JobsView } from "../lib/jobs-view.ts";
 import { Text, type TUI } from "@earendil-works/pi-tui";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
@@ -716,7 +717,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// conversation.
 	const completions = createCompletionQueue<TaskRecord>();
 	const messages = createAgentMessageQueue();
-	const jobNotices: JobRecord[] = [];
+	// A job's exit, or a monitor's line events and harness stop, waiting for
+	// the parent delivery router.
+	type JobNotice = { job: JobRecord; kind: "exit" } | MonitorNotice;
+	const jobNotices: JobNotice[] = [];
 	let jobOutputDir: string | undefined;
 	const jobs = createJobRegistry({
 		outputDir: deps.jobOutputDir ?? (() => (jobOutputDir ??= mkdtempSync(join(os.tmpdir(), "gentle-jobs-")))),
@@ -726,6 +730,12 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			return { operations: createLocalBashOperations({ shellPath: settings.getShellPath() }), commandPrefix: settings.getShellCommandPrefix() };
 		}),
 		onSettled: (job) => settleJob(job),
+	});
+	const monitors = createMonitorController({
+		registry: jobs,
+		schedule: (fn, ms) => deps.schedule(fn, ms),
+		now: deps.now,
+		deliver: (notice) => queueJobNotice(notice),
 	});
 	let activeAgentRuns = 0;
 	// ExtensionAPI has no idle probe; ctx.isIdle() is the only one. It is live
@@ -1004,13 +1014,17 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	const flushJobNotices = () => {
 		const route = deliveryRoute(false);
 		if (!route) return;
-		const failed: JobRecord[] = [];
-		for (const job of jobNotices.splice(0)) {
+		const failed: JobNotice[] = [];
+		for (const notice of jobNotices.splice(0)) {
+			const { job } = notice;
 			if (activeSessionId() !== job.ownerSessionId) continue;
+			const content = notice.kind === "events" ? monitorEventsText(job, notice.batch)
+				: notice.kind === "stopped" ? monitorStoppedText(job, notice.reason) : jobNoticeText(job);
+			const event = notice.kind === "events" ? "events" : notice.kind === "stopped" ? notice.reason : undefined;
 			try {
-				sendToParent({ customType: JOB_NOTICE_TYPE, content: jobNoticeText(job), display: true, details: { gentleJobs: { jobId: job.id, label: job.label, status: job.status, exitCode: job.exitCode ?? null, outputPath: job.outputPath } } }, route);
+				sendToParent({ customType: JOB_NOTICE_TYPE, content, display: true, details: jobDetails(job, event) }, route);
 			} catch {
-				failed.push(job);
+				failed.push(notice);
 			}
 		}
 		if (failed.length === 0) return;
@@ -1061,11 +1075,22 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 
 	// A job exit settles like a completion below: flushed at once for an idle
 	// parent, at the next turn boundary for a busy one.
-	const settleJob = (job: JobRecord) => {
-		jobNotices.push(job);
+	// Line events still waiting for a busy parent coalesce per monitor.
+	const queueJobNotice = (notice: JobNotice) => {
+		const last = jobNotices.at(-1);
+		if (notice.kind === "events" && last?.kind === "events" && last.job === notice.job) {
+			jobNotices[jobNotices.length - 1] = { ...last, batch: mergeMonitorBatches(last.batch, notice.batch) };
+		} else {
+			jobNotices.push(notice);
+		}
 		refreshJobStatus();
 		requestRender();
 		if (activeAgentRuns === 0) flushAll();
+	};
+	const settleJob = (job: JobRecord) => {
+		// A monitor's pending lines are delivered before its end.
+		if (job.kind === "monitor") monitors.finish(job);
+		queueJobNotice({ job, kind: "exit" });
 	};
 
 	// A completion settles into our queue. An idle parent flushes right away so
@@ -1215,7 +1240,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		},
 	});
 
-	registerBackgroundJobTools(pi, { registry: jobs, sessionId: (ctx) => ctx.sessionManager.getSessionId() ?? "", now: deps.now, onChange: () => { refreshJobStatus(); requestRender(); } });
+	registerBackgroundJobTools(pi, { registry: jobs, monitors, sessionId: (ctx) => ctx.sessionManager.getSessionId() ?? "", now: deps.now, onChange: () => { refreshJobStatus(); requestRender(); } });
 
 	pi.registerMessageRenderer(AGENTS_MESSAGE_TYPE, (message, options, theme) => {
 		const details = (message.details as { gentleAgents?: { taskId?: unknown; agent?: unknown } } | undefined)?.gentleAgents;
@@ -2116,8 +2141,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					// The agent was promised a notice, so a human stop is reported;
 					// a job_stop needs none because the agent itself stopped it.
 					onStop: (job) => {
+						monitors.cancel(job.id);
 						const stopped = jobs.stop(job.id);
-						if (stopped) settleJob(stopped);
+						if (stopped) queueJobNotice({ job: stopped, kind: "exit" });
 					},
 					onClose: () => close(null),
 					requestRender: () => tui.requestRender(),
@@ -2205,6 +2231,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		completions.dropAll();
 		messages.dropAll();
 		// Jobs never outlive their session: a stopped job sends no notice.
+		monitors.cancelAll();
 		const jobsStopped = jobs.stopAll();
 		jobNotices.length = 0;
 		refreshJobStatus();
