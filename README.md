@@ -192,7 +192,9 @@ Extension commands are only useful if you can find them. `alt+k` opens a curated
 
 ### Audio notifications — opt-in
 
-Open `/gentle:customize` → **Notifications** (the card header reads **Audio notifications**) and configure audio directly in the same two-column card, with no nested menu. Enter toggles the master switch or cycles a type/event through silence/success/error/attention, `f` assigns a literal absolute local WAV to the highlighted **Success**, **Error** or **Attention** type (each type keeps its own sound), and `p` previews its assigned sound. **Advanced** folds per-event exceptions; the type choices stay independent. Audio starts off; RPC and children stay silent. Linux/macOS adapters await manual listening verification; Windows playback is unavailable. [Usage, limits and verification →](docs/sound-notifications.md)
+Open `/gentle:customize` → **Notifications** (the card header reads **Audio notifications**) and configure audio directly in the same two-column card, with no nested menu. Enter toggles the master switch or cycles a type/event through silence/success/error/attention, `f` assigns a literal absolute local WAV to the highlighted **Success**, **Error** or **Attention** type (each type keeps its own sound), and `p` previews its assigned sound. **Advanced** folds per-event exceptions; the type choices stay independent. Audio starts off; RPC and children stay silent.
+
+**Quick answer (Linux/WSLg):** on the installed package the native WAV backend is preferred and needs no external player — it talks to a local PulseAudio/PipeWire-Pulse Unix socket and requires a running server with a default sink. A read-only probe succeeded here (`available`, formats `wav`), but that is not a claim of physically heard audio. OGG/FLAC keep the legacy CLI backend (`paplay`/`pw-play`/`aplay`); native codecs are a future phase. macOS keeps `afplay` while an own CoreAudio phase is planned, and Windows WASAPI remains planned/unavailable. [Usage, limits and verification →](docs/sound-notifications.md)
 
 ### Also in the box
 

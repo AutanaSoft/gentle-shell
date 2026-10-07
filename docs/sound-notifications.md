@@ -2,6 +2,8 @@
 
 Audio is **off by default**. In a primary Pi terminal, open `/gentle:customize` → **Notifications** (the card header reads **Audio notifications**) and use the controls **directly in the same two-column card**: the global switch, process mute and three independent type groups (**Success**, **Error**, **Attention**) that each own their included tone or a local WAV. Per-event exceptions stay folded behind **Advanced**. Nothing closes the overlay or opens a second menu, and audio preferences stay separate from visual settings, profiles and visual reset. No new command is needed.
 
+**Quick answer (Linux/WSLg):** the installed package prefers the native WAV backend and needs no external player; it connects to the local PulseAudio/PipeWire-Pulse Unix socket and needs a running server with a default sink. A read-only probe succeeded here, but physical audio is not claimed. OGG/FLAC always use the legacy CLI backend on Linux; native OGG/FLAC codecs are a future phase. macOS keeps `afplay` (own CoreAudio phase planned); Windows WASAPI is planned and currently unavailable.
+
 ## Use the direct controls
 
 - **Audio notifications: on / off** toggles the global switch. Highlighting or rendering the row never discovers a player or enables anything.
@@ -72,7 +74,7 @@ Enter a **literal absolute local path** in the file dialog (without the `file:` 
 
 Allowed content: RIFF/WAVE integer PCM (format 1), mono or stereo, 8/16/24/32-bit, 8000–192000 Hz, nonempty aligned data, coherent chunk bounds/padding and rate metadata; maximum **2 MiB** and **5 seconds**. Compressed/float/extensible WAV is not accepted. The final source must be a readable regular file, not a symlink or FIFO. No-follow/nonblocking descriptor opening, bounded reads and WAV validation fail closed. Intermediate directories are not a sandbox against other same-user filesystem writers.
 
-Playback revalidates and snapshots the bytes in a private 0700 temporary directory with an exclusive 0600 WAV, then uses a trusted absolute executable with separate literal argv and `shell:false`. Source changes after selection cannot substitute unchecked playback bytes. Abort/timeout kills the child; the serial reservation is held until close and cleanup, not merely until kill was requested. Playback timeout is 6000 ms. OS-denied termination/cleanup cannot be guaranteed by mocks.
+Playback revalidates and snapshots the bytes in a private 0700 temporary directory with an exclusive 0600 file named for the validated format, then selects a backend **after** the format is known: native WAV first on Linux, otherwise the trusted absolute CLI with separate literal argv and `shell:false`. Source changes after selection cannot substitute unchecked playback bytes. A format no available backend supports is rejected before any snapshot or spawn. A native failure after a spawn is never retried through the CLI, so partial audio cannot duplicate. Abort/timeout kills the child/worker; the serial reservation is held until close and cleanup, not merely until kill was requested. Playback timeout is 6000 ms (native bridge + socket + owned Node). OS-denied termination/cleanup cannot be guaranteed by mocks.
 
 ## Noise and retention
 
@@ -82,15 +84,20 @@ Ráfagas coalesce into at most one pending candidate, in event priority order: f
 
 The scheduler keeps a bounded 256-identity FIFO. The owner additionally retains the highest sequence **per producer/run** for the active parent session, across reload, preventing old wire duplicates after FIFO eviction. This map is not size-capped: it costs O(distinct runs) during a long session, is cleared when attaching a different session ID, and disappears on process exit. The actual TaskStore producer increments a store-global sequence on each status change, but current retention is still keyed per run; no producer-wide compaction is claimed here. Muted/off occurrences are consumed, not buffered.
 
+## Runtime backend selection
+
+| Format | Linux / WSLg | macOS | Windows |
+| --- | --- | --- | --- |
+| WAV | Native Pulse backend (preferred); falls back to the CLI when native is unavailable | `/usr/bin/afplay` (legacy) | Unavailable |
+| OGG / FLAC | Legacy CLI: first of `/usr/bin/paplay`, `/usr/bin/pw-play`, `/usr/bin/aplay` that supports it | `afplay` supports FLAC; OGG unverified | Unavailable |
+
+Capabilities are aggregated, not replaced: a native WAV backend never removes the CLI OGG/FLAC capability. `availability` and `capabilities` discover only on an explicit request, never on import, render, or while audio is off. The native backend probes the local Unix socket once per discovery and requires a default sink; when it is unavailable the CLI is used, and the probe result is cached until the owner is rebuilt. Native codecs (OGG/FLAC) are a future phase; own CoreAudio (macOS) and WASAPI (Windows) phases are planned. No system players are installed automatically and no new package dependency is added.
+
 ## Platforms and manual verification
 
-| Platform | Adapter implemented | Physical listening / UI / reload / quit |
-| --- | --- | --- |
-| Linux | First executable among `/usr/bin/paplay`, `/usr/bin/pw-play`, `/usr/bin/aplay` | **PENDING / UNVERIFIED**; no player available in the reported development environment |
-| macOS | `/usr/bin/afplay` | **PENDING / UNVERIFIED** |
-| Windows | Deliberately unavailable; no native adapter yet | **PENDING**; no playback support claim |
+Physical listening, UI, reload and quit remain **PENDING / UNVERIFIED** on every platform. The Linux/WSLg native path reached a real read-only Pulse `AUTH`/ServerInfo probe with a default sink (not a physical-listen claim); macOS still uses `afplay` while its own CoreAudio phase is planned; Windows WASAPI is planned and playback is unavailable.
 
-No system dependencies are installed automatically. No available player produces silence plus a bounded local warning, not an agent failure. SSH and containers play on the process host, not necessarily your client; an executable may exist without a usable device/server. Automated tests use injected clocks/processes and WAV validation; they do **not** establish physical audio or manual TUI correctness.
+No system dependencies are installed automatically. No usable backend produces silence plus a bounded local warning, not an agent failure. SSH and containers play on the process host, not necessarily your client; an executable may exist without a usable device/server. Automated tests use injected clocks/processes and WAV validation; they do **not** establish physical audio or manual TUI correctness.
 
 Manual acceptance remains pending for every applicable platform:
 

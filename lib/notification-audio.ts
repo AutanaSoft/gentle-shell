@@ -7,6 +7,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isNotificationSound, type NotificationSound } from "./notification-policy.ts";
 import type { PlaybackPermit } from "./notification-scheduler.ts";
+import { NativePulseNotPermittedError, NativePulsePlayer } from "./notification-audio-native.ts";
 
 const MAX_BYTES = 2 * 1024 * 1024;
 const PLAYBACK_TIMEOUT_MS = 6000;
@@ -118,6 +119,29 @@ export function validateNotificationOgg(bytes: Buffer): number {
 	if (!(durationMs > 0)) return invalid();
 	return durationMs;
 }
+/** Canonical capability order; native WAV never removes the CLI OGG/FLAC capabilities. */
+const CANONICAL_FORMATS: readonly NotificationAudioFormat[] = ["wav", "ogg", "flac"];
+function formatsForExecutable(executable: string): readonly NotificationAudioFormat[] {
+	const name = basename(executable);
+	if (name === "paplay" || name === "pw-play") return ["wav", "ogg", "flac"];
+	if (name === "aplay") return ["wav"];
+	if (name === "afplay") return ["wav", "flac"];
+	return [];
+}
+function canonicalFormats(formats: readonly NotificationAudioFormat[]): readonly NotificationAudioFormat[] {
+	return CANONICAL_FORMATS.filter(format => formats.includes(format));
+}
+
+/** Typed seam over the owned native bridge (lazy: no IO until an explicit probe/play). */
+export interface NativeAudioBackend {
+	supportsTarget(): boolean;
+	probe(signal?: AbortSignal): Promise<{ available: boolean; formats: readonly NotificationAudioFormat[] }>;
+	getNativeFormats(): readonly NotificationAudioFormat[];
+	play(snapshot: string, signal?: AbortSignal, gate?: (() => boolean) | { permit(): boolean }): Promise<void>;
+}
+interface DiscoveredSystem { executable: string; formats: readonly NotificationAudioFormat[]; }
+interface Discovery { native: readonly NotificationAudioFormat[]; system?: DiscoveredSystem; }
+
 export interface AudioIO {
 	open(path: string, flags: number): Promise<{
 		stat(): Promise<{ isFile(): boolean; size: number }>;
@@ -139,6 +163,7 @@ export interface AudioOptions {
 	io?: AudioIO;
 	tempRoot?: string;
 	builtinRoot?: string;
+	native?: NativeAudioBackend;
 	executableAvailable?(path: string): Promise<boolean>;
 	spawn?(executable: string, args: string[], options: {
 		shell: false; windowsHide: true; detached: false; stdio: ["ignore", "ignore", "pipe"];
@@ -154,45 +179,86 @@ const defaultIO: AudioIO = { open, mkdtemp, chmod, writeFile, unlink, rmdir };
 export class NotificationPlayer {
 	private readonly options: AudioOptions;
 	private readonly io: AudioIO;
-	private detection?: Promise<string | undefined>;
-	constructor(options: AudioOptions = {}) { this.options = options; this.io = options.io ?? defaultIO; }
+	private readonly native: NativeAudioBackend;
+	private discovery?: Promise<Discovery>;
+	constructor(options: AudioOptions = {}) {
+		this.options = options;
+		this.io = options.io ?? defaultIO;
+		this.native = options.native ?? new NativePulsePlayer({ platform: options.platform });
+	}
 	async availability(): Promise<"available" | "unavailable"> {
-		return await this.detect() ? "available" : "unavailable";
+		const discovered = await this.discover();
+		return discovered.native.length > 0 || discovered.system ? "available" : "unavailable";
 	}
-	/** Reuses the cached lazy detection only; never starts playback. Unknown executables advertise nothing. */
+	/** Aggregate, canonical capabilities: native WAV cannot shadow the CLI OGG/FLAC support. */
 	async capabilities(): Promise<Set<NotificationAudioFormat>> {
-		const executable = await this.detect();
-		const name = executable ? basename(executable) : "";
-		if (name === "paplay" || name === "pw-play") return new Set<NotificationAudioFormat>(["wav", "ogg", "flac"]);
-		if (name === "aplay") return new Set<NotificationAudioFormat>(["wav"]);
-		// macOS afplay reliably plays WAV and FLAC; OGG is unverified on macOS and therefore excluded.
-		if (name === "afplay") return new Set<NotificationAudioFormat>(["wav", "flac"]);
-		return new Set();
+		const discovered = await this.discover();
+		const present = new Set<NotificationAudioFormat>([...discovered.native, ...(discovered.system?.formats ?? [])]);
+		return new Set(CANONICAL_FORMATS.filter(format => present.has(format)));
 	}
-	private detect(): Promise<string | undefined> {
-		return this.detection ??= (async () => {
+	/** Explicit discovery only: native probe once on Linux, then trusted absolute CLI candidates. */
+	private discover(): Promise<Discovery> {
+		return this.discovery ??= (async () => {
 			const platform = this.options.platform ?? process.platform;
-			const candidates = platform === "linux" ? ["/usr/bin/paplay", "/usr/bin/pw-play", "/usr/bin/aplay"]
-				: platform === "darwin" ? ["/usr/bin/afplay"] : [];
-			for (const path of candidates) {
-				try {
-					const available = this.options.executableAvailable ? await this.options.executableAvailable(path)
-						: await access(path, constants.X_OK).then(() => true);
-					if (available) return path;
-				} catch { /* Missing/denied executable is a local availability result, not an agent failure. */ }
+			let native: readonly NotificationAudioFormat[] = [];
+			if (platform === "linux" && this.native.supportsTarget()) {
+				try { const probed = await this.native.probe(); if (probed.available) native = canonicalFormats(probed.formats); }
+				catch { native = []; }
 			}
-			return undefined;
+			const executable = await this.detectExecutable(platform);
+			return { native, system: executable ? { executable, formats: formatsForExecutable(executable) } : undefined };
 		})();
+	}
+	private async detectExecutable(platform: string): Promise<string | undefined> {
+		const candidates = platform === "linux" ? ["/usr/bin/paplay", "/usr/bin/pw-play", "/usr/bin/aplay"]
+			: platform === "darwin" ? ["/usr/bin/afplay"] : [];
+		for (const path of candidates) {
+			try {
+				const available = this.options.executableAvailable ? await this.options.executableAvailable(path)
+					: await access(path, constants.X_OK).then(() => true);
+				if (available) return path;
+			} catch { /* Missing/denied executable is a local availability result, not an agent failure. */ }
+		}
+		return undefined;
 	}
 	async play(sound: Exclude<NotificationSound, null>, signal: AbortSignal, permit: PlaybackPermit): Promise<void> {
 		if (signal.aborted) return;
-		const executable = await this.detect();
-		if (!executable || signal.aborted) return;
+		const discovered = await this.discover();
+		if (signal.aborted) return;
+		// No usable backend: preserve the old behavior of no read, snapshot or spawn.
+		if (discovered.native.length === 0 && !discovered.system) return;
 		if (!isNotificationSound(sound, "posix")) throw new TypeError("Invalid notification sound");
 		const source = sound.startsWith("file:") ? sound.slice(5)
 			: join(this.options.builtinRoot ?? fileURLToPath(new URL("../assets/sounds/", import.meta.url)), `${sound.slice(8)}.wav`);
+		const { bytes, format } = await this.readSource(source);
+		if (signal.aborted) return;
+		const useNative = format === "wav" && discovered.native.length > 0;
+		const executable = !useNative && discovered.system?.formats.includes(format) ? discovered.system.executable : undefined;
+		if (!useNative && !executable) throw new Error("Notification audio: no backend supports the format");
+		const directory = await this.io.mkdtemp(join(this.options.tempRoot ?? tmpdir(), "gentle-notification-"));
+		const snapshot = join(directory, `sound.${format}`);
+		try {
+			await this.io.chmod(directory, 0o700);
+			await this.io.writeFile(snapshot, bytes, { mode: 0o600, flag: "wx" });
+			if (signal.aborted) return;
+			if (useNative) {
+				// The owned bridge calls the scheduler gate once synchronously before spawning; a false
+				// permit resolves silently and any real native failure is never retried through the CLI.
+				try { await this.native.play(snapshot, signal, () => permit.start()); }
+				catch (error) { if (error instanceof NativePulseNotPermittedError) return; throw error; }
+			} else {
+				// No await between permit and spawn: scheduler TTL/generation owns the final start gate.
+				if (!permit.start()) return;
+				await this.run(executable!, snapshot, signal);
+			}
+		} finally {
+			try { await this.io.unlink(snapshot); } catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("Audio snapshot cleanup failed");
+			} finally { await this.io.rmdir(directory); }
+		}
+	}
+	private async readSource(source: string): Promise<{ bytes: Buffer; format: NotificationAudioFormat }> {
 		const handle = await this.io.open(source, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-		let bytes: Buffer; let format: NotificationAudioFormat;
 		try {
 			const stat = await handle.stat();
 			if (!stat.isFile() || stat.size > MAX_BYTES || stat.size < 44) throw new TypeError("Invalid notification file");
@@ -200,23 +266,9 @@ export class NotificationPlayer {
 			// One bounded descriptor read: short reads fail closed rather than accepting truncation.
 			const { bytesRead } = await handle.read(buffer);
 			if (bytesRead !== stat.size) throw new TypeError("Notification file changed or truncated");
-			bytes = Buffer.from(buffer.subarray(0, bytesRead));
-			format = validateNotificationAudio(bytes).format;
+			const bytes = Buffer.from(buffer.subarray(0, bytesRead));
+			return { bytes, format: validateNotificationAudio(bytes).format };
 		} finally { await handle.close(); }
-		if (signal.aborted) return;
-		const directory = await this.io.mkdtemp(join(this.options.tempRoot ?? tmpdir(), "gentle-notification-"));
-		const snapshot = join(directory, `sound.${format}`);
-		try {
-			await this.io.chmod(directory, 0o700);
-			await this.io.writeFile(snapshot, bytes, { mode: 0o600, flag: "wx" });
-			if (signal.aborted || !permit.start()) return;
-			// No await between permit and spawn: scheduler TTL/generation owns the final start gate.
-			await this.run(executable, snapshot, signal);
-		} finally {
-			try { await this.io.unlink(snapshot); } catch (error) {
-				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("Audio snapshot cleanup failed");
-			} finally { await this.io.rmdir(directory); }
-		}
 	}
 	private run(executable: string, snapshot: string, signal: AbortSignal): Promise<void> {
 		return new Promise((resolve, reject) => {

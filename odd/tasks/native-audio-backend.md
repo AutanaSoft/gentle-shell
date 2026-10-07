@@ -3,15 +3,19 @@
 Locator: `odd/tasks/native-audio-backend.md`
 Worktree: `/home/egdev/proyectos/gentle-shell-native-audio` (gitdir linked to
 `/home/egdev/proyectos/gentle-shell/.git/worktrees/gentle-shell-native-audio`)
-Branch: `feat/native-notification-audio`, base `9a1f8a75` (clean tree; real
-`node_modules` retained as ignored linked entries, no install performed).
+Branch: `feat/native-notification-audio`, base `9a1f8a75`. Worktree setup did
+**no install of its own** (real `node_modules` retained as ignored linked
+entries). The later **N5 verification incident** separately auto-installed an
+ignored local Go release binary — a package-local artifact, not an audio
+dependency (L9); it does not change the initial no-install fact.
 N0 plan committed at **`9282b002`** [x] (399 lines); N1a codec committed at
 **`b2bdee09`** [x] (518 authored lines); N1b client committed at **`7ea3e15a`**
 [x] (684 authored lines); N2 stream committed at **`597e4d27`** [x] (525 authored
-lines). **N3 is in progress on top of that commit** and stays unchecked until the
-parent commits it.
+lines); N3 bridge+worker committed at **`e368e74a`** [x] (~489 authored lines);
+N4 routing+docs committed by the parent at **`7f1b87ac`** [x]. **N5 is [ ]
+BLOCKED — not done.**
 
-**Status: IMPLEMENTATION STARTED (N1a, N1b, N2 committed; N3 in progress).** The
+**Status: LINUX/WSLg IMPLEMENTED, READ-ONLY VERIFIED, N5 BLOCKED.** The
 protocol appendix below was read from the locally downloaded official
 PulseAudio **v17.0** references (read-only, hashes verified) and corrected by the
 **L2 independent document verification** (B1–B3, see the Log). N1a is the pure
@@ -23,7 +27,12 @@ against a **fake Unix server only** (`lib/notification-pulse-stream.ts`); N3 add
 the lazy Linux-only bridge (`lib/notification-audio-native.ts`) and the owned
 `process.execPath` worker (`lib/notification-pulse-worker.ts`) as source `.ts`
 (built-in type stripping; no generated runtime, runtime stays 8 and the 69 pins
-are unchanged). No real physical audio playback. RED/GREEN are in L3/L4/L5/L6.
+are unchanged). N4 integrates routing: on Linux the native WAV backend is
+preferred with the CLI retained as the OGG/FLAC fallback, capabilities are
+aggregated, the scheduler permit is called once, and no real audio is played.
+RED/GREEN are in L3/L4/L5/L6/L7; N5 closure evidence is in L8/L9. **No physical
+playback is claimed; macOS CoreAudio and Windows WASAPI remain phased and
+unimplemented.**
 
 ## Objective
 
@@ -43,8 +52,11 @@ physical support.
 - Package answer: **"CLIENTE PROPIO SIN NUEVOS PAQUETES"** — own client, no new
   packages, no `pulseaudio.js` dependency, no new npm, no CLI player/system
   library install, no global config/activation, no physical play claim, no push
-  PR, no subagents, no commits, no review in this turn. Parent performs local
-  commits per unit.
+  PR. The user **authorized the parent's local per-unit commits and delegation**.
+- **Delegated-worker constraint, NOT a user prohibition:** the worker was told
+  not to spawn subagents, not to commit, and not to run review itself. That scope
+  limit applies to the delegated writer only; the parent still commits locally
+  per unit and owns review.
 - Source artifact to respect: user-provided `[ruta local anonimizada]`
   (reported 5.58 s) is intentionally rejected by the unchanged 5 s limit; it is
   not cropped, not raised.
@@ -73,7 +85,7 @@ physical support.
 | R3 | Cookie exposure or creation | Read existing regular file only, `O_NOFOLLOW`, bounded ≤256 bytes, never create, never log contents, never send it anywhere but the local socket AUTH. |
 | R4 | Accidental TCP / network / SHM / ancillary-FD surface | Explicit denial: Unix `SOCK_STREAM` only, no TCP, no network, no shared memory, no `SCM_RIGHTS`. **REQUEST is expected, not refused**: for non-SHM PCM it is handled by matching the current stream and accumulating bounded bytes; only SHM/memfd flag frames, refund/revoke control frames, and ancillary FDs fail closed. |
 | R5 | Worker spawn overlap, leak, orphan, or lingering process | Reuse existing `permit.start()` **synchronous** gate immediately before spawn with no await; parent SIGKILL timeout 6000 ms; settle only on `close` + cleanup; single-flight reservation in the owner. |
-| R6 | Packaging/binary creep (Addon, prebuilt, postinstall download, ABI) | Pure Node in a standalone generated `runtime/*.mjs` worker; no Addon, no binary, no ABI, no install step; `verify-package-files.mjs` reconciliation keeps runtime/sources/requiredPaths in sync. |
+| R6 | Packaging/binary creep (Addon, prebuilt, postinstall download, ABI) | Pure Node in the owned source worker `lib/notification-pulse-worker.ts` (`process.execPath`, built-in type stripping, engine `node >=22.19.0`): **no generated `runtime/*.mjs`**, runtime stays **8**. No Addon, binary, ABI, compiler or audio install step; the pre-existing npm `postinstall` Go step is unchanged and the audio work adds no new dependency. `verify-package-files.mjs` keeps runtime/sources/requiredPaths in sync. |
 | R7 | WSLg path divergence | Resolve `/run/user/<uid>/pulse/native` first, then `/mnt/wslg/runtime-dir/pulse/native`; missing socket → unavailable → fallback preserved. |
 | R8 | Physical-support overreach | Linux/WSLg first with a real read-only probe; macOS/Windows remain planned/pending; no "supported" claim without manual physical evidence. |
 | R9 | Regression of 9a1 (`878`-restored) UI or OGG/FLAC behavior | Preserve the six-control basic card and existing validators/fallback verbatim; changes limited to routing/lifecycle and additive native capability. |
@@ -81,16 +93,19 @@ physical support.
 
 ## Specs
 
-- **S1 — Scope and authorization.** Planning only now. Linux/WSLg first; macOS/
-  Windows phased and planned only. Own Node client. Forbidden: new packages,
-  `pulseaudio.js` dependency, new npm, CLI player/system library install, global
-  config/activation, physical-play claim, push/PR, subagents, this-turn commits
-  or review. Parent commits locally per unit.
+- **S1 — Scope and authorization.** Now **implemented for Linux/WSLg (N1a–N4)**;
+  macOS/Windows remain phased and planned only. Own Node client. Forbidden: new
+  packages, `pulseaudio.js` dependency, new npm, CLI player/system library
+  install, global config/activation, physical-play claim, push/PR. The parent
+  commits locally per unit and owns review; the delegated writer's
+  no-subagents/no-commit/no-review rule was a **worker-local constraint**, not a
+  user prohibition.
 - **S2 — Isolation.** The native client runs as its own standalone Node worker
-  (`runtime/notification-audio-native.mjs`) launched with `process.execPath`,
-  argv only, `shell:false`. No Addon, no precompiled binary, no ABI dependency,
-  no postinstall download. It is a directed parent→child helper, not an SDK
-  agent, and it never loads the agent extension graph.
+  (`lib/notification-pulse-worker.ts`, owned source `.ts`) launched with
+  `process.execPath`, argv only, `shell:false`, built-in type stripping. No
+  generated `runtime/*.mjs`; no Addon, precompiled binary, or ABI dependency; and
+  no postinstall download added by this work. It is a directed parent→child
+  helper, not an SDK agent, and it never loads the agent extension graph.
 - **S3 — Transport.** Built-in `node:net` Unix `SOCK_STREAM` to the resolved
   Pulse socket. Explicitly no TCP, no network, no shared memory, no ancillary
   file descriptors. Packet framing is bounded and length-checked; malformed or
@@ -132,8 +147,9 @@ physical support.
 - **S12 — Budget and evidence discipline.** Forecast **~1,350–1,600 authored
   lines total** (code + tests + runtime pack checks + docs; vendor 0), no code
   golf. Units N0–N5, ~400 advisory cap, tests stay with the behavior they
-  protect; split once honestly if an indivisible unit exceeds the cap. Plan-only:
-  RED/GREEN are **not active** and must not be fabricated.
+  protect; split once honestly if an indivisible unit exceeds the cap. RED/GREEN
+  are **active per unit** (L3–L7); the earlier plan-only stance is superseded and
+  already-shipped evidence stands.
 - **S13 — Protocol provenance.** The local PulseAudio **v17.0** references are
   read-only: no dependency, not executed, not vendored. We derive the protocol
   declaration only (LGPL-2.1+ upstream implementation is not copied).
@@ -266,36 +282,33 @@ only; **no probe evidence exists yet**.
 | **N1a** | Tagged tagstruct codec + bounded fake frames (no socket, no server). **[x] committed `b2bdee09`.** | `lib/notification-pulse-protocol.ts` (305), `tests/notification-pulse-protocol.test.ts` (213) | ≤400 forecast; **518 observed** | Round-trip encode/decode of the verified tags (`u32`, `u8`, `string`, `arbitrary`, `boolean`, `usec`, `sample_spec`, `cvolume`, `proplist`); command+tag prefix; bounded small frames; malformed/truncated fields fail closed. Unknown sample-format enum values may remain and block **N2**, not N1a. |
 | **N1b** | Client transport: Unix connect, AUTH (v13/256-byte cookie/no-SHM), SET_CLIENT_NAME, GET_SERVER_INFO/default-sink. Real **read-only** probe (no stream/sample). **[x] committed `7ea3e15a`.** | `lib/notification-pulse-client.ts` (+38), `tests/notification-pulse-client.test.ts` (356) | ≤400 forecast; **684 observed** | Fake-server golden tests plus a real read-only probe that returns server info without opening a stream; ERROR/REPLY/timeout/interspersed handling; cookie absent → 256 zero bytes → peer-credential or fail closed. |
 | **N2** | PCM flow + DRAIN + DELETE + cancel against a **fake Unix server, no audio**. **[x] committed `597e4d27`.** | `lib/notification-pulse-stream.ts` (212), `tests/notification-pulse-stream.test.ts` (275), `lib/notification-pulse-client.ts` (+38) | ≤600 forecast; **525 observed** | Strict WAV parse/mapping; CREATE v13 golden wire; REQUEST-driven aligned PCM memblocks; early/coalesced/unknown REQUEST; mismatched spec; budget/abort/backpressure; DRAIN+DELETE acks; bounded per-request deadline. |
-| **N3** | Bridge + standalone worker via owned `process.execPath` + fixed flags (source `.ts`, **no generated runtime**). **IN PROGRESS — local GREEN, awaiting parent commit.** | `lib/notification-audio-native.ts` (149), `lib/notification-pulse-worker.ts` (66), `tests/notification-audio-native.test.ts` (246), `scripts/verify-package-files.mjs` (+5), `tests/package-manifest.test.ts` (+~28) | ≤400–600 forecast; **~489 observed** | Lazy no-IO bridge; Linux-only; scrubbed child env; bounded stdout/stderr; JSON `gentle.audio.pulse/v1`; SIGKILL once + settle on close; probe unavailable / play generic reject; real fake-socket worker probe (no CREATE) + fake PCM play (no OS audio); verifier 179. |
-| **N4** | Auto-routing selection + lifecycle/context + preserve system fallback + UI/docs. | `lib/notification-audio.ts`, `lib/notification-service.ts`, `lib/notification-customize.ts` (labels only if needed), `docs/sound-notifications.md`, `tests/notification-audio.test.ts`, `tests/gentle-notifications.test.ts`, `tests/notification-customize.test.ts` | 240–320 | Aggregate capabilities; native WAV never shadows external OGG/FLAC; `permit.start()` sync gate; child/headless/RPC silent; six-control card and 9a1 OGG/FLAC fallback preserved. |
-| **N5** | Default full / typecheck / package offline functional closure. | docs + closure records only | 60–120 | Focused suites, `pnpm run typecheck` (ratchet, no regressions), `pnpm run check:runtime-modules`, `node scripts/verify-package-files.mjs`; record exact commands/results. |
+| **N3** | Bridge + standalone worker via owned `process.execPath` + fixed flags (source `.ts`, **no generated runtime**). **[x] committed `e368e74a`.** | `lib/notification-audio-native.ts` (149), `lib/notification-pulse-worker.ts` (66), `tests/notification-audio-native.test.ts` (246), `scripts/verify-package-files.mjs` (+5), `tests/package-manifest.test.ts` (+~28) | ≤400–600 forecast; **~489 observed** | Lazy no-IO bridge; Linux-only; scrubbed child env; bounded stdout/stderr; JSON `gentle.audio.pulse/v1`; SIGKILL once + settle on close; probe unavailable / play generic reject; real fake-socket worker probe (no CREATE) + fake PCM play (no OS audio); verifier 179. |
+| **N4** | Native-first Linux routing + CLI fallback + docs. **[x] committed `7f1b87ac` (parent).** | `lib/notification-audio.ts` (~130 changed), `lib/notification-audio-native.ts` (+20), tests `notification-audio`/`native`/`pulse-stream` (+~152), `README.md`, `docs/sound-notifications.md` | ~500 allowance; **~327 changed** | Aggregate capabilities; native WAV preferred, CLI OGG/FLAC retained; format validated before backend choice; native error never retries CLI; gate called once; all old tests inject a fake native (no real audio); 194 notif / 86 focused. |
+| **N5** | Default full / typecheck / package offline functional closure. **BLOCKED — not done.** | docs + closure records only | 60–120 | Final focal suites green (L9); `check-types` **186** no regressions; runtime **8**; verifier **179/69**; focused `package-manifest` **57**. Blocked by two whole-suite failures (L9 `history-session-scan`; only :244 confirmed at baseline) left unrepaired pending explicit user approval; no full installed packed-package E2E was run. |
 
 Dependencies: **N1a → N1b → N2 → N3 → N4 → N5**; N0 precedes all. Each unit
 is independently committed by the **parent** after its focused checks pass. If a
 unit exceeds ~400 authored lines without a clean split, record the honest delta
 in the Log rather than trimming tests or code-golfing.
 
-**Generated-slice accounting (N3).** The native client may be generated as
-**3–4 runtime helpers** copied from `lib/*.ts`
-(`runtime/notification-pulse-protocol.mjs`, `-client.mjs`, `-stream.mjs`,
-`notification-audio-native.mjs`). Generated bytes are counted **separately**
-from authored source/test lines — not a native-case budget exception: authored
-source+tests stay within the unit cap and the generated artifact plus the
-`requiredPaths`/runtime-module count (8 → 11–12) are reported as their own
-measured numbers, no code golf.
+**Generated-slice accounting (N3) — SUPERSEDED, not current source truth.** This
+was an early N3 assumption. The actual engine is `node >=22.19.0` with built-in
+type stripping, so **no runtime helpers are generated** and the runtime-module
+count stays **8** (U5). The historical forecast (3–4 `runtime/*.mjs` helpers,
+runtime 8 → 11–12) is retained only as provenance; it is not current source truth.
 
-## Provisional artifacts
+## Provisional artifacts — HISTORICAL plan (superseded by committed N1a–N4)
 
-- New (planned): `lib/notification-pulse-protocol.ts` (tagstruct codec),
-  `lib/notification-pulse-client.ts` (transport/auth/probe),
-  `lib/notification-pulse-stream.ts` (PCM/drain/delete; may merge into the
-  client), `lib/notification-audio-native.ts` (worker entry); generated
-  `runtime/notification-pulse-protocol.mjs`, `-client.mjs`, `-stream.mjs`,
-  `notification-audio-native.mjs`; the matching tests and fake-server fixture.
-- Modified (planned): `scripts/build-runtime-modules.mjs`,
-  `scripts/verify-package-files.mjs`, `lib/notification-audio.ts`,
-  `lib/notification-service.ts`, `lib/notification-customize.ts` (only if a
-  label must mention native/fallback), `docs/sound-notifications.md`.
+- New (delivered as source `.ts`; **no generated `runtime/*.mjs`**):
+  `lib/notification-pulse-protocol.ts` (codec), `lib/notification-pulse-client.ts`
+  (transport/auth/probe), `lib/notification-pulse-stream.ts` (PCM/drain/delete),
+  `lib/notification-audio-native.ts` (bridge), and the owned worker
+  `lib/notification-pulse-worker.ts`; plus their tests and the fake-server
+  fixture. The generated-runtime list below is a superseded N3 assumption (U5).
+- Modified (as planned): `scripts/verify-package-files.mjs`,
+  `lib/notification-audio.ts`, `README.md`, `docs/sound-notifications.md`.
+  `scripts/build-runtime-modules.mjs`, `lib/notification-service.ts` and
+  `lib/notification-customize.ts` needed no native change.
 - Explicitly unchanged: `lib/notification-policy.ts` schema (no new `backend`
   value), `lib/notification-scheduler.ts`, `extensions/gentle-notifications.ts`
   context guards, the six-control basic card, and the 9a1 OGG/FLAC validators.
@@ -322,11 +335,13 @@ measured numbers, no code golf.
   `runtime/*.mjs`, no `build-runtime-modules.mjs` edits, runtime stays 8 and the
   69 byte pins are unchanged; the owned TS lib is legitimate and no addon/C
   toolchain is involved.
-- **U6 — Physical evidence.** The real probe is N1b (read-only, no sound) and
-  **no probe evidence exists yet**; audible output on WSLg and any Linux desktop
-  variant remains pending manual verification. No support is claimed until then.
-- **U7 — Baseline drift.** Runtime count (8), resources (174), and pins (69)
-  were measured at `9a1f8a75`; N3 will change the first two and must re-measure.
+- **U6 — Physical evidence.** The real probe is N1b (read-only, no sound); it
+  returned available/`wav` on WSLg, but that is **not** physical proof. Audible
+  output on WSLg and any Linux desktop variant remains pending manual
+  verification, and no support is claimed until then.
+- **U7 — Baseline drift: re-measured.** Runtime count stayed **8**; resources
+  moved to **179** with **69** pins after N3 (the 174/8 figures were the
+  `9a1f8a75` baseline). Typecheck diagnostics stayed **186** (no regressions).
 - **U8 — Native review unavailable: resolved for the doc stage.** The managed
   assets remain outdated and the sync was not executed, so **native review is
   still unavailable**. The independent document verifier did run on the staged
@@ -559,3 +574,122 @@ these fixes; **no source implementation until the parent's explicit follow-up**.
   `gentle.audio.pulse/v1` JSON.
 - N3 stays **unchecked** until the parent commits it. Next: **N4** routing/UI/
   lifecycle, not started (native audio app remains inactive; Linux first phase).
+
+### L7 — N4 routing: RED before production, GREEN, native preferred (no real audio)
+
+- Route: single writer, focused. Surfaces: `lib/notification-audio.ts`,
+  `lib/notification-audio-native.ts`, `tests/notification-audio.test.ts`,
+  `tests/notification-audio-native.test.ts`, `tests/notification-pulse-stream.test.ts`,
+  `README.md`, `docs/sound-notifications.md`. N3 committed at `e368e74a`.
+- N3 independent verifier: **PASS** (focused native/pulse 62, notification 184,
+  package 57, verifier 179/69, runtime 8, type 186) — incorporated low findings
+  **F1** (allowlisted native child env), **F2** (33-early-REQUEST bound test) and
+  **F4** (typed not-permitted gate) within N4, proven by tests.
+- **RED observed before production edits**: with the new routing tests and the
+  `native:` injection absent, `node --experimental-strip-types --test
+  tests/notification-audio.test.ts` had the native-preferred test never complete
+  (the old class ignored `native` and took the CLI path; 14 pass, file timeout).
+  The two type-level gaps (`NativeAudioBackend`/`native`) were part of the same RED.
+- **GREEN**: `tests/notification-audio.test.ts tests/notification-audio-native.test.ts
+  tests/notification-pulse-stream.test.ts tests/notification-pulse-client.test.ts
+  tests/notification-pulse-protocol.test.ts` → **86/86, exit 0**.
+- **Surrounding (no full suite)**: `tests/*notification*.test.ts` → **194/194**,
+  exit 0. `node scripts/check-types.mjs` → exit 0, **186 recorded diagnostics, no
+  regressions**. `node scripts/verify-package-files.mjs` → exit 0, **179 files /
+  69 pins**; runtime 8. `tests/package-manifest.test.ts` → 57/57. `git diff --check`
+  clean.
+- **No real audio**: every old `NotificationPlayer` construction injects
+  `native: unavailableNative()` (or a fake) and the service tests inject a fake
+  `backend`; no real Pulse probe, stream, spawn or OS audio ran. The read-only
+  WSLg probe was not repeated.
+- **Cost (within the before-report allowance)**: +271/-56 changed lines across 7
+  files (~327 changed); cohesive routing + test-data matrix retained, not golfed.
+- Default routing: Linux prefers native WAV; the CLI keeps OGG/FLAC; capabilities
+  union `wav,ogg,flac`; a format no backend supports is rejected before snapshot or
+  spawn; a native failure after spawn never retries the CLI; the native gate is
+  `() => permit.start()` invoked once by the bridge; the native child env is an
+  allowlist.
+- Docs: README and `docs/sound-notifications.md` now give the Linux/WSLg quick
+  answer (native WAV, no player, server+sink required, read-only probe not
+  physical proof), the aggregated capability matrix, and the planned macOS
+  CoreAudio / Windows WASAPI phases.
+- N4 stays **unchecked** until the parent commits it. Next: the mandatory final
+  high-risk verifier over N0–N4; physical listening remains unverified; the
+  actual Node here is 24 while the logical minimum engine is 22.19.
+  *(Superseded: the parent committed N4 at `7f1b87ac`; see the locator and L8.)*
+
+### L8 — N3 independent verification (High PASS) → F1/F2/F4 fixed in N4
+
+- Independent read-only source verification of N3 returned **High PASS**: the
+  protocol/client/stream/bridge/worker matured coherently. The new wire client
+  uses the existing GET_SERVER_INFO/AUTH protocol (v13, AUTH cookie, SHM
+  disabled), Unix socket only (**no TCP**), and owns **no native libraries**.
+- Numbers at that point: focused native/pulse **62**, notification **184**,
+  package-manifest **57**, verifier **179 files / 69 pins**, runtime **8**,
+  `check-types` **186** (no regressions).
+- Three low findings were folded into **N4** and proven by tests: **F1**
+  allowlist for the native child env, **F2** queue bound against 33 early REQUEST messages, **F4**
+  typed not-permitted gate. Physical playback stayed unverified.
+
+### L9 — N5 final focal GREEN; default suite BLOCKED; environment incident
+
+- **Focal proof (GREEN).** Final focal suites **486/486**: protocol 19, client
+  20, stream 14, audio 22, native 11, customize 38, UI 13, service 25, palette
+  36, visual 39, shell 249. `package-manifest` **57** separate; `check-types`
+  **186, no regressions**; runtime **8**; verifier **179 files / 69 pins**.
+- **Native availability (read-only).** A real `NotificationPlayer` probe on WSLg
+  returned available / capability `wav` (AUTH + server-info only, **no CREATE, no
+  samples, no physical audio**).
+- **Offline packed-package closure (no npm install).** `npm pack
+  --ignore-scripts --offline` produced the exact tarball; the packed TypeScript
+  sources were run with the owned Node worker against a **fake Unix server**
+  (probe: AUTH/name/info, no CREATE; play: AUTH/name/CREATE/DRAIN/DELETE, 17640
+  fake PCM bytes, 100 ms, budget 6142 ms failure expected). All packed TS sources
+  resolved. A temp WAV harness failed first then was fixed (temp test only; honest
+  note, **not a product bug**). The ordinary `test:packed-package` **install path
+  was NOT run** — no full installed packed-package E2E is claimed.
+- **Node version.** Node 24 was tested; the logical minimum engine 22.19 was not
+  physically exercised. No physical listen occurred.
+- **Whole default suite (RED, reported).** `unit` **4962 total / 4926 pass / 2
+  fail / 34 skip**; provider contract + runtime harness PASS. The two failures
+  are `history-session-scan` **244/582** (blob unchanged, module unchanged vs
+  `9a`): baseline `9a` reproduced the **244** 1/3 → confirmed preexisting; the
+  **582** was not reproduced 0/3, so causality is **INCONCLUSIVE** — no
+  regression proof and **not** declared a known baseline failure. The failure
+  timestamp `Date.now()-5` (5 ms window; observed ~1 ms below its lower bound) suggests environment sources but
+  does not prove the 582. **No suite retries to green, no suppression, no
+  clock-bound raising, and no unrelated fix** (that needs separate user approval).
+- **Environment incident (reported, preserved).** A parallel verifier `pnpm` run
+  (type/runtime) with default `verifyDepsBeforeRun=install` treated the ignored
+  stale farm `node_modules/.modules.yaml`/`.pnpm-workspace-state` symlinks into a
+  sibling `sound-notifications` root as needing install. It auto-downloaded the
+  **pre-existing Go release v4** binary (17,109,176 bytes, SHA-verified) into the
+  native repo's `.gitignored` `.gentle-ai/v4.0.0` (+228 integrity); one local
+  install lock/tombstone race failed. The sibling's ignored modules metadata was
+  overwritten (mtime 10:51) with symlinks unchanged; store reused 17, downloaded
+  0, added 0. Tracked `package.json`/lockfile stayed clean — no new packages,
+  dependencies or root CLI. Global npm/pnpmrc/PI settings mtimes unchanged; no
+  compiler (system Go) and no audio/player libraries were downloaded. This is
+  **package-local to the ignored farm, not a new audio dependency**, and distinct
+  from the **pre-existing, unchanged npm `postinstall` Go step**. Nothing was
+  cleaned up — preserved as-is for the user's disposition; all later direct Node
+  tests ran with no further install or mutation. The user was told of the 2
+  historical failures and the implicit local install; no tokens, env values or
+  private endpoints are recorded.
+- **Verifier/approval state.** No native RDD approval assets (managed assets
+  outdated, sync not run); only independent read-only source verification ran
+  (native assess combined **High, 16 files / 3143 changed lines**, base `9a`
+  unchanged) with **no Lens-clean claim** and **no approved flag**; native review
+  remained unavailable.
+- **Cost.** At N4 `7f1b87ac`, `base..HEAD` = **3091 insertions / 52 deletions**
+  incl. ODD docs. Several coupled source+test units exceeded the ~400 advisory;
+  overruns are recorded above and an independent High-risk verifier ran. This
+  is not a claim the initial line forecast was met. Local node/local-process scope; the native-
+  audio UI toggle stayed inactive/off, so existing scheduler guards are unaffected.
+- **Open / BLOCKED.** **N5 stays [ ] BLOCKED — not done**: awaiting explicit user
+  approval to repair the two historical-suite failures (optional), and any
+  physical `<=5 s` WAV playback test needs explicit permission, not assumed. The
+  already-authorized `[archivo de audio local anonimizado]` (5.58 s) stays rejected by the unchanged limit —
+  no crop. macOS CoreAudio / Windows WASAPI, Node 22 physical, and manual
+  listening remain current/future phases as documented. Final verification
+  history is **BLOCKED**; no whole-task "done" is claimed.

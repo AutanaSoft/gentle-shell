@@ -4,6 +4,7 @@ import { constants } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { NotificationPlayer, validateNotificationAudio, validateNotificationFlac, validateNotificationOgg, validateNotificationWav, type AudioIO } from "../lib/notification-audio.ts";
+import type { NativeAudioBackend } from "../lib/notification-audio.ts";
 import { NotificationScheduler } from "../lib/notification-scheduler.ts";
 import { DEFAULT_NOTIFICATION_SETTINGS } from "../lib/notification-policy.ts";
 
@@ -58,12 +59,38 @@ class Child extends EventEmitter {
 	stderr = new EventEmitter(); kills: string[] = [];
 	kill(signal: string) { this.kills.push(signal); return true; }
 }
+interface FakeNative {
+	readonly backend: NativeAudioBackend;
+	readonly snapshots: string[];
+	readonly gates: Array<(() => boolean) | { permit(): boolean } | undefined>;
+	probes(): number;
+}
+/** Injected native backend; records probes/plays and calls the gate exactly once like the real bridge. */
+function nativeFake(options: { available?: boolean; formats?: readonly ("wav")[]; fail?: boolean; supported?: boolean } = {}): FakeNative {
+	const snapshots: string[] = [];
+	const gates: Array<(() => boolean) | { permit(): boolean } | undefined> = [];
+	let probes = 0;
+	const backend: NativeAudioBackend = {
+		supportsTarget: () => options.supported ?? true,
+		probe: async () => { probes++; return { available: options.available ?? false, formats: options.available ? (options.formats ?? (["wav"] as const)) : [] }; },
+		getNativeFormats: () => (options.available ? (options.formats ?? (["wav"] as const)) : []),
+		play: async (snapshot, _signal, gate) => {
+			gates.push(gate);
+			const permitted = typeof gate === "function" ? gate() : gate?.permit();
+			if (permitted === false) return;
+			snapshots.push(snapshot);
+			if (options.fail) throw new Error("native playback failed");
+		},
+	};
+	return { backend, snapshots, gates, probes: () => probes };
+}
+const unavailableNative = (): NativeAudioBackend => nativeFake({ available: false }).backend;
 const tick = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
-function fixture(platform = "linux") {
+function fixture(platform = "linux", native: NativeAudioBackend = unavailableNative()) {
 	const child = new Child(); const calls: Array<{ executable: string; args: string[]; options: unknown }> = [];
 	const probes: string[] = []; const cleaned: string[] = []; const writes: Array<{ path: string; bytes: Buffer; mode: number }> = [];
 	let bytes: Buffer = wav(); let regular = true; let size = bytes.length; let available = true;
-	let detect: (() => Promise<boolean>) | undefined;
+	let detect: (() => Promise<boolean>) | undefined; let availablePaths: string[] | undefined;
 	let spawnError = false; let writeError = false; let cleanupError = false;
 	let duringRead: (() => void) | undefined;
 	let timeout: (() => void) | undefined; let cleared = 0;
@@ -77,8 +104,8 @@ function fixture(platform = "linux") {
 		writeFile: async (path, data, options) => { if (writeError) throw Error("write"); writes.push({ path, bytes: data, mode: options.mode }); },
 		unlink: async path => { cleaned.push(path); if (cleanupError) throw Error("cleanup"); }, rmdir: async path => { cleaned.push(path); },
 	};
-	const player = new NotificationPlayer({ platform, io, tempRoot: "/private", builtinRoot: "/builtins",
-		executableAvailable: async path => { probes.push(path); return detect ? detect() : available; },
+	const player = new NotificationPlayer({ platform, io, tempRoot: "/private", builtinRoot: "/builtins", native,
+		executableAvailable: async path => { probes.push(path); return availablePaths ? availablePaths.includes(path) : (detect ? detect() : available); },
 		spawn: (executable, args, options) => { if (spawnError) throw Error("spawn"); calls.push({ executable, args, options }); return child; },
 		setTimeout: fn => { timeout = fn; return 1; }, clearTimeout: () => { cleared++; },
 	});
@@ -86,6 +113,7 @@ function fixture(platform = "linux") {
 	const play = (allow = true) => player.play("file:/input/a ; &(b).wav", signal.signal, { start: () => { permits++; return allow; } });
 	return { player, child, calls, probes, cleaned, writes, signal, play, timeout: () => timeout!(), cleared: () => cleared,
 		permits: () => permits, setAvailable: (v: boolean) => { available = v; }, setDetect: (v: () => Promise<boolean>) => { detect = v; },
+		setAvailablePaths: (paths: string[]) => { availablePaths = paths; },
 		setBytes: (v: Buffer) => { bytes = v; size = v.length; }, setRegular: () => { regular = false; },
 		setSize: (v: number) => { size = v; }, failSpawn: () => { spawnError = true; }, failWrite: () => { writeError = true; },
 		failCleanup: () => { cleanupError = true; }, onRead: (fn: () => void) => { duringRead = fn; } };
@@ -159,7 +187,7 @@ test("Ogg pages are walked with bounds: non-BOS first page, bad version, unsuppo
 });
 
 test("player capabilities map trusted executables to their real formats without starting playback", async () => {
-	const pick = (platform: string, match?: string) => new NotificationPlayer({ platform,
+	const pick = (platform: string, match?: string) => new NotificationPlayer({ platform, native: unavailableNative(),
 		executableAvailable: async path => match === undefined ? true : path === match });
 	assert.deepEqual([...(await pick("linux", "/usr/bin/paplay").capabilities())], ["wav", "ogg", "flac"]);
 	assert.deepEqual([...(await pick("linux", "/usr/bin/pw-play").capabilities())], ["wav", "ogg", "flac"]);
@@ -266,4 +294,80 @@ test("all original builtin WAV assets pass the same validator", async () => {
 		assert.ok(validateNotificationWav(bytes) > 0);
 		assert.equal(validateNotificationAudio(bytes).format, "wav");
 	}
+});
+
+test("native WAV backend is preferred and never spawns the CLI", async () => {
+	const native = nativeFake({ available: true, formats: ["wav"] });
+	const f = fixture("linux", native.backend);
+	await f.play();
+	assert.equal(native.snapshots.length, 1);
+	assert.match(native.snapshots[0]!, /sound\.wav$/);
+	assert.equal(f.calls.length, 0);
+	assert.equal(f.cleaned.length, 2);
+	assert.equal(native.probes(), 1);
+});
+
+test("native unavailable falls back to the trusted CLI for WAV", async () => {
+	const f = fixture("linux", unavailableNative());
+	let done = false; const p = f.play().then(() => { done = true; }); await tick();
+	assert.equal(f.calls.length, 1); assert.equal(done, false);
+	f.child.emit("close", 0); await p; assert.equal(done, true);
+});
+
+test("capabilities union native WAV with legacy CLI OGG/FLAC", async () => {
+	const native = nativeFake({ available: true, formats: ["wav"] });
+	const f = fixture("linux", native.backend);
+	assert.deepEqual([...(await f.player.capabilities())], ["wav", "ogg", "flac"]);
+	assert.equal(await f.player.availability(), "available");
+	assert.equal(native.probes(), 1);
+});
+
+test("OGG/FLAC route to the CLI by validated content, never the native WAV backend", async () => {
+	const native = nativeFake({ available: true, formats: ["wav"] });
+	const f = fixture("linux", native.backend);
+	f.setBytes(oggVorbis());
+	let done = false; const p = f.play().then(() => { done = true; }); await tick();
+	assert.equal(native.snapshots.length, 0);
+	assert.equal(f.calls.length, 1);
+	assert.equal(f.calls[0]!.args[0], "/private/audio ; literal/sound.ogg");
+	f.child.emit("close", 0); await p; assert.equal(done, true);
+});
+
+test("a format no backend supports is rejected before snapshot or spawn", async () => {
+	const f = fixture("linux", unavailableNative());
+	f.setAvailablePaths(["/usr/bin/aplay"]); // WAV only
+	f.setBytes(flac());
+	await assert.rejects(f.play(), /no backend|Unsupported/);
+	assert.equal(f.calls.length, 0); assert.equal(f.writes.length, 0); assert.equal(f.cleaned.length, 0);
+});
+
+test("a native play error never retries the CLI", async () => {
+	const native = nativeFake({ available: true, formats: ["wav"], fail: true });
+	const f = fixture("linux", native.backend);
+	await assert.rejects(f.play(), /native playback failed/);
+	assert.equal(native.snapshots.length, 1);
+	assert.equal(f.calls.length, 0);
+	assert.equal(f.cleaned.length, 2);
+});
+
+test("native gate false starts once, spawns nothing and preserves cleanup", async () => {
+	const native = nativeFake({ available: true, formats: ["wav"] });
+	const f = fixture("linux", native.backend);
+	await f.play(false);
+	assert.equal(f.permits(), 1);
+	assert.equal(native.gates.length, 1);
+	assert.equal(native.snapshots.length, 0);
+	assert.equal(f.calls.length, 0);
+	assert.equal(f.cleaned.length, 2);
+});
+
+test("abort before discovery performs no probe, read or play", async () => {
+	const native = nativeFake({ available: true, formats: ["wav"] });
+	const f = fixture("linux", native.backend);
+	f.signal.abort();
+	await f.play();
+	assert.equal(native.probes(), 0);
+	assert.equal(native.snapshots.length, 0);
+	assert.equal(f.writes.length, 0);
+	assert.equal(f.calls.length, 0);
 });
