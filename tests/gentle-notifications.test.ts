@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createNotificationExtension } from "../extensions/gentle-notifications.ts";
 import { getNotificationService } from "../lib/notification-service.ts";
@@ -13,6 +16,7 @@ interface Options {
 	sessionId?: string;
 	enabled?: boolean; mode?: string; child?: boolean; malformed?: boolean; readError?: boolean; absent?: boolean;
 	deferred?: boolean; slowProbe?: boolean; holdPlayback?: boolean; noUnsubscribe?: boolean; unavailable?: boolean; fail?: boolean;
+	capabilities?: Set<"wav" | "ogg" | "flac">;
 }
 function harness(options: Options = {}) {
 	const id = options.sessionId ?? `parent-${++nextSession}`;
@@ -48,7 +52,7 @@ function harness(options: Options = {}) {
 		backend: { availability: async () => {
 			probes++; if (options.slowProbe) await new Promise<void>(resolve => probeReleases.push(resolve));
 			return options.unavailable ? "unavailable" as const : "available" as const;
-		}, play: async (sound: string, signal: AbortSignal, permit: Parameters<SchedulerOptions["player"]>[2]) => {
+		}, capabilities: async () => options.capabilities ?? new Set(["wav", "ogg", "flac"] as const), play: async (sound: string, signal: AbortSignal, permit: Parameters<SchedulerOptions["player"]>[2]) => {
 			attempts++; signals.push(signal); permits.push(permit);
 			if (options.deferred) await new Promise<void>(resolve => releases.push(resolve));
 			if (permit.start()) played.push(sound);
@@ -281,3 +285,47 @@ test("legacy native handlers without unsubscribe become inert when their lease i
 		b.source(1); await drain(); assert.equal(b.played.length, 1); assert.equal(listeners(a.bus), 0);
 	} finally { a.retire(); b.retire(); }
 });
+
+// Byte-exact fixtures so assignment-capability rejection is verified without external encoders.
+function oggPage(headerType: number, granule: number, body: Buffer, seqno = 0): Buffer {
+	const segments = body.length === 0 ? 0 : Math.ceil(body.length / 255);
+	const table = Buffer.alloc(segments); let remaining = body.length;
+	for (let i = 0; i < segments; i++) { table[i] = Math.min(255, remaining); remaining -= table[i]!; }
+	const head = Buffer.alloc(27); head.write("OggS", 0); head[4] = 0; head[5] = headerType;
+	head.writeUInt32LE(granule >>> 0, 6); head.writeUInt32LE(0, 10); head.writeUInt32LE(0, 14);
+	head.writeUInt32LE(seqno, 18); head.writeUInt32LE(0, 22); head[26] = segments;
+	return Buffer.concat([head, table, body]);
+}
+function vorbisId(): Buffer {
+	const b = Buffer.alloc(30); b[0] = 0x01; b.write("vorbis", 1); b[11] = 1; b.writeUInt32LE(8000, 12); b[29] = 0x01; return b;
+}
+function oggVorbis(): Buffer {
+	return Buffer.concat([oggPage(0x02, 0, vorbisId(), 0), oggPage(0x00, 8000, Buffer.alloc(0), 1)]);
+}
+function flac(): Buffer {
+	const sampleRate = 8000; const totalSamples = 8000; const b = Buffer.alloc(46);
+	b.write("fLaC", 0); b[4] = 0x80; b[7] = 34; const s = 8;
+	b[s + 10] = (sampleRate >> 12) & 0xff; b[s + 11] = (sampleRate >> 4) & 0xff; b[s + 12] = (sampleRate & 0x0f) << 4;
+	b[s + 13] = 0xf0; b.writeUInt32BE(totalSamples, s + 14); return b;
+}
+
+for (const capabilities of [["wav"], ["wav", "ogg", "flac"]] as const) {
+	test(`validateFile gates OGG/FLAC on the detected player capabilities ${JSON.stringify(capabilities)}`, async () => {
+		const dir = await mkdtemp(join(tmpdir(), "gentle-notification-validate-"));
+		const wavPath = join(dir, "sound.wav"); const oggPath = join(dir, "sound.ogg"); const flacPath = join(dir, "sound.flac");
+		await writeFile(wavPath, Buffer.alloc(0)); await writeFile(oggPath, oggVorbis()); await writeFile(flacPath, flac());
+		const h = harness({ capabilities: new Set(capabilities) }); try {
+			await h.start(); const service = getNotificationService()!;
+			assert.equal(await service.validateFile(h.ctx, `file:${wavPath}`), false, "an empty file is never a valid sound");
+			const wavBytes = Buffer.alloc(44 + 4); wavBytes.write("RIFF", 0); wavBytes.writeUInt32LE(wavBytes.length - 8, 4);
+			wavBytes.write("WAVEfmt ", 8); wavBytes.writeUInt32LE(16, 16); wavBytes.writeUInt16LE(1, 20); wavBytes.writeUInt16LE(1, 22);
+			wavBytes.writeUInt32LE(8000, 24); wavBytes.writeUInt32LE(16000, 28); wavBytes.writeUInt16LE(2, 32);
+			wavBytes.writeUInt16LE(16, 34); wavBytes.write("data", 36); wavBytes.writeUInt32LE(4, 40);
+			await writeFile(wavPath, wavBytes);
+			assert.equal(await service.validateFile(h.ctx, `file:${wavPath}`), true, "WAV stays accepted for every player");
+			const supports = new Set(capabilities);
+			assert.equal(await service.validateFile(h.ctx, `file:${oggPath}`), supports.has("ogg"), "OGG requires the player capability");
+			assert.equal(await service.validateFile(h.ctx, `file:${flacPath}`), supports.has("flac"), "FLAC requires the player capability");
+		} finally { h.retire(); await rm(dir, { recursive: true, force: true }); }
+	});
+}

@@ -44,7 +44,7 @@ function harness(options: { malformed?: boolean; failWrite?: boolean; events?: P
 	const owner = claimNotificationOwner(() => {}, { env: {},
 		read: () => ({ settings, source: "global_file", malformed: options.malformed ?? false, readError: false, globalFile: "/config/notifications.json" }),
 		write: (next: NotificationSettings) => { writes++; if (options.failWrite) throw Error("private"); settings = next; return "/config/notifications.json"; },
-		backend: { availability: async () => { probes++; return "available"; }, play: async (_sound, _signal, permit) => { if (permit.start()) played++; } },
+		backend: { availability: async () => { probes++; return "available"; }, capabilities: async () => new Set(["wav", "ogg", "flac"] as const), play: async (_sound, _signal, permit) => { if (permit.start()) played++; } },
 	});
 	owner.attach(ctx); getNotificationService()!.setMuted(ctx, false);
 	return { ctx, owner, notes, nested, get writes() { return writes; }, get probes() { return probes; }, get played() { return played; },
@@ -69,7 +69,7 @@ function fakeInline(inputs: (string | undefined)[] = [], confirms: boolean[] = [
 }
 function label(row: CustomizeRow): string { return typeof row.label === "function" ? row.label() : row.label; }
 
-test("Notifications rows toggle, mute and restore directly without any nested native dialog", async () => {
+test("Notifications rows toggle and mute directly without any nested native dialog", async () => {
 	const h = harness(); try {
 		const rows = h.rows();
 		await findRow(rows, "Audio notifications: off").action(fakeInline());
@@ -78,21 +78,17 @@ test("Notifications rows toggle, mute and restore directly without any nested na
 		await findRow(rows, "Audio: unmuted").action(fakeInline());
 		assert.equal(getNotificationService()!.getState().muted, true);
 		assert.equal(h.writes, 1, "mute persists in-process without writing configuration");
-		await findRow(rows, "Audio: restore preset").action(fakeInline());
-		assert.equal(getNotificationService()!.getState().settings.enabled, true, "restore preserves enabled");
-		assert.equal(h.writes, 2);
 		assert.deepEqual(h.nested, { select: 0, input: 0, confirm: 0 });
 	} finally { h.owner.retire(); }
 });
 
-test("labels and previews never probe, play or write; availability is explicit", async () => {
+test("labels and previews never probe, play or write and the card exposes no availability row", () => {
 	const h = harness(); try {
 		const rows = h.rows();
 		for (const row of rows) { label(row); row.preview?.(); }
 		assert.equal(h.probes, 0); assert.equal(h.played, 0); assert.equal(h.writes, 0);
-		await findRow(rows, "Audio availability: check").action(fakeInline());
-		assert.equal(h.probes, 1);
-		assert.equal(h.writes, 0);
+		assert.equal(rows.some(row => label(row).startsWith("Audio availability:")), false, "availability is removed from the card");
+		assert.equal(h.probes, 0, "rendering every row still never probes the backend");
 	} finally { h.owner.retire(); }
 });
 
@@ -214,7 +210,7 @@ async function expandAndSelect(view: VisualCustomizeView, prefix: string): Promi
 	selectControl(view, prefix);
 }
 
-test("an in-flight local WAV validation keeps busy, blocking a second field and any write until it settles", async () => {
+test("an in-flight local sound validation keeps busy, blocking a second field and any write until it settles", async () => {
 	const h = harness(); try {
 		const rows = h.rows();
 		let resolveValidation!: (value: boolean) => void;
@@ -224,7 +220,7 @@ test("an in-flight local WAV validation keeps busy, blocking a second field and 
 		await expandAndSelect(view, "agent.failed:");
 		assert.match(view.render(160).join("\n"), /agent\.failed:/);
 		view.handleInput("f");
-		assert.match(view.render(160).join("\n"), /Local WAV path/);
+		assert.match(view.render(160).join("\n"), /Local audio path/);
 		view.handleInput(WAV_FIXTURE);
 		view.handleInput("\r");
 		await tick();
@@ -233,7 +229,7 @@ test("an in-flight local WAV validation keeps busy, blocking a second field and 
 		view.handleInput("f");
 		view.handleInput("\r");
 		await tick();
-		assert.doesNotMatch(view.render(160).join("\n"), /Local WAV path/, "a second f cannot open another field while busy");
+		assert.doesNotMatch(view.render(160).join("\n"), /Local audio path/, "a second f cannot open another field while busy");
 		assert.equal(h.writes, 0, "no write before the deferred validation resolves");
 		// Resolve: a single write, then busy releases for the next edit.
 		resolveValidation(true);
@@ -241,7 +237,7 @@ test("an in-flight local WAV validation keeps busy, blocking a second field and 
 		assert.equal(h.writes, 1, "the resolved validation writes exactly once");
 		assert.equal(getNotificationService()!.getState().settings.audio.events["agent.failed"], `file:${WAV_FIXTURE}`);
 		view.handleInput("f");
-		assert.match(view.render(160).join("\n"), /Local WAV path/, "busy is released so the next edit opens a fresh field");
+		assert.match(view.render(160).join("\n"), /Local audio path/, "busy is released so the next edit opens a fresh field");
 	} finally { h.owner.retire(); }
 });
 
@@ -252,13 +248,13 @@ test("Escape cancels the inline field while the async key task is busy and relea
 		const view = customizeView(rows);
 		await expandAndSelect(view, "agent.failed:");
 		view.handleInput("f");
-		assert.match(view.render(160).join("\n"), /Local WAV path/);
+		assert.match(view.render(160).join("\n"), /Local audio path/);
 		view.handleInput("\x1b");
 		await tick(); await tick();
-		assert.doesNotMatch(view.render(160).join("\n"), /Local WAV path/, "Escape cancels the inline field");
+		assert.doesNotMatch(view.render(160).join("\n"), /Local audio path/, "Escape cancels the inline field");
 		assert.equal(h.writes, 0, "a cancelled field never validates or writes");
 		view.handleInput("f");
-		assert.match(view.render(160).join("\n"), /Local WAV path/, "busy is released after the cancelled key task");
+		assert.match(view.render(160).join("\n"), /Local audio path/, "busy is released after the cancelled key task");
 	} finally { h.owner.retire(); }
 });
 
@@ -305,7 +301,7 @@ test("event rows cover supported events and never expose session.shutdown", () =
 test("p on every basic non-event notification control stays on the audio card, opens no profiles and never previews", () => {
 	const h = harness(); try {
 		const rows = h.rows();
-		const targets = ["Audio notifications:", "Audio: unmuted", "Audio availability:", "Audio: restore preset", "Advanced"];
+		const targets = ["Audio notifications:", "Audio: unmuted", "Advanced"];
 		const listed: number[] = [];
 		const view = new VisualCustomizeView({ rows, theme: { fg: (_role: string, text: string) => text }, rowsAvailable: () => 24, requestRender: () => {}, onClose: () => {}, profiles: {
 			list: () => { listed.push(1); return []; }, save: () => {}, apply: () => {}, delete: () => {}, reset: () => {},
@@ -324,13 +320,18 @@ test("p on every basic non-event notification control stays on the audio card, o
 	} finally { h.owner.retire(); }
 });
 
-test("the basic card exposes human Success/Error/Attention groups and an Advanced toggle without raw ids", () => {
+test("the basic card exposes exactly six human controls and an Advanced toggle without raw ids", () => {
 	const h = harness(); try {
 		const labels = visibleRows(h.rows()).map(label);
+		assert.equal(labels.length, 6, "the basic card must expose exactly six controls");
+		assert.ok(labels.some(text => text.startsWith("Audio notifications:")), "the global switch row is required");
+		assert.ok(labels.some(text => /^Audio: (?:un)?muted/.test(text)), "the process mute row is required");
 		assert.ok(labels.some(text => text.startsWith("Success:")), "a Success group row is required");
 		assert.ok(labels.some(text => text.startsWith("Error:")), "an Error group row is required");
 		assert.ok(labels.some(text => text.startsWith("Attention:")), "an Attention group row is required");
 		assert.ok(labels.some(text => /^Advanced/.test(text)), "an Advanced toggle row is required");
+		assert.equal(labels.some(text => text.startsWith("Audio availability:")), false, "the availability row is removed");
+		assert.equal(labels.some(text => text.startsWith("Audio: restore preset")), false, "the restore row is removed");
 		for (const text of labels) {
 			assert.doesNotMatch(text, /builtin:/, `a basic label leaks a builtin id: ${text}`);
 			assert.doesNotMatch(text, /(?:agent|subagent|session)\./, `a basic label leaks a raw event id: ${text}`);
@@ -361,14 +362,14 @@ test("Advanced folds the thirteen detailed event rows inside the same card witho
 	} finally { h.owner.retire(); }
 });
 
-test("global controls and the fold toggle advertise no WAV key while group and detail rows do", async () => {
+test("global controls and the fold toggle advertise no sound key while group and detail rows do", async () => {
 	const h = harness(); try {
 		const rows = h.rows();
-		for (const prefix of ["Audio notifications:", "Audio: unmuted", "Audio availability:", "Audio: restore preset", "Advanced"])
-			assert.doesNotMatch(keyhintOf(findRow(rows, prefix)), /f WAV/, `${prefix} is not a per-type file target`);
-		for (const { prefix } of GROUPS) assert.match(keyhintOf(findRow(rows, prefix)), /f WAV/, `${prefix} assigns its own WAV`);
+		for (const prefix of ["Audio notifications:", "Audio: unmuted", "Advanced"])
+			assert.doesNotMatch(keyhintOf(findRow(rows, prefix)), /f sound/, `${prefix} is not a per-type file target`);
+		for (const { prefix } of GROUPS) assert.match(keyhintOf(findRow(rows, prefix)), /f sound/, `${prefix} assigns its own sound`);
 		await findRow(rows, /^Advanced/).action(fakeInline());
-		for (const prefix of ["agent.failed:", "agent.completed:"]) assert.match(keyhintOf(findRow(rows, prefix)), /f WAV/);
+		for (const prefix of ["agent.failed:", "agent.completed:"]) assert.match(keyhintOf(findRow(rows, prefix)), /f sound/);
 	} finally { h.owner.retire(); }
 });
 
@@ -578,7 +579,7 @@ test("the rendered basic card shows three independent group choices and hides pe
 		for (const { prefix } of GROUPS) assert.match(frame(), new RegExp(prefix), `${prefix} must be visible on the basic card`);
 		assert.doesNotMatch(frame(), /agent\.failed:/, "no per-event technical row is visible before Advanced");
 		selectControl(view, "Success:");
-		assert.match(frame(), /f WAV/, "the selected group advertises its own file key");
+		assert.match(frame(), /f sound/, "the selected group advertises its own file key");
 		selectControl(view, "Advanced:");
 		view.handleInput("\r");
 		await tick();

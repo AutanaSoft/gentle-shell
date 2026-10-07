@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import { access, chmod, mkdtemp, open, rmdir, unlink, writeFile } from "node:fs/promises";
 import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isNotificationSound, type NotificationSound } from "./notification-policy.ts";
 import type { PlaybackPermit } from "./notification-scheduler.ts";
@@ -40,6 +40,83 @@ export function validateNotificationWav(bytes: Buffer): number {
 	const duration = dataSize / format.align / format.rate * 1000;
 	if (duration > 5000) return invalid();
 	return duration;
+}
+
+export type NotificationAudioFormat = "wav" | "ogg" | "flac";
+/** Content detection only (magic bytes, never the extension). Unknown containers are refused
+ *  so an unrecognized file can never reach the player as white noise. */
+export function validateNotificationAudio(bytes: Buffer): { format: NotificationAudioFormat; durationMs: number } {
+	let format: NotificationAudioFormat;
+	let durationMs: number;
+	if (bytes.length >= 12 && bytes.toString("ascii", 0, 4) === "RIFF" && bytes.toString("ascii", 8, 12) === "WAVE") {
+		format = "wav"; durationMs = validateNotificationWav(bytes);
+	} else if (bytes.toString("ascii", 0, 4) === "fLaC") {
+		format = "flac"; durationMs = validateNotificationFlac(bytes);
+	} else if (bytes.toString("ascii", 0, 4) === "OggS") {
+		format = "ogg"; durationMs = validateNotificationOgg(bytes);
+	} else throw new TypeError("Unsupported notification audio format");
+	// WAV already enforces this internally; the shared guard also bounds the decoded OGG/FLAC durations.
+	if (durationMs > 5000) throw new TypeError("Notification audio exceeds 5 seconds");
+	return { format, durationMs };
+}
+/** FLAC duration from STREAMINFO: the first metadata block must be STREAMINFO of exactly 34 bytes
+ *  and total samples must be known, otherwise a duration limit cannot be verified. */
+export function validateNotificationFlac(bytes: Buffer): number {
+	const invalid = () => { throw new TypeError("Invalid notification FLAC"); };
+	if (bytes.length < 42 || bytes.length > MAX_BYTES || bytes.toString("ascii", 0, 4) !== "fLaC") return invalid();
+	const lastFlagAndType = bytes[4];
+	const length = (bytes[5] << 16) | (bytes[6] << 8) | bytes[7];
+	if ((lastFlagAndType & 0x7f) !== 0 || length !== 34) return invalid();
+	const s = 8;
+	const sampleRate = (bytes[s + 10] << 12) | (bytes[s + 11] << 4) | (bytes[s + 12] >> 4);
+	const channels = ((bytes[s + 12] >> 1) & 0x07) + 1;
+	const bitsPerSample = (((bytes[s + 12] & 0x01) << 4) | (bytes[s + 13] >> 4)) + 1;
+	const totalSamples = (bytes[s + 13] & 0x0f) * 2 ** 32 + bytes.readUInt32BE(s + 14);
+	if (sampleRate < 8000 || sampleRate > 192000 || channels < 1 || channels > 2
+		|| bitsPerSample < 4 || bitsPerSample > 32 || totalSamples <= 0) return invalid();
+	return totalSamples / sampleRate * 1000;
+}
+/** OGG duration from the last page granule, without decoding: Vorbis uses the header sample rate,
+ *  Opus is always 48 kHz and subtracts the header pre-skip. Only Vorbis/Opus are accepted. */
+export function validateNotificationOgg(bytes: Buffer): number {
+	const invalid = () => { throw new TypeError("Invalid notification OGG"); };
+	if (bytes.length < 27 || bytes.length > MAX_BYTES) return invalid();
+	let offset = 0; let first = true; let opus = false;
+	let channels: number | undefined; let sampleRate: number | undefined; let preSkip = 0;
+	let endGranule = 0; let foundGranule = false;
+	while (offset < bytes.length) {
+		if (offset + 27 > bytes.length) return invalid();
+		if (bytes.toString("ascii", offset, offset + 4) !== "OggS" || bytes[offset + 4] !== 0) return invalid();
+		const headerType = bytes[offset + 5];
+		const low = bytes.readUInt32LE(offset + 6); const high = bytes.readInt32LE(offset + 10);
+		const noGranule = high === -1 && low === 0xffffffff;
+		const pageSegments = bytes[offset + 26];
+		if (offset + 27 + pageSegments > bytes.length) return invalid();
+		let bodySize = 0;
+		for (let i = 0; i < pageSegments; i++) bodySize += bytes[offset + 27 + i];
+		const bodyStart = offset + 27 + pageSegments; const next = bodyStart + bodySize;
+		if (next > bytes.length) return invalid();
+		if (first) {
+			// The BOS page must carry the identification header for exactly one supported codec.
+			if ((headerType & 0x02) === 0) return invalid();
+			if (bodySize >= 7 && bytes[bodyStart] === 0x01 && bytes.toString("ascii", bodyStart + 1, bodyStart + 7) === "vorbis") {
+				if (bodySize < 16) return invalid();
+				channels = bytes[bodyStart + 11]; sampleRate = bytes.readUInt32LE(bodyStart + 12);
+			} else if (bodySize >= 8 && bytes.toString("ascii", bodyStart, bodyStart + 8) === "OpusHead") {
+				if (bodySize < 12) return invalid();
+				channels = bytes[bodyStart + 9]; preSkip = bytes.readUInt16LE(bodyStart + 10);
+				sampleRate = 48000; opus = true;
+			} else return invalid();
+			first = false;
+		}
+		if (!noGranule) { const value = high * 2 ** 32 + low; if (!foundGranule || value > endGranule) endGranule = value; foundGranule = true; }
+		offset = next;
+	}
+	if (first || !foundGranule || channels === undefined || sampleRate === undefined || channels < 1 || channels > 2) return invalid();
+	if (!opus && (sampleRate < 8000 || sampleRate > 192000)) return invalid();
+	const durationMs = opus ? Math.max(0, endGranule - preSkip) / 48000 * 1000 : endGranule / sampleRate * 1000;
+	if (!(durationMs > 0)) return invalid();
+	return durationMs;
 }
 export interface AudioIO {
 	open(path: string, flags: number): Promise<{
@@ -82,6 +159,16 @@ export class NotificationPlayer {
 	async availability(): Promise<"available" | "unavailable"> {
 		return await this.detect() ? "available" : "unavailable";
 	}
+	/** Reuses the cached lazy detection only; never starts playback. Unknown executables advertise nothing. */
+	async capabilities(): Promise<Set<NotificationAudioFormat>> {
+		const executable = await this.detect();
+		const name = executable ? basename(executable) : "";
+		if (name === "paplay" || name === "pw-play") return new Set<NotificationAudioFormat>(["wav", "ogg", "flac"]);
+		if (name === "aplay") return new Set<NotificationAudioFormat>(["wav"]);
+		// macOS afplay reliably plays WAV and FLAC; OGG is unverified on macOS and therefore excluded.
+		if (name === "afplay") return new Set<NotificationAudioFormat>(["wav", "flac"]);
+		return new Set();
+	}
 	private detect(): Promise<string | undefined> {
 		return this.detection ??= (async () => {
 			const platform = this.options.platform ?? process.platform;
@@ -105,7 +192,7 @@ export class NotificationPlayer {
 		const source = sound.startsWith("file:") ? sound.slice(5)
 			: join(this.options.builtinRoot ?? fileURLToPath(new URL("../assets/sounds/", import.meta.url)), `${sound.slice(8)}.wav`);
 		const handle = await this.io.open(source, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-		let bytes: Buffer;
+		let bytes: Buffer; let format: NotificationAudioFormat;
 		try {
 			const stat = await handle.stat();
 			if (!stat.isFile() || stat.size > MAX_BYTES || stat.size < 44) throw new TypeError("Invalid notification file");
@@ -113,11 +200,12 @@ export class NotificationPlayer {
 			// One bounded descriptor read: short reads fail closed rather than accepting truncation.
 			const { bytesRead } = await handle.read(buffer);
 			if (bytesRead !== stat.size) throw new TypeError("Notification file changed or truncated");
-			bytes = Buffer.from(buffer.subarray(0, bytesRead)); validateNotificationWav(bytes);
+			bytes = Buffer.from(buffer.subarray(0, bytesRead));
+			format = validateNotificationAudio(bytes).format;
 		} finally { await handle.close(); }
 		if (signal.aborted) return;
 		const directory = await this.io.mkdtemp(join(this.options.tempRoot ?? tmpdir(), "gentle-notification-"));
-		const snapshot = join(directory, "sound.wav");
+		const snapshot = join(directory, `sound.${format}`);
 		try {
 			await this.io.chmod(directory, 0o700);
 			await this.io.writeFile(snapshot, bytes, { mode: 0o600, flag: "wx" });

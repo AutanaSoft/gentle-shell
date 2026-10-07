@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { NotificationPlayer, validateNotificationWav } from "./notification-audio.ts";
+import { NotificationPlayer, validateNotificationAudio } from "./notification-audio.ts";
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import {
@@ -15,7 +15,7 @@ export interface NotificationServiceDependencies {
 	policy?: NotificationOptions;
 	read?: () => NotificationResolution;
 	write?: (settings: NotificationSettings) => string;
-	backend?: Pick<NotificationPlayer, "play" | "availability">;
+	backend?: Pick<NotificationPlayer, "play" | "availability" | "capabilities">;
 	setTimeout?: SchedulerOptions["setTimeout"];
 	clearTimeout?: SchedulerOptions["clearTimeout"];
 }
@@ -143,7 +143,9 @@ export function claimNotificationOwner(retireRuntime: () => void, deps: Notifica
 					const bytes = Buffer.alloc(stat.size + 1);
 					const { bytesRead } = await handle.read(bytes);
 					if (bytesRead !== stat.size) return false;
-					validateNotificationWav(bytes.subarray(0, bytesRead));
+					const { format } = validateNotificationAudio(bytes.subarray(0, bytesRead));
+					// Assignment-time rejection: a player that cannot play this container must never receive it.
+					if (format !== "wav" && !(await backend.capabilities()).has(format)) return false;
 					return allowed(candidate) && scheduler === activeScheduler;
 				} finally { await handle.close(); }
 			} catch { return false; }

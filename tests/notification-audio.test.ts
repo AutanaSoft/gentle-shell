@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { constants } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { NotificationPlayer, validateNotificationWav, type AudioIO } from "../lib/notification-audio.ts";
+import { NotificationPlayer, validateNotificationAudio, validateNotificationFlac, validateNotificationOgg, validateNotificationWav, type AudioIO } from "../lib/notification-audio.ts";
 import { NotificationScheduler } from "../lib/notification-scheduler.ts";
 import { DEFAULT_NOTIFICATION_SETTINGS } from "../lib/notification-policy.ts";
 
@@ -13,6 +13,46 @@ function wav(samples = 800) {
 	b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22);
 	b.writeUInt32LE(8000, 24); b.writeUInt32LE(16000, 28); b.writeUInt16LE(2, 32);
 	b.writeUInt16LE(16, 34); b.write("data", 36); b.writeUInt32LE(samples * 2, 40); return b;
+}
+/** Minimal Ogg page (27-byte header + lacing table); bodies stay < 255 bytes so one lacing value suffices.
+ *  CRC is deliberately written as zero: the validator never verifies it. */
+function oggPage(headerType: number, granule: number | "none", body: Buffer, seqno = 0): Buffer {
+	const segments = body.length === 0 ? 0 : Math.ceil(body.length / 255);
+	const table = Buffer.alloc(segments);
+	let remaining = body.length;
+	for (let i = 0; i < segments; i++) { table[i] = Math.min(255, remaining); remaining -= table[i]!; }
+	const head = Buffer.alloc(27);
+	head.write("OggS", 0); head[4] = 0; head[5] = headerType;
+	if (granule === "none") { head.writeUInt32LE(0xffffffff, 6); head.writeUInt32LE(0xffffffff, 10); }
+	else { head.writeUInt32LE(granule >>> 0, 6); head.writeUInt32LE(Math.floor(granule / 2 ** 32), 10); }
+	head.writeUInt32LE(0, 14); head.writeUInt32LE(seqno, 18); head.writeUInt32LE(0, 22); head[26] = segments;
+	return Buffer.concat([head, table, body]);
+}
+function vorbisId(channels = 1, sampleRate = 8000): Buffer {
+	const b = Buffer.alloc(30); b[0] = 0x01; b.write("vorbis", 1); b[11] = channels; b.writeUInt32LE(sampleRate, 12); b[29] = 0x01; return b;
+}
+function opusHead(channels = 1, preSkip = 312): Buffer {
+	const b = Buffer.alloc(19); b.write("OpusHead", 0); b[8] = 1; b[9] = channels;
+	b.writeUInt16LE(preSkip, 10); b.writeUInt32LE(48000, 12); b[18] = 0; return b;
+}
+/** One identification page (BOS) plus a final granule page; default granule encodes exactly 1000 ms. */
+function oggVorbis(sampleRate = 8000, granule = sampleRate): Buffer {
+	return Buffer.concat([oggPage(0x02, 0, vorbisId(1, sampleRate), 0), oggPage(0x00, granule, Buffer.alloc(0), 1)]);
+}
+function oggOpus(preSkip = 312, granule = preSkip + 48000): Buffer {
+	return Buffer.concat([oggPage(0x02, 0, opusHead(1, preSkip), 0), oggPage(0x00, granule, Buffer.alloc(0), 1)]);
+}
+/** Minimal FLAC: 4-byte magic + one last STREAMINFO block (34 bytes) + `extra` opaque trailing bytes.
+ *  sampleRate is 20 bits, channels-1 3 bits, bitsPerSample-1 5 bits and totalSamples 36 bits. */
+function flac(sampleRate = 8000, totalSamples = 8000, extra = 4): Buffer {
+	const b = Buffer.alloc(42 + extra);
+	b.write("fLaC", 0); b[4] = 0x80; b[7] = 34;
+	const s = 8;
+	b[s + 10] = (sampleRate >> 12) & 0xff; b[s + 11] = (sampleRate >> 4) & 0xff;
+	b[s + 12] = (sampleRate & 0x0f) << 4; // low rate nibble; channels-1 = 0; bps high bit = 0
+	b[s + 13] = 0xf0 | ((totalSamples / 2 ** 32) & 0x0f); // bps-1 low nibble (16 bps) + totalSamples bits 35..32
+	b.writeUInt32BE(totalSamples >>> 0, s + 14);
+	return b;
 }
 class Child extends EventEmitter {
 	stderr = new EventEmitter(); kills: string[] = [];
@@ -76,6 +116,63 @@ test("RIFF chunk padding, duplicates and bounds are validated", () => {
 	}
 });
 
+test("content detection accepts WAV, OGG Vorbis/Opus and FLAC with decoded durations", () => {
+	assert.deepEqual(validateNotificationAudio(wav()), { format: "wav", durationMs: 100 });
+	assert.deepEqual(validateNotificationAudio(oggVorbis(8000, 4000)), { format: "ogg", durationMs: 500 });
+	assert.deepEqual(validateNotificationAudio(oggOpus(312, 312 + 24000)), { format: "ogg", durationMs: 500 });
+	assert.deepEqual(validateNotificationAudio(flac(8000, 4000)), { format: "flac", durationMs: 500 });
+	// Minimal FLAC without trailing bytes: 4 magic + 4 block header + 34 STREAMINFO is already sufficient.
+	assert.equal(validateNotificationFlac(flac().subarray(0, 42)), 1000);
+	assert.equal(validateNotificationOgg(oggVorbis()), 1000);
+});
+
+test("content detection rejects other containers, unknown Ogg codecs, malformed pages and over-limit audio", () => {
+	for (const other of [Buffer.from("ID3\x04\x00\x00\x00\x00\x00\x00"), Buffer.from("\x00\x00\x00\x18ftypmp42"), Buffer.alloc(0), Buffer.from("Ogg")])
+		assert.throws(() => validateNotificationAudio(other), /Unsupported notification audio format/);
+	const unsupported = Buffer.concat([oggPage(0x02, 0, Buffer.from("Xcodec!!", "ascii"), 0), oggPage(0x00, 1000, Buffer.alloc(0), 1)]);
+	assert.throws(() => validateNotificationAudio(unsupported), /Invalid notification OGG/);
+	// Duration is decoded per format and then rejected by the shared 5 s guard.
+	for (const long of [flac(8000, 8000 * 6), oggVorbis(8000, 8000 * 6), oggOpus(312, 312 + 48000 * 6)])
+		assert.throws(() => validateNotificationAudio(long), /exceeds 5 seconds|Invalid notification/);
+	// Size is bounded for every container, even before parsing.
+	const hugeOgg = Buffer.alloc(2 * 1024 * 1024 + 1); hugeOgg.write("OggS", 0);
+	const hugeFlac = Buffer.alloc(2 * 1024 * 1024 + 1); hugeFlac.write("fLaC", 0);
+	assert.throws(() => validateNotificationAudio(hugeOgg), /Invalid notification OGG/);
+	assert.throws(() => validateNotificationAudio(hugeFlac), /Invalid notification FLAC/);
+	// FLAC requires the first block to be STREAMINFO of exactly 34 bytes.
+	const notStreaminfo = flac(); notStreaminfo[4] = 0x80 | 0x04; assert.throws(() => validateNotificationFlac(notStreaminfo), /Invalid notification FLAC/);
+	const wrongLength = flac(); wrongLength[7] = 33; assert.throws(() => validateNotificationFlac(wrongLength), /Invalid notification FLAC/);
+	const unknownSamples = flac(8000, 0); assert.throws(() => validateNotificationFlac(unknownSamples), /Invalid notification FLAC/);
+});
+
+test("Ogg pages are walked with bounds: non-BOS first page, bad version, unsupported codec and truncation fail closed", () => {
+	const nonBos = Buffer.concat([oggPage(0x00, 0, vorbisId(), 0), oggPage(0x00, 1000, Buffer.alloc(0), 1)]);
+	assert.throws(() => validateNotificationOgg(nonBos), /Invalid notification OGG/);
+	const badVersion = oggVorbis(); badVersion[4] = 1; assert.throws(() => validateNotificationOgg(badVersion), /Invalid notification OGG/);
+	const badMagic = oggVorbis(); badMagic.write("XggS", 0); assert.throws(() => validateNotificationOgg(badMagic), /Invalid notification OGG/);
+	const badChannels = Buffer.concat([oggPage(0x02, 0, vorbisId(3), 0), oggPage(0x00, 1000, Buffer.alloc(0), 1)]);
+	assert.throws(() => validateNotificationOgg(badChannels), /Invalid notification OGG/);
+	const badRate = Buffer.concat([oggPage(0x02, 0, vorbisId(1, 4000), 0), oggPage(0x00, 1000, Buffer.alloc(0), 1)]);
+	assert.throws(() => validateNotificationOgg(badRate), /Invalid notification OGG/);
+	assert.throws(() => validateNotificationOgg(oggVorbis().subarray(0, 40)), /Invalid notification OGG/);
+	assert.throws(() => validateNotificationOgg(Buffer.concat([oggVorbis(), Buffer.from([1, 2, 3])])), /Invalid notification OGG/);
+});
+
+test("player capabilities map trusted executables to their real formats without starting playback", async () => {
+	const pick = (platform: string, match?: string) => new NotificationPlayer({ platform,
+		executableAvailable: async path => match === undefined ? true : path === match });
+	assert.deepEqual([...(await pick("linux", "/usr/bin/paplay").capabilities())], ["wav", "ogg", "flac"]);
+	assert.deepEqual([...(await pick("linux", "/usr/bin/pw-play").capabilities())], ["wav", "ogg", "flac"]);
+	assert.deepEqual([...(await pick("linux", "/usr/bin/aplay").capabilities())], ["wav"]);
+	assert.deepEqual([...(await pick("darwin", "/usr/bin/afplay").capabilities())], ["wav", "flac"]);
+	assert.deepEqual([...(await pick("win32", "/usr/bin/paplay").capabilities())], []);
+	assert.deepEqual([...(await pick("linux", "").capabilities())], []);
+	// Capabilities reuse the cached lazy detection: no second probe sequence.
+	const cached = pick("linux", "/usr/bin/aplay");
+	assert.equal(await cached.availability(), "available");
+	assert.deepEqual([...(await cached.capabilities())], ["wav"]);
+});
+
 test("detection lazy, cached, trusted absolute candidates only; absence and Windows silent", async () => {
 	const f = fixture(); assert.deepEqual(f.probes, []); f.setAvailable(false);
 	await f.play(); await f.play(); assert.equal(f.calls.length, 0); assert.equal(f.permits(), 0);
@@ -94,6 +191,21 @@ test("private snapshot, literal argv, no shell/detach; settle only after close a
 	assert.equal(f.writes[0].mode, 0o600); assert.deepEqual(f.writes[0].bytes, wav());
 	f.child.emit("exit", 0); await tick(); assert.equal(done, false);
 	f.child.emit("close", 0); await p; assert.equal(done, true); assert.equal(f.cleaned.length, 2); assert.equal(f.cleared(), 1);
+});
+
+test("snapshot extension follows the detected format and OGG/FLAC bytes reach the same secure flow", async () => {
+	for (const [bytes, extension] of [[oggVorbis(), "ogg"], [flac(), "flac"]] as const) {
+		const f = fixture(); f.setBytes(bytes); let done = false;
+		const p = f.play().then(() => { done = true; }); await tick();
+		assert.equal(f.permits(), 1); assert.equal(done, false);
+		assert.equal(f.calls[0]!.args[0], `/private/audio ; literal/sound.${extension}`);
+		assert.equal(f.writes[0]!.mode, 0o600); assert.deepEqual(f.writes[0]!.bytes, bytes);
+		f.child.emit("close", 0); await p; assert.equal(done, true); assert.equal(f.cleaned.length, 2);
+	}
+	// An unknown container never allocates a snapshot or spawns a player.
+	const unknown = fixture(); unknown.setBytes(Buffer.concat([Buffer.from("\x00\x00\x00\x18ftypmp42"), Buffer.alloc(40)]));
+	await assert.rejects(unknown.play(), /Unsupported notification audio format/);
+	assert.equal(unknown.calls.length, 0); assert.equal(unknown.writes.length, 0);
 });
 
 test("abort before/during detection, validation and late false permit never spawn", async () => {
@@ -152,5 +264,6 @@ test("all original builtin WAV assets pass the same validator", async () => {
 	for (const id of ["success", "error", "attention"]) {
 		const bytes = await readFile(new URL(`../assets/sounds/${id}.wav`, import.meta.url));
 		assert.ok(validateNotificationWav(bytes) > 0);
+		assert.equal(validateNotificationAudio(bytes).format, "wav");
 	}
 });

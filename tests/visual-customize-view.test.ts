@@ -555,21 +555,21 @@ test("row key shortcuts run before panel shortcuts and are ignored outside the c
 
 test("Notifications non-event controls consume p without opening visual profiles and keep the audio title", () => {
 	const listed: string[] = [];
-	const view = new VisualCustomizeView({ rows: [
+	const rows: CustomizeRow[] = [
 		{ category: "Notifications", label: "Audio notifications: on", action: () => {} },
 		{ category: "Notifications", label: "Audio: unmuted", action: () => {} },
-		{ category: "Notifications", label: "Audio availability: check", action: () => {} },
-		{ category: "Notifications", label: "Audio: restore preset", action: () => {} },
-	], theme, requestRender: () => {}, onClose: () => {}, profiles: { list: () => { listed.push("list"); return []; }, save: () => {}, apply: () => {}, delete: () => {}, reset: () => {} } });
+		{ category: "Notifications", label: "Advanced: show per-event exceptions", action: () => {} },
+	];
+	const view = new VisualCustomizeView({ rows, theme, requestRender: () => {}, onClose: () => {}, profiles: { list: () => { listed.push("list"); return []; }, save: () => {}, apply: () => {}, delete: () => {}, reset: () => {} } });
 	view.render(76);
 	view.handleInput("\x1b[C");
-	for (let i = 0; i < 4; i++) {
+	for (let i = 0; i < rows.length; i++) {
 		view.handleInput("p");
 		const frame = view.render(76).join("\n");
 		assert.equal(view.title(), "Audio notifications", `non-event row ${i} must keep the audio title`);
 		assert.match(frame, /Audio notifications/, `non-event row ${i} must stay on the audio card`);
 		assert.doesNotMatch(frame, /Visual profiles/, `non-event row ${i} must not open the profile pane`);
-		if (i < 3) view.handleInput("\x1b[B");
+		if (i < rows.length - 1) view.handleInput("\x1b[B");
 	}
 	assert.deepEqual(listed, [], "the profile catalog must never be listed from Notifications controls");
 });

@@ -2855,7 +2855,8 @@ test("customize Notifications applies audio controls directly in the same overla
 	try {
 		assert.ok(findCustomizeRow(ui, "Audio notifications: off"), "global switch is a direct row");
 		assert.ok(findCustomizeRow(ui, "Audio: unmuted"), "mute is a direct row");
-		assert.ok(findCustomizeRow(ui, "Audio availability: check"), "availability is a direct row");
+		assert.equal(findCustomizeRow(ui, "Audio availability: check"), false, "availability row is removed from the card");
+		assert.equal(findCustomizeRow(ui, "Audio: restore preset"), false, "restore row is removed from the card");
 		assert.ok(findCustomizeRow(ui, "Success:"), "Success group is a direct row");
 		assert.ok(findCustomizeRow(ui, "Error:"), "Error group is a direct row");
 		assert.ok(findCustomizeRow(ui, "Attention:"), "Attention group is a direct row");

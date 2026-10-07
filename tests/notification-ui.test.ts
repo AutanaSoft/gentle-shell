@@ -25,7 +25,7 @@ function harness(options: { malformed?: boolean; readError?: boolean; failWrite?
 		read: () => ({ settings, source: "global_file", malformed: options.malformed ?? false,
 			readError: options.readError ?? false, globalFile: "/config/notifications.json" }),
 		write: (next: NotificationSettings) => { writes++; if (options.failWrite) throw Error("private"); settings = next; return "/config/notifications.json"; },
-		backend: { availability: async () => { probes++; return "available"; }, play: async (_sound, _signal, permit) => { if (permit.start()) played++; } },
+		backend: { availability: async () => { probes++; return "available"; }, capabilities: async () => new Set(["wav", "ogg", "flac"] as const), play: async (_sound, _signal, permit) => { if (permit.start()) played++; } },
 	}); owner.attach(ctx); getNotificationService()!.setMuted(ctx, false);
 	return { ctx, owner, choices, inputs, confirms, notes, menus,
 		panel: () => openNotificationPanel(ctx), replaceDuringSelect: () => { beforeSelect = () => owner.attach(ctx); },
