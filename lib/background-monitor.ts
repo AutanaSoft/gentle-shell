@@ -106,8 +106,8 @@ export function createMonitorController(deps: MonitorControllerDeps) {
 		active.delete(id);
 	};
 	const stopFor = (job: JobRecord, reason: MonitorStopReason) => {
-		// A command that already ended reports its own exit instead.
-		if (job.status !== "running") return cancel(job.id);
+		// A command that already ended reports its own exit (finish flushes it).
+		if (job.status !== "running") return;
 		flush(job);
 		cancel(job.id);
 		deps.registry.stop(job.id);

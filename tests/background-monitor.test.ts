@@ -164,13 +164,17 @@ test("a timeout that fires after the command already exited reports nothing; the
 	const h = monitorHarness();
 	try {
 		const job = h.controller.start({ command: "watch", cwd: "/repo", ownerSessionId: "s1", timeoutSeconds: 1 });
+		h.advance(900);
+		h.line("last line");
 		h.runs[0]!.exit(0);
 		await Promise.resolve();
 		await Promise.resolve();
 		assert.equal(job.status, "exited", "the exit is recorded before its log closes");
-		h.advance(1000);
+		h.advance(100);
 		assert.deepEqual(h.notices, [], "no stopped notice for a monitor that ended on its own");
 		await io();
 		assert.equal(h.settled[0], job);
+		h.controller.finish(job);
+		assert.deepEqual(h.notices, [{ job, kind: "events", batch: { lines: ["last line"], omitted: 0 } }], "its pending line still arrives");
 	} finally { h.controller.cancelAll(); h.cleanup(); }
 });
