@@ -30,6 +30,8 @@ import { listVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
+import { claimNotificationOwner } from "../lib/notification-service.ts";
+import { DEFAULT_NOTIFICATION_SETTINGS } from "../lib/notification-policy.ts";
 
 
 // Vim fixtures claim the installed pi-tui release, which the adapter gate
@@ -2811,7 +2813,7 @@ function scopedDoubleEscCancelConfigHome(t: { after(callback: () => void): void 
 function findCustomizeRow(ui: FakeUi, label: string, width = 90): boolean {
 	const view = ui.overlayView!;
 	view.handleInput("\x1b[D");
-	for (let category = 0; category < 10; category++) {
+	for (let category = 0; category < 11; category++) {
 		view.handleInput("\x1b[C");
 		for (let index = 0; index < 35; index++) {
 			if (view.render(width).some((line) => line.includes(`▸ ${label}`))) return true;
@@ -2830,6 +2832,31 @@ async function customizeAction(ui: FakeUi, label: string): Promise<void> {
 	for (let attempt = 0; attempt < 100 && ui.notices.length === notices; attempt++) await new Promise<void>((resolve) => setTimeout(resolve, 5));
 	assert.ok(ui.notices.length > notices, `action did not finish: ${label}`);
 }
+
+test("customize Notifications opens dedicated panel after overlay closes, no visual writer or new command", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home }); // Shell loads BEFORE owner.
+	const child = process.env.GENTLE_PI_AGENTS_CHILD;
+	process.env.GENTLE_PI_AGENTS_CHILD = "0";
+	t.after(() => { if (child === undefined) delete process.env.GENTLE_PI_AGENTS_CHILD; else process.env.GENTLE_PI_AGENTS_CHILD = child; });
+	const menus: string[] = [];
+	const { ctx, ui, overlayReady } = fakeContext({ select: async title => { menus.push(title); return undefined; } });
+	const owner = claimNotificationOwner(() => {}, { env: {}, read: () => ({ settings: structuredClone(DEFAULT_NOTIFICATION_SETTINGS),
+		source: "default", globalFile: join(home, "notifications.json"), malformed: false, readError: false }) });
+	owner.attach(ctx); t.after(() => owner.retire());
+	const pending = commands.get("gentle:customize")!.handler("", ctx); await overlayReady;
+	try {
+		assert.ok(findCustomizeRow(ui, "Notification settings"));
+		assert.match(ui.overlayView!.render(90).join("\n"), /Notifications/);
+		assert.deepEqual(menus, []);
+		ui.overlayView!.handleInput("\r"); await new Promise<void>(resolve => setImmediate(resolve));
+		assert.match(menus[0] ?? "", /^Notifications/);
+		assert.equal(existsSync(join(home, "visual.json")), false);
+		assert.equal(existsSync(join(home, "notifications.json")), false);
+		assert.equal([...commands.keys()].some(name => /notification/.test(name)), false);
+	} finally { ui.closeOverlay?.(); await pending; }
+});
 
 test("customize Editor rows preview global preference without applying until Enter or Space", async (t) => {
 	const home = scopedDoubleEscCancelConfigHome(t);

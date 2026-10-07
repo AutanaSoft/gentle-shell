@@ -190,6 +190,10 @@ Extension commands are only useful if you can find them. `alt+k` opens a curated
 
 ---
 
+### Sound notifications — opt-in
+
+Open `/gentle:customize` → **Notifications** → **Notification settings** to enable audio, assign builtin/local WAV sounds by event, preview, or mute this process. Audio starts off; RPC and children stay silent. Linux/macOS adapters await manual listening verification; Windows playback is unavailable. [Usage, limits and verification →](docs/sound-notifications.md)
+
 ### Also in the box
 
 | Component | What it does |
