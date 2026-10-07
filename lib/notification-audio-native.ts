@@ -19,7 +19,8 @@ const FIXED_NODE_FLAGS = ["--experimental-strip-types", "--max-old-space-size=32
 const MAX_STDOUT = 1024;
 const MAX_STDERR = 4096;
 const DEFAULT_PROBE_TIMEOUT_MS = 1200;
-const DEFAULT_PLAY_TIMEOUT_MS = 6000;
+/** 10 s maximum validated duration plus a 1 s termination margin; must outlive every accepted sound. */
+const DEFAULT_PLAY_TIMEOUT_MS = 11000;
 
 export interface NativePulseProbeResult { readonly available: boolean; readonly formats: readonly ("wav")[]; }
 export interface NativePulseSpawnOptions {

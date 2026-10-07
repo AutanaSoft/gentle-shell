@@ -11,7 +11,9 @@ import { NativePulseNotPermittedError, NativePulsePlayer } from "./notification-
 import { NativeWindowsPlayer } from "./notification-audio-windows.ts";
 
 const MAX_BYTES = 2 * 1024 * 1024;
-const PLAYBACK_TIMEOUT_MS = 6000;
+/** User-facing duration ceiling for every accepted container; the play deadlines below add a 1 s margin. */
+const MAX_DURATION_MS = 10000;
+const PLAYBACK_TIMEOUT_MS = 11000;
 const STDERR_LIMIT = 4096;
 /** Strict RIFF PCM: unknown chunks allowed, with word padding; one fmt and one nonempty data. */
 export function validateNotificationWav(bytes: Buffer): number {
@@ -40,7 +42,7 @@ export function validateNotificationWav(bytes: Buffer): number {
 	}
 	if (!format || dataSize === undefined || dataSize % format.align !== 0) return invalid();
 	const duration = dataSize / format.align / format.rate * 1000;
-	if (duration > 5000) return invalid();
+	if (duration > MAX_DURATION_MS) return invalid();
 	return duration;
 }
 
@@ -58,7 +60,7 @@ export function validateNotificationAudio(bytes: Buffer): { format: Notification
 		format = "ogg"; durationMs = validateNotificationOgg(bytes);
 	} else throw new TypeError("Unsupported notification audio format");
 	// WAV already enforces this internally; the shared guard also bounds the decoded OGG/FLAC durations.
-	if (durationMs > 5000) throw new TypeError("Notification audio exceeds 5 seconds");
+	if (durationMs > MAX_DURATION_MS) throw new TypeError("Notification audio exceeds 10 seconds");
 	return { format, durationMs };
 }
 /** FLAC duration from STREAMINFO: the first metadata block must be STREAMINFO of exactly 34 bytes

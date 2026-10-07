@@ -123,12 +123,14 @@ test("parsePulseWav extracts PCM and maps 8/16/24/32-bit mono/stereo", () => {
 	}
 });
 
-test("parsePulseWav rejects invalid, oversized and over-5s bytes without IO", () => {
+test("parsePulseWav rejects invalid and oversized bytes while accepting the 10 s boundary without IO", () => {
 	assert.throws(() => parsePulseWav(Buffer.alloc(8)));
 	assert.throws(() => parsePulseWav(wav(16, 1, 8000, 100).subarray(0, 40)));
 	assert.throws(() => parsePulseWav(wav(16, 3, 8000, 10)));
 	assert.throws(() => parsePulseWav(wav(16, 1, 4000, 10)));
-	assert.throws(() => parsePulseWav(wav(16, 1, 8000, 44640))); // 5.58s
+	assert.equal(parsePulseWav(wav(16, 1, 8000, 80000)).durationMs, 10000); // exact 10 s boundary
+	assert.equal(parsePulseWav(wav(16, 1, 8000, 44640)).durationMs, 5580); // previously rejected 5.58 s
+	assert.throws(() => parsePulseWav(wav(16, 1, 8000, 80001))); // just past 10 s
 	assert.throws(() => parsePulseWav(wav(32, 2, 192000, 300000))); // > 2 MiB
 });
 
@@ -242,6 +244,28 @@ test("DRAIN may exceed the 900 ms default via a bounded per-request deadline", a
 		await new Promise(resolve => setTimeout(resolve, 10));
 		assert.equal(settled, false);
 		server.state.drainSender!();
+		await playing;
+		await client.close();
+	} finally { await server.close(); }
+});
+
+test("default engine request deadline allows a full 10 s drain instead of the old 6 s", async () => {
+	const bytes = wav(16, 1, 8000, 100); const data = dataOf(bytes);
+	const server = await startPlaybackServer({ missing: data.length, holdDrain: true });
+	const clock = fakeClock();
+	try {
+		const client = new PulseClient({ socketPath: server.path, cookie: Buffer.alloc(256), requestTimeoutMs: 900, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
+		await client.connect();
+		let settled = false;
+		const playing = playPulseWav(bytes, undefined, { client }).then(() => { settled = true; }, () => { settled = true; });
+		for (let i = 0; i < 20 && !server.state.drainSender; i++) await new Promise(resolve => setTimeout(resolve, 5));
+		assert.ok(server.state.drainSender, "drain reached");
+		clock.advance(10000); // past the old 6000 ms deadline, still inside the 10 s duration
+		await new Promise(resolve => setTimeout(resolve, 10));
+		assert.equal(settled, false);
+		clock.advance(1000); // now past the new 11000 ms deadline
+		await new Promise(resolve => setTimeout(resolve, 10));
+		assert.equal(settled, true);
 		await playing;
 		await client.close();
 	} finally { await server.close(); }
