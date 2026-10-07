@@ -34,15 +34,15 @@ export interface NotificationSettings {
 		events: Partial<Record<NotificationEvent, NotificationSound>>;
 	};
 }
-export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
+export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = Object.freeze({
 	enabled: false,
-	audio: {
-		backend: "auto", minimumIntervalMs: 1000, coalesceWindowMs: 300,
-		events: Object.fromEntries(NOTIFICATION_EVENTS.map(event => [event,
+	audio: Object.freeze({
+		backend: "auto" as const, minimumIntervalMs: 1000, coalesceWindowMs: 300,
+		events: Object.freeze(Object.fromEntries(NOTIFICATION_EVENTS.map(event => [event,
 			NOTIFICATION_PRIORITY[event] === 3 ? "builtin:error" : NOTIFICATION_PRIORITY[event] === 2 ? "builtin:attention"
-				: NOTIFICATION_PRIORITY[event] === 1 ? "builtin:success" : null])),
-	},
-};
+				: NOTIFICATION_PRIORITY[event] === 1 ? "builtin:success" : null]))),
+	}),
+});
 export type NotificationPathFlavor = "posix" | "win32";
 export interface NotificationIO {
 	readFile(path: string): string;
@@ -117,7 +117,7 @@ export function restoreNotificationPreset(settings: NotificationSettings): Notif
 	return { ...structuredClone(DEFAULT_NOTIFICATION_SETTINGS), enabled: settings.enabled };
 }
 export function resolveNotificationSettings(options: NotificationOptions = {}): NotificationResolution {
-	const globalFile = join(options.gentlePiConfigHome ?? gentlePiConfigHome(), "notifications.json");
+	const globalFile = join(options.gentlePiConfigHome || gentlePiConfigHome(), "notifications.json");
 	try {
 		const settings = parseNotificationSettingsFile((options.io ?? DEFAULT_IO).readFile(globalFile), options.pathFlavor);
 		return { settings: settings ?? structuredClone(DEFAULT_NOTIFICATION_SETTINGS), source: "global_file", malformed: settings === undefined, readError: false, globalFile };
@@ -130,7 +130,7 @@ export function resolveNotificationSettings(options: NotificationOptions = {}): 
 export function writeNotificationSettings(settings: NotificationSettings, options: NotificationOptions = {}): string {
 	if (!isNotificationSettings(settings, options.pathFlavor)) throw new TypeError("Invalid notification settings");
 	const io = options.io ?? DEFAULT_IO;
-	const home = options.gentlePiConfigHome ?? gentlePiConfigHome();
+	const home = options.gentlePiConfigHome || gentlePiConfigHome();
 	const path = join(home, "notifications.json");
 	const temporary = `${path}.${randomUUID()}.tmp`;
 	io.mkdir(home);

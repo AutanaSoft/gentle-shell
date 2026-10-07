@@ -36,6 +36,26 @@ function memoryIO() {
 }
 const options = (io: NotificationIO) => ({ gentlePiConfigHome: "/config", io });
 
+test("preset cannot be mutated globally at any depth", () => {
+	assert.throws(() => { DEFAULT_NOTIFICATION_SETTINGS.enabled = true; }, TypeError);
+	assert.throws(() => { DEFAULT_NOTIFICATION_SETTINGS.audio.minimumIntervalMs = 42; }, TypeError);
+	assert.throws(() => { DEFAULT_NOTIFICATION_SETTINGS.audio.events["agent.completed"] = null; }, TypeError);
+	assert.equal(restoreNotificationPreset(DEFAULT_NOTIFICATION_SETTINGS).audio.events["agent.completed"], "builtin:success");
+});
+
+test("empty explicit home falls back to official global home for reads and writes", () => {
+	const previous = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = "/official";
+	try {
+		const fs = memoryIO();
+		assert.equal(resolveNotificationSettings({ gentlePiConfigHome: "", io: fs.io }).globalFile, "/official/notifications.json");
+		assert.equal(writeNotificationSettings(DEFAULT_NOTIFICATION_SETTINGS, { gentlePiConfigHome: "", io: fs.io }), "/official/notifications.json");
+	} finally {
+		if (previous === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previous;
+	}
+});
+
 test("missing configuration is off, independent and has no write side effects", () => {
 	const fs = memoryIO();
 	const result = resolveNotificationSettings(options(fs.io));
