@@ -26,7 +26,7 @@ References: Claude Code background Bash (`run_in_background`, task notification,
 - T5 — S10, S11: `monitor` (stacked on #1842); inline:
   - T5a — S11: pure event batcher (200 ms window, 20 lines per notice, flood limit) in `lib/background-monitor.ts`; done, commit `172c1295f`.
   - T5b — S10, S11: registry line hook, `monitor` tool, timeout, flood stop, coalesced event delivery through the parent router, shell guards; done, commit `c1dca5646`.
-  - T5c — S10: `/gentle:jobs` and docs; commit pending.
+  - T5c — S10: `/gentle:jobs` and docs; done, commit `deeff9f3c`.
 
 ## Log
 
