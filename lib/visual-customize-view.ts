@@ -30,10 +30,16 @@ function dropLastGrapheme(text: string): string {
 }
 
 /** Category-aware footer; the audio card advertises audio keys, never the visual profiles pane. */
-function footerHint(category: string, navOnly: boolean, previewLines: number): string {
+function footerHint(category: string, navOnly: boolean, previewLines: number, keyhint?: string): string {
 	if (navOnly) return "↑/↓ categories · → open · Esc close";
-	if (category === "Notifications") return "Tab panes · Enter change · f WAV · p test · Esc close";
+	if (category === "Notifications") return keyhint ?? "Tab panes · Enter change · p test · Esc close";
 	return previewLines ? "←/→ or Tab panes · ↑/↓ move · Enter apply · p profiles · Esc close" : "Preview omitted · ←/→ panes · ↑/↓ move · Enter apply · Esc close";
+}
+
+/** A row is interactive only while its `visible()` check passes; a throwing check fails closed. */
+function rowVisible(row: CustomizeRow): boolean {
+	if (!row.visible) return true;
+	try { return row.visible() !== false; } catch { return false; }
 }
 
 export type CustomizeCategory = "Animations" | "Banner" | "Themes" | "Editor" | "History" | "Notifications" | "Layout" | "Cards" | "Sections" | "Profiles" | "Reset";
@@ -43,6 +49,10 @@ export interface CustomizeRow {
 	label: string | (() => string);
 	/** Read-only representation of the highlighted choice, never an application. */
 	preview?: () => { title: string; sample: string };
+	/** When present and it returns false the row is hidden from its category; an exception fails closed. */
+	visible?: () => boolean;
+	/** Audio-footer hint for this row; omitted rows use the category default (never advertising `f WAV`). */
+	keyhint?: string;
 	/** Runs on Enter/Space. May await the inline bridge for a row-scoped edit or consent. */
 	action(inline: CustomizeInline): void | Promise<void>;
 	/** Row-scoped shortcuts, checked before panel shortcuts. Return `true` for a synchronous
@@ -289,7 +299,7 @@ export class VisualCustomizeView {
 	}
 
 	private categoryRows(): CustomizeRow[] {
-		return this.options.rows.filter(row => (row.category ?? "Settings") === this.categories[this.categoryIndex]);
+		return this.options.rows.filter(row => (row.category ?? "Settings") === this.categories[this.categoryIndex] && rowVisible(row));
 	}
 
 	handleInput(data: string): void {
@@ -410,7 +420,7 @@ export class VisualCustomizeView {
 			lines.push(paint(navOnly ? "" : preview?.sample ?? "No read-only sample for this choice", inner, "muted"));
 		} else if (previewLines === 1) lines.push(paint(navOnly ? "→ controls · Esc close" : "Preview omitted · enlarge terminal", inner, "muted"));
 		if (showBottomGap) lines.push("");
-		if (showHeading) lines.push(paint(footerHint(category, navOnly, previewLines), inner, "muted"));
+		if (showHeading) lines.push(paint(footerHint(category, navOnly, previewLines, rows[this.selected]?.keyhint), inner, "muted"));
 		// The top-right close hint mirrors Commands without consuming another row.
 		const title = this.title();
 		lines[0] = paint(title + " ".repeat(Math.max(1, inner - visibleWidth(title) - 3)) + "esc", inner, "accent");
