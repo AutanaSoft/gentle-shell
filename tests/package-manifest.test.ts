@@ -848,6 +848,28 @@ test("selective review migration adopts only untouched legacy copies and preserv
 	}
 });
 
+test("native pulse audio ships owned TypeScript sources without new dependencies or addons", () => {
+	const manifest = readPackageJson();
+	const verifier = readFileSync(join(PACKAGE_ROOT, "scripts", "verify-package-files.mjs"), "utf8");
+	const sources = [
+		"lib/notification-pulse-protocol.ts", "lib/notification-pulse-client.ts",
+		"lib/notification-pulse-stream.ts", "lib/notification-audio-native.ts",
+		"lib/notification-pulse-worker.ts",
+	];
+	for (const source of sources) {
+		assert.ok(existsSync(join(PACKAGE_ROOT, source)), `${source} must exist`);
+		assert.ok(verifier.includes(`"${source}"`), `${source} must be a required package resource`);
+	}
+	assert.ok(!manifest.files?.includes("native/"), "no native addon directory may ship");
+	for (const name of Object.keys(manifest.dependencies ?? {})) assert.doesNotMatch(name, /pulse|audio|sound|native/i, name);
+	for (const name of Object.keys(manifest.scripts ?? {})) assert.doesNotMatch(name, /pulse|native:build|audio:install/i, name);
+	for (const path of ["lib/notification-pulse-worker.ts", "lib/notification-audio-native.ts"]) {
+		const source = readFileSync(join(PACKAGE_ROOT, path), "utf8");
+		assert.doesNotMatch(source, /@earendil-works|\.node["']|addon/i, path);
+		assert.doesNotMatch(source, /postinstall|installer|download/i, path);
+	}
+});
+
 test("packed tarball excludes retired workflow paths while source retains legacy migration proof", () => {
 	const fixture = "tests/fixtures/legacy/sdd-research-v2.5.0.md";
 	assert.ok(existsSync(join(PACKAGE_ROOT, fixture)), "the historical source fixture must remain available to migration tests");
@@ -867,6 +889,8 @@ test("packed tarball excludes retired workflow paths while source retains legacy
 			"lib/notification-scheduler.ts", "lib/notification-service.ts", "lib/notification-ui.ts",
 			"assets/sounds/success.wav", "assets/sounds/error.wav", "assets/sounds/attention.wav",
 			"assets/sounds/LICENSE.md", "docs/sound-notifications.md", "docs/sound-notifications-proposal.md",
+			"lib/notification-pulse-protocol.ts", "lib/notification-pulse-client.ts", "lib/notification-pulse-stream.ts",
+			"lib/notification-audio-native.ts", "lib/notification-pulse-worker.ts",
 			"scripts/npm-pack-result.mjs",
 		]) {
 			assert.ok(packed.files.some(file => file.path === path), `${path} must be packed`);
