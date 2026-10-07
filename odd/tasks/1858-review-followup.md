@@ -9,7 +9,7 @@ Source: ElCaaarnal's changes-requested review on #1858 plus the CodeRabbit findi
 - [x] Re-apply the cleanup fix on the integrated `play()` so no early `return` skips the cleanup error, and include bounded stderr in the process failure message. Test-first.
 - [x] Remove the remaining absolute local paths from `odd/tasks/sound-notifications.md`.
 - [x] Open the PR into `feat/1829-audio-tracker` with `Refs #1829`.
-- [ ] Convert #1858 back to draft and refresh its body with the real head, size and state.
+- [x] Convert #1858 back to draft and refresh its body with the real head, size and state.
 
 ## Non-goals
 
