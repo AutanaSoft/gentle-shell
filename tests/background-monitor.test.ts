@@ -159,3 +159,18 @@ test("timeout_seconds is mandatory and capped at 30 minutes", () => {
 		assert.equal(h.runs.length, 0, "an invalid monitor never starts a process");
 	} finally { h.controller.cancelAll(); h.cleanup(); }
 });
+
+test("a timeout that fires after the command already exited reports nothing; the exit wins", async () => {
+	const h = monitorHarness();
+	try {
+		const job = h.controller.start({ command: "watch", cwd: "/repo", ownerSessionId: "s1", timeoutSeconds: 1 });
+		h.runs[0]!.exit(0);
+		await Promise.resolve();
+		await Promise.resolve();
+		assert.equal(job.status, "exited", "the exit is recorded before its log closes");
+		h.advance(1000);
+		assert.deepEqual(h.notices, [], "no stopped notice for a monitor that ended on its own");
+		await io();
+		assert.equal(h.settled[0], job);
+	} finally { h.controller.cancelAll(); h.cleanup(); }
+});

@@ -1077,9 +1077,13 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// parent, at the next turn boundary for a busy one.
 	// Line events still waiting for a busy parent coalesce per monitor.
 	const queueJobNotice = (notice: JobNotice) => {
-		const last = jobNotices.at(-1);
-		if (notice.kind === "events" && last?.kind === "events" && last.job === notice.job) {
-			jobNotices[jobNotices.length - 1] = { ...last, batch: mergeMonitorBatches(last.batch, notice.batch) };
+		// Merge into this monitor's latest pending notice when that is still
+		// an events notice, so events never move past its own end.
+		let index = -1;
+		for (let i = jobNotices.length - 1; i >= 0; i--) if (jobNotices[i]!.job === notice.job) { index = i; break; }
+		const pending = index >= 0 ? jobNotices[index]! : undefined;
+		if (notice.kind === "events" && pending?.kind === "events") {
+			jobNotices[index] = { ...pending, batch: mergeMonitorBatches(pending.batch, notice.batch) };
 		} else {
 			jobNotices.push(notice);
 		}
@@ -2123,7 +2127,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	}
 
 	pi.registerCommand(JOBS_COMMAND_NAME, {
-		description: "Show this session's background jobs (bash_background): status, command, output tail; s stops the selected job.",
+		description: "Show this session's background jobs (bash_background and monitor): status, command, output tail; s stops the selected job.",
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) return;
 			if (ctx.mode !== "tui") {
@@ -2141,7 +2145,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					// The agent was promised a notice, so a human stop is reported;
 					// a job_stop needs none because the agent itself stopped it.
 					onStop: (job) => {
-						monitors.cancel(job.id);
+						// Lines already seen are delivered before the stop notice.
+						monitors.finish(job);
 						const stopped = jobs.stop(job.id);
 						if (stopped) queueJobNotice({ job: stopped, kind: "exit" });
 					},

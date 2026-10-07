@@ -124,6 +124,21 @@ test("onLine receives each complete output line across chunks, and the last part
 	} finally { cleanup(); }
 });
 
+test("onLine bounds an endless line to its newest MAX_TAIL_LINE_CHARS characters", async () => {
+	const { fake, registry, cleanup } = setup();
+	try {
+		const lines: string[] = [];
+		registry.start({ command: "watch", cwd: "/repo", ownerSessionId: "s1", kind: "monitor", onLine: (line) => lines.push(line) });
+		fake.runs[0]!.onData(Buffer.from(`${"x".repeat(MAX_TAIL_LINE_CHARS * 5)}END\nshort\n`));
+		assert.equal(lines.length, 2);
+		assert.ok(lines[0]!.length <= MAX_TAIL_LINE_CHARS + 1 && lines[0]!.startsWith("…") && lines[0]!.endsWith("xEND"));
+		assert.equal(lines[1], "short");
+		fake.runs[0]!.onData(Buffer.from("y".repeat(MAX_TAIL_LINE_CHARS * 5)));
+		fake.runs[0]!.onData(Buffer.from("TAIL\n"));
+		assert.ok(lines[2]!.length <= MAX_TAIL_LINE_CHARS + 1 && lines[2]!.startsWith("…") && lines[2]!.endsWith("yTAIL"));
+	} finally { cleanup(); }
+});
+
 test("stopAll resolves only after every job's log file is closed", async () => {
 	const { registry, cleanup } = setup();
 	try {

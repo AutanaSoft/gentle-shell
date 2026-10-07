@@ -163,8 +163,12 @@ export function createJobRegistry(deps: JobRegistryDeps) {
 			if (!request.onLine) return;
 			const parts = (linePartial + text).split("\n");
 			linePartial = end ? "" : parts.pop() ?? "";
-			if (linePartial.length > MAX_TAIL_LINE_CHARS) linePartial = linePartial.slice(-MAX_TAIL_LINE_CHARS);
-			for (const part of parts) request.onLine(part.endsWith("\r") ? part.slice(0, -1) : part);
+			// Keep one extra character so a cut partial still reads as cut.
+			if (linePartial.length > MAX_TAIL_LINE_CHARS) linePartial = linePartial.slice(-(MAX_TAIL_LINE_CHARS + 1));
+			for (const part of parts) {
+				const line = part.endsWith("\r") ? part.slice(0, -1) : part;
+				request.onLine(line.length > MAX_TAIL_LINE_CHARS ? `…${line.slice(-MAX_TAIL_LINE_CHARS)}` : line);
+			}
 		};
 		const flushDecoder = () => {
 			const rest = decoder.decode();

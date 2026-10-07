@@ -6107,3 +6107,31 @@ test("monitor rejects a missing or out-of-range timeout before starting anything
 		jobs.cleanup();
 	}
 });
+
+test("events from two interleaved monitors coalesce per monitor while the parent is busy", async () => {
+	const { pi, tools, fire, sent } = fakePi();
+	const harness = deps();
+	const timers = recordTimers(harness.deps);
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...harness.deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		await fire("agent_start", ctx);
+		await tools.get("monitor")!.execute("m1", { command: "watch a", label: "A", timeout_seconds: 60 }, undefined, undefined, ctx);
+		await tools.get("monitor")!.execute("m2", { command: "watch b", label: "B", timeout_seconds: 60 }, undefined, undefined, ctx);
+		for (const round of [1, 2, 3]) {
+			jobs.runs[0]!.onData(Buffer.from(`a${round}\n`));
+			jobs.runs[1]!.onData(Buffer.from(`b${round}\n`));
+			timers.run(200);
+		}
+		await fire("turn_end", ctx);
+		const contents = sent.map((entry) => String(entry.message.content));
+		assert.equal(contents.length, 2, "one notice per monitor, not one per batch");
+		assert.match(contents[0]!, /\("A"\) reported 3 new lines:\na1\na2\na3/);
+		assert.match(contents[1]!, /\("B"\) reported 3 new lines:\nb1\nb2\nb3/);
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
