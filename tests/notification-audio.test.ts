@@ -24,7 +24,7 @@ function fixture(platform = "linux") {
 	const probes: string[] = []; const cleaned: string[] = []; const writes: Array<{ path: string; bytes: Buffer; mode: number }> = [];
 	let bytes: Buffer = wav(); let regular = true; let size = bytes.length; let available = true;
 	let detect: (() => Promise<boolean>) | undefined;
-	let spawnError = false; let writeError = false; let cleanupError = false;
+	let spawnError = false; let writeError = false; let cleanupError = false; let rmdirError = false;
 	let duringRead: (() => void) | undefined;
 	let timeout: (() => void) | undefined; let cleared = 0;
 	const io: AudioIO = {
@@ -35,7 +35,8 @@ function fixture(platform = "linux") {
 		},
 		mkdtemp: async () => "/private/audio ; literal", chmod: async (_path, mode) => { assert.equal(mode, 0o700); },
 		writeFile: async (path, data, options) => { if (writeError) throw Error("write"); writes.push({ path, bytes: data, mode: options.mode }); },
-		unlink: async path => { cleaned.push(path); if (cleanupError) throw Error("cleanup"); }, rmdir: async path => { cleaned.push(path); },
+		unlink: async path => { cleaned.push(path); if (cleanupError) throw Error("cleanup"); },
+		rmdir: async path => { cleaned.push(path); if (rmdirError) throw Error("rmdir"); },
 	};
 	const player = new NotificationPlayer({ platform, io, tempRoot: "/private", builtinRoot: "/builtins",
 		executableAvailable: async path => { probes.push(path); return detect ? detect() : available; },
@@ -48,7 +49,7 @@ function fixture(platform = "linux") {
 		permits: () => permits, setAvailable: (v: boolean) => { available = v; }, setDetect: (v: () => Promise<boolean>) => { detect = v; },
 		setBytes: (v: Buffer) => { bytes = v; size = v.length; }, setRegular: () => { regular = false; },
 		setSize: (v: number) => { size = v; }, failSpawn: () => { spawnError = true; }, failWrite: () => { writeError = true; },
-		failCleanup: () => { cleanupError = true; }, onRead: (fn: () => void) => { duringRead = fn; } };
+		failCleanup: () => { cleanupError = true; }, failRmdir: () => { rmdirError = true; }, onRead: (fn: () => void) => { duringRead = fn; } };
 }
 
 test("WAV content and coherent PCM limits, not filename extension", () => {
@@ -132,6 +133,12 @@ test("filesystem failures and synchronous spawn failure always clean snapshot", 
 	}
 	const cleanup = fixture(); cleanup.failCleanup(); const p = cleanup.play(); await tick(); cleanup.child.emit("close", 0);
 	await assert.rejects(p, /cleanup/); assert.equal(cleanup.cleaned.length, 2);
+	const rm = fixture(); rm.failRmdir(); const rp = rm.play(); await tick(); rm.child.emit("close", 0);
+	await assert.rejects(rp, /cleanup/); assert.equal(rm.cleaned.length, 2);
+	for (const breakCleanup of [(f: ReturnType<typeof fixture>) => f.failCleanup(), (f: ReturnType<typeof fixture>) => f.failRmdir()]) {
+		const f = fixture(); breakCleanup(f); const failed = f.play(); await tick(); f.child.emit("close", 3);
+		await assert.rejects(failed, /Audio process failed/); assert.equal(f.cleaned.length, 2);
+	}
 	for (const sound of ["file:https://example.org/a.wav", "file:relative.wav", "builtin:other"]) {
 		const f = fixture(); await assert.rejects(f.player.play(sound as "file:relative.wav", f.signal.signal, { start: () => true })); assert.equal(f.calls.length, 0);
 	}

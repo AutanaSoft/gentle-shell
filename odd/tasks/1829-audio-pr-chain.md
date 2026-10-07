@@ -20,7 +20,7 @@ Objetivo: preparar LOCALMENTE una cadena de ramas por unidades revisables que re
 - Cada rama transpone commits fuente relevantes; no se aplican `ours`/`theirs` en bloque, ni reset duro, ni rebase de ramas originales.
 - Todos los 34 commits fuente quedan contabilizados, incluidos evidencia ODD y documentación.
 - La rama de tracker solo aporta este documento de planificación: no entra en el diff de la unidad 01 (su base es esta rama), pero sí es la base del PR de la cadena.
-- PR tracker: `Closes #1829`. PRs hijas: `Refs #1829`. Estado final de la cadena: draft, sin merge.
+- PR tracker y PRs hijas: `Refs #1829`. `Closes #1829` queda reservado para el PR final de integración, para que el merge del tracker no cierre la issue antes de entregar la feature. Estado final de la cadena: draft, sin merge.
 - Una etiqueta de tipo planificada por PR (no aplicada). Checklists públicas sin marcar hasta tener prueba.
 
 ## Unidades planificadas

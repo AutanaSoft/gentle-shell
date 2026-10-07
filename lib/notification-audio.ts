@@ -118,6 +118,7 @@ export class NotificationPlayer {
 		if (signal.aborted) return;
 		const directory = await this.io.mkdtemp(join(this.options.tempRoot ?? tmpdir(), "gentle-notification-"));
 		const snapshot = join(directory, "sound.wav");
+		let cleanupFailed = false;
 		try {
 			await this.io.chmod(directory, 0o700);
 			await this.io.writeFile(snapshot, bytes, { mode: 0o600, flag: "wx" });
@@ -125,10 +126,13 @@ export class NotificationPlayer {
 			// No await between permit and spawn: scheduler TTL/generation owns the final start gate.
 			await this.run(executable, snapshot, signal);
 		} finally {
+			// Cleanup failures never replace a playback error; they surface only when playback itself succeeded.
 			try { await this.io.unlink(snapshot); } catch (error) {
-				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("Audio snapshot cleanup failed");
-			} finally { await this.io.rmdir(directory); }
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") cleanupFailed = true;
+			}
+			try { await this.io.rmdir(directory); } catch { cleanupFailed = true; }
 		}
+		if (cleanupFailed) throw new Error("Audio snapshot cleanup failed");
 	}
 	private run(executable: string, snapshot: string, signal: AbortSignal): Promise<void> {
 		return new Promise((resolve, reject) => {

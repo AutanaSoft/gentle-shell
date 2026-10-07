@@ -1,6 +1,6 @@
 # Notificaciones sonoras nativas — planificación ODD
 Objetivo: ejecutar el alcance completo opt-in de la [propuesta preservada](../../docs/sound-notifications-proposal.md); planificación inicial completada; ejecución secuencial autorizada por el usuario.
-Branch: `feat/sound-notifications`; worktree: `/home/egdev/proyectos/gentle-shell-sound-notifications`; entrega elegida: «Por unidades revisables (recomendado)», commits LOCALES futuros por unidad con tests, sin push/PR.
+Branch: `feat/sound-notifications`; worktree: `../gentle-shell-sound-notifications` (hermano del clon principal); entrega elegida: «Por unidades revisables (recomendado)», commits LOCALES futuros por unidad con tests, sin push/PR.
 Runner futuro: `node --experimental-strip-types --test tests/*notification*.test.ts` + tests afectados; forecast inicial: 1700–1800 líneas autoradas totales; ajustado SN-2: 1799–1919 (adiciones + eliminaciones, excluidos generados; L5/L6).
 
 ## Specs
@@ -57,7 +57,7 @@ Suma inicial: 1700–1800; ajustada tras SN-2: 1799–1919 líneas, tests inclui
 ### L2 — Autorización global y límites históricos del turno inicial
 
 Usuario eligió «Por unidades revisables (recomendado)»; alcance entero, commits LOCALES futuros por unidad con tests juntos, sin push/PR. Instrucción puntual inicial, ahora histórica: «Escribe SOLO planificación ODD y copia propuesta; no implementación todavía.» y «No review, subagentes ni commits.» Esa restricción fue del primer turno y no revoca la autorización global; la delegación actual ejecuta SOLO SN-1 sin delegación adicional, review ni commits.
-El worktree ya existe en la ruta del encabezado y el árbol inicial estaba limpio; no se creó otro. Propuesta fuente: `/home/egdev/proyectos/gentle-shell/docs/sound-notifications-proposal.md`, solo lectura; texto preservado en copia y estado actualizado mediante apéndice enlazado.
+El worktree ya existe en la ruta del encabezado y el árbol inicial estaba limpio; no se creó otro. Propuesta fuente: `docs/sound-notifications-proposal.md` (en el clon principal), solo lectura; texto preservado en copia y estado actualizado mediante apéndice enlazado.
 Normas leídas: `assets/orchestrator-tracking.md`, `assets/orchestrator-memory.md` y skill cognitive-doc-design. Se mantiene orden Specs → Tasks → Log; route inline por prohibición actual de subagentes. No se infiere estrategia de PR ni consentimiento de review de la elección de commits locales.
 
 ### L3 — Evidencia y siguiente paso
