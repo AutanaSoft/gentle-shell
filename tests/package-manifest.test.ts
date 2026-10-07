@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { parseNpmPackResult } from "../scripts/npm-pack-result.mjs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -857,9 +858,19 @@ test("packed tarball excludes retired workflow paths while source retains legacy
 			encoding: "utf8",
 			maxBuffer: 8 * 1024 * 1024,
 		});
-		const [packed] = JSON.parse(output) as [{ files: { path: string }[] }];
+		const [packed] = parseNpmPackResult(output);
 		assert.ok(packed?.files?.length, "npm pack must return a nonempty tar manifest");
 		assert.ok(packed.files.some(file => file.path === "tests/package-manifest.test.ts"), "other tests remain packed");
+		for (const path of [
+			"extensions/gentle-notifications.ts",
+			"lib/notification-audio.ts", "lib/notification-events.ts", "lib/notification-policy.ts",
+			"lib/notification-scheduler.ts", "lib/notification-service.ts", "lib/notification-ui.ts",
+			"assets/sounds/success.wav", "assets/sounds/error.wav", "assets/sounds/attention.wav",
+			"assets/sounds/LICENSE.md", "docs/sound-notifications.md", "docs/sound-notifications-proposal.md",
+			"scripts/npm-pack-result.mjs",
+		]) {
+			assert.ok(packed.files.some(file => file.path === path), `${path} must be packed`);
+		}
 		assert.deepEqual(packed.files.filter(file => /sdd|openspec/i.test(file.path)).map(file => file.path), []);
 	} finally {
 		rmSync(destination, { recursive: true, force: true });
