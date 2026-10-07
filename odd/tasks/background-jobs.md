@@ -24,8 +24,8 @@ References: Claude Code background Bash (`run_in_background`, task notification,
 - T3 — S3-S8: tools `bash_background`/`job_stop`/`job_list` wired into the gentle-agents parent delivery router, shell guards cover `bash_background`; inline; done, commit 4d266722d.
 - T4 — S9: `/gentle:jobs` overlay, footer count, palette entry, docs, orchestrator guidance; inline; done, commit 6eb41231f.
 - T5 — S10, S11: `monitor` (stacked on #1842); inline:
-  - T5a — S11: pure event batcher (200 ms window, 20 lines per notice, flood limit) in `lib/background-monitor.ts`; commit pending.
-  - T5b — S10, S11: registry line hook, `monitor` tool, timeout, flood stop, coalesced event delivery through the parent router; commit pending.
+  - T5a — S11: pure event batcher (200 ms window, 20 lines per notice, flood limit) in `lib/background-monitor.ts`; done, commit `172c1295f`.
+  - T5b — S10, S11: registry line hook, `monitor` tool, timeout, flood stop, coalesced event delivery through the parent router, shell guards; done, commit `c1dca5646`.
   - T5c — S10: `/gentle:jobs` and docs; commit pending.
 
 ## Log
@@ -45,3 +45,4 @@ References: Claude Code background Bash (`run_in_background`, task notification,
 - L12 (delivery, user-authorized "Cerrar #1171 directamente"): #1171 labeled status:approved; branch pushed; PR gentle-shell#1835 (Closes #1171, type:feature, size:exception). CI at open: test (ubuntu-24.04) pass, others pending.
 - L13 (user: "Si"): added job-notice regression tests mirroring #1833 for failed idle forward (requeue + bounded retry) and compaction hold (session_compact, session_compact_failed); mutation-checked (removing requeue or the hold route fails them); moved the misplaced settle comment.
 - L14 (user): "Explica t5 y si a todo" — T5 unblocked; S10 rewritten, S11 added.
+- L15 (evidence): T5 `pnpm test` all stages pass, check-types no regressions; real-shell smoke through Pi `createLocalBashOperations`: each line of `for i in 1 2 3; do echo check $i; sleep 0.4; done; printf "ñandú"` arrived as its own event while running, then `EXIT 0 events=4`; a 1 s timeout stopped `sleep 3001 & sleep 3002; wait` with 0 surviving processes. `monitor` added to SHELL_COMMAND_TOOLS (confirmation, YOLO, child safety), RED first. The orchestrator-delegation asset stays unchanged (20,479/20,500 B budget); the tool description carries the usage guidance.
