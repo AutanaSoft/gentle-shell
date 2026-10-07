@@ -14,7 +14,8 @@ References: Claude Code background Bash (`run_in_background`, task notification,
 - S7 — `job_stop` kills the job's whole process tree and sends no exit notice (the agent stopped it). A job a human stops from `/gentle:jobs` is reported once ("stopped by the user"), because the agent was promised a notice (L10). `job_list` lists the session's jobs with status.
 - S8 — Jobs live in memory, are owned by the starting session, are capped at 25 running, and are killed on session shutdown.
 - S9 — Human surface, verbatim (L7): "tendriamos que tener un modal como el de /gentle:agents para ver todos los procesos de monitoreo que hay para esta sesion"; plus a footer count of running jobs. Docs and orchestrator guidance tell the model to use `bash_background` instead of `sleep` loops or a subagent to wait.
-- S10 — Stage 2, optional, needs a user decision before starting: `monitor`, one event per stdout line, 200 ms batching, mandatory timeout (max 30 min), auto-kill on event flood.
+- S10 — Stage 2 (L14 "si a todo"): `monitor` runs a command whose every stdout line is an event delivered to the agent without waiting for exit; lines within 200 ms form one notice; mandatory `timeout_seconds` (1-1800) stops it and reports the event count; an event flood stops it; process exit ends the watch with a final notice. It is a background job: listed in `/gentle:jobs`, stopped with `job_stop` (no notice).
+- S11 — Bounds: at most 20 lines per notice (the rest counted), more than 120 lines within 60 s stops the monitor as a flood; pending event notices for the same monitor coalesce while the agent is busy.
 
 ## Tasks
 
@@ -22,7 +23,10 @@ References: Claude Code background Bash (`run_in_background`, task notification,
 - T2 — S3, S6, S7, S8: job registry on Pi `createLocalBashOperations` (output file, stop, cap); inline; done, commit `bb9b3a258`.
 - T3 — S3-S8: tools `bash_background`/`job_stop`/`job_list` wired into the gentle-agents parent delivery router, shell guards cover `bash_background`; inline; done, commit 4d266722d.
 - T4 — S9: `/gentle:jobs` overlay, footer count, palette entry, docs, orchestrator guidance; inline; done, commit 6eb41231f.
-- T5 — S10: `monitor`; blocked on user decision.
+- T5 — S10, S11: `monitor` (stacked on #1842); inline:
+  - T5a — S11: pure event batcher (200 ms window, 20 lines per notice, flood limit) in `lib/background-monitor.ts`; commit pending.
+  - T5b — S10, S11: registry line hook, `monitor` tool, timeout, flood stop, coalesced event delivery through the parent router; commit pending.
+  - T5c — S10: `/gentle:jobs` and docs; commit pending.
 
 ## Log
 
@@ -40,3 +44,4 @@ References: Claude Code background Bash (`run_in_background`, task notification,
 - L11 (evidence, RDD): lineage review-a12f41f0623b2c3e, tier high (process_boundary), 4 lenses, **approved** and acknowledged (authority burned) on candidate tree 6bf3335 (main..f2b23768c). 16 advisory findings, none blocking; notable follow-ups: unbounded partial tail line (lib/background-jobs.ts:38-48), UTF-8 chunk split in tail (lib/background-jobs.ts:132), temp log dir retention, sleep-based test sync.
 - L12 (delivery, user-authorized "Cerrar #1171 directamente"): #1171 labeled status:approved; branch pushed; PR gentle-shell#1835 (Closes #1171, type:feature, size:exception). CI at open: test (ubuntu-24.04) pass, others pending.
 - L13 (user: "Si"): added job-notice regression tests mirroring #1833 for failed idle forward (requeue + bounded retry) and compaction hold (session_compact, session_compact_failed); mutation-checked (removing requeue or the hold route fails them); moved the misplaced settle comment.
+- L14 (user): "Explica t5 y si a todo" — T5 unblocked; S10 rewritten, S11 added.
