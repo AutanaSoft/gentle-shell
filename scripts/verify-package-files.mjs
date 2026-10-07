@@ -12,6 +12,7 @@ const requiredPaths = [
   "extensions/gentle-notifications.ts",
   "lib/notification-audio.ts",
   "lib/notification-audio-native.ts",
+  "lib/notification-audio-windows.ts",
   "lib/notification-pulse-protocol.ts",
   "lib/notification-pulse-client.ts",
   "lib/notification-pulse-stream.ts",
