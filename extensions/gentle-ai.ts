@@ -10020,6 +10020,18 @@ function createGentleAiExtensionForTesting(
 		// Another concurrent end or ACK may already have consumed this prefix.
 		if (!pendingReviewMutation(ctx.sessionManager, root, mutation)) return;
 		if (status.nextTransition?.kind !== "execute" || status.nextTransition.execute.operation !== "review.start") return;
+		// verify-always-rdd-high S2: automatic review is for high risk only, so a
+		// candidate the native assessment reports not review_due earns no nudge.
+		// An assessment that cannot answer, or an older binary without
+		// review_due, keeps the nudge.
+		if (nativeReviewCli.assess !== undefined) {
+			let reviewDue: boolean | undefined;
+			try { reviewDue = (await nativeReviewCli.assess({ cwd: root })).reviewDue; }
+			catch { reviewDue = undefined; }
+			if (reviewDue === false) return;
+			if (!reminderSessionActive || epoch !== reminderEpoch || pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey) !== sessionKey) return;
+			if (!pendingReviewMutation(ctx.sessionManager, root, mutation)) return;
+		}
 		const targetIdentity = status.targetIdentity;
 		pi.sendMessage(
 			{
