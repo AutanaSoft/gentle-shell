@@ -1,6 +1,6 @@
 # Propuesta: notificaciones sonoras nativas
 
-**Estado: propuesta pendiente de aprobación. No implementada.**
+**Propuesta histórica aprobada y ejecutada por unidades; ver [estado actual](#estado-actual-sn6).** El texto original debajo conserva las decisiones propuestas, no afirma que sigan sin implementar.
 
 Incorporar a gentle-shell notificaciones sonoras configurables para sesión, agente principal y subagentes. El audio estará **desactivado por defecto** y no alterará la ejecución, las decisiones ni los permisos del harness.
 
@@ -180,6 +180,12 @@ Aprobar o ajustar el alcance de v1 y la configuración global. Después, realiza
 
 ## Estado de ejecución en este worktree
 
-**Ejecución aprobada por unidades revisables; implementación todavía no iniciada.**
+**Estado histórico al copiar esta propuesta: ejecución aprobada; implementación todavía no iniciada en aquel turno.**
 El estado inicial y el texto anterior se conservan como propuesta histórica, sin modificar el original de `gentle-shell`. El alcance aprobado, los contratos refinados y las seis unidades futuras se concretan en el [plan ODD](../odd/tasks/sound-notifications.md), que rige la ejecución.
 Esta entrega es solo planificación y copia: sin implementación, review, subagentes ni commits. La elección «Por unidades revisables (recomendado)» autoriza para la ejecución posterior commits LOCALES por unidad con sus tests, no push ni PR.
+
+## Estado actual SN6
+
+SN1–SN5 implementados y entregados por el parent; SN5 `c3a20d8e` (548 líneas, contexto confirmado por parent). SN6 añade el panel Notifications desde customize, validación WAV al seleccionar, consentimiento de recuperación estrictamente booleano y documentación de uso. La guía vigente es [sound-notifications.md](sound-notifications.md); el [ODD](../odd/tasks/sound-notifications.md) conserva RED/GREEN y pendientes.
+
+No se declara aceptación completa: SN6 espera commit del parent, full checks/verifier y manuales de UI, escucha, reload y quit. Linux/macOS tienen adaptadores implementados **UNVERIFIED manual listening**; Windows permanece unavailable. `session.shutdown` se excluye del catálogo runtime/UI para no demorar el cierre, aunque la propuesta histórica pedía mejor esfuerzo y el esquema conserva la clave. La sección Plataformas anterior es intención histórica, no una afirmación actual de soporte Windows ni verificación física. No hay review, commits ni subagentes en este turno de implementación.
