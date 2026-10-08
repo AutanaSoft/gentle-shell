@@ -338,9 +338,9 @@ Thinking levels follow NaN's [reasoning contract](https://nan.builders/docs/mode
 
 | Models | Pi thinking levels |
 | --- | --- |
-| GLM 5.3 / GLM 5.3 Flash | `low`, `medium`, `high`, `max`; `minimal` aliases `low`, and `xhigh` aliases `max`. No `off`. |
-| Gemma 4 / Qwen 3.6 | `off` sends `none`; `minimal` also disables reasoning. `low`, `medium`, `high`, and `max` set reasoning budgets; `xhigh` aliases `max`. |
-| DeepSeek V4 Flash / Qwen 3.8 Flash / MiMo | Only `medium` is exposed as a Pi placeholder. NaN manages reasoning depth; the effort parameter does not provide an off switch or adjustable depth. |
+| GLM 5.3 / GLM 5.3 Flash | `low`, `medium`, `high`, and `max` are fully controllable. No `off`; Pi's `minimal` and `xhigh` clamp to `low` and `max`. |
+| Qwen 3.6 / Gemma 4 | `off` sends `none` and `minimal` also skips reasoning; `low`, `medium`, `high`, and `max` set reasoning budgets. Pi's `xhigh` clamps to `max`. |
+| DeepSeek V4 Flash / Qwen 3.8 Flash / MiMo | The same `off` (`none`), `minimal`, `low`, `medium`, `high`, and `max` levels are accepted, but NaN manages their reasoning depth, so no value changes it. Pi's `xhigh` clamps to `max`. The header reports `effort: auto` for these three and a one-time notice says the level does not change the depth. |
 
 ```text
 /gentle:status
