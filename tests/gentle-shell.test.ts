@@ -325,6 +325,22 @@ test("a self-managing NaN model announces its automatic depth once per session",
 	assert.equal(ui.notices.filter((notice) => notice.includes("automatically")).length, 1);
 });
 
+test("a session that starts on a self-managing NaN model announces it once", async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const adaptive = { id: "mimo-v2.6-flash", provider: "nan", name: "MiMo V2.6 Flash", reasoning: true };
+	(ctx as unknown as { model: unknown }).model = adaptive;
+	for (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);
+	assert.deepEqual(ui.notices.filter((notice) => notice.includes("automatically")), [
+		"MiMo V2.6 Flash chooses its reasoning depth automatically; the selected thinking level is accepted but does not change it.",
+	]);
+	// A session that starts on a model which honors the level stays silent.
+	(ctx as unknown as { model: unknown }).model = { id: "gemma4", provider: "nan", name: "Gemma 4", reasoning: true };
+	for (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);
+	assert.equal(ui.notices.filter((notice) => notice.includes("automatically")).length, 1);
+});
+
 test("gentleShell installs the footer on session_start when a UI exists", () => {
 	const { pi, handlers } = fakePi();
 	gentleShell(pi, {});
