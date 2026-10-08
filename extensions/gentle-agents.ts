@@ -270,24 +270,18 @@ function ownedChildIpc(env: NodeJS.ProcessEnv, candidate: IpcEndpoint | undefine
 	return candidate;
 }
 
-// gentle-shell#1269: routing cannot check whether a child can perform a task
-// unless the catalog states the child's inventory. `tools` is the exact `--tools`
-// allowlist `lib/agents-runner.ts` `requestedTools()` passes, so an empty
-// declaration is NOT "no tools": the child keeps Pi's default tool set and the
-// catalog must say so. The always-granted parent-message tool is transport, not a
-// capability, and is deliberately absent here.
-// A declaration can also carry entries Pi drops, so they are not capabilities and
-// must not be rendered as such. The review and Judgment Day roles declare the
-// `"*": false` wildcard this way. Only names Pi can accept are kept: unlike the
-// #1690 check below, `mcp__*` names are real capabilities and stay visible.
+// Catalog declarations are routing hints, not proof of child availability.
+// Filter non-name entries such as `"*": false`, but do not claim that a
+// syntactically valid name is registered. Empty declarations omit --tools and
+// use Pi defaults. The runner adds parent messaging separately.
 const TOOL_NAME = /^[A-Za-z0-9_.:-]+$/;
 
 function declaredToolInventory(agent: AgentDefinition): string {
 	const usable = agent.tools.filter((name) => TOOL_NAME.test(name));
-	if (usable.length > 0) return `[tools: ${usable.join(", ")}]`;
-	// Nothing usable: a declaration with no entries at all leaves Pi's default
-	// tool set in place, while one made only of dropped entries leaves none.
-	return agent.tools.length === 0 ? "[tools: unrestricted]" : "[tools: none]";
+	if (usable.length > 0) return `[declared tools (not verified): ${usable.join(", ")}]`;
+	return agent.tools.length === 0
+		? "[declared tools: Pi defaults (no allowlist)]"
+		: "[declared tools: no tool names declared]";
 }
 
 // Pi drops unknown --tools names without a diagnostic (#1690), so the child
