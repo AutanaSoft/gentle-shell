@@ -4,6 +4,7 @@ import { access, lstat, readFile, realpath, stat } from "node:fs/promises";
 import { posix, win32 } from "node:path";
 import { gentleAiBinaryPath } from "../runtime/gentle-ai-binary.mjs";
 import { pnpmGlobalBin, requirements } from "./installer-preflight.mjs";
+import { installOwner } from "./main-channel.mjs";
 import {
 	PI_PACKAGE,
 	SHELL_PACKAGE,
@@ -232,16 +233,39 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 		if (!packages.has(name)) return (await persistentOn(command)) ? { state: "unknown", outsidePnpm: true } : { state: "absent" };
 		const entry = packages.get(name);
 		const version = exactVersion(entry?.version, STABLE);
-		if (entry && version) return { state: "present", entry, version };
+		// A main-channel Shell (<stable>-main.<sha12>) is present too: it can be updated.
 		const main = typeof entry?.version === "string" && MAIN_BUILD.test(entry.version) ? entry.version : null;
-		return main ? { state: "unknown", mainVersion: main } : { state: "unknown" };
+		return entry && (version || main) ? { state: "present", entry, version: version ?? main } : { state: "unknown" };
 	};
 	// Still unknown (never absent or replaced), but says the command comes from
 	// another installation so the wizard can explain the blocker.
-	const notPnpmGlobal = (found) => {
-		if (found.outsidePnpm) return { ...unknown(), outsidePnpm: true };
-		return found.mainVersion ? { ...unknown(), mainVersion: found.mainVersion } : unknown();
+	const notPnpmGlobal = (found) => (found.outsidePnpm ? { ...unknown(), outsidePnpm: true } : unknown());
+	/** The package a command on the user's PATH runs from: its real root and version. */
+	const packageOnPath = async (command, name) => {
+		const found = await lookPath(command, user, platform, fs);
+		if (!found) return null;
+		let directory = path.dirname(await fs.realpath(found));
+		for (let depth = 0; depth < 6; depth += 1) {
+			const text = await fs.readText(path.join(directory, "package.json")).catch(() => null);
+			if (text !== null) {
+				let manifest = null;
+				try { manifest = JSON.parse(text); } catch { manifest = null; }
+				if (manifest?.name === name && typeof manifest.version === "string") return { root: directory, version: manifest.version };
+			}
+			const parent = path.dirname(directory);
+			if (parent === directory) break;
+			directory = parent;
+		}
+		return null;
 	};
+	let npmRoot;
+	/** `npm root -g`, real path; POSIX only (a Windows npm.cmd needs a shell). */
+	const npmGlobalRoot = () => (npmRoot ??= (async () => {
+		const npm = platform === "win32" ? null : await lookPath("npm", user, platform, fs);
+		const stdout = npm ? await output(npm, ["root", "-g"], user, deadlines.version) : null;
+		const line = stdout?.split(/\r?\n/).at(-1)?.trim() ?? "";
+		return path.isAbsolute(line) ? fs.realpath(line).catch(() => null) : null;
+	})());
 	const shellBin = () => path.join(globalBin.path, platform === "win32" ? "gentle-shell.cmd" : "gentle-shell");
 
 	const probes = {
@@ -273,13 +297,22 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 		},
 		async pi() {
 			const pi = await globalPackage(PI_PACKAGE, "pi");
-			if (pi.state !== "present") return pi.state === "absent" ? absent() : notPnpmGlobal(pi);
-			return { available: true, version: pi.version, usable: true };
+			if (pi.state === "present") return { available: true, version: pi.version, usable: true };
+			if (pi.state === "absent" || !pi.outsidePnpm) return pi.state === "absent" ? absent() : unknown();
+			// Another installation of Pi: reused as long as it reports a stable version.
+			const command = await lookPath("pi", user, platform, fs);
+			const version = command ? /(?:^|\s|v)(\d+\.\d+\.\d+)(?:\s|$)/.exec(await output(command, ["--version"], user, deadlines.version) ?? "") : null;
+			return version ? { available: true, version: version[1], usable: true, external: true } : notPnpmGlobal(pi);
 		},
 		async shell() {
 			const shell = await globalPackage(SHELL_PACKAGE, "gentle-shell");
-			if (shell.state !== "present") return shell.state === "absent" ? absent() : notPnpmGlobal(shell);
-			return { available: true, version: shell.version, usable: await fs.isFile(shellBin()), global: true };
+			if (shell.state === "present") return { available: true, version: shell.version, usable: await fs.isFile(shellBin()), global: true, owner: "pnpm" };
+			if (shell.state === "absent" || !shell.outsidePnpm) return shell.state === "absent" ? absent() : unknown();
+			// Installed by npm only when it really lives in npm's global root; a linked checkout stays unknown.
+			const found = await packageOnPath("gentle-shell", SHELL_PACKAGE);
+			const owner = found ? installOwner({ packageRoot: found.root, pnpmHome: null, npmRoot: await npmGlobalRoot() }) : null;
+			const version = found && (exactVersion(found.version, STABLE) ?? (MAIN_BUILD.test(found.version) ? found.version : null));
+			return owner === "npm" && version ? { available: true, version, usable: true, global: true, owner } : notPnpmGlobal(shell);
 		},
 		async gentleAi() {
 			const shell = await globalPackage(SHELL_PACKAGE, "gentle-shell");
