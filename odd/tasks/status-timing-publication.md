@@ -9,8 +9,8 @@ S3. Use the selected delivery shape. Selected answer: "Cadena con rama integrado
 
 ## Tasks
 T1 | S1-S3 | inline | done | Create the draft tracker branch and publication plan; commit: c5eebb8575da1f62a7091816044ef120f456dc84.
-T2 | S1-S3 | inline | in_progress | Commit diagnostics with tests/docs/runtime, then Windows fixtures on dependent child branches; commits: pending.
-T3 | S1-S3 | inline | pending | Push and open the draft tracker and both dependent PRs; record links and check state; commit: pending.
+T2 | S1-S3 | inline | done | Commit diagnostics with tests/docs/runtime, then Windows fixtures on dependent child branches; commits: 69932a043e9dea1a75647f29cbadc9c64ccb038c (diagnostics), bc656ea77f89a22f8ba038a482883c9cfbb9757d (fixtures).
+T3 | S1-S3 | inline | in_progress | All PRs opened: #1950 tracker draft -> main; #1951 diagnostics -> tracker; #1953 fixtures -> diagnostics. Commit/push delivery metadata and read final remote/check state; delivery-evidence commit: pending.
 
 ## Log
 L1. Original publication approval: "sip, hagamos eso".
@@ -23,3 +23,7 @@ L7. Previously observed checks: timing 64/64 and independent 2/2 PASS; fixtures 
 L8. Deferred/unavailable proof: interrupted full suite, omitted global provider-contract/runtime-harness stages, unknown historical hang cause, POSIX execution unavailable, native assessment unavailable due undeclared untracked. No real STATUS, retries, authority mutation or new full-suite execution is authorized by publication.
 L9. Preserve preexisting .status-213-checks/ untouched and untracked. Stage only named delivery files. No merge or protected-label operation is authorized.
 L10. Branch plan: feat/213-status-timing (draft tracker -> main), feat/213-status-timing-diagnostics (diagnostics -> tracker), test/213-windows-fixtures (fixtures -> diagnostics).
+L11. Three branches pushed successfully. Draft tracker: https://github.com/Gentleman-Programming/gentle-shell/pull/1950. Diagnostics: https://github.com/Gentleman-Programming/gentle-shell/pull/1951. Fixtures: https://github.com/Gentleman-Programming/gentle-shell/pull/1953. Child bases are immediate parents; labels are type:chore, type:feature and type:chore respectively.
+L12. Combined inline publication command failed at shell parsing (unexpected EOF), before executing GitHub operations. Short gh commands using project-local body files work; exact long-command parsing cause is not proven.
+L13. Current upstream workflow has additional installer matrix checks beyond the original checkout. No extra local suite was run or gate waived; required CI and upstream integration remain unverified. A Git blob-path diff command was also rejected by MSYS argument conversion; ordinary revision-plus-path diff confirmed the workflow addition without modifying files.
+L14. PR bodies are retained under odd/prs/ as delivery metadata on the final child. No frozen native candidate bytes or incident data are included. Final CI readback will be reported, not waited on or treated as merge authorization.
