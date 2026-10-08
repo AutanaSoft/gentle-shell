@@ -10,7 +10,7 @@ S3. Use the selected delivery shape. Selected answer: "Cadena con rama integrado
 ## Tasks
 T1 | S1-S3 | inline | done | Create the draft tracker branch and publication plan; commit: c5eebb8575da1f62a7091816044ef120f456dc84.
 T2 | S1-S3 | inline | done | Commit diagnostics with tests/docs/runtime, then Windows fixtures on dependent child branches; commits: 69932a043e9dea1a75647f29cbadc9c64ccb038c (diagnostics), bc656ea77f89a22f8ba038a482883c9cfbb9757d (fixtures).
-T3 | S1-S3 | inline | in_progress | All PRs opened: #1950 tracker draft -> main; #1951 diagnostics -> tracker; #1953 fixtures -> diagnostics. Commit/push delivery metadata and read final remote/check state; delivery-evidence commit: pending.
+T3 | S1-S3 | inline | done | PRs #1950 draft -> main, #1951 diagnostics -> tracker, #1953 fixtures -> diagnostics published; bases/labels/diffs/check state read back successfully. Delivery-evidence commit: e06e59f751db507f3c80924e893584cb86149347.
 
 ## Log
 L1. Original publication approval: "sip, hagamos eso".
@@ -26,4 +26,7 @@ L10. Branch plan: feat/213-status-timing (draft tracker -> main), feat/213-statu
 L11. Three branches pushed successfully. Draft tracker: https://github.com/Gentleman-Programming/gentle-shell/pull/1950. Diagnostics: https://github.com/Gentleman-Programming/gentle-shell/pull/1951. Fixtures: https://github.com/Gentleman-Programming/gentle-shell/pull/1953. Child bases are immediate parents; labels are type:chore, type:feature and type:chore respectively.
 L12. Combined inline publication command failed at shell parsing (unexpected EOF), before executing GitHub operations. Short gh commands using project-local body files work; exact long-command parsing cause is not proven.
 L13. Current upstream workflow has additional installer matrix checks beyond the original checkout. No extra local suite was run or gate waived; required CI and upstream integration remain unverified. A Git blob-path diff command was also rejected by MSYS argument conversion; ordinary revision-plus-path diff confirmed the workflow addition without modifying files.
-L14. PR bodies are retained under odd/prs/ as delivery metadata on the final child. No frozen native candidate bytes or incident data are included. Final CI readback will be reported, not waited on or treated as merge authorization.
+L14. PR bodies are retained under odd/prs/ as delivery metadata on the final child. No frozen native candidate bytes or incident data are included.
+L15. Remote readback after pushing e06e59f7 confirms all three PRs have the intended base/head and exactly one type label; all report MERGEABLE (not a CI approval). Tracker #1950 is draft with 25 changed lines; diagnostic #1951 has 826 changed lines; fixture #1953 has 269 before this bounded log update, below 400.
+L16. CI snapshot: tracker verify, transport, authority and several platform checks SUCCESS, Windows installer still IN_PROGRESS; diagnostics verify/Windows authority IN_PROGRESS and macOS transport SUCCESS; fixtures verify/transport/authority QUEUED. An external status context is not represented by CheckRun name/status fields. No all-green or merge-ready claim. This journal-only closure commit may trigger a new fixture CI run; no waiting or additional fixes authorized.
+L17. Working tree readback after delivery showed only preexisting .status-213-checks/ untracked. No source edits, new suite rerun, merge, issue closure or protected-label mutation during publication.
