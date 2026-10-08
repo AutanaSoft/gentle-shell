@@ -18,8 +18,8 @@ Decision source (L2): "Instalar lo que falta y actualizar lo existente (recomend
 
 | ID | Specs | Route | Status | Evidence |
 |----|-------|-------|--------|----------|
-| T1 | S1, S3, S4 (probes: Pi/Shell outside pnpm with version and owner) | inline | pending | |
-| T2 | S1–S4 (preflight plans) | inline | pending | |
+| T1 | S1, S3, S4 (probes: Pi/Shell outside pnpm with version and owner) | inline | done 25ea832d2, f0858ba75 | RED→GREEN probes 26/0; installOwner rule (npm only inside `npm root -g`, linked checkout = unknown) also fixes `gentle-shell upgrade` |
+| T2 | S1–S4 (preflight plans) | inline | done f0858ba75 | RED→GREEN preflight 42/0; owner-less Shell observations keep blocking (guards) |
 | T3 | S1–S3 (runner variants) | inline | pending | |
 | T4 | S3, S5, S6 (server, UI, docs, README) | inline | pending | |
 
@@ -30,3 +30,5 @@ Route evidence: no Writer trigger (the four tasks share the plan contract, so th
 - L1 (2026-10-08, user): "Pero que feo eso no ? No quiero que sea para solo máquina nuevas"
 - L2 (2026-10-08, user decision): option 1, quoted under Specs.
 - L3 (evidence): Pi is an optional peer of gentle-pi; `gentle-shell` resolves `GENTLE_SHELL_PI`, then a bundled CLI, then `pi` on PATH (`lib/gentle-shell-launcher.ts:369`). The runner accepts only a clean stack (`requiredActions`, `scripts/installer-runner.mjs:90`) or setup recovery, and blocks `existing-stack`.
+- L4 (evidence): the maintainer's own `gentle-shell` is an `npm link` of a source checkout (`~/.local/lib/node_modules/gentle-pi` → `~/work/gentle-pi`). Before this feature, `gentle-shell upgrade` would have treated it as npm-owned and `npm install -g` would replace the link; fixed in 25ea832d2.
+
