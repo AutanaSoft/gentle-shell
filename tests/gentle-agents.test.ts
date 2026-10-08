@@ -3259,6 +3259,8 @@ test("subagent_list_agents publishes each agent's declared tool inventory so rou
 	mkdirSync(join(agentHome, ".pi", "agent", "agents"), { recursive: true });
 	writeFileSync(join(agentHome, ".pi", "agent", "agents", "explore.md"), "---\ndescription: maps things\ntools: [read, grep, find, codegraph]\n---\nYou map things.");
 	writeFileSync(join(agentHome, ".pi", "agent", "agents", "open.md"), "---\ndescription: no allowlist\n---\nYou are open.");
+	writeFileSync(join(agentHome, ".pi", "agent", "agents", "lens.md"), "---\ndescription: review lane\ntools:\n  - \"*\": false\n  - read\n  - grep\n  - gentle_review_scope\n---\nYou review.");
+	writeFileSync(join(agentHome, ".pi", "agent", "agents", "denied.md"), "---\ndescription: only a wildcard\ntools:\n  - \"*\": false\n---\nYou are denied.");
 	try {
 		const h = fakePi(), runtime = deps();
 		runtime.deps.home = agentHome;
@@ -3270,6 +3272,11 @@ test("subagent_list_agents publishes each agent's declared tool inventory so rou
 		// gentle-shell#1269: a definition without an allowlist keeps Pi's default
 		// tool set, so the catalog must never render it as having no tools at all.
 		assert.match(listed.content[0].text, /- open \(global\): no allowlist \[tools: unrestricted\]/);
+		// The review lane declares the `"*": false` wildcard, which Pi drops: it is
+		// not a capability and must not appear as one in the routing surface.
+		assert.match(listed.content[0].text, /- lens \(global\): review lane \[tools: read, grep, gentle_review_scope\]/);
+		assert.doesNotMatch(listed.content[0].text, /false/);
+		assert.match(listed.content[0].text, /- denied \(global\): only a wildcard \[tools: none\]/);
 	} finally { rmSync(fixture, TEST_DIR_REMOVAL); }
 });
 

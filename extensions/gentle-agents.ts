@@ -276,8 +276,18 @@ function ownedChildIpc(env: NodeJS.ProcessEnv, candidate: IpcEndpoint | undefine
 // declaration is NOT "no tools": the child keeps Pi's default tool set and the
 // catalog must say so. The always-granted parent-message tool is transport, not a
 // capability, and is deliberately absent here.
+// A declaration can also carry entries Pi drops, so they are not capabilities and
+// must not be rendered as such. The review and Judgment Day roles declare the
+// `"*": false` wildcard this way. Only names Pi can accept are kept: unlike the
+// #1690 check below, `mcp__*` names are real capabilities and stay visible.
+const TOOL_NAME = /^[A-Za-z0-9_.:-]+$/;
+
 function declaredToolInventory(agent: AgentDefinition): string {
-	return agent.tools.length > 0 ? `[tools: ${agent.tools.join(", ")}]` : "[tools: unrestricted]";
+	const usable = agent.tools.filter((name) => TOOL_NAME.test(name));
+	if (usable.length > 0) return `[tools: ${usable.join(", ")}]`;
+	// Nothing usable: a declaration with no entries at all leaves Pi's default
+	// tool set in place, while one made only of dropped entries leaves none.
+	return agent.tools.length === 0 ? "[tools: unrestricted]" : "[tools: none]";
 }
 
 // Pi drops unknown --tools names without a diagnostic (#1690), so the child
