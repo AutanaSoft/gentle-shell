@@ -590,9 +590,10 @@ export class GentlePromptEditor extends CustomEditor {
 			this.pendingIdleClearText = undefined;
 		}
 		// Vim owns its modal keys and paste frames. Ordinary editing retains
-		// native selection before the prompt's existing input chain.
+		// native selection before the prompt's existing input chain, but a
+		// registered extension shortcut still owns its chord (gentle-shell#1565).
 		if (this.vimPolicy === "on") this.handleInputNative(data);
-		else this.selectionEngine.handleInput(data, (d) => this.handleInputNative(d));
+		else this.selectionEngine.handleInput(data, (d) => this.handleInputNative(d), (d) => this.onExtensionShortcut?.(d) === true);
 	}
 
 	private handleInputNative(data: string): void {

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandInfo, type SourceInfo } from "@earendil-works/pi-coding-agent";
-import { CURSOR_MARKER, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, matchesKey, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, GentlePromptEditor } from "../extensions/gentle-shell.ts";
 import { CODEX_USAGE_URL, NAN_QUOTA_URL, USAGE_SOURCE_EVENT, USAGE_SOURCE_SCHEMA } from "../lib/shell-usage.ts";
 import { bindSessionProfile, clearSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
@@ -1575,6 +1575,49 @@ test("GentlePromptEditor keeps visual selection when autocomplete offers printab
 		assert.match(editor.render(30).join("\n"), /VISUAL/);
 		assert.equal(editor.isShowingAutocomplete(), false);
 		assert.deepEqual(reverseColumns(editor.render(30)[1]!), [3, 4], "the selected range remains anchored");
+	} finally { editor.dispose(); }
+});
+
+// gentle-shell#1565: in ordinary editing the Gentle Agents alt+a shortcut
+// must win over prompt select-all, for empty and non-empty drafts alike.
+test("GentlePromptEditor gives extension shortcuts precedence over selection chords", () => {
+	const { pi, handlers } = fakePi(); gentleShell(pi, {});
+	const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+	try {
+		const seen: string[] = [];
+		editor.onExtensionShortcut = (data) => { seen.push(data); return matchesKey(data, "alt+a"); };
+		for (const altA of ["\x1ba", "\x1b[97;3u", "\x1b[97;3:1u"]) {
+			seen.length = 0;
+			editor.setText("");
+			editor.handleInput(altA);
+			assert.deepEqual(seen, [altA], "empty draft dispatches the shortcut");
+			seen.length = 0;
+			editor.setText("abc\ndef");
+			editor.handleInput(altA);
+			assert.deepEqual(seen, [altA], "non-empty draft dispatches the shortcut");
+			assert.doesNotMatch(editor.render(40).join("\n"), /\x1b\[7mabc/);
+			editor.handleInput("\x7f");
+			assert.equal(editor.getText(), "abc\nde", "the draft was not selected");
+		}
+		// alt+e is the dedicated select-all chord while alt+a belongs to Agents.
+		editor.setText("abc\ndef");
+		editor.handleInput("\x1be");
+		assert.match(editor.render(40).join("\n"), /\x1b\[7mabc/);
+		editor.handleInput("\x7f");
+		assert.equal(editor.getText(), "");
+	} finally { editor.dispose(); }
+});
+
+test("GentlePromptEditor keeps alt+a select-all when no extension claims it", () => {
+	const { pi, handlers } = fakePi(); gentleShell(pi, {});
+	const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+	try {
+		editor.onExtensionShortcut = () => false;
+		editor.setText("abc\ndef");
+		editor.handleInput("\x1ba");
+		assert.match(editor.render(40).join("\n"), /\x1b\[7mabc/);
+		editor.handleInput("\x7f");
+		assert.equal(editor.getText(), "");
 	} finally { editor.dispose(); }
 });
 
