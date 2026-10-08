@@ -431,6 +431,28 @@ pre-install gate.
 so the runner never reads them: a user-level prefix that itself points into
 the store is indistinguishable from the default and would be replaced.
 
+### Existing installations
+
+The wizard installs what is missing and updates what exists; it never reinstalls
+or downgrades Pi, and nothing changes before consent.
+
+| Found | Plan |
+| --- | --- |
+| A compatible Pi (pnpm-global, or any `pi` on PATH whose `pi --version` reports a stable version ≥ the minimum) and no Gentle Shell | Install only Gentle Shell: `pnpm add -g gentle-pi@<version> --allow-build=gentle-pi`, after checking that pnpm lists no gentle-pi (`check-existing-shell`). Pi is left as it is. |
+| A Gentle Shell that pnpm or npm owns | `update-shell-release` when it is older, unusable or a main build; `update-shell-main` on the main channel (needs Go). Then `setup-shell`. A missing Pi is installed first (`install-pi`). |
+| A current Gentle Shell that npm owns, on release | Nothing to do. |
+| A Gentle Shell neither pnpm nor npm owns (an `npm link` of a source checkout, for example) | Blocked with an explanation; never reinstalled. |
+
+Ownership comes from real paths ([`installOwner`](../scripts/main-channel.mjs)):
+pnpm when the package lives under PNPM_HOME, npm only when it is
+`<npm root -g>/gentle-pi` itself (POSIX; a Windows `npm.cmd` cannot be run
+without a shell, so npm ownership is not detected there yet). The update runs
+the same code as `gentle-shell upgrade --channel <channel>`
+(`check-installed-shell`, `update-shell`), then `verify-updated-shell` requires
+the same owner and a stable version not older than before (release) or a
+`-main.<sha12>` version (main); release also re-runs `verify-gentle-ai`. An
+update never runs `pnpm setup`: the existing installation already has its PATH.
+
 ### Main channel
 
 The Review screen offers **Latest release** (default) or **Latest main**. Choosing
@@ -442,10 +464,7 @@ publishes main builds, so main is built on this computer
 - Preflight requires a compatible Go (≥ the Windows minimum) on every platform
   and otherwise blocks with `main-requires-go`. Main steps are added only when the
   plan installs or completes setup; a stack that is already set up switches with
-  `gentle-shell upgrade --channel main`. A pnpm-global Gentle Shell already at a
-  `<version>-main.<sha12>` version stays `unknown` (never replaced); its probe adds
-  `mainVersion`, and the guidance points to `gentle-shell upgrade` and
-  `gentle-shell upgrade --channel release`.
+  `gentle-shell upgrade --channel main`, or the wizard's update plan below.
 - After the release stack is installed and `verify-gentle-ai` passed, the runner:
   1. `build-gentle-ai-main`: resolves the latest `main` commit of
      Gentleman-Programming/gentle-ai (GitHub API, raw SHA), runs
