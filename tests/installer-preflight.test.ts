@@ -67,6 +67,36 @@ for (const [name, version] of [["node", "22.18.0"], ["pi", "0.99.0"], ["shell", 
 	});
 }
 
+test("an older Shell without its global command is reported as incompatible, not unknown", () => {
+	const unchecked = { available: null };
+	const inventory = { ...installed(), shell: { available: true, version: "3.4.0", usable: false, global: true },
+		gentleAi: unchecked, setup: unchecked };
+	const plan = planPreflight(inventory);
+	assert.deepEqual(plan.blockers, [{ code: "incompatible-tool", tool: "shell" }]);
+	assert.equal(plan.tools.shell.status, "incompatible");
+	assert.deepEqual(plan.actions, []);
+	assert.equal(plan.ready, false);
+});
+
+test("a Shell installed outside pnpm is the only blocker, without derived Gentle AI and setup blockers", () => {
+	const unchecked = { available: null };
+	const plan = planPreflight({ ...installed(), shell: { available: null, outsidePnpm: true }, gentleAi: unchecked, setup: unchecked });
+	assert.deepEqual(plan.blockers, [{ code: "unknown-tool", tool: "shell" }]);
+	assert.deepEqual(plan.actions, []);
+	assert.equal(plan.ready, false);
+});
+
+test("an unknown Gentle AI still blocks when the Shell is reusable", () => {
+	const plan = planPreflight({ ...installed(), gentleAi: { available: null } });
+	assert.deepEqual(plan.blockers, [{ code: "unknown-tool", tool: "gentleAi" }]);
+});
+
+test("a current Shell without its global command still blocks as unknown", () => {
+	const plan = planPreflight({ ...installed(), shell: { available: true, version: "5.0.0", usable: false, global: true } });
+	assert.deepEqual(plan.blockers, [{ code: "unknown-tool", tool: "shell" }]);
+	assert.deepEqual(plan.actions, []);
+});
+
 test("missing Windows Go is acquired before reprovisioning an existing Shell", () => {
 	const inventory = { ...installed("win32"), gentleAi: absent };
 	assert.deepEqual(ids(inventory), ["acquire-go", "verify-go", "provision-native", "setup-shell", "verify-readiness"]);

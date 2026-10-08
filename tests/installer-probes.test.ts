@@ -245,11 +245,11 @@ test("a failed, unparseable or ambiguous global list makes Pi, Shell, Gentle AI 
 	assert.deepEqual(await h.probes.shell(), { available: null });
 });
 
-test("Pi or Shell on the user's PATH but not pnpm-global is unknown, never absent", async () => {
+test("Pi or Shell on the user's PATH but not pnpm-global is unknown, never absent, and says so", async () => {
 	const h = probes({ files: [TOOLS_PNPM, "/usr/local/bin/pi", "/usr/local/bin/gentle-shell"],
 		env: { HOME, PATH: `${TOOLS}/pnpm/bin:/usr/local/bin` }, results: pnpmVersion });
-	assert.deepEqual(await h.probes.pi(), { available: null });
-	assert.deepEqual(await h.probes.shell(), { available: null });
+	assert.deepEqual(await h.probes.pi(), { available: null, outsidePnpm: true });
+	assert.deepEqual(await h.probes.shell(), { available: null, outsidePnpm: true });
 	assert.deepEqual(await h.probes.setup(), { available: null });
 });
 

@@ -388,7 +388,7 @@ test("planModel turns preflight blockers into guidance and offers no install", a
 	assert.equal(model.kind, "blocked");
 	assert.equal(model.blockers.length, 1);
 	assert.equal(model.blockers[0].toolLabel, "Node.js");
-	assert.equal(model.blockers[0].guidance, guidance.blockers["incompatible-tool"]);
+	assert.equal(model.blockers[0].guidance, "Node.js 18.0.0 is installed, but this installer needs 22.19.0 or newer. Nothing was replaced. Update it, then select Check again.");
 	for (const code of Object.keys(guidance.blockers)) {
 		const rendered = wizard.planModel({ planId: "p", ready: false, actions: [], blockers: [{ code, tool: "pnpm", guidance: guidance.blockers[code] }],
 			profileChange: { changesProfile: false, binDir: null, description: "x" }, persistence: { tools: [], pnpmHome: null, description: "y" } });

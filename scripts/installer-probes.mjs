@@ -226,11 +226,14 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 	const globalPackage = async (name, command) => {
 		const packages = await globalPackages();
 		if (!packages) return { state: "unknown" };
-		if (!packages.has(name)) return { state: (await persistentOn(command)) ? "unknown" : "absent" };
+		if (!packages.has(name)) return (await persistentOn(command)) ? { state: "unknown", outsidePnpm: true } : { state: "absent" };
 		const entry = packages.get(name);
 		const version = exactVersion(entry?.version, STABLE);
 		return entry && version ? { state: "present", entry, version } : { state: "unknown" };
 	};
+	// Still unknown (never absent or replaced), but says the command comes from
+	// another installation so the wizard can explain the blocker.
+	const notPnpmGlobal = (found) => (found.outsidePnpm ? { ...unknown(), outsidePnpm: true } : unknown());
 	const shellBin = () => path.join(globalBin.path, platform === "win32" ? "gentle-shell.cmd" : "gentle-shell");
 
 	const probes = {
@@ -262,12 +265,12 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 		},
 		async pi() {
 			const pi = await globalPackage(PI_PACKAGE, "pi");
-			if (pi.state !== "present") return pi.state === "absent" ? absent() : unknown();
+			if (pi.state !== "present") return pi.state === "absent" ? absent() : notPnpmGlobal(pi);
 			return { available: true, version: pi.version, usable: true };
 		},
 		async shell() {
 			const shell = await globalPackage(SHELL_PACKAGE, "gentle-shell");
-			if (shell.state !== "present") return shell.state === "absent" ? absent() : unknown();
+			if (shell.state !== "present") return shell.state === "absent" ? absent() : notPnpmGlobal(shell);
 			return { available: true, version: shell.version, usable: await fs.isFile(shellBin()), global: true };
 		},
 		async gentleAi() {
