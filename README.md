@@ -291,7 +291,7 @@ See the [v3.5.1 release notes](https://github.com/Gentleman-Programming/gentle-s
 
 ### Path C: browser installer (preview)
 
-On a computer without Node.js, pnpm or Pi, the browser installer sets everything up for you. It checks the machine, shows exactly what it will change, and installs only after you confirm.
+The browser installer sets up Gentle Shell on a new computer or one that already has some of it: it installs what is missing (Node.js, pnpm, Pi, Gentle Shell) and updates an existing Gentle Shell. It checks the machine, shows exactly what it will change, and changes nothing until you confirm.
 
 ```bash
 git clone https://github.com/Gentleman-Programming/gentle-shell.git
@@ -309,7 +309,7 @@ The bootstrap gets Node.js and pnpm into a temporary folder if they are missing,
 - **Latest release** (recommended): the published Gentle Shell with its pinned Gentle AI binary.
 - **Latest main**: development builds of Gentle Shell and Gentle AI from the latest commit of `main`, built on your computer. Needs Go.
 
-The installer never replaces an existing installation: when it finds one, it says what it found and how to update it instead. No checkout dependencies are needed (`pnpm install` is not required). This is a preview: it is tested on Linux and in CI, while clean-machine runs on macOS and Windows are still being verified. Details: **[installation wizard](docs/install-wizard.md)**.
+An existing Pi is reused, never reinstalled or downgraded. An existing Gentle Shell is updated with the package manager that installed it (pnpm or npm); one it cannot attribute, such as an `npm link` of a source checkout, is left untouched and explained. No checkout dependencies are needed (`pnpm install` is not required). This is a preview: it is tested on Linux and in CI, while clean-machine runs on macOS and Windows are still being verified. Details: **[installation wizard](docs/install-wizard.md)**.
 
 ### Keep it up to date
 
