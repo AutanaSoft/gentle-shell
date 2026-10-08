@@ -102,9 +102,12 @@ function classify(observation, required, extraCheck = () => true, exact = false)
 	if (observation?.available === false) return "unavailable";
 	if (observation?.available !== true) return "unknown";
 	const version = versionParts(observation.version);
-	if (!version || observation.usable !== true) return "unknown";
+	if (!version) return "unknown";
 	const order = compareVersions(version, versionParts(required));
-	if (order < 0 || (exact && order !== 0)) return "incompatible";
+	// A known version below the minimum is incompatible whether or not it runs.
+	if (order < 0) return "incompatible";
+	if (observation.usable !== true) return "unknown";
+	if (exact && order !== 0) return "incompatible";
 	const extra = extraCheck(observation);
 	if (extra === false) return "incompatible";
 	return extra === true ? "reusable" : "unknown";
@@ -125,7 +128,11 @@ export function planPreflight(inventory) {
 	}
 	function record(name, status, required) {
 		tools[name] = { status, ...(required ? { required } : {}) };
-		if (status === "unknown" || status === "incompatible") {
+		// Gentle AI and setup are only checked for the pinned Shell, so their
+		// unknown status adds nothing once that Shell already blocks.
+		const shellBlocks = tools.shell?.status === "incompatible" || tools.shell?.status === "unknown";
+		const derived = status === "unknown" && (name === "gentleAi" || name === "setup") && shellBlocks;
+		if (!derived && (status === "unknown" || status === "incompatible")) {
 			blockers.push({ code: `${status}-tool`, tool: name });
 		}
 	}

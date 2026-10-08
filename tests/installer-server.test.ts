@@ -275,6 +275,75 @@ test("/api/plan reports blockers with guidance and no profile change when alread
 	}
 });
 
+test("/api/plan names the found and required version of an older Gentle Shell and how to resolve it", async () => {
+	const { host, port, login } = await start({ collect: async () => collected({
+		pi: { available: true, version: "1.0.4", usable: true },
+		shell: { available: true, version: "3.4.0", usable: false, global: true },
+		gentleAi: { available: null }, setup: { available: null },
+	}) });
+	try {
+		const view = await plan(port, await login());
+		assert.deepEqual(view.blockers.map((blocker: { code: string; tool: string }) => [blocker.code, blocker.tool]), [["incompatible-tool", "shell"]]);
+		assert.equal(view.blockers[0].guidance,
+			"Gentle Shell 3.4.0 is installed globally with pnpm, but this installer needs 4.0.0 or newer. Nothing was replaced. " +
+			"Update it with `pnpm add -g gentle-pi@4.0.0`, or remove it with `pnpm remove -g gentle-pi`, then select Check again.");
+		assert.deepEqual(view.actions, []);
+	} finally {
+		await host.close("test");
+	}
+});
+
+test("/api/plan names the found and required version of another older tool", async () => {
+	const { host, port, login } = await start({ collect: async () => collected({ pi: { available: true, version: "0.99.0", usable: true } }) });
+	try {
+		const view = await plan(port, await login());
+		const blocker = view.blockers.find((item: { tool: string }) => item.tool === "pi");
+		assert.equal(blocker.guidance, "Pi 0.99.0 is installed, but this installer needs 0.99.1 or newer. Nothing was replaced. Update it, then select Check again.");
+	} finally {
+		await host.close("test");
+	}
+});
+
+test("/api/plan explains a Gentle Shell installed outside pnpm", async () => {
+	const { host, port, login } = await start({ collect: async () => collected({
+		pi: { available: true, version: "1.0.4", usable: true },
+		shell: { available: null, outsidePnpm: true }, gentleAi: { available: null }, setup: { available: null },
+	}) });
+	try {
+		const view = await plan(port, await login());
+		assert.deepEqual(view.blockers.map((blocker: { code: string; tool: string }) => [blocker.code, blocker.tool]), [["unknown-tool", "shell"]]);
+		assert.equal(view.blockers[0].guidance,
+			"Gentle Shell is already installed, but not with pnpm: the `gentle-shell` command on your PATH comes from another installation, " +
+			"so this installer cannot check or update it. Nothing was replaced. Keep using that installation, or remove it " +
+			"(for example with `npm uninstall -g gentle-pi`), then select Check again.");
+	} finally {
+		await host.close("test");
+	}
+});
+
+test("/api/plan keeps the generic guidance for an unknown tool without more evidence", async () => {
+	const { host, port, login } = await start({ collect: async () => collected({ shell: { available: null } }) });
+	try {
+		const view = await plan(port, await login());
+		const blocker = view.blockers.find((item: { tool: string }) => item.tool === "shell");
+		assert.equal(blocker.guidance, guidance.blockers["unknown-tool"]);
+	} finally {
+		await host.close("test");
+	}
+});
+
+test("/api/plan keeps the generic guidance when no older version is known", async () => {
+	const { host, port, login } = await start({ collect: async () => collected({
+		gentleAi: { available: true, version: "1.0.0", usable: true, compatible: false } }) });
+	try {
+		const view = await plan(port, await login());
+		const blocker = view.blockers.find((item: { tool: string }) => item.tool === "gentleAi");
+		assert.equal(blocker.guidance, guidance.blockers["incompatible-tool"]);
+	} finally {
+		await host.close("test");
+	}
+});
+
 test("/api/plan keeps the preflight's camelCase tool names, but no other tool text", async () => {
 	const { host, port, login } = await start({ collect: async () => {
 		const result = collected({ gentleAi: { available: true, version: "1.0.0", usable: true, compatible: false },

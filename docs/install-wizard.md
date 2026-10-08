@@ -87,7 +87,16 @@ caller-provided functions; adapter implementations require review.
 ## Reading a plan
 
 Tool statuses distinguish `unavailable`, `unknown`, `incompatible`, `reusable`,
-`needs-setup` and `not-required`. Any blocker suppresses all actions: repairing an
+`needs-setup` and `not-required`. A known version below the minimum is `incompatible` even when the tool cannot
+run (for example an older Shell whose global command is missing); Gentle AI and
+setup add no separate `unknown` blocker then, because they are only checked for
+the pinned Shell. When Node.js, Pi or Gentle Shell is simply older than its
+minimum, the wizard's guidance names the found and required versions (for the
+Shell, also the pnpm commands that update or remove it); other blockers keep
+their fixed guidance. A Pi or Shell command on PATH that pnpm does not manage
+stays `unknown` (never replaced), and its probe adds `outsidePnpm: true` so the
+guidance can say so; Gentle AI and setup add no separate blocker while the Shell
+blocks. Any blocker suppresses all actions: repairing an
 existing incompatible or uncertain component requires a later explicit decision,
 not automatic replacement. `ready` means no acquisition/setup is indicated by
 this inventory, **not that verification has executed**.
@@ -700,7 +709,12 @@ With that entry available, the fixed sequence is:
    `add`/`bin` help-capability evidence. Engines support only simple `>=x.y` or
    `>=x.y.z` lower bounds; comparison fills an omitted patch with zero. Actual
    Node versions must remain exact stable versions; other ranges block rather
-   than guess.
+   than guess. The package is found from the resolved `pnpm` command; when that
+   command is a regular cmd-shim file (as pnpm 11 writes when it installs
+   itself), the search starts from its `# cmd-shim-target=` path. That path only
+   locates `package.json`; `pnpm --version` must still match it. Prerequisite
+   checks run from `/`, so a pnpm that switches to a project's `packageManager`
+   pin reports its own version.
    Missing pnpm is acquired from a fixed registry tarball, SHA512-SRI verified,
    checked for unsafe paths/links, extracted and probed before publication.
 4. Start the fixed bundle entry with the refreshed child environment. A mandatory

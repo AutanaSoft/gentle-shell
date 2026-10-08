@@ -167,6 +167,49 @@ function fingerprint(collected) {
 }
 
 /** Browser view of a server-held plan: fixed descriptions, never commands. */
+// Tools whose requirement is a minimum version, with their fixed labels. The
+// Shell probe only inspects pnpm's global packages, so its remedy names pnpm.
+const minimumTools = Object.freeze({
+	node: { label: "Node.js", where: "" },
+	pi: { label: "Pi", where: "" },
+	shell: { label: "Gentle Shell", where: " globally with pnpm",
+		remedy: (required) => `Update it with \`pnpm add -g gentle-pi@${required}\`, or remove it with \`pnpm remove -g gentle-pi\`` },
+});
+// A Pi or Shell command found on PATH that pnpm does not manage.
+const outsidePnpmTools = Object.freeze({
+	pi: { label: "Pi", command: "pi", pkg: "@earendil-works/pi-coding-agent" },
+	shell: { label: "Gentle Shell", command: "gentle-shell", pkg: "gentle-pi" },
+});
+const STABLE = /^v?(\d{1,6})\.(\d{1,6})\.(\d{1,6})$/;
+function older(found, required) {
+	const [a, b] = [STABLE.exec(found), STABLE.exec(required)];
+	if (!a || !b) return false;
+	for (let index = 1; index <= 3; index += 1) {
+		if (Number(a[index]) !== Number(b[index])) return Number(a[index]) < Number(b[index]);
+	}
+	return false;
+}
+/** Names the found and required versions when an incompatible tool is simply
+ * older than its minimum, and explains a Pi or Shell installed outside pnpm;
+ * anything else keeps the fixed guidance. */
+function blockerGuidance(blocker, inventory, plan) {
+	const fixed = guidance.blockers[blocker.code] ?? guidance.fallback;
+	if (blocker.code === "unknown-tool" && Object.hasOwn(outsidePnpmTools, blocker.tool) && inventory?.[blocker.tool]?.outsidePnpm === true) {
+		const { label, command, pkg } = outsidePnpmTools[blocker.tool];
+		return `${label} is already installed, but not with pnpm: the \`${command}\` command on your PATH comes from another installation, ` +
+			"so this installer cannot check or update it. Nothing was replaced. Keep using that installation, or remove it " +
+			`(for example with \`npm uninstall -g ${pkg}\`), then select Check again.`;
+	}
+	const tool = Object.hasOwn(minimumTools, blocker.tool) ? minimumTools[blocker.tool] : null;
+	if (blocker.code !== "incompatible-tool" || tool === null) return fixed;
+	const found = inventory?.[blocker.tool]?.version;
+	const required = plan.tools?.[blocker.tool]?.required;
+	if (typeof found !== "string" || typeof required !== "string" || !older(found, required)) return fixed;
+	const version = found.replace(/^v/, "");
+	const remedy = tool.remedy ? tool.remedy(required) : "Update it";
+	return `${tool.label} ${version} is installed${tool.where}, but this installer needs ${required} or newer. Nothing was replaced. ${remedy}, then select Check again.`;
+}
+
 function planView(planId, { inventory, plan }) {
 	const ids = plan.actions.map((action) => action.id);
 	const binDir = typeof inventory?.globalBin?.path === "string" ? inventory.globalBin.path : null;
@@ -187,7 +230,7 @@ function planView(planId, { inventory, plan }) {
 		blockers: plan.blockers.map((blocker) => ({
 			code: identifier(blocker.code),
 			tool: toolName(blocker.tool),
-			guidance: guidance.blockers[blocker.code] ?? guidance.fallback,
+			guidance: blockerGuidance(blocker, inventory, plan),
 		})),
 		profileChange: {
 			changesProfile,
