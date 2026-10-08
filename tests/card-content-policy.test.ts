@@ -7,9 +7,9 @@ import { CARD_CONTENT, CARD_CONTENT_SCHEMA, cardContent, parseCardContentFile, r
 
 const home = () => mkdtempSync(join(tmpdir(), "gentle-card-content-"));
 
-test("a missing preference means the minimal content level", () => {
+test("a missing preference means the default content level", () => {
 	const dir = home();
-	assert.deepEqual(resolveCardContent({ gentlePiConfigHome: dir }), { content: "minimal", source: "default", malformed: false, globalFile: join(dir, "card-content.json") });
+	assert.deepEqual(resolveCardContent({ gentlePiConfigHome: dir }), { content: "default", source: "default", malformed: false, globalFile: join(dir, "card-content.json") });
 });
 
 test("the preference round-trips through the atomic writer", () => {
@@ -29,13 +29,13 @@ test("the writer rejects values outside the content domain", () => {
 	assert.equal(existsSync(join(dir, "card-content.json")), false);
 });
 
-test("invalid or unreadable preference files read as minimal and are never overwritten", () => {
+test("invalid or unreadable preference files read as default and are never overwritten", () => {
 	for (const raw of ["", "{", "[]", "null", `{"schema":"${CARD_CONTENT_SCHEMA}","content":"clean"}`, `{"schema":"other/v1","content":"minimal"}`, `{"schema":"${CARD_CONTENT_SCHEMA}","content":"default","extra":1}`]) {
 		assert.equal(parseCardContentFile(raw), undefined, raw);
 		const dir = home();
 		const path = join(dir, "card-content.json");
 		writeFileSync(path, raw);
-		assert.deepEqual(resolveCardContent({ gentlePiConfigHome: dir }), { content: "minimal", source: "global_file", malformed: true, globalFile: path }, raw);
+		assert.deepEqual(resolveCardContent({ gentlePiConfigHome: dir }), { content: "default", source: "global_file", malformed: true, globalFile: path }, raw);
 		assert.throws(() => writeCardContent(CARD_CONTENT.MINIMAL, { gentlePiConfigHome: dir }), /Cannot update malformed or unreadable card content preference/, raw);
 		assert.equal(readFileSync(path, "utf8"), raw, "the malformed file is preserved");
 	}
@@ -47,16 +47,20 @@ test("invalid or unreadable preference files read as minimal and are never overw
 		writeCardContent(CARD_CONTENT.MINIMAL, { gentlePiConfigHome: locked });
 		chmodSync(join(locked, "card-content.json"), 0o000);
 		try {
-			assert.deepEqual({ ...resolveCardContent({ gentlePiConfigHome: locked }), globalFile: "" }, { content: "minimal", source: "global_file", malformed: true, globalFile: "" });
+			assert.deepEqual({ ...resolveCardContent({ gentlePiConfigHome: locked }), globalFile: "" }, { content: "default", source: "global_file", malformed: true, globalFile: "" });
 		} finally {
 			chmodSync(join(locked, "card-content.json"), 0o600);
 		}
 	}
 });
 
-test("the live slot shares one content level per process and an unset slot reads minimal", (t) => {
-	const found = cardContent();
-	t.after(() => setCardContent(found));
+test("the live slot shares one content level per process and an unset slot reads default", (t) => {
+	const slot = Symbol.for("gentle-pi.card-content");
+	const state = globalThis as typeof globalThis & { [slot]?: unknown };
+	const found = state[slot];
+	t.after(() => { state[slot] = found; });
+	delete state[slot];
+	assert.equal(cardContent(), CARD_CONTENT.DEFAULT);
 	setCardContent(CARD_CONTENT.DEFAULT);
 	assert.equal(cardContent(), CARD_CONTENT.DEFAULT);
 	setCardContent(CARD_CONTENT.MINIMAL);

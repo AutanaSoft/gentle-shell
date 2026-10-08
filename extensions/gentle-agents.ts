@@ -8,13 +8,18 @@ import { SESSION_WORKTREE_ENTRY, SESSION_WORKTREE_CHANGED, SessionWorktreeRegist
 import { canonicalWriterRoot } from "../lib/writer-surfaces.ts";
 import { ForeignTargetGrants } from "../lib/foreign-target-grants.ts";
 import { MESSAGING_REASON_MAX_UTF8_BYTES, MESSAGING_REASON_MIN_CHARACTERS, normalizeMessagingReason, SessionMessagingGrants } from "../lib/session-messaging-grants.ts";
-import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import { join, resolve, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
-import { keyHint, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createLocalBashOperations, keyHint, SettingsManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createJobRegistry, type JobExecOperations, type JobRecord } from "../lib/background-jobs.ts";
+import { JOB_GLYPH, JOB_NOTICE_TYPE, jobDetails, jobNoticeText, monitorEventsText, monitorStoppedText, registerBackgroundJobTools } from "../lib/background-jobs-tools.ts";
+import { createMonitorController, mergeMonitorBatches, type MonitorNotice } from "../lib/background-monitor.ts";
+import { JobsView } from "../lib/jobs-view.ts";
+import { JOBS_SIDEBAR_EVENT, JOBS_STATUS_KEY } from "../lib/jobs-sidebar-state.ts";
 import { Text, type TUI } from "@earendil-works/pi-tui";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
 import { VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
@@ -37,7 +42,8 @@ import { historyDir, loadHistory, loadStoredTask, pruneHistory, saveTask } from 
 import { sessionToMarkdown } from "../lib/agents-transcript.ts";
 import { AgentsView } from "../lib/agents-view.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
-import { PresencePublisher, sanitizeDisplayLabel } from "../lib/orchestrator-presence.ts";
+import { PresencePublisher, sanitizeDisplayLabel, listPresence, sessionHash } from "../lib/orchestrator-presence.ts";
+import { incomingMessageCard, outgoingMessageCall, outgoingMessageResult, type OrchestratorMessageDetails } from "../lib/orchestrator-message-card.ts";
 import { discoverOrchestrators } from "../lib/orchestrator-discovery.ts";
 import { consultPublishedMetadata, unavailableMetadata, type MetadataReceipt } from "../lib/orchestrator-consultation.ts";
 import { HelperCostPermission } from "../lib/orchestrator-helper-consent.ts";
@@ -57,6 +63,7 @@ import { resolveProfilePin, resolveUnversionedProjectProfile } from "../lib/agen
 import { allowedEditSurfaces, inheritAllowedEditSurfaces, isBoundedWriter, isDevelopmentSurface, isGenericBoundedWriter, prepareBoundSessionRepository, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sessionRepositoryAuthority } from "../lib/bounded-writer-admission.ts";
 import { CHILD_METRICS_EVENT, CHILD_METRICS_REVOKED, childEvent, launchSelection, type LaunchSelection } from "../lib/runtime-metrics-children.ts";
 import { runtimeMetricsEnvAllows, type RuntimeMetricsPolicyDeps } from "../lib/runtime-metrics-policy.ts";
+import { publishTaskStatusChanges } from "../lib/notification-events.ts";
 
 // Gentle Agents: subagents as isolated `pi --mode rpc` children, a task
 // store that notifies per task, and a Gentle Shell card above the editor.
@@ -65,9 +72,22 @@ import { runtimeMetricsEnvAllows, type RuntimeMetricsPolicyDeps } from "../lib/r
 
 export const AGENTS_WIDGET_KEY = "gentle-agents";
 export const AGENTS_COMMAND_NAME = "gentle:agents";
+export const JOBS_COMMAND_NAME = "gentle:jobs";
+// How long session shutdown waits for stopped jobs to close their logs.
+const JOBS_SHUTDOWN_GRACE_MS = 2000;
 export const AGENTS_RESULT_TYPE = "gentle-agents.result";
 export const AGENTS_MESSAGE_TYPE = "gentle-agents.message";
 export const AGENTS_ORCHESTRATOR_MESSAGE_TYPE = "gentle-agents.orchestrator-message";
+
+// Display labels are best-effort local snapshots, never routing or authority.
+function messagePeerLabel(profile: string, sessionId: string): string | undefined {
+	try {
+		const page = listPresence(profile);
+		if (page.unavailable || page.overflow || page.rejected) return undefined;
+		const matches = page.entries.filter(header => header.sessionHash === sessionHash(sessionId));
+		return matches.length === 1 && matches[0].recent ? sanitizeDisplayLabel(matches[0].label) || undefined : undefined;
+	} catch { return undefined; }
+}
 export const AGENTS_STALE_RESULT_TYPE = "gentle-agents.stale-result";
 export const AGENTS_STALE_NOTICE_TYPE = "gentle-agents.stale-notice";
 const RENDER_COALESCE_MS = 400;
@@ -132,6 +152,10 @@ export interface AgentsDeps extends RunnerDeps {
 	metricsSchedule?: RunnerDeps["schedule"];
 	// Extensions every child loads with --extension (gentle-shell#1587).
 	childExtensionPaths?: string[];
+	/** Shell for background jobs; defaults to Pi's configured Bash. */
+	jobShell?: (cwd: string) => { operations: JobExecOperations; commandPrefix?: string };
+	/** Directory for background job output; defaults to a private temp dir. */
+	jobOutputDir?: () => string;
 }
 
 // gentle-shell#1587: fallback for a parent without the launcher's package
@@ -450,6 +474,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	const viewKey = agentsViewKey(env);
 	const stopKey = agentsStopKey(env);
 	const store = new TaskStore();
+	// Attach before any live add/start; restore and unchanged updates are silent.
+	// TaskStore contains bus listener failures so notifications cannot fail tools.
+	const stopStatusNotifications = publishTaskStatusChanges(store, pi.events, () => performance.now());
+	pi.on("session_shutdown", () => { stopStatusNotifications(); });
 	const restoredTaskIds = new Set<string>();
 	const tasksDir = historyDir(deps.home, agentHome);
 	let ui: ExtensionContext["ui"] | undefined;
@@ -613,7 +641,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				listener = sessionTransport.createListener(registry, sessionId, async (notification) => {
 					const active = activeSessionTransport;
 					if (!active || active.generation !== generation || active.sessionManager !== sessionManager || active.sessionId !== sessionId || sessions !== sessionManager || activeSessionId() !== sessionId) throw new Error("stale session transport");
-					pi.sendMessage({ customType: AGENTS_ORCHESTRATOR_MESSAGE_TYPE, content: `Session message from ${notification.senderSessionId} (correlation ${notification.id}): ${notification.message}`, display: true, details: { gentleAgents: { senderSessionId: notification.senderSessionId, recipientSessionId: sessionId, correlationId: notification.id, direction: "incoming" } } }, { deliverAs: "followUp", triggerTurn: true });
+					pi.sendMessage({ customType: AGENTS_ORCHESTRATOR_MESSAGE_TYPE, content: `Session message from ${notification.senderSessionId} (correlation ${notification.id}): ${notification.message}`, display: true, details: { gentleAgents: { senderSessionId: notification.senderSessionId, recipientSessionId: sessionId, correlationId: notification.id, direction: "incoming", message: notification.message, senderLabel: messagePeerLabel(agentHome, notification.senderSessionId), recipientLabel: sanitizeDisplayLabel(sessionManager.getSessionName?.() ?? "") } } }, { deliverAs: "followUp", triggerTurn: true });
 				});
 				client = sessionTransport.createClient(registry, sessionId);
 				if (sessions !== sessionManager || generation !== transportGeneration || activeSessionId() !== sessionId) {
@@ -705,6 +733,26 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// conversation.
 	const completions = createCompletionQueue<TaskRecord>();
 	const messages = createAgentMessageQueue();
+	// A job's exit, or a monitor's line events and harness stop, waiting for
+	// the parent delivery router.
+	type JobNotice = { job: JobRecord; kind: "exit" } | MonitorNotice;
+	const jobNotices: JobNotice[] = [];
+	let jobOutputDir: string | undefined;
+	const jobs = createJobRegistry({
+		outputDir: deps.jobOutputDir ?? (() => (jobOutputDir ??= mkdtempSync(join(os.tmpdir(), "gentle-jobs-")))),
+		now: deps.now,
+		shell: deps.jobShell ?? ((cwd) => {
+			const settings = SettingsManager.create(cwd, agentHome);
+			return { operations: createLocalBashOperations({ shellPath: settings.getShellPath() }), commandPrefix: settings.getShellCommandPrefix() };
+		}),
+		onSettled: (job) => settleJob(job),
+	});
+	const monitors = createMonitorController({
+		registry: jobs,
+		schedule: (fn, ms) => deps.schedule(fn, ms),
+		now: deps.now,
+		deliver: (notice) => queueJobNotice(notice),
+	});
 	let activeAgentRuns = 0;
 	// ExtensionAPI has no idle probe; ctx.isIdle() is the only one. It is live
 	// and also reports compaction, which activeAgentRuns cannot see. The
@@ -976,9 +1024,34 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		}
 	};
 
+	// A background job's exit notice rides the same router as a completion. It
+	// is compact (no full output), so it has no stale form; a failed forward
+	// requeues it like a completion does.
+	const flushJobNotices = () => {
+		const route = deliveryRoute(false);
+		if (!route) return;
+		const failed: JobNotice[] = [];
+		for (const notice of jobNotices.splice(0)) {
+			const { job } = notice;
+			if (activeSessionId() !== job.ownerSessionId) continue;
+			const content = notice.kind === "events" ? monitorEventsText(job, notice.batch)
+				: notice.kind === "stopped" ? monitorStoppedText(job, notice.reason) : jobNoticeText(job);
+			const event = notice.kind === "events" ? "events" : notice.kind === "stopped" ? notice.reason : undefined;
+			try {
+				sendToParent({ customType: JOB_NOTICE_TYPE, content, display: true, details: jobDetails(job, event) }, route);
+			} catch {
+				failed.push(notice);
+			}
+		}
+		if (failed.length === 0) return;
+		jobNotices.unshift(...failed);
+		if (route === "idle") armDeliveryRetry();
+	};
+
 	const flushAll = () => {
 		flushMessages();
 		flushCompletions();
+		flushJobNotices();
 		// A wake left owed by an earlier held or expired attempt is retried here.
 		requestWake();
 	};
@@ -1008,6 +1081,41 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		cancelBoundaryFlush = undefined;
 		endDeliveryRetry();
 		deliveryRetries = 0;
+	};
+
+	// Structured descriptions feed Status; native hosts keep the compact count.
+	const refreshJobStatus = () => {
+		const sessionId = activeSessionId();
+		const running = jobs.list(sessionId ?? "").filter((job) => job.status === "running")
+			.sort((a, b) => b.startedAt - a.startedAt);
+		try { parentCtx?.ui.setStatus(JOBS_STATUS_KEY, running.length === 0 ? undefined : `${JOB_GLYPH} ${running.length} job${running.length === 1 ? "" : "s"}`); } catch { /* Status is cosmetic. */ }
+		if (sessionId) {
+			try { pi.events.emit(JOBS_SIDEBAR_EVENT, { sessionId, snapshot: { jobs: running.map(({ id, label, startedAt }) => ({ id, label, startedAt })) } }); } catch { /* Display only. */ }
+		}
+	};
+
+	// A job exit settles like a completion below: flushed at once for an idle
+	// parent, at the next turn boundary for a busy one.
+	// Line events still waiting for a busy parent coalesce per monitor.
+	const queueJobNotice = (notice: JobNotice) => {
+		// Merge into this monitor's latest pending notice when that is still
+		// an events notice, so events never move past its own end.
+		let index = -1;
+		for (let i = jobNotices.length - 1; i >= 0; i--) if (jobNotices[i]!.job === notice.job) { index = i; break; }
+		const pending = index >= 0 ? jobNotices[index]! : undefined;
+		if (notice.kind === "events" && pending?.kind === "events") {
+			jobNotices[index] = { ...pending, batch: mergeMonitorBatches(pending.batch, notice.batch) };
+		} else {
+			jobNotices.push(notice);
+		}
+		refreshJobStatus();
+		requestRender();
+		if (activeAgentRuns === 0) flushAll();
+	};
+	const settleJob = (job: JobRecord) => {
+		// A monitor's pending lines are delivered before its end.
+		if (job.kind === "monitor") monitors.finish(job);
+		queueJobNotice({ job, kind: "exit" });
 	};
 
 	// A completion settles into our queue. An idle parent flushes right away so
@@ -1157,6 +1265,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		},
 	});
 
+	registerBackgroundJobTools(pi, { registry: jobs, monitors, sessionId: (ctx) => ctx.sessionManager.getSessionId() ?? "", now: deps.now, onChange: () => { refreshJobStatus(); requestRender(); } });
+
 	pi.registerMessageRenderer(AGENTS_MESSAGE_TYPE, (message, options, theme) => {
 		const details = (message.details as { gentleAgents?: { taskId?: unknown; agent?: unknown } } | undefined)?.gentleAgents;
 		const taskId = typeof details?.taskId === "string" ? details.taskId : "unknown";
@@ -1167,11 +1277,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	});
 
 	pi.registerMessageRenderer(AGENTS_ORCHESTRATOR_MESSAGE_TYPE, (message, options, theme) => {
-		const details = (message.details as { gentleAgents?: { senderSessionId?: unknown } } | undefined)?.gentleAgents;
-		const sender = typeof details?.senderSessionId === "string" ? details.senderSessionId : "unknown";
-		const heading = `⇄ Orchestrator message · Received · From ${sanitizeTerminalText(sender)}`;
-		const body = sanitizeTerminalText(messageText(message.content));
-		return new Text(`${theme.fg("customMessageLabel", heading)}\n${theme.fg("customMessageText", body)}`, options.outputPad, 0);
+		const details = (message.details as { gentleAgents?: OrchestratorMessageDetails } | undefined)?.gentleAgents ?? {};
+		return incomingMessageCard(details, messageText(message.content), options.expanded, theme, expandHint(options.expanded));
 	});
 
 	pi.registerMessageRenderer(AGENTS_RESULT_TYPE, (message, options, theme) => {
@@ -1834,6 +1941,13 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.registerTool({
 		name: "orchestrator_send_message",
 		label: "Send orchestrator message",
+		renderShell: "self",
+		renderCall(args, theme, context) {
+			return outgoingMessageCall(args as { message?: unknown }, theme, context, expandHint(context.expanded));
+		},
+		renderResult(result, options, theme, context) {
+			return outgoingMessageResult(result, options.expanded, options.isPartial, theme, context);
+		},
 		description: "Send a notification to another active session in this trusted local profile. If recipient_session_id is omitted, the sole peer is selected or the user selects one. Acceptance means enqueued, not read or completed.",
 		parameters: {
 			type: "object",
@@ -1892,7 +2006,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			}
 			try {
 				const accepted = await transport.client.sendNotification(recipient, message, { signal, expectedActivation: activation, beforeConnect: () => activeTransportFor(ctx) === transport });
-				return activeTransportFor(ctx) === transport ? text(`Message ${accepted.id} from ${transport.sessionId} to ${recipient} accepted for delivery; it is not a delivery or read receipt.`, { gentleAgents: { messageId: accepted.id, senderSessionId: transport.sessionId, recipientSessionId: recipient, state: "accepted" } }) : text("Error: session messaging is not ready.", { error: "stale" });
+				return activeTransportFor(ctx) === transport ? text(`Message ${accepted.id} from ${transport.sessionId} to ${recipient} accepted for delivery; it is not a delivery or read receipt.`, { gentleAgents: { messageId: accepted.id, senderSessionId: transport.sessionId, recipientSessionId: recipient, state: "accepted", message, reason, senderLabel: sanitizeDisplayLabel(ctx.sessionManager.getSessionName?.() ?? ""), recipientLabel: messagePeerLabel(agentHome, recipient) } }) : text("Error: session messaging is not ready.", { error: "stale" });
 			} catch {
 				return text("Error: session message was not accepted.", { error: "not accepted" });
 			}
@@ -2037,6 +2151,37 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		});
 	}
 
+	pi.registerCommand(JOBS_COMMAND_NAME, {
+		description: "Show background jobs: running first, newest first within each group; status, command, output tail; s stops the selected job.",
+		handler: async (_args, ctx) => {
+			if (!ctx.hasUI) return;
+			if (ctx.mode !== "tui") {
+				ctx.ui.notify("The jobs overlay requires TUI mode.", "warning");
+				return;
+			}
+			let view: JobsView | undefined;
+			await ctx.ui.custom<null>((tui, theme, _keybindings, done) => {
+				const close = withOverlayRepaint(tui, done);
+				view = new JobsView({
+					theme,
+					rows: () => Math.max(0, tui.terminal.rows),
+					jobs: () => jobs.list(ctx.sessionManager.getSessionId() ?? ""),
+					now: () => deps.now(),
+					// The agent was promised a notice, so a human stop is reported;
+					// a job_stop needs none because the agent itself stopped it.
+					onStop: (job) => {
+						// Lines already seen are delivered before the stop notice.
+						monitors.finish(job);
+						const stopped = jobs.stop(job.id);
+						if (stopped) queueJobNotice({ job: stopped, kind: "exit" });
+					},
+					onClose: () => close(null),
+					requestRender: () => tui.requestRender(),
+				});
+				return view;
+			}, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0, anchor: "center" } }).finally(() => view?.dispose());
+		},
+	});
 	pi.registerCommand(AGENTS_COMMAND_NAME, {
 		description: "Show this session's active subagents; a lists open orchestrators in this profile. Peer threads are read-only; o opens a local task's transcript in $EDITOR.",
 		handler: async (_args, ctx) => openOverlay(ctx),
@@ -2066,6 +2211,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// queue so nothing pending from another session can replay here.
 		completions.dropAll();
 		messages.dropAll();
+		jobNotices.length = 0;
 		resetParentDelivery(ctx);
 		presence?.dispose();
 		registryFor(ctx);
@@ -2114,6 +2260,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.on("session_shutdown", async () => {
 		completions.dropAll();
 		messages.dropAll();
+		// Jobs never outlive their session: a stopped job sends no notice.
+		monitors.cancelAll();
+		const jobsStopped = jobs.stopAll();
+		jobNotices.length = 0;
+		refreshJobStatus();
 		activeAgentRuns = 0;
 		resetParentDelivery(undefined);
 		presence?.dispose();
@@ -2134,5 +2285,16 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const stopped = shutdownSessionTransport();
 		runner.cancelAll("cancelled: parent session shut down");
 		await stopped;
+		// The default log directory goes with the session once every log is
+		// closed, but a process that ignores its stop must not hang shutdown.
+		await new Promise<void>((done) => {
+			const cancel = deps.schedule(done, JOBS_SHUTDOWN_GRACE_MS);
+			void jobsStopped.then(() => { cancel(); done(); });
+		});
+		if (jobOutputDir) {
+			const dir = jobOutputDir;
+			jobOutputDir = undefined;
+			try { rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); } catch { /* A leftover temp directory is harmless. */ }
+		}
 	});
 }

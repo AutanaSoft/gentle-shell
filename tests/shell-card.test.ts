@@ -139,13 +139,13 @@ test("renderCard truncates ANSI-styled title content at display width", () => {
 });
 
 test("tool heading continuation reserves configured hint columns before ANSI and Unicode wrapping", () => {
-	const title = "printf 界e\u0301 alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa";
+	const title = "bash $ printf 界e\u0301 alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa";
 	const hint = "\x1b[36mconfigured key to expand\x1b[0m";
 	const value = card({ title: `\x1b[1m${title}\x1b[0m`, subtitle: undefined, glyph: "🌹︎", body: [] });
 	for (const width of [60, 80, 120]) {
 		const lines = cardTopRows(value, ansiTheme, width, hint);
 		assert.match(stripAnsi(lines[0]), /configured key to expand ╮$/);
-		assert.match(stripAnsi(lines[0]), /^╭─ 🌹︎ printf/);
+		assert.match(stripAnsi(lines[0]), /^╭─ 🌹︎ bash \$ printf/);
 		assert.ok(lines.length > 1, "long heading continues inside the same frame");
 		assert.ok(lines.every((line) => visibleWidth(line) === width));
 		const content = lines.map(stripAnsi).map((line, index) => index === 0

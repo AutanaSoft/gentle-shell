@@ -116,7 +116,7 @@ The panel rows a provider reports its windows with:
   glm5.3-flash      ▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱  11% · resets in 12d 17h
 ```
 
-- For Codex, usage comes from the same account usage endpoint the Codex CLI reads, using the OAuth token pi already holds. It is fetched at session start, at most every 5 minutes after a turn, and on `r` in the panel. Rate-limit headers on SSE responses are picked up too. The same refresh covers every provider the session targets: the active model's own provider plus every provider the active profile's subagent routing names — a repository pin decides which profile that is, falling back to the global active profile when no pin applies. Each provider keeps its own 5-minute window, its own stale-source guard, and its own last good snapshot. Providers refresh concurrently, each inside its own bounded window (default 10s, `GENTLE_PI_SHELL_USAGE_TIMEOUT_MS`): the abort signal reaches the underlying fetch — composed with the caller's own signal when it carries one, never replacing it — a provider that outlives its window wears the generic failure note, and whatever it answers afterwards is discarded — a late answer never replaces what the timeout settled, exactly like the stale-source guard above.
+- For Codex, usage comes from the same account usage endpoint the Codex CLI reads, using the OAuth token pi already holds. It is fetched at session start, at most every 5 minutes after a turn, and on `r` in the panel. Rate-limit headers on SSE responses are picked up too. Codex windows require a finite positive duration reported by the provider; missing or invalid durations are ignored, never shown as `0m` or replaced with an assumed `5h` quota. A real `0%` remains visible when its window is valid, and a response with no valid header windows leaves the previous snapshot untouched. The same refresh covers every provider the session targets: the active model's own provider plus every provider the active profile's subagent routing names — a repository pin decides which profile that is, falling back to the global active profile when no pin applies. Each provider keeps its own 5-minute window, its own stale-source guard, and its own last good snapshot. Providers refresh concurrently, each inside its own bounded window (default 10s, `GENTLE_PI_SHELL_USAGE_TIMEOUT_MS`): the abort signal reaches the underlying fetch — composed with the caller's own signal when it carries one, never replacing it — a provider that outlives its window wears the generic failure note, and whatever it answers afterwards is discarded — a late answer never replaces what the timeout settled, exactly like the stale-source guard above.
 - A routing entry names its provider with a qualified ref (`provider/model`); a bare model id is resolved through the model registry only when exactly one provider carries that id, and is left untargeted rather than guessed when none or several do. The targeted scope is resolved when a refresh runs — at session start, on each turn's throttled refresh, on `r` or reopening the panel, and when a usage source registers — so a profile switch is picked up by the next refresh rather than live per render.
 - For Claude Pro/Max, usage arrives in the rate-limit headers of every response, so the 5h and weekly windows appear after the first turn.
 - For NaN Cloud, usage comes from the quota endpoint the official dashboard reads, with the same API key pi already holds. Each metered model reports one allowance for the billing period, and that window carries no label: the model id names it in the bar and the reset text says what it is in the panel. A model that also reports a rolling window shows that one labeled next to it (`4h`), which today's payload does not send; percentages are tokens used over the allowance, exactly as the dashboard draws them, and the allowance is the full-period cap (`fullCap`) whenever the model reports a positive one, because `cap` alone is the prorated allowance of the period in progress. It is fetched under the same 5-minute rule as Codex, counted per provider so a switch fetches the provider it switched to, refuses redirects so the bearer cannot be replayed to another origin, and keeps no cached copy. The endpoint sits outside NaN's published OpenAPI, so the parser reads it defensively: a model that reports no allowance is skipped, as the dashboard skips it, while a metered model whose usage cannot be read fails the whole read, so a partial payload never replaces a complete snapshot with a cheaper-looking one. A session that already has a snapshot keeps the last valid one through a malformed payload or a failed fetch, and the pending note appears only while there is nothing to draw.
@@ -149,7 +149,7 @@ Gentle notices follow the selected card style. In `neon`, informational cards us
 ╰──────────────────────────────────────────────────────────────────────╯
 ```
 
-- Quiet tools use the selected card style with their actual name in the heading (`read`, `bash`, `grep`, `find`, `ls`, `edit`, `write`); bash keeps its command visible. Collapsed results show up to three physical preview rows, including search/list entries or changed diff lines alongside useful totals. Expand with the configured key shown in the top rule for complete available output and image handling.
+- Quiet tools use the selected card style with their actual name in the heading (`read`, `bash`, `grep`, `find`, `ls`, `edit`, `write`); bash keeps its command visible. Collapsed results show up to three physical preview rows, including search/list entries or changed diff lines alongside useful totals. Expand with the configured key shown in the top rule for complete available output and image handling. Expanded successful `write` cards show the complete written content; collapsed cards keep their concise confirmation. Failed writes show the error instead.
 - Every call into the gentle-ai binary and every `gentle_review` tool draws a rose card titled like the quiet `read` card: the colored 🌹 emoji, a short name, then the operation (`🌹 rdd inspect`, `🌹 gentle-ai version`), with `running`/`preparing`/`failed` shown until the call completes (`🌹 rdd running · start`). The rail uses the existing theme roles: warning while running/partial, success on completion, error on failure. Collapsed results show up to three useful physical rows, not just a line count. A JSON envelope instead collapses to one summary line of its key fields (status, outcome, risk, action, reason code, diagnostic message, e.g. `blocked · start · fresh_target_ready`) and expands as pretty-printed JSON. The expand key sits in the top rule once finished, and elapsed timing stays on the closing rule. Reviewer captures name their lens (`rdd capture · risk`; the group lists all four).
 - The review preflight reminder renders as a card in the transcript with the expand key in its top rule. Collapsed, it previews up to three non-blank physical rows of the reminder; expanded, it shows the full text.
 - An active dev-binary override shows above the editor at startup as a 🌹 gentle-ai card, in amber, naming the binary and its digest, and leaves with the first prompt; an invalid override shows in red with the reason.
@@ -175,6 +175,17 @@ Pick the conversation-card and shell-chrome style in `/gentle:customize` → **C
 - `float` applies to tool, Code and 🌹 cards, Agent result and stale cards, the review preflight reminder, the dev-binary notice, and the Agents, Todos and Status panels. The prompt and fullscreen header/footer use their specialized float chrome described above. The regular-mode one-line Status bar is unchanged.
 - A theme without a tool background, or a card narrower than 10 columns, falls back to `neon`. A malformed `card-style.json` reads as `float` and the panel refuses to overwrite it.
 
+### Card content
+
+Pick how much a collapsed quiet-tool card shows in `/gentle:customize` → **Cards** → **Card content**. The choice is saved in `card-content.json` in the Gentle Pi config home; a missing, malformed, or unreadable file reads as `default`, and a malformed file is never overwritten.
+
+| Level | Collapsed quiet-tool cards |
+|-------|----------------------------|
+| `default` | Result previews, counts, and summaries, as described above. Bash rows keep pi's native drawing. |
+| `minimal` | Only the command row for `read`, `write`, `bash`, `grep`, `find`, `ls`, and `edit`; the expand key still reveals the full result. Failed calls keep their bounded error tail. Bash rows draw as a Gentle card when the host supports `pi.registerToolRenderer`, with the bare command as the title. |
+
+Quiet tool cards redraw immediately after a change; bash rows follow on new calls. Gentle AI cards keep their full card and elapsed time at both levels.
+
 ### Compact Code card
 
 With quiet tools enabled, `codemode` uses the same rounded **Code** card. The collapsed view shows up to eight observed child calls in their original order, including repeats, with Pi's actual status and available nonnegative duration. Additional calls and failures are counted. Error payloads have a separate two-row preview even when their child falls outside the first eight; final output has a three-row physical budget, and a full-output locator remains visible when available.
@@ -191,6 +202,7 @@ Gentle Shell ships its own interactive tools instead of depending on third-party
 - **`ask_user_question`** — one to four structured questions in a single questionnaire, each with two to four options, multi-select, per-option descriptions and previews — rendered as real TUI dialogs, usable in the live session.
 - **`ask_user_choice`** — one exactly representable single-select question, with an opt-in free-text response.
 - **`todo`** — plan tracking with the Gentle Todo card (see Gentle Todo below).
+- **`bash_background`**, **`monitor`**, **`job_stop`**, **`job_list`** — background shell jobs that notify the agent when they exit, or on every output line (see Background jobs below).
 - **`gentle_review` / capture tools** — the native review surface for receipt-driven development.
 - **Optional companions** (separately installed, never bundled): `gentle-engram` for persistent memory, `pi-web-access` for web access when a task needs it and your policy allows it, `pi-lens` for additional inspection surfaces, `pi-intercom` for cross-session communication where your Pi setup supports it, and `@juicesharp/rpiv-ask-user-question` for interactive choice support where a separately installed extension fits your setup. These are companions, not hidden prerequisites or a claim that every Pi installation has every capability; persistent memory is **not** bundled with `gentle-pi`.
 
@@ -241,6 +253,23 @@ In the isolated Gentle Shell home, `settings.json` does not declare gentle-pi; t
 - Finished tasks are written to `~/.pi/agent/gentle-agents/tasks/` (one JSON per task, newest `history_max_tasks` kept, default 200) and come back on demand for `subagent_result` and `subagent_continue`; an id looked up this way from an unrelated session never enters the overlay or becomes cancellable. Child sessions live under `~/.pi/agent/gentle-agents/sessions/`.
 - `ctrl+shift+a` collapses the card to its first row (`GENTLE_PI_AGENTS_KEY`), `GENTLE_PI_AGENTS_VIEW_KEY` rebinds the overlay, `GENTLE_PI_AGENTS_PI` overrides the pi command used for children, and `GENTLE_PI_AGENTS=0` disables the tools and the card.
 
+### Background jobs
+
+Waiting on CI, a build, or a server should cost neither a `sleep` loop nor a subagent, and neither should reacting to a log or a CI run while it progresses. `bash_background` runs a shell command in the background and returns a job id at once; the agent ends its turn or keeps working, and when the command exits the agent gets one message with the exit code, the last output lines, and the output file path. The wait condition lives inside the command, so its exit is the event:
+
+```bash
+gh run watch 12345 --exit-status                           # CI finished
+until curl -sf localhost:3000/health; do sleep 1; done     # server is up
+```
+
+- Jobs run through Pi's own Bash execution: your configured `shellPath` and `shellCommandPrefix`, a process group per job, and process-tree kill. `bash_background` is a separate tool; native `bash` is unchanged.
+- The exit notice uses the same delivery as background subagent results: it is steered into a running turn at the next turn boundary, or stored and wakes an idle session. A job the agent stops with `job_stop` sends no notice; one you stop from `/gentle:jobs` is reported to the agent as stopped by the user.
+- stdout and stderr go to a temp file (`gentle-jobs-*/job-N.log`), never into the context; the agent reads it with `read` when it needs more than the tail. The tail keeps the last 20 lines, each capped at its newest 2,000 characters, and the log directory is removed when the session shuts down.
+- `bash_background` passes through the same command confirmation, YOLO waiver, and child safety guards as `bash`.
+- Jobs live in memory, belong to the session that started them, and are stopped when the session shuts down. At most 25 run at once.
+- `monitor` is a background job whose every output line is an event, delivered while the command keeps running — for example `tail -f app.log | grep --line-buffered ERROR`, or a loop that prints each CI check as it finishes. Lines within 200 ms share one notice of at most 20 lines (the rest are counted, and stay in the log); notices waiting for a busy agent coalesce. `timeout_seconds` is mandatory (1–1800): the monitor is stopped when it expires and reports its event count. One that prints more than 120 lines within 60 seconds is stopped as a flood, so filter its output. When the command exits, a final notice reports the exit code and event count. It goes through the same command guards as `bash`.
+- `/gentle:jobs` opens a full-terminal overlay with this session's jobs beside the selected job's command, status, output file, and live output tail; `↑`/`↓` or `j`/`k` move, `s` stops the selected running job, `q` closes (narrow terminals: `Tab` toggles details, `Escape` goes back). The footer shows `⧗ N jobs` while any run.
+
 ### Gentle Todo
 
 The `todo` tool and its card replace the third-party todo extension (remove `npm:@juicesharp/rpiv-todo` from your pi packages; sessions written by it replay into the new card).
@@ -253,11 +282,12 @@ The `todo` tool and its card replace the third-party todo extension (remove `npm
 ╰─────────────────────────────────────────────────────────╯
 ```
 
-Three things keep the list current, which a static tool description cannot:
+The runtime helps keep the list current beyond a static tool description:
 
 - `write` replaces the whole list in one call, so the model rewrites the plan instead of patching it; `add`, `update`, `clear`, and `list` remain for single moves.
-- Every turn's system prompt carries the open tasks and the rules: in_progress before starting, done right after finishing, update before ending the turn.
-- A list that goes two turns untouched while pending or in-progress tasks remain turns amber with `stale · N turns`, and the prompt says so, so the model brings it up to date.
+- Each agent run's system prompt carries the open tasks and the rules: in_progress before starting, done right after finishing, update before ending the run.
+- A list that goes two agent runs untouched while pending or in-progress tasks remain turns amber with `stale · N turns`, and the prompt reports that age.
+- Within a long run, after four tool-use model turns without a successful todo write, the next model request receives one hidden, request-local reminder to review the plan. A successful `write`, `add`, `update`, or `clear` resets and rearms it; `list` and rejected writes do not. The turn containing the write does not count toward the threshold. Empty, finished and blocked-only plans receive no reminder. Reminder tracking restarts when the session loads; it does not change the existing card freshness, persist a message, start an extra model turn, change task statuses, or connect to subagents.
 
 Tasks are `pending` (`○`), `in_progress` (`◐`), `blocked` (`⊘`), `done` (`✓`), or `dropped` (`✕`):
 
