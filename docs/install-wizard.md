@@ -442,7 +442,10 @@ publishes main builds, so main is built on this computer
 - Preflight requires a compatible Go (≥ the Windows minimum) on every platform
   and otherwise blocks with `main-requires-go`. Main steps are added only when the
   plan installs or completes setup; a stack that is already set up switches with
-  `gentle-shell upgrade --channel main`.
+  `gentle-shell upgrade --channel main`. A pnpm-global Gentle Shell already at a
+  `<version>-main.<sha12>` version stays `unknown` (never replaced); its probe adds
+  `mainVersion`, and the guidance points to `gentle-shell upgrade` and
+  `gentle-shell upgrade --channel release`.
 - After the release stack is installed and `verify-gentle-ai` passed, the runner:
   1. `build-gentle-ai-main`: resolves the latest `main` commit of
      Gentleman-Programming/gentle-ai (GitHub API, raw SHA), runs
