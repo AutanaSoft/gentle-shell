@@ -270,6 +270,16 @@ function ownedChildIpc(env: NodeJS.ProcessEnv, candidate: IpcEndpoint | undefine
 	return candidate;
 }
 
+// gentle-shell#1269: routing cannot check whether a child can perform a task
+// unless the catalog states the child's inventory. `tools` is the exact `--tools`
+// allowlist `lib/agents-runner.ts` `requestedTools()` passes, so an empty
+// declaration is NOT "no tools": the child keeps Pi's default tool set and the
+// catalog must say so. The always-granted parent-message tool is transport, not a
+// capability, and is deliberately absent here.
+function declaredToolInventory(agent: AgentDefinition): string {
+	return agent.tools.length > 0 ? `[tools: ${agent.tools.join(", ")}]` : "[tools: unrestricted]";
+}
+
 // Pi drops unknown --tools names without a diagnostic (#1690), so the child
 // reports them once through the one notify the parent keeps. The check runs
 // at the first before_agent_start, not session_start: Pi runs session_start
@@ -2013,9 +2023,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		},
 	});
 
-	tool("list_agents", "List the subagents defined for this project and user, with their descriptions.", { properties: {} }, async (_params, ctx) => {
+	tool("list_agents", "List the subagents defined for this project and user, with their descriptions and declared tool inventory.", { properties: {} }, async (_params, ctx) => {
 		const { agents, errors } = discoverAgents(roots(ctx));
-		const lines = agents.map((agent) => `- ${agent.name} (${agent.scope}): ${agent.description || "no description"}`);
+		const lines = agents.map((agent) => `- ${agent.name} (${agent.scope}): ${agent.description || "no description"} ${declaredToolInventory(agent)}`);
 		const problems = errors.map((error) => `! ${error}`);
 		return text(lines.length === 0 ? "No subagents defined." : [...lines, ...problems].join("\n"));
 	});
