@@ -30,6 +30,7 @@ import { listVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
+import { CARD_CONTENT, cardContent, resolveCardContent, setCardContent, writeCardContent } from "../lib/card-content-policy.ts";
 import { claimNotificationOwner } from "../lib/notification-service.ts";
 import { DEFAULT_NOTIFICATION_SETTINGS } from "../lib/notification-policy.ts";
 
@@ -3019,7 +3020,7 @@ test("customize Cards rows persist the card style and switch live conversation c
 	const pending = commands.get("gentle:customize")!.handler("", ctx);
 	await overlayReady;
 	assert.ok(findCustomizeRow(ui, "Card style: float (current)"));
-	assert.match(ui.overlayView!.render(90).join("\n"), /Cards · 2\/2/);
+	assert.match(ui.overlayView!.render(90).join("\n"), /Cards · 2\/4/);
 	assert.ok(findCustomizeRow(ui, "Card style: neon"));
 	assert.ok(!ui.overlayView!.render(90).some((line) => line.includes("▸ Card style: neon (current)")), "neon is not current without a saved preference");
 	assert.equal(existsSync(join(home, "card-style.json")), false, "highlighting never applies");
@@ -3040,6 +3041,32 @@ test("customize Cards rows persist the card style and switch live conversation c
 	await customizeAction(ui, "Card style: float");
 	assert.equal(resolveCardStyle({ gentlePiConfigHome: home }).style, "float");
 	assert.equal(cardStyle(), CARD_STYLE.FLOAT);
+	ui.overlayView!.handleInput("\x1b"); await pending;
+});
+
+test("customize Cards rows persist the card content level and switch the live quiet tools", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const previous = cardContent();
+	t.after(() => setCardContent(previous));
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	assert.equal(cardContent(), CARD_CONTENT.DEFAULT, "no preference file means default");
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	assert.ok(findCustomizeRow(ui, "Card content: default (current)"));
+	assert.ok(findCustomizeRow(ui, "Card content: minimal"));
+	assert.equal(existsSync(join(home, "card-content.json")), false, "highlighting never applies");
+	await customizeAction(ui, "Card content: minimal");
+	await new Promise<void>(resolve => setImmediate(resolve));
+	assert.equal(resolveCardContent({ gentlePiConfigHome: home }).content, "minimal");
+	assert.equal(cardContent(), CARD_CONTENT.MINIMAL, "the live slot follows the choice");
+	assert.match(ui.notices.at(-1)!, /Card content: minimal/);
+	assert.ok(findCustomizeRow(ui, "Card content: minimal (current)"));
+	assert.ok(findCustomizeRow(ui, "Card content: default"));
+	await customizeAction(ui, "Card content: default");
+	assert.equal(resolveCardContent({ gentlePiConfigHome: home }).content, "default");
+	assert.equal(cardContent(), CARD_CONTENT.DEFAULT);
 	ui.overlayView!.handleInput("\x1b"); await pending;
 });
 
@@ -3163,6 +3190,20 @@ test("the saved card style applies at startup and on every session start", async
 	const { ctx } = fakeContext({ hasUI: false });
 	for (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);
 	assert.equal(cardStyle(), CARD_STYLE.FLOAT);
+});
+
+test("the saved card content applies at startup and on every session start", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const found = cardContent();
+	t.after(() => setCardContent(found));
+	writeCardContent("minimal", { gentlePiConfigHome: home });
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	assert.equal(cardContent(), CARD_CONTENT.MINIMAL);
+	writeCardContent("default", { gentlePiConfigHome: home });
+	const { ctx } = fakeContext({ hasUI: false });
+	for (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);
+	assert.equal(cardContent(), CARD_CONTENT.DEFAULT);
 });
 
 test("customize Cards rows refuse to overwrite a malformed preference", async (t) => {

@@ -175,6 +175,17 @@ Pick the conversation-card and shell-chrome style in `/gentle:customize` → **C
 - `float` applies to tool, Code and 🌹 cards, Agent result and stale cards, the review preflight reminder, the dev-binary notice, and the Agents, Todos and Status panels. The prompt and fullscreen header/footer use their specialized float chrome described above. The regular-mode one-line Status bar is unchanged.
 - A theme without a tool background, or a card narrower than 10 columns, falls back to `neon`. A malformed `card-style.json` reads as `float` and the panel refuses to overwrite it.
 
+### Card content
+
+Pick how much a collapsed quiet-tool card shows in `/gentle:customize` → **Cards** → **Card content**. The choice is saved in `card-content.json` in the Gentle Pi config home; a missing, malformed, or unreadable file reads as `default`, and a malformed file is never overwritten.
+
+| Level | Collapsed quiet-tool cards |
+|-------|----------------------------|
+| `default` | Result previews, counts, and summaries, as described above. Bash rows keep pi's native drawing. |
+| `minimal` | Only the command row for `read`, `write`, `bash`, `grep`, `find`, `ls`, and `edit`; the expand key still reveals the full result. Failed calls keep their bounded error tail. Bash rows draw as a Gentle card when the host supports `pi.registerToolRenderer`, with the bare command as the title. |
+
+Quiet tool cards redraw immediately after a change; bash rows follow on new calls. Gentle AI cards keep their full card and elapsed time at both levels.
+
 ### Compact Code card
 
 With quiet tools enabled, `codemode` uses the same rounded **Code** card. The collapsed view shows up to eight observed child calls in their original order, including repeats, with Pi's actual status and available nonnegative duration. Additional calls and failures are counted. Error payloads have a separate two-row preview even when their child falls outside the first eight; final output has a three-row physical budget, and a full-output locator remains visible when available.
