@@ -5,6 +5,7 @@ import { blockChildDestructiveCommand } from "./child-safety.ts";
 import { allowedEditSurfaces as hasTaskScopedAllowedEditSurfaces, bindSessionRepositoryPreparation, captureBoundSessionRepositoryAuthority, prepareBoundSessionRepository, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sourcePathWithinProject } from "../lib/bounded-writer-admission.ts";
 import { consumeReviewMutation, pendingReviewMutation, pendingReviewMutationProfiles, recordReviewMutation, type ReceiptSession } from "../lib/review-reminder-receipt.ts";
 import { createReviewSidebarPublisher } from "../lib/review-sidebar-state.ts";
+import { StatusTimingDiagnostics } from "../lib/status-timing-diagnostics.ts";
 import { isOddPhase, oddPhaseRegistry, ODD_PHASES } from "../lib/odd-phase.ts";
 import { shellEnabled } from "../lib/shell-bar.ts";
 import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
@@ -9446,8 +9447,13 @@ function createGentleAiExtensionForTesting(
 		return revoked;
 	};
 
+	const statusTiming = new StatusTimingDiagnostics();
 	const reviewSidebar = createReviewSidebarPublisher(pi);
-	pi.on("session_tree", (_event, ctx) => reviewSidebar.reset(ctx));
+	const observedReviewTool: typeof reviewSidebar.tool = (definition) => statusTiming.tool(reviewSidebar.tool(definition));
+	pi.on("session_tree", (_event, ctx) => {
+		reviewSidebar.reset(ctx);
+		statusTiming.reset(ctx);
+	});
 	let reminderSessionActive = true;
 	let reminderEpoch = 0;
 	let reminderManager: ExtensionContext["sessionManager"] | undefined;
@@ -9455,6 +9461,7 @@ function createGentleAiExtensionForTesting(
 	pi.on("session_shutdown", (event, context) => {
 		yolo.reset(context);
 		reviewSidebar.reset();
+		statusTiming.reset();
 		reminderSessionActive = false;
 		reminderEpoch += 1;
 		unbindPreparation?.();
@@ -9594,7 +9601,7 @@ function createGentleAiExtensionForTesting(
 		return named.length === 0 ? operation : `${operation} · ${named.join(" · ")}`;
 	};
 
-	pi.registerTool(reviewSidebar.tool({
+	pi.registerTool(observedReviewTool({
 		name: "gentle_review_capture_group",
 		renderShell: "self",
 		label: "Gentle Review Capture Group",
@@ -9634,7 +9641,7 @@ function createGentleAiExtensionForTesting(
 		},
 	}));
 
-	pi.registerTool(reviewSidebar.tool({
+	pi.registerTool(observedReviewTool({
 		name: "gentle_review_capture",
 		renderShell: "self",
 		label: "Gentle Review Capture",
@@ -9680,7 +9687,7 @@ function createGentleAiExtensionForTesting(
 		},
 	}));
 
-	pi.registerTool(reviewSidebar.tool({
+	pi.registerTool(observedReviewTool({
 		name: "gentle_review",
 		renderShell: "self",
 		label: "Gentle Review Controller",
@@ -9831,6 +9838,7 @@ function createGentleAiExtensionForTesting(
 	pi.on("session_start", async (event, ctx) => {
 		yolo.reset(ctx);
 		reviewSidebar.reset(ctx);
+		statusTiming.reset(ctx);
 		elapsedTiming = new GentleAiElapsedTimingLedger(ctx.sessionManager, pi);
 		reminderSessionActive = true;
 		reminderEpoch += 1;
@@ -10240,6 +10248,11 @@ function createGentleAiExtensionForTesting(
 				? "Reviews are allowed for this Pi session and Git repository. Use /gentle:review-session-permission revoke to ask again."
 				: "Reviews are not pre-authorized for this Pi session; each medium- or high-risk candidate asks normally.", "info");
 		},
+	});
+
+	pi.registerCommand("gentle:status-timing", {
+		description: "Arm session-only timing for the next authorized STATUS-bearing tool call, clear it, or show the last summary (enable|disable|show). Never invokes or retries STATUS.",
+		handler: async (args, ctx) => { statusTiming.command(args, ctx); },
 	});
 
 	pi.registerCommand("gentle:review-mode", {

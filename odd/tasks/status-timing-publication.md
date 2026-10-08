@@ -8,8 +8,8 @@ S2. Use the authorized repository/session and nonclosing reference. Selected ans
 S3. Use the selected delivery shape. Selected answer: "Cadena con rama integradora".
 
 ## Tasks
-T1 | S1-S3 | inline | in_progress | Create the draft tracker branch and publication plan; commit: pending.
-T2 | S1-S3 | inline | pending | Commit diagnostics with tests/docs/runtime, then Windows fixtures on dependent child branches; commits: pending.
+T1 | S1-S3 | inline | done | Create the draft tracker branch and publication plan; commit: c5eebb8575da1f62a7091816044ef120f456dc84.
+T2 | S1-S3 | inline | in_progress | Commit diagnostics with tests/docs/runtime, then Windows fixtures on dependent child branches; commits: pending.
 T3 | S1-S3 | inline | pending | Push and open the draft tracker and both dependent PRs; record links and check state; commit: pending.
 
 ## Log
