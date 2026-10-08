@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
+import { requirements } from "./installer-preflight.mjs";
 
 // Local wizard host: a dependency-free loopback HTTP server with a fixed route
 // allowlist. The browser never sends commands, paths, plans or environment:
@@ -75,6 +76,9 @@ export const actionDescriptions = Object.freeze({
 	"provision-native": "Provision the package-native Gentle AI binary with the existing installer.",
 	"setup-shell": "Run the normal `gentle-shell setup`.",
 	"verify-readiness": "Verify that the installed stack is ready.",
+	"build-gentle-ai-main": "Build Gentle AI from the latest commit of its `main` branch with Go, verified by Go's checksum database, and use it instead of the pinned release binary.",
+	"install-shell-main": "Install Gentle Shell from the latest commit of its `main` branch with pnpm, replacing the release package.",
+	"record-channel": "Remember the `main` channel, so `gentle-shell upgrade` keeps following `main`.",
 });
 
 const tryAgain = "Fix the cause, then run the installer again.";
@@ -111,11 +115,15 @@ export const guidance = Object.freeze({
 		"verify-gentle-ai": `The package-native Gentle AI binary could not be verified. ${tryAgain}`,
 		"shell-setup": "`gentle-shell setup` did not finish. Run `gentle-shell setup` in a terminal to see the details.",
 		"persist-path": "`pnpm setup` could not add the global bin directory to your PATH. Run `pnpm setup` in a terminal, then open a new terminal.",
+		"build-gentle-ai-main": `Gentle AI could not be built from its latest \`main\` commit. Check your network connection and that \`go\` runs in a terminal. ${tryAgain}`,
+		"install-shell-main": `Gentle Shell could not be installed from its latest \`main\` commit. Check your network connection. ${tryAgain}`,
+		"record-channel": "Gentle Shell is installed from `main`, but the channel could not be saved under `~/.pi/gentle-ai`. Check that folder's permissions, then run the installer again.",
 	}),
 	blockers: Object.freeze({
 		"unsupported-target": "This operating system or CPU is not supported by the wizard. Follow the README for a manual installation.",
 		"unknown-tool": "A required tool could not be checked safely. Make sure it runs from a terminal, or remove the broken installation, then run the installer again.",
 		"incompatible-tool": "A required tool is installed at an incompatible version. Update it, then run the installer again.",
+		"main-requires-go": `The \`main\` channel builds Gentle AI from source and needs Go ${requirements.go} or newer on your PATH. Install Go, or choose the release channel, then select Check again.`,
 	}),
 	outcomes: Object.freeze({
 		ready: "Gentle Shell is installed. Run `gentle-shell` in a terminal.",
@@ -277,7 +285,7 @@ function outcomeView(result) {
 
 /**
  * createInstallerServer({ collectPlan, runInstall, assetsDir, now?, random?, limits?, onRedeemed? })
- * collectPlan() -> { inventory, plan } (fresh preflight, trusted local code);
+ * collectPlan(channel) -> { inventory, plan } for "release" or "main" (fresh preflight, trusted local code);
  * runInstall({ plan, consent: true }, log) -> runner result; onRedeemed() runs once
  * when the one-time code is used (it must not throw). Returns
  * { listen(), close(reason), closed, checkIdle(), outcome() }.
@@ -292,7 +300,7 @@ export function createInstallerServer({ collectPlan, runInstall, assetsDir, now 
 	let origin = "";
 	let lastActivity = now();
 	let stored = null;
-	let planning = null;
+	const planning = { release: null, main: null };
 	let installing = false;
 	let lastOutcome = null;
 	let seq = 0;
@@ -361,12 +369,21 @@ export function createInstallerServer({ collectPlan, runInstall, assetsDir, now 
 		while (log.length > limit.logEntries) log.shift();
 	}
 
-	function collect() {
-		planning ??= Promise.resolve().then(collectPlan).finally(() => { planning = null; });
-		return planning;
+	// One in-flight inventory per channel: the channels plan different steps.
+	function collect(channel) {
+		planning[channel] ??= Promise.resolve().then(() => collectPlan(channel)).finally(() => { planning[channel] = null; });
+		return planning[channel];
 	}
 
-	async function getPlan(res) {
+	async function getPlan(query, res) {
+		// Only `?channel=release` or `?channel=main`; no query means release.
+		const params = new URLSearchParams(query);
+		const keys = [...params.keys()];
+		const channel = query === "" ? "release" : params.get("channel");
+		if ((query !== "" && (keys.length !== 1 || keys[0] !== "channel")) || !["release", "main"].includes(channel)) {
+			reply(res, 400, { error: "invalid-request" });
+			return;
+		}
 		// Probing while the runner mutates the machine would describe a moving target.
 		if (installing) {
 			reply(res, 409, { error: "install-running" });
@@ -374,7 +391,7 @@ export function createInstallerServer({ collectPlan, runInstall, assetsDir, now 
 		}
 		let collected;
 		try {
-			collected = await collect();
+			collected = await collect(channel);
 		} catch {
 			reply(res, 500, { error: "plan-unavailable" });
 			return;
@@ -383,8 +400,8 @@ export function createInstallerServer({ collectPlan, runInstall, assetsDir, now 
 			reply(res, 409, { error: "install-running" });
 			return;
 		}
-		stored = { planId: token(random, 18), collected: structuredClone(collected), fingerprint: fingerprint(collected) };
-		reply(res, 200, planView(stored.planId, stored.collected));
+		stored = { planId: token(random, 18), channel, collected: structuredClone(collected), fingerprint: fingerprint(collected) };
+		reply(res, 200, { ...planView(stored.planId, stored.collected), channel });
 	}
 
 	async function install(req, res) {
@@ -415,7 +432,7 @@ export function createInstallerServer({ collectPlan, runInstall, assetsDir, now 
 		let fresh;
 		try {
 			// Re-inventory: install only when the machine still matches the consented plan.
-			fresh = await collect();
+			fresh = await collect(current.channel);
 		} catch {
 			fresh = null;
 		}
@@ -514,9 +531,9 @@ export function createInstallerServer({ collectPlan, runInstall, assetsDir, now 
 			const type = String(req.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase();
 			if (type !== "application/json") return reply(res, 415, { error: "unsupported-media-type" });
 		}
-		if (query !== "" && path !== "/api/progress") return reply(res, 400, { error: "invalid-request" });
+		if (query !== "" && path !== "/api/progress" && path !== "/api/plan") return reply(res, 400, { error: "invalid-request" });
 		if (Object.hasOwn(assets, path)) return asset(path, res);
-		if (path === "/api/plan") return getPlan(res);
+		if (path === "/api/plan") return getPlan(query, res);
 		if (path === "/api/progress") return progress(query, res);
 		if (path === "/api/install") return install(req, res);
 		// /api/shutdown

@@ -66,14 +66,14 @@ const cleanInventory = {
 };
 
 /** The real host's /api/plan view for an inventory, so model tests never drift from the server. */
-async function serverPlanView(changes: Record<string, unknown> = {}) {
+async function serverPlanView(changes: Record<string, unknown> = {}, channel = "release") {
 	const inventory = { ...cleanInventory, ...changes };
-	const host = createInstallerServer({ assetsDir, collectPlan: async () => ({ inventory, plan: planPreflight(inventory) }),
+	const host = createInstallerServer({ assetsDir, collectPlan: async (requested: string) => ({ inventory, plan: planPreflight(inventory, { channel: requested }) }),
 		runInstall: async () => ({ outcome: "ready", completed: [] }) });
 	const { port, url } = await host.listen();
 	try {
 		const cookie = await login(port, url);
-		const { status, body } = await getJson(port, "/api/plan", cookie);
+		const { status, body } = await getJson(port, `/api/plan?channel=${channel}`, cookie);
 		assert.equal(status, 200);
 		return body;
 	} finally {
@@ -425,6 +425,56 @@ test("expectedSteps mirrors the runner sequence and every step has a label", () 
 	assert.equal(wizard.stepLabel("not-a-step"), "not-a-step");
 });
 
+const mainIds = ["build-gentle-ai-main", "install-shell-main", "record-channel"];
+const goReady = { go: { available: true, version: "1.26.0", usable: true } };
+
+test("planModel carries the plan's channel, release unless the host says main", async () => {
+	assert.equal(wizard.planModel(await serverPlanView(goReady, "main")).channel, "main");
+	assert.equal(wizard.planModel(await serverPlanView()).channel, "release");
+	assert.equal(wizard.planModel({ channel: "nightly", actions: [], blockers: [] }).channel, "release");
+});
+
+test("expectedSteps places the main steps after the release verification and before setup", () => {
+	const verified = ["install-global", "verify-global-list", "verify-shell-bin", "verify-gentle-ai"];
+	assert.deepEqual(wizard.expectedSteps(["install-pi", "install-shell", "setup-shell", "verify-readiness", ...mainIds]),
+		["check-npm", "check-global-bin", "check-existing-stack", ...verified, ...mainIds, "shell-setup"]);
+	assert.deepEqual(wizard.expectedSteps(["setup-shell", "verify-readiness", ...mainIds]),
+		["check-npm", "check-global-bin", "check-recoverable-stack", "verify-global-list", "verify-shell-bin", "verify-gentle-ai", ...mainIds, "shell-setup"]);
+	for (const id of mainIds) assert.notEqual(wizard.stepLabel(id), id, `label for ${id}`);
+});
+
+test("the review screen offers the release and main channels and reloads the plan for the chosen one", async () => {
+	const release = await serverPlanView(goReady);
+	const main = await serverPlanView(goReady, "main");
+	const ui = mount({
+		"GET /api/progress": () => idleProgress(),
+		"GET /api/plan": (call) => [200, call.url.endsWith("channel=main") ? main : release],
+	});
+	await ui.app.start();
+	await flush();
+	const radios = () => all(ui.view, "input").filter((input) => input.getAttribute("type") === "radio");
+	assert.deepEqual(radios().map((radio) => [radio.getAttribute("value"), radio.checked === true]), [["release", true], ["main", false]]);
+	assert.ok(ui.view.textContent.includes("Latest release"));
+	assert.ok(ui.view.textContent.includes("Latest main"));
+	const choose = radios()[1];
+	choose.checked = true;
+	dispatch(choose, "change");
+	await flush();
+	const plans = ui.server.calls.filter((call) => call.url.startsWith("/api/plan")).map((call) => call.url);
+	assert.deepEqual(plans, ["/api/plan?channel=release", "/api/plan?channel=main"]);
+	assert.deepEqual(radios().map((radio) => [radio.getAttribute("value"), radio.checked === true]), [["release", false], ["main", true]]);
+	assert.ok(ui.view.textContent.includes(plain(main.actions.find((action: { id: string }) => action.id === "build-gentle-ai-main").description)));
+});
+
+test("a main plan blocked by a missing Go still lets the user switch back to release", async () => {
+	const blocked = await serverPlanView({}, "main");
+	assert.ok(blocked.blockers.some((blocker: { code: string }) => blocker.code === "main-requires-go"));
+	const ui = mount({ "GET /api/progress": () => idleProgress(), "GET /api/plan": () => [200, blocked] });
+	await ui.app.start();
+	await flush();
+	assert.equal(all(ui.view, "input").filter((input) => input.getAttribute("type") === "radio").length, 2);
+});
+
 test("progressModel shows done, failed, in-progress and pending steps without relying on color", () => {
 	const steps = ["check-npm", "check-global-bin", "install-global"];
 	const running = wizard.progressModel(steps, [{ seq: 1, step: "check-npm", status: "done", reason: null }], { running: true, outcome: null });
@@ -693,14 +743,14 @@ test("409 plan-changed reloads the plan and requires consent again", async () =>
 	});
 	await ui.app.start();
 	await flush();
-	let consent = all(ui.view, "input")[0];
+	let consent = all(ui.view, "input").find((input) => input.getAttribute("type") === "checkbox") as FakeElement;
 	consent.checked = true;
 	dispatch(button(ui.view, "Install") as FakeElement, "click");
 	await flush();
 	assert.equal(plans, 2, "the plan was reloaded");
 	assert.match(ui.alert.textContent, /changed/i);
 	assert.match(headings(ui.view)[0].textContent, /review/i);
-	consent = all(ui.view, "input")[0];
+	consent = all(ui.view, "input").find((input) => input.getAttribute("type") === "checkbox") as FakeElement;
 	assert.equal(consent.checked, false, "consent must be given again");
 	assert.ok(ui.view.textContent.includes(plain(second.profileChange.description)));
 	dispatch(button(ui.view, "Install") as FakeElement, "click");

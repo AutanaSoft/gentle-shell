@@ -192,3 +192,13 @@ export async function packMainShell({ commit, ctx, fetch, run, pnpm, fs }) {
 		await fs.rm(work, { recursive: true, force: true });
 	}
 }
+
+/** The installer runner's main-channel adapter over real network and files. */
+export function mainChannelAdapter({ fetch = globalThis.fetch, fs }) {
+	return {
+		resolveCommit: (repository) => resolveMainCommit(repository, { fetch }),
+		buildGentleAi: ({ commit, goPath, platform, ctx, run }) => buildMainGentleAi({ commit, ctx, platform, goPath, run, fs }),
+		packShell: ({ commit, ctx, run, pnpm }) => packMainShell({ commit, ctx, fetch, run, pnpm, fs }),
+		writeChannel: (ctx, state) => writeChannel(ctx, state, fs),
+	};
+}

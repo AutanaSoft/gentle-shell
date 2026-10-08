@@ -117,7 +117,9 @@ function classify(observation, required, extraCheck = () => true, exact = false)
  * Blocked plans contain no actions: never overwrite an incompatible/unknown tool.
  * Compatible newer Node/Pi/Shell versions remain owned by their existing install.
  */
-export function planPreflight(inventory) {
+export function planPreflight(inventory, { channel = "release" } = {}) {
+	if (channel !== "release" && channel !== "main") throw new TypeError(`Unsupported installation channel: ${channel}`);
+	const main = channel === "main";
 	const tools = {};
 	const blockers = [];
 	const actions = [];
@@ -144,7 +146,9 @@ export function planPreflight(inventory) {
 	record("pnpm", classify(inventory.pnpm, "0.0.0", (o) => o.compatible), requirements.pnpm);
 	record("gentleAi", classify(inventory.gentleAi, requirements.gentleAi, (o) => o.compatible, true), requirements.gentleAi);
 	const needsNative = tools.gentleAi.status === "unavailable";
-	record("go", platform === "win32" && needsNative ? classify(inventory.go, requirements.go) : "not-required", requirements.go);
+	// The main channel builds Gentle AI from source on every platform.
+	record("go", (platform === "win32" && needsNative) || main ? classify(inventory.go, requirements.go) : "not-required", requirements.go);
+	if (main && tools.go.status !== "reusable") blockers.push({ code: "main-requires-go", tool: "go" });
 	const bin = inventory.globalBin;
 	const binKnown = bin?.available === true && typeof bin.path === "string" && bin.path.trim().length > 0 &&
 		bin.writable === true && typeof bin.onPath === "boolean";
@@ -196,5 +200,12 @@ export function planPreflight(inventory) {
 	if (needsNative && !missingShell) action("provision-native", "existing-installer", "gentleAi", requirements.gentleAi);
 	if (tools.setup.status !== "reusable") action("setup-shell", "normal-setup", "shell");
 	action("verify-readiness", "verify", "stack");
+	// Main overlays the verified release installation with both latest main commits;
+	// a stack that is already set up installs nothing (`gentle-shell upgrade --channel main` switches it).
+	if (main && actions.length > 1) {
+		action("build-gentle-ai-main", "build-native-main", "gentleAi");
+		action("install-shell-main", "install-global", "shell");
+		action("record-channel", "configure", "channel");
+	}
 	return { tools, blockers, actions, ready: actions.length === 1 };
 }

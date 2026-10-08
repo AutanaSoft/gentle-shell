@@ -10,6 +10,7 @@ import {
 	MainChannelError,
 	buildMainGentleAi,
 	channelStatePath,
+	mainChannelAdapter,
 	mainVersion,
 	packMainShell,
 	readChannel,
@@ -153,5 +154,20 @@ test("a Gentle AI build whose version names another commit is rejected and never
 		await assert.rejects(buildMainGentleAi({ commit: AI_SHA, ctx: s.ctx, platform: "darwin", goPath: "/go/bin/go", run, fs: fsPromises }),
 			(error: MainChannelError) => error.code === "main-gentle-ai-unverified");
 		assert.equal(existsSync(join(s.home, ".pi", "gentle-ai", "dev-binary.json")), false);
+	} finally { s.cleanup(); }
+});
+
+test("the runner adapter resolves commits and records the channel through the given network and files", async () => {
+	const s = sandbox();
+	try {
+		const urls: string[] = [];
+		const adapter = mainChannelAdapter({ fs: fsPromises, fetch: async (url: string) => {
+			urls.push(url);
+			return { ok: true, status: 200, text: async () => AI_SHA };
+		} });
+		assert.equal(await adapter.resolveCommit("Gentleman-Programming/gentle-ai"), AI_SHA);
+		assert.deepEqual(urls, ["https://api.github.com/repos/Gentleman-Programming/gentle-ai/commits/main"]);
+		await adapter.writeChannel(s.ctx, { channel: "main", shellCommit: SHELL_SHA, gentleAiCommit: AI_SHA });
+		assert.deepEqual(await readChannel(s.ctx, fsPromises), { channel: "main", shellCommit: SHELL_SHA, gentleAiCommit: AI_SHA });
 	} finally { s.cleanup(); }
 });

@@ -50,6 +50,49 @@ for (const platform of ["linux", "darwin", "win32"]) {
 	});
 }
 
+const mainSteps = ["build-gentle-ai-main", "install-shell-main", "record-channel"];
+for (const platform of ["linux", "darwin", "win32"]) {
+	test(`the main channel on ${platform} adds the main build steps after a clean installation`, () => {
+		const inventory = { ...clean(platform), node: tool("24.1.0"), pnpm: { ...tool("11.1.1"), compatible: true },
+			globalBin: { available: true, path: "/disposable/bin", writable: true, onPath: true }, go: tool("1.26.0") };
+		const release = ids(inventory);
+		const plan = planPreflight(inventory, { channel: "main" });
+		assert.deepEqual(plan.blockers, []);
+		assert.equal(plan.tools.go.status, "reusable");
+		assert.deepEqual(plan.actions.map((action: { id: string }) => action.id), [...release, ...mainSteps]);
+		assert.deepEqual(plan.actions.slice(-3), [
+			{ id: "build-gentle-ai-main", kind: "build-native-main", target: "gentleAi" },
+			{ id: "install-shell-main", kind: "install-global", target: "shell" },
+			{ id: "record-channel", kind: "configure", target: "channel" }]);
+		assert.equal(plan.ready, false);
+	});
+}
+
+test("the main channel requires a compatible Go on every platform", () => {
+	for (const go of [absent, tool("1.25.9"), { available: null }]) {
+		const plan = planPreflight({ ...clean("darwin"), go }, { channel: "main" });
+		assert.ok(plan.blockers.some((blocker: { code: string; tool: string }) => blocker.code === "main-requires-go" && blocker.tool === "go"));
+		assert.deepEqual(plan.actions, []);
+	}
+});
+
+test("the release channel is the default and plans exactly as before", () => {
+	for (const inventory of [clean("darwin"), installed("linux"), { ...clean("win32"), go: tool("1.26.0") }]) {
+		assert.deepEqual(planPreflight(inventory, { channel: "release" }), planPreflight(inventory));
+	}
+	assert.equal(planPreflight(clean("darwin")).tools.go.status, "not-required");
+});
+
+test("an already set-up stack on the main channel plans no main steps, since nothing is installed", () => {
+	const plan = planPreflight({ ...installed("darwin"), go: tool("1.26.0") }, { channel: "main" });
+	assert.deepEqual(plan.actions.map((action: { id: string }) => action.id), ["verify-readiness"]);
+	assert.equal(plan.ready, true);
+});
+
+test("an unknown channel is rejected", () => {
+	assert.throws(() => planPreflight(clean("linux"), { channel: "nightly" }), /Unsupported installation channel/);
+});
+
 test("Windows requires compatible Go only before a missing native binary", () => {
 	const inventory = { ...installed("win32"), gentleAi: absent, go: tool("1.26.0") };
 	assert.equal(planPreflight(inventory).tools.go.status, "reusable");
