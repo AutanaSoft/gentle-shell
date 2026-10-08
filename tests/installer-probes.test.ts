@@ -246,8 +246,9 @@ test("a failed, unparseable or ambiguous global list makes Pi, Shell, Gentle AI 
 });
 
 test("a pnpm-global Shell from the main channel stays unknown but names its main version", async () => {
-	for (const [version, expected] of [[`${requirements.shell}-main.6e7e3a18f794`, { available: null, mainVersion: `${requirements.shell}-main.6e7e3a18f794` }],
-		[`${requirements.shell}-rc.1`, { available: null }], [`${requirements.shell}-main.6E7E3A18F794`, { available: null }]]) {
+	const cases: Array<[string, object]> = [[`${requirements.shell}-main.6e7e3a18f794`, { available: null, mainVersion: `${requirements.shell}-main.6e7e3a18f794` }],
+		[`${requirements.shell}-rc.1`, { available: null }], [`${requirements.shell}-main.6E7E3A18F794`, { available: null }]];
+	for (const [version, expected] of cases) {
 		const stdout = listing({ "gentle-pi": { version, path: SHELL_ROOT } });
 		const h = probes({ files: [TOOLS_PNPM], results: { [`${TOOLS_PNPM} ${LIST}`]: { code: 0, stdout } } });
 		assert.deepEqual(await h.probes.shell(), expected, version);
