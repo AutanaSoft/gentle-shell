@@ -20,8 +20,8 @@ Decision source (L2): "Instalar lo que falta y actualizar lo existente (recomend
 |----|-------|-------|--------|----------|
 | T1 | S1, S3, S4 (probes: Pi/Shell outside pnpm with version and owner) | inline | done 25ea832d2, f0858ba75 | RED→GREEN probes 26/0; installOwner rule (npm only inside `npm root -g`, linked checkout = unknown) also fixes `gentle-shell upgrade` |
 | T2 | S1–S4 (preflight plans) | inline | done f0858ba75 | RED→GREEN preflight 42/0; owner-less Shell observations keep blocking (guards) |
-| T3 | S1–S3 (runner variants) | inline | pending | |
-| T4 | S3, S5, S6 (server, UI, docs, README) | inline | pending | |
+| T3 | S1–S3 (runner variants) | inline | done 57be59485 | RED→GREEN runner 62/0 (shell-only, update release/main, install-pi first, unowned refusal); real probes on the maintainer Mac: pnpm Pi reused, linked Shell owner null → blocked |
+| T4 | S3, S5, S6 (server, UI, docs, README) | inline | done 0590bf441 | RED→GREEN server/UI (update kind, steps, guidance); 333/0 installer area; typecheck no regressions |
 
 Route evidence: no Writer trigger (the four tasks share the plan contract, so they are not independent). Risk: item 5 (installer now modifies existing installations) → independent verifier after the change's own checks.
 
