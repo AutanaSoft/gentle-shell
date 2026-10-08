@@ -17,10 +17,10 @@ Assumptions: the main channel requires Go ≥ the Windows minimum on every platf
 
 | ID | Specs | Route | Status | Evidence |
 |----|-------|-------|--------|----------|
-| T1 | S2, S4 | inline | done (commit below) | RED: module missing; GREEN tests/main-channel.test.ts 7/0; real smoke built 1f9d5e6 in 10s, override registered |
-| T2 | S1, S4 | inline | done (commit below) | GREEN pack test; real smoke packed gentle-pi-4.0.0-main.6e7e3a18f794.tgz; host run gained optional cwd (RED→GREEN) |
-| T3 | S1, S2 (wizard channel choice end to end) | inline | pending | |
-| T4 | S3, S5 (updater command, help, docs) | inline | pending | |
+| T1 | S2, S4 | inline | done d3fabfd28 | RED: module missing; GREEN tests/main-channel.test.ts 7/0; real smoke built 1f9d5e6 in 10s, override registered |
+| T2 | S1, S4 | inline | done d3fabfd28 | GREEN pack test; real smoke packed gentle-pi-4.0.0-main.6e7e3a18f794.tgz; host run gained optional cwd (RED→GREEN) |
+| T3 | S1, S2 (wizard channel choice end to end) | inline | done 7df5c3a15 | RED→GREEN preflight (36), runner (55), server (38), wizard UI (29); preview checked in a real browser |
+| T4 | S3, S5 (updater command, help, docs) | inline | done 96ff045a8 | RED→GREEN tests/main-channel-upgrade.test.ts 12/0, launcher parse/help; real `gentle-shell upgrade` on release: already latest, exit 0, nothing written |
 
 Route evidence: no Writer trigger (T1–T4 share the channel state module, so they are not independent parallel units); inline, following this logbook.
 
@@ -32,4 +32,5 @@ Route evidence: no Writer trigger (T1–T4 share the channel state module, so th
 - L4: forecast well above 400 authored lines; chain strategy asked once before the first commit.
 - L5 (2026-10-08, user decision): "una sola pr size exception" — one PR labeled `size:exception`, no chain.
 - L6 (evidence): `pnpm add -g github:…#sha` and codeload tarball URLs both run `prepack` (full suite, 2m16s, installs nothing). Working path: download the commit tarball, rewrite version to `<v>-main.<sha12>`, drop prepack/prepare, `pnpm pack`, then `pnpm add -g <tgz>` (34s, no prepack). `pnpm pack` has no `--ignore-scripts`. Go module cache is read-only: `GOFLAGS=-modcacherw` lets the build dir be removed.
+- L7 (decision, assumption): the wizard adds main steps only when it installs or completes setup; an already set-up stack switches with `gentle-shell upgrade --channel main` (added to S3's updater as `--channel release|main`). The updater is `gentle-shell upgrade`, because `update` is Pi's own subcommand. Wizard and server texts that recommended `gentle-shell update` for updating Gentle Shell now say `gentle-shell upgrade`.
 
