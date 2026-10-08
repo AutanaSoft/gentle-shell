@@ -5,11 +5,11 @@ foundation, the standard installation runner module (including runtime
 persistence), the secure local wizard host with its packaged entry and the
 interactive browser wizard UI are implemented. Windows native validation
 remains unavailable locally.
-**This is not a supported installation path yet:** published bootstrap
-artifacts, real browsers and native macOS/Windows clean-machine runs are still
-unverified (T7); one Linux clean-container run passed (see
-[Clean-machine acceptance](#clean-machine-acceptance-t7)). For ordinary
-installation and terminal use, follow the [README](../README.md).
+**Preview:** run it from a checkout with `sh scripts/bootstrap.sh` (macOS,
+Linux) or `scripts\bootstrap.cmd` (Windows), as the [README](../README.md#path-c-browser-installer-preview)
+shows. There are no published bootstrap artifacts yet, and native macOS/Windows
+clean-machine runs are still unverified (T7); one Linux clean-container run
+passed (see [Clean-machine acceptance](#clean-machine-acceptance-t7)).
 
 ## What is available
 

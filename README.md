@@ -289,6 +289,41 @@ See the [v3.5.1 release notes](https://github.com/Gentleman-Programming/gentle-s
 
 **Builtin codemode warning.** gentle-pi replaces Pi's builtin `codemode` with its compact renderer, so Pi warns at startup that the builtin was not loaded. In your own Pi home (`pi` with this package, or `gentle-shell --link`), gentle-pi asks once in the interactive TUI whether to add `"-builtin:codemode"` to `extensions` in the agent `settings.json` (usually `~/.pi/agent/settings.json`); it writes only if you accept, and the warning disappears from the next launch. A declined prompt is not repeated. To silence it by hand, add the entry yourself, for example `"extensions": ["-builtin:codemode"]`. Isolated `gentle-shell` homes already carry it.
 
+### Path C: browser installer (preview)
+
+On a computer without Node.js, pnpm or Pi, the browser installer sets everything up for you. It checks the machine, shows exactly what it will change, and installs only after you confirm.
+
+```bash
+git clone https://github.com/Gentleman-Programming/gentle-shell.git
+cd gentle-shell
+
+# macOS and Linux
+sh scripts/bootstrap.sh
+
+# Windows (cmd)
+scripts\bootstrap.cmd
+```
+
+The bootstrap gets Node.js and pnpm into a temporary folder if they are missing, then opens the wizard in your browser at a private `127.0.0.1` address. Use the tab it opens: the link works once and expires after 2 minutes. On the review screen, choose what to install:
+
+- **Latest release** (recommended): the published Gentle Shell with its pinned Gentle AI binary.
+- **Latest main**: development builds of Gentle Shell and Gentle AI from the latest commit of `main`, built on your computer. Needs Go.
+
+The installer never replaces an existing installation: when it finds one, it says what it found and how to update it instead. No checkout dependencies are needed (`pnpm install` is not required). This is a preview: it is tested on Linux and in CI, while clean-machine runs on macOS and Windows are still being verified. Details: **[installation wizard](docs/install-wizard.md)**.
+
+### Keep it up to date
+
+```bash
+# Update along your channel: the latest release, or the latest main
+gentle-shell upgrade
+
+# Switch channel
+gentle-shell upgrade --channel main
+gentle-shell upgrade --channel release
+```
+
+`gentle-shell upgrade` uses the package manager that owns your installation. On the main channel it rebuilds Gentle AI and Gentle Shell from the latest `main` commits (only what changed) and needs Go and pnpm; switching back to release restores the pinned Gentle AI binary. `gentle-shell update` is a different command: it is Pi's own package update. More: **[upgrade reference](docs/readme-reference.md#upgrade-subcommand-and-channels)**.
+
 ### Background jobs
 
 Use `/gentle:jobs` to inspect this session's background commands and monitors. Running jobs appear first; each group is ordered newest first. Arrow keys select a job, `Tab` opens details on narrow terminals, `s` stops a running job, and `q` closes the modal.
@@ -339,7 +374,7 @@ Start with the product-facing destination, then move into the operational refere
 | [Telemetry](docs/telemetry.md) | Approved fields and source limitations. |
 | [Delegated verification](docs/delegated-verification.md) | Practical verification guidance. |
 | [Skill style guide](docs/skill-style-guide.md) | The package skill contract. |
-| [Installation wizard (in development)](docs/install-wizard.md) | The browser installation wizard's design, security model and preview. Not a supported installation path yet. |
+| [Installation wizard (preview)](docs/install-wizard.md) | How the browser installer checks your computer, what it installs on the release and main channels, its security model, and what is still being verified. |
 
 <p align="right"><a href="#top">Back to top ↑</a></p>
 
