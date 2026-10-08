@@ -1536,6 +1536,13 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	// but manages their depth itself, so the header reports `auto` and the shell says
 	// why once per model instead of repeating it on every level change.
 	const adaptiveReasoningNotices = new Set<string>();
+	const announceAdaptiveReasoning = (ctx: ExtensionContext, model: { provider: string; id: string; name?: string } | undefined) => {
+		if (!ctx.hasUI || !isNanAdaptiveReasoningModel(model)) return;
+		const key = `${model.provider}/${model.id}`;
+		if (adaptiveReasoningNotices.has(key)) return;
+		adaptiveReasoningNotices.add(key);
+		ctx.ui.notify(`${model.name || model.id} chooses its reasoning depth automatically; the selected thinking level is accepted but does not change it.`, "info");
+	};
 	// One spelling of the config home, so the pin resolver, the global profiles
 	// store and the profile reader cannot drift onto two different stores.
 	const usageConfigHome = gentlePiConfigHome(env);
@@ -1837,6 +1844,9 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		closeCustomize?.();
 		runningJobs = undefined;
 		adaptiveReasoningNotices.clear();
+		// A restored or default session never emits model_select, so the startup model
+		// announces itself here when it manages its own depth.
+		announceAdaptiveReasoning(ctx, ctx.model);
 		if (review) {
 			review = undefined;
 			redrawReview();
@@ -2526,16 +2536,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		await refreshChanges(ctx);
 		void refreshUsage(ctx, false);
 	});
-	const announceAdaptiveReasoning = (ctx: ExtensionContext, model: { provider: string; id: string; name?: string }) => {
-		const key = `${model.provider}/${model.id}`;
-		if (adaptiveReasoningNotices.has(key)) return;
-		adaptiveReasoningNotices.add(key);
-		ctx.ui.notify(`${model.name || model.id} chooses its reasoning depth automatically; the selected thinking level is accepted but does not change it.`, "info");
-	};
 	pi.on("model_select", (event, ctx) => {
-		if (ctx.hasUI && isNanAdaptiveReasoningModel(event.model)) announceAdaptiveReasoning(ctx, event.model);
+		announceAdaptiveReasoning(ctx, event.model);
 	});
 	pi.on("thinking_level_select", (_event, ctx) => {
-		if (ctx.hasUI && ctx.model && isNanAdaptiveReasoningModel(ctx.model)) announceAdaptiveReasoning(ctx, ctx.model);
+		announceAdaptiveReasoning(ctx, ctx.model);
 	});
 }
