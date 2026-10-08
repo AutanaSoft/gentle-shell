@@ -466,6 +466,18 @@ test("the review screen offers the release and main channels and reloads the pla
 	assert.ok(ui.view.textContent.includes(plain(main.actions.find((action: { id: string }) => action.id === "build-gentle-ai-main").description)));
 });
 
+test("an already set-up computer points to gentle-shell upgrade, and to its main channel when main is chosen", () => {
+	for (const [channel, expected] of [["release", "Run gentle-shell in a terminal. To upgrade, run gentle-shell upgrade."],
+		["main", "Run gentle-shell in a terminal. To follow main, run gentle-shell upgrade --channel main."]]) {
+		const document = new FakeDocument();
+		const model = wizard.planModel({ planId: "p", ready: true, channel, actions: [{ id: "verify-readiness", description: "Verify." }], blockers: [] });
+		const view = wizard.renderPlan(document, model, { install: () => {}, reload: () => {}, close: () => {} });
+		assert.ok(view.textContent.includes(expected), channel);
+	}
+	assert.equal(guidance.blocked["existing-stack"], "Pi or Gentle Shell is already installed globally. Nothing was changed; use `gentle-shell upgrade` instead.");
+	assert.ok(guidance.blocked["unsupported-plan"].includes("Use `gentle-shell upgrade` or follow the README."));
+});
+
 test("a main plan blocked by a missing Go still lets the user switch back to release", async () => {
 	const blocked = await serverPlanView({}, "main");
 	assert.ok(blocked.blockers.some((blocker: { code: string }) => blocker.code === "main-requires-go"));

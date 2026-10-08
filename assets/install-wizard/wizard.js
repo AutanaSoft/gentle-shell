@@ -391,7 +391,9 @@ export function renderPlan(doc, model, handlers) {
 		return panel(doc, { stage: "review", eyebrow: "Step 2 of 4 · Review", title: "Gentle Shell is already set up",
 			lead: "This computer already has everything the wizard installs." },
 		choice,
-		el(doc, "p", {}, rich(doc, "Run `gentle-shell` in a terminal. To upgrade, run `gentle-shell update`.")),
+		el(doc, "p", {}, rich(doc, model.channel === "main"
+			? "Run `gentle-shell` in a terminal. To follow main, run `gentle-shell upgrade --channel main`."
+			: "Run `gentle-shell` in a terminal. To upgrade, run `gentle-shell upgrade`.")),
 		el(doc, "div", { class: "actions" }, close));
 	}
 	const recovery = model.kind === "recovery";

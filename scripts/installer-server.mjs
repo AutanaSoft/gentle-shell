@@ -89,7 +89,7 @@ export const guidance = Object.freeze({
 		"consent-required": "Nothing was installed because consent was not given. Review the plan and confirm to continue.",
 		"preflight-blocked": "Preflight found a blocker, so nothing was installed. Resolve the listed blockers and run the installer again.",
 		"go-required": "Windows needs Go 1.25.10 or newer on PATH before Gentle AI can be provisioned. Install Go, then run the installer again.",
-		"unsupported-plan": "This machine needs steps the wizard does not run yet, such as updating an existing installation. Use `gentle-shell update` or follow the README.",
+		"unsupported-plan": "This machine needs steps the wizard does not run yet, such as updating an existing installation. Use `gentle-shell upgrade` or follow the README.",
 		"pnpm-home-unknown": "The pnpm home directory could not be determined. Set PNPM_HOME to an absolute directory, then run the installer again.",
 		"node-unavailable": "The installer could not find its own Node.js executable. Run the installer again from the bootstrap script.",
 		"pnpm-unavailable": "pnpm could not be started. Run the installer again from the bootstrap script so it can provide pnpm.",
@@ -97,7 +97,7 @@ export const guidance = Object.freeze({
 		"npm-shadowed": "Another `npm` program appears on PATH before Node.js's npm. Remove or reorder it, then run the installer again.",
 		"global-bin-mismatch": "pnpm reported a different global bin directory than expected. Check PNPM_HOME, then run the installer again.",
 		"global-list-unavailable": "pnpm could not list global packages. Check that `pnpm list -g` works, then run the installer again.",
-		"existing-stack": "Pi or Gentle Shell is already installed globally. Nothing was changed; use `gentle-shell update` instead.",
+		"existing-stack": "Pi or Gentle Shell is already installed globally. Nothing was changed; use `gentle-shell upgrade` instead.",
 		"existing-stack-unverified": "The installed Pi and Gentle Shell changed after the plan was made, or are no longer the versions this installer set up. Nothing was changed; run the installer again to check this computer again.",
 	}),
 	failed: Object.freeze({

@@ -11,8 +11,9 @@
 //     `<version>-main.<sha12>` and packed without `prepack` (which runs the full
 //     test suite), then installed globally like any local tarball.
 // The recorded channel lets `gentle-shell upgrade` follow release or main.
-import { dirname, join } from "node:path";
-import { registerGentleAiDevBinary } from "../runtime/gentle-ai-binary.mjs";
+import { dirname, isAbsolute, join, relative } from "node:path";
+import { gentleAiDevBinaryRegistrationPath, registerGentleAiDevBinary, unregisterGentleAiDevBinary } from "../runtime/gentle-ai-binary.mjs";
+import { pnpmGlobalBin } from "./installer-preflight.mjs";
 
 export const SHELL_REPOSITORY = "Gentleman-Programming/gentle-shell";
 export const GENTLE_AI_REPOSITORY = "Gentleman-Programming/gentle-ai";
@@ -201,4 +202,130 @@ export function mainChannelAdapter({ fetch = globalThis.fetch, fs }) {
 		packShell: ({ commit, ctx, run, pnpm }) => packMainShell({ commit, ctx, fetch, run, pnpm, fs }),
 		writeChannel: (ctx, state) => writeChannel(ctx, state, fs),
 	};
+}
+
+// ---------------------------------------------------------------------------
+// `gentle-shell upgrade [--channel release|main]`
+// ---------------------------------------------------------------------------
+
+const STABLE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const UPGRADE_USAGE = "usage: gentle-shell upgrade [--channel release|main]";
+const INSTALL_DEADLINE = 20 * MINUTE;
+
+function parseUpgradeArgs(args) {
+	if (args.length === 0) return null;
+	let value;
+	if (args.length === 1 && args[0].startsWith("--channel=")) value = args[0].slice("--channel=".length);
+	else if (args.length === 2 && args[0] === "--channel") value = args[1];
+	if (!CHANNELS.includes(value)) throw new MainChannelError("upgrade-usage", UPGRADE_USAGE);
+	return value;
+}
+
+function older(left, right) {
+	const [a, b] = [STABLE.exec(left), STABLE.exec(right)];
+	if (!a || !b) return true;
+	for (let index = 1; index <= 3; index += 1) {
+		if (Number(a[index]) !== Number(b[index])) return Number(a[index]) < Number(b[index]);
+	}
+	return false;
+}
+
+function inside(parent, child) {
+	const path = relative(parent, child);
+	return path !== "" && !path.startsWith("..") && !isAbsolute(path);
+}
+
+async function latestRelease(fetch) {
+	let version = null;
+	try {
+		const response = await fetch("https://registry.npmjs.org/gentle-pi/latest", { headers: { Accept: "application/json" } });
+		if (response?.ok) version = (await response.json())?.version;
+	} catch {
+		version = null;
+	}
+	if (typeof version !== "string" || !STABLE.test(version)) {
+		throw new MainChannelError("latest-release-unavailable", "the latest gentle-pi release could not be read from the npm registry");
+	}
+	return version;
+}
+
+/** pnpm when this package lives under PNPM_HOME, otherwise npm. */
+async function ownerManager({ ctx, platform, packageRoot, fs, which }) {
+	const bin = pnpmGlobalBin({ platform, env: { HOME: ctx.home, ...ctx.env } });
+	let pnpmOwned = false;
+	if (bin) {
+		const [home, root] = await Promise.all([fs.realpath(bin.pnpmHome).catch(() => null), fs.realpath(packageRoot).catch(() => null)]);
+		pnpmOwned = home !== null && root !== null && inside(home, root);
+	}
+	const name = pnpmOwned ? "pnpm" : "npm";
+	const command = await which(name);
+	if (!command) throw new MainChannelError("upgrade-manager-missing", `${name}, which owns this Gentle Shell installation, is not on PATH`);
+	return { name, command };
+}
+
+async function installGlobal(manager, spec, run) {
+	const argv = manager.name === "pnpm" ? ["add", "-g", spec, "--allow-build=gentle-pi"] : ["install", "-g", spec];
+	if (!succeeded(await run(manager.command, argv, { deadlineMs: INSTALL_DEADLINE }))) {
+		throw new MainChannelError("upgrade-install-failed", `${manager.name} could not install ${spec}`);
+	}
+}
+
+/** Removes the dev-binary override only when it points at a main build this module made. */
+async function removeMainOverride(ctx, fs) {
+	try {
+		const registration = JSON.parse(await fs.readFile(gentleAiDevBinaryRegistrationPath(ctx), "utf8"));
+		if (typeof registration?.path === "string" && inside(join(configHome(ctx), "main", "gentle-ai"), registration.path)) {
+			unregisterGentleAiDevBinary(ctx);
+		}
+	} catch {
+		// No registration, or one that is not ours: leave it alone.
+	}
+}
+
+/**
+ * Updates Gentle Shell along its recorded channel (or the one `--channel` selects):
+ * release goes to the latest npm release, main to the latest `main` commits of
+ * Gentle Shell and Gentle AI, rebuilding only what moved. Returns the exit code;
+ * failures throw MainChannelError (`upgrade-usage` is a usage error).
+ */
+export async function runUpgrade({ args, ctx, platform, packageRoot, currentVersion, adapters, out }) {
+	const { fetch, run, fs, which } = adapters;
+	const requested = parseUpgradeArgs(args);
+	const state = await readChannel(ctx, fs);
+	const channel = requested ?? state.channel;
+	if (channel === "release") {
+		const latest = await latestRelease(fetch);
+		if (state.channel === "release" && !older(currentVersion, latest)) {
+			out(`gentle-shell ${currentVersion} is already the latest release.`);
+			return 0;
+		}
+		await installGlobal(await ownerManager({ ctx, platform, packageRoot, fs, which }), `gentle-pi@${latest}`, run);
+		await removeMainOverride(ctx, fs);
+		await writeChannel(ctx, { channel: "release" }, fs);
+		out(`Updated gentle-shell ${currentVersion} to ${latest} (release).`);
+		return 0;
+	}
+	const [goPath, pnpmPath] = [await which("go"), await which("pnpm")];
+	if (!goPath || !pnpmPath) {
+		throw new MainChannelError("main-requires-tools", "the main channel builds Gentle AI with Go and packs Gentle Shell with pnpm; put both on PATH");
+	}
+	const gentleAiCommit = await resolveMainCommit(GENTLE_AI_REPOSITORY, { fetch });
+	const shellCommit = await resolveMainCommit(SHELL_REPOSITORY, { fetch });
+	const onMain = state.channel === "main";
+	const aiCurrent = onMain && state.gentleAiCommit === gentleAiCommit;
+	const shellCurrent = onMain && state.shellCommit === shellCommit && currentVersion.endsWith(`-main.${shellCommit.slice(0, 12)}`);
+	const summary = `Gentle Shell ${shellCommit.slice(0, 12)}, Gentle AI ${gentleAiCommit.slice(0, 12)}`;
+	if (aiCurrent && shellCurrent) {
+		out(`gentle-shell is already at the latest main: ${summary}.`);
+		return 0;
+	}
+	if (!aiCurrent) await buildMainGentleAi({ commit: gentleAiCommit, ctx, platform, goPath, run, fs });
+	if (!shellCurrent) {
+		const manager = await ownerManager({ ctx, platform, packageRoot, fs, which });
+		const tgz = await packMainShell({ commit: shellCommit, ctx, fetch, run, pnpm: { command: pnpmPath, prefix: [] }, fs });
+		await installGlobal(manager, tgz, run);
+	}
+	await writeChannel(ctx, { channel: "main", shellCommit, gentleAiCommit }, fs);
+	out(`Updated to the latest main: ${summary}.`);
+	return 0;
 }
