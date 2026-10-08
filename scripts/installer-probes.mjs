@@ -269,6 +269,17 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 	const shellBin = () => path.join(globalBin.path, platform === "win32" ? "gentle-shell.cmd" : "gentle-shell");
 
 	const probes = {
+		/** The installed Gentle Shell for an update: real root, version and owner (pnpm, npm or null). */
+		async locateShell() {
+			const shell = await globalPackage(SHELL_PACKAGE, "gentle-shell");
+			if (shell.state === "present" && typeof shell.entry.path === "string" && path.isAbsolute(shell.entry.path)) {
+				return { root: await fs.realpath(shell.entry.path), version: shell.version, owner: "pnpm" };
+			}
+			if (shell.state !== "unknown" || !shell.outsidePnpm) return null;
+			const found = await packageOnPath("gentle-shell", SHELL_PACKAGE);
+			if (!found) return null;
+			return { root: found.root, version: found.version, owner: installOwner({ packageRoot: found.root, pnpmHome: null, npmRoot: await npmGlobalRoot() }) };
+		},
 		async node() {
 			const persistent = await lookPath("node", user, platform, fs);
 			const node = persistent ?? await lookPath("node", env, platform, fs);

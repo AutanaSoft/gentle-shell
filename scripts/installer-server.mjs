@@ -118,6 +118,9 @@ export const guidance = Object.freeze({
 		"build-gentle-ai-main": `Gentle AI could not be built from its latest \`main\` commit. Check your network connection and that \`go\` runs in a terminal. ${tryAgain}`,
 		"install-shell-main": `Gentle Shell could not be installed from its latest \`main\` commit. Check your network connection. ${tryAgain}`,
 		"record-channel": "Gentle Shell is installed from `main`, but the channel could not be saved under `~/.pi/gentle-ai`. Check that folder's permissions, then run the installer again.",
+		"install-pi": `Installing Pi with pnpm failed. Your existing Gentle Shell was not changed. Check your network connection. ${tryAgain}`,
+		"update-shell": "Updating Gentle Shell failed. Run `gentle-shell upgrade` in a terminal to see the details.",
+		"verify-updated-shell": "Gentle Shell did not report the expected version after the update. Run `gentle-shell --version`, then `gentle-shell upgrade` in a terminal.",
 	}),
 	blockers: Object.freeze({
 		"unsupported-target": "This operating system or CPU is not supported by the wizard. Follow the README for a manual installation.",

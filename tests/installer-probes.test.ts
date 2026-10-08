@@ -285,6 +285,15 @@ test("a Gentle Shell that npm links from a source checkout stays unknown and is 
 	assert.deepEqual(await outside("3.9.0", { linked: true }).probes.shell(), { available: null, outsidePnpm: true });
 });
 
+test("locateShell finds the installed Gentle Shell with its real root, version and owner", async () => {
+	const stdout = listing({ "gentle-pi": { version: "3.9.0", path: SHELL_ROOT } });
+	const pnpm = probes({ files: [TOOLS_PNPM], dirs: [HOME, SHELL_ROOT], results: { [`${TOOLS_PNPM} ${LIST}`]: { code: 0, stdout } } });
+	assert.deepEqual(await pnpm.probes.locateShell(), { root: SHELL_ROOT, version: "3.9.0", owner: "pnpm" });
+	assert.deepEqual(await outside("3.9.0").probes.locateShell(), { root: NPM_SHELL, version: "3.9.0", owner: "npm" });
+	assert.deepEqual(await outside("3.9.0", { linked: true }).probes.locateShell(), { root: "/home/u/work/gentle-pi", version: "3.9.0", owner: null });
+	assert.equal(await probes({ files: [TOOLS_PNPM], results: pnpmVersion }).probes.locateShell(), null);
+});
+
 test("Pi or Shell on the user's PATH but not pnpm-global is unknown, never absent, and says so", async () => {
 	const h = probes({ files: [TOOLS_PNPM, "/usr/local/bin/pi", "/usr/local/bin/gentle-shell"],
 		env: { HOME, PATH: `${TOOLS}/pnpm/bin:/usr/local/bin` }, results: pnpmVersion });

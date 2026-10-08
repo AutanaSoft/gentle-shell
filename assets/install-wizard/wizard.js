@@ -32,6 +32,11 @@ export const stepLabels = Object.freeze({
 	"build-gentle-ai-main": "Build Gentle AI from main",
 	"install-shell-main": "Install Gentle Shell from main",
 	"record-channel": "Save the main channel",
+	"check-existing-shell": "Check for an existing Gentle Shell",
+	"check-installed-shell": "Find the installed Gentle Shell",
+	"install-pi": "Install Pi",
+	"update-shell": "Update Gentle Shell",
+	"verify-updated-shell": "Verify the updated Gentle Shell",
 });
 export function stepLabel(id) {
 	return typeof id === "string" && Object.hasOwn(stepLabels, id) ? stepLabels[id] : String(id);

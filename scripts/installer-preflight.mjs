@@ -160,8 +160,10 @@ export function planPreflight(inventory, { channel = "release" } = {}) {
 	record("gentleAi", classify(inventory.gentleAi, requirements.gentleAi, (o) => o.compatible, true), requirements.gentleAi);
 	const needsNative = tools.gentleAi.status === "unavailable";
 	// The main channel builds Gentle AI from source on every platform.
-	// An update reuses the existing package's Gentle AI, so only main needs Go then.
-	record("go", (platform === "win32" && needsNative && !update && !npmCurrent) || main ? classify(inventory.go, requirements.go) : "not-required", requirements.go);
+	// gentle-pi's postinstall may build Gentle AI from source on Windows, so a
+	// Windows release update needs Go like an installation; main always does.
+	const windowsBuild = platform === "win32" && (update !== null || (needsNative && !npmCurrent));
+	record("go", windowsBuild || main ? classify(inventory.go, requirements.go) : "not-required", requirements.go);
 	if (main && tools.go.status !== "reusable") blockers.push({ code: "main-requires-go", tool: "go" });
 	const bin = inventory.globalBin;
 	const binKnown = bin?.available === true && typeof bin.path === "string" && bin.path.trim().length > 0 &&
