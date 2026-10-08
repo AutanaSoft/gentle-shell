@@ -3,6 +3,7 @@ import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding
 import type { TSchema } from "typebox";
 
 const MAX_STATUSES = 8;
+const MAX_ACTIVE_OBSERVATIONS = 8;
 type Outcome = { kind: "success" | "cli_error" | "native_failure" | "unknown"; code?: string; phase?: string; mutation_outcome?: string; retry_safe?: boolean; next_action?: string };
 interface StatusSample {
 	timeout_ms: number;
@@ -114,7 +115,7 @@ export class StatusTimingDiagnostics {
 			execute: async (toolCallId, params, signal, onUpdate, ctx) => {
 				const run = () => definition.execute(toolCallId, params, signal, onUpdate, ctx);
 				if (!this.matches(ctx)) this.reset(ctx);
-				if (!this.armed || this.active.size >= MAX_STATUSES) return run();
+				if (!this.armed || this.active.size >= MAX_ACTIVE_OBSERVATIONS) return run();
 				const epoch = this.epoch;
 				const host: HostObservation = {
 					clock: this.clock,

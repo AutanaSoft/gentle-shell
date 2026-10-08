@@ -4,6 +4,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 
 const MAX_STATUSES = 8;
+const MAX_ACTIVE_OBSERVATIONS = 8;
 
 
 
@@ -115,7 +116,7 @@ export class StatusTimingDiagnostics {
 			execute: async (toolCallId, params, signal, onUpdate, ctx) => {
 				const run = () => definition.execute(toolCallId, params, signal, onUpdate, ctx);
 				if (!this.matches(ctx)) this.reset(ctx);
-				if (!this.armed || this.active.size >= MAX_STATUSES) return run();
+				if (!this.armed || this.active.size >= MAX_ACTIVE_OBSERVATIONS) return run();
 				const epoch = this.epoch;
 				const host                  = {
 					clock: this.clock,
