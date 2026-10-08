@@ -105,10 +105,11 @@ export function userEnvironment({ platform, env }) {
  * `stderrTail`. Callers must sanitize that text before showing it anywhere.
  * The deadline signals the direct child only, not its descendants, and settles
  * the result as timed out without waiting for the child's pipes to close.
+ * An optional `cwd` sets the child's working directory.
  * `spawn` is injectable only for trusted tests.
  */
 export function hostAdapters({ maxOutputBytes = 1024 * 1024, maxTextBytes = 1024 * 1024, spawn = spawnProcess } = {}) {
-	const run = (command, argv, { env, deadlineMs, stderrTail }) => new Promise((resolve) => {
+	const run = (command, argv, { env, cwd, deadlineMs, stderrTail }) => new Promise((resolve) => {
 		let size = 0;
 		let truncated = false;
 		let timedOut = false;
@@ -118,7 +119,7 @@ export function hostAdapters({ maxOutputBytes = 1024 * 1024, maxTextBytes = 1024
 		const withTail = (result) => (tailBytes > 0 ? { ...result, stderrTail: tail.toString("utf8") } : result);
 		let child;
 		try {
-			child = spawn(command, argv, { env, shell: false, stdio: ["ignore", "pipe", tailBytes > 0 ? "pipe" : "ignore"], windowsHide: true });
+			child = spawn(command, argv, { env, cwd, shell: false, stdio: ["ignore", "pipe", tailBytes > 0 ? "pipe" : "ignore"], windowsHide: true });
 		} catch {
 			resolve(withTail({ code: null, signal: null, timedOut: false, truncated: false, stdout: "" }));
 			return;
