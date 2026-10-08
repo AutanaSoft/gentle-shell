@@ -167,6 +167,16 @@ test("AC7: each delegation module stays under its byte budget and is loaded by i
 	}
 });
 
+// gentle-shell#1269/#1598: the capability rule is the substantive part of the fix,
+// so losing it must fail a test instead of quietly passing the AC7 budget gate.
+// Focused on the two claims that carry the fix, not on the exact wording around them.
+test("delegation reports a capability gap instead of substituting inline work for a fired trigger", () => {
+	assert.match(delegation, /declared `tools` in `subagent_list_agents` before launching/);
+	assert.match(delegation, /never give a read-only explorer shell, HTTP or MCP work/);
+	assert.match(delegation, /report the capability gap; a fired trigger is never replaced by inline work/);
+	assert.equal(delegation.split("report the capability gap").length - 1, 1);
+});
+
 test("work usage stays complete in the human guide while routing precedence stays canonical", () => {
 	const asset = read("assets/orchestrator-delegation.md");
 	const guide = read("docs/gentle-agents-activity.md");
