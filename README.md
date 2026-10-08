@@ -312,6 +312,8 @@ Thinking levels follow NaN's [reasoning contract](https://nan.builders/docs/mode
 /gentle:doctor
 ```
 
+> **STATUS diagnostics are opt-in:** `/gentle:status-timing enable` arms timing for the next separately authorized STATUS-bearing tool call; `show` consults the memory-only summary and `disable` clears it. It never invokes or retries STATUS. See the [diagnostic boundaries](docs/readme-reference.md#diagnose-status-timing-without-retrying-it).
+
 > **RDD is opt-in:** enable native receipt-driven development only through an explicit `/gentle:review-mode enable` decision. The `.git/gentle-ai/candidate-views` parent must sit on a filesystem that honors private POSIX modes (or equivalent Windows ACLs); WSL DrvFS mounts without metadata can reject START before lineage creation.
 
 > **Fullscreen installation note:** a recognized global installation persists Pi’s `"tuiMode": "fullscreen"` setting. Project-local and other install paths do not receive that change.
