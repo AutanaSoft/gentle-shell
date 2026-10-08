@@ -5,11 +5,11 @@ foundation, the standard installation runner module (including runtime
 persistence), the secure local wizard host with its packaged entry and the
 interactive browser wizard UI are implemented. Windows native validation
 remains unavailable locally.
-**This is not a supported installation path yet:** published bootstrap
-artifacts, real browsers and native macOS/Windows clean-machine runs are still
-unverified (T7); one Linux clean-container run passed (see
-[Clean-machine acceptance](#clean-machine-acceptance-t7)). For ordinary
-installation and terminal use, follow the [README](../README.md).
+**Preview:** run it from a checkout with `sh scripts/bootstrap.sh` (macOS,
+Linux) or `scripts\bootstrap.cmd` (Windows), as the [README](../README.md#path-c-browser-installer-preview)
+shows. There are no published bootstrap artifacts yet, and native macOS/Windows
+clean-machine runs are still unverified (T7); one Linux clean-container run
+passed (see [Clean-machine acceptance](#clean-machine-acceptance-t7)).
 
 ## What is available
 
@@ -442,7 +442,10 @@ publishes main builds, so main is built on this computer
 - Preflight requires a compatible Go (≥ the Windows minimum) on every platform
   and otherwise blocks with `main-requires-go`. Main steps are added only when the
   plan installs or completes setup; a stack that is already set up switches with
-  `gentle-shell upgrade --channel main`.
+  `gentle-shell upgrade --channel main`. A pnpm-global Gentle Shell already at a
+  `<version>-main.<sha12>` version stays `unknown` (never replaced); its probe adds
+  `mainVersion`, and the guidance points to `gentle-shell upgrade` and
+  `gentle-shell upgrade --channel release`.
 - After the release stack is installed and `verify-gentle-ai` passed, the runner:
   1. `build-gentle-ai-main`: resolves the latest `main` commit of
      Gentleman-Programming/gentle-ai (GitHub API, raw SHA), runs

@@ -49,6 +49,8 @@ function exactVersion(text, pattern) {
 }
 const NUMBER = "(0|[1-9]\\d*)";
 const STABLE = new RegExp(`^${NUMBER}\\.${NUMBER}\\.${NUMBER}$`);
+// A main-channel Gentle Shell (scripts/main-channel.mjs): <stable>-main.<sha12>.
+const MAIN_BUILD = new RegExp(`^${NUMBER}\\.${NUMBER}\\.${NUMBER}-main\\.[0-9a-f]{12}$`);
 const NODE_VERSION = new RegExp(`^v${NUMBER}\\.${NUMBER}\\.${NUMBER}$`);
 const GO_VERSION = new RegExp(`^go version go${NUMBER}\\.${NUMBER}(?:\\.${NUMBER})? \\S+$`);
 function atLeast(version, minimum) {
@@ -230,11 +232,16 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 		if (!packages.has(name)) return (await persistentOn(command)) ? { state: "unknown", outsidePnpm: true } : { state: "absent" };
 		const entry = packages.get(name);
 		const version = exactVersion(entry?.version, STABLE);
-		return entry && version ? { state: "present", entry, version } : { state: "unknown" };
+		if (entry && version) return { state: "present", entry, version };
+		const main = typeof entry?.version === "string" && MAIN_BUILD.test(entry.version) ? entry.version : null;
+		return main ? { state: "unknown", mainVersion: main } : { state: "unknown" };
 	};
 	// Still unknown (never absent or replaced), but says the command comes from
 	// another installation so the wizard can explain the blocker.
-	const notPnpmGlobal = (found) => (found.outsidePnpm ? { ...unknown(), outsidePnpm: true } : unknown());
+	const notPnpmGlobal = (found) => {
+		if (found.outsidePnpm) return { ...unknown(), outsidePnpm: true };
+		return found.mainVersion ? { ...unknown(), mainVersion: found.mainVersion } : unknown();
+	};
 	const shellBin = () => path.join(globalBin.path, platform === "win32" ? "gentle-shell.cmd" : "gentle-shell");
 
 	const probes = {

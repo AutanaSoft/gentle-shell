@@ -188,6 +188,7 @@ const outsidePnpmTools = Object.freeze({
 	pi: { label: "Pi", command: "pi", pkg: "@earendil-works/pi-coding-agent" },
 	shell: { label: "Gentle Shell", command: "gentle-shell", pkg: "gentle-pi" },
 });
+const MAIN_BUILD = /^\d{1,6}\.\d{1,6}\.\d{1,6}-main\.[0-9a-f]{12}$/;
 const STABLE = /^v?(\d{1,6})\.(\d{1,6})\.(\d{1,6})$/;
 function older(found, required) {
 	const [a, b] = [STABLE.exec(found), STABLE.exec(required)];
@@ -202,6 +203,11 @@ function older(found, required) {
  * anything else keeps the fixed guidance. */
 function blockerGuidance(blocker, inventory, plan) {
 	const fixed = guidance.blockers[blocker.code] ?? guidance.fallback;
+	const mainVersion = inventory?.shell?.mainVersion;
+	if (blocker.code === "unknown-tool" && blocker.tool === "shell" && typeof mainVersion === "string" && MAIN_BUILD.test(mainVersion)) {
+		return `Gentle Shell ${mainVersion} is already installed from the \`main\` channel, so this installer leaves it as it is. ` +
+			"To update it, run `gentle-shell upgrade`; to go back to the latest release, run `gentle-shell upgrade --channel release`.";
+	}
 	if (blocker.code === "unknown-tool" && Object.hasOwn(outsidePnpmTools, blocker.tool) && inventory?.[blocker.tool]?.outsidePnpm === true) {
 		const { label, command, pkg } = outsidePnpmTools[blocker.tool];
 		return `${label} is already installed, but not with pnpm: the \`${command}\` command on your PATH comes from another installation, ` +

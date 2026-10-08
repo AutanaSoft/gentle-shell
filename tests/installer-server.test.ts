@@ -323,6 +323,33 @@ test("/api/plan explains a Gentle Shell installed outside pnpm", async () => {
 	}
 });
 
+test("/api/plan explains a Gentle Shell installed from the main channel and how to update or leave it", async () => {
+	const { host, port, login } = await start({ collect: async () => collected({
+		pi: { available: true, version: "1.0.4", usable: true },
+		shell: { available: null, mainVersion: "4.0.0-main.6e7e3a18f794" }, gentleAi: { available: null }, setup: { available: null },
+	}) });
+	try {
+		const view = await plan(port, await login());
+		assert.deepEqual(view.blockers.map((blocker: { code: string; tool: string }) => [blocker.code, blocker.tool]), [["unknown-tool", "shell"]]);
+		assert.equal(view.blockers[0].guidance,
+			"Gentle Shell 4.0.0-main.6e7e3a18f794 is already installed from the `main` channel, so this installer leaves it as it is. " +
+			"To update it, run `gentle-shell upgrade`; to go back to the latest release, run `gentle-shell upgrade --channel release`.");
+		assert.deepEqual(view.actions, []);
+	} finally {
+		await host.close("test");
+	}
+});
+
+test("/api/plan never shows a main version that is not a main version", async () => {
+	const { host, port, login } = await start({ collect: async () => collected({ shell: { available: null, mainVersion: "4.0.0-main.<b>" } }) });
+	try {
+		const view = await plan(port, await login());
+		assert.equal(view.blockers.find((item: { tool: string }) => item.tool === "shell").guidance, guidance.blockers["unknown-tool"]);
+	} finally {
+		await host.close("test");
+	}
+});
+
 test("/api/plan keeps the generic guidance for an unknown tool without more evidence", async () => {
 	const { host, port, login } = await start({ collect: async () => collected({ shell: { available: null } }) });
 	try {
