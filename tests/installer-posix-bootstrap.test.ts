@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync, readdirSync, rmSync, lstatSync, unlinkSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
@@ -351,6 +351,104 @@ posixTest("a script pnpm without a package is not treated as standalone", async 
 		await assert.rejects(ensurePnpm({ tools: f.home, env: { PATH: f.bin }, nodeVersion: "24.21.0", adapters: { process: () => { throw new Error("must not run"); } } }),
 			/package engine evidence missing/);
 	} finally { f.cleanup(); }
+});
+// $PNPM_HOME layouts captured from real macOS installs (get.pnpm.io + `pnpm setup`,
+// `pnpm self-update`, `pnpm add -g`), shims trimmed to the lines naming the target.
+interface PnpmHomeLayout {
+	bin: string; target: string; shim: (home: string) => string; native: boolean;
+	pkg?: { dir: string; json: Record<string, unknown> }; store?: string;
+}
+const setupShim = (target: string) => (home: string) => `#!/bin/sh\nbasedir_abs=$(CDPATH= cd -P -- "$basedir" && pwd -P) || exit $?\nbasedir="$basedir_abs"\n\n` +
+	`exec "$basedir_abs/../${target}"   "$@"\nexit $?\n# cmd-shim-target=${home}/${target}\n`;
+const legacyShim = (target: string) => () => `#!/bin/sh\nbasedir=$(dirname "$(echo "$0" | sed -e 's,\\\\,/,g')")\n\n\n"$basedir/${target}"   "$@"\nexit $?\n`;
+const addGlobalShim = (target: string) => () => `#!/bin/sh\nbasedir=$(dirname "$(echo "$0" | sed -e 's,\\\\,/,g')")\n\nif [ -x "$basedir/node" ]; then\n` +
+	`  exec "$basedir/node"  "$basedir/${target}" "$@"\nelse\n  exec node  "$basedir/${target}" "$@"\nfi\n`;
+const pnpmHomeLayouts: Record<string, PnpmHomeLayout & { version: string; outcome: "reused" | "acquired" }> = {
+	"pnpm 11 setup or self-update (@pnpm/exe in $PNPM_HOME/bin)": {
+		bin: "bin", target: "global/v11/933b1afb/node_modules/@pnpm/exe/pnpm", shim: setupShim("global/v11/933b1afb/node_modules/@pnpm/exe/pnpm"),
+		native: true, store: "store/v11/links/@pnpm/exe/directory/643afacf/node_modules/@pnpm/exe",
+		pkg: { dir: "global/v11/933b1afb/node_modules/@pnpm/exe", json: { name: "@pnpm/exe", version: "11.28.2", bin: { pnpm: "pnpm", pn: "pnpm" } } },
+		version: "11.28.2", outcome: "reused",
+	},
+	"pnpm 10 self-update to 11 (@pnpm/exe in $PNPM_HOME/.tools)": {
+		bin: "", target: ".tools/@pnpm+exe/11.28.2/node_modules/@pnpm/exe/pnpm", shim: legacyShim(".tools/@pnpm+exe/11.28.2/node_modules/@pnpm/exe/pnpm"),
+		native: true, pkg: { dir: ".tools/@pnpm+exe/11.28.2/node_modules/@pnpm/exe", json: { name: "@pnpm/exe", version: "11.28.2" } },
+		version: "11.28.2", outcome: "reused",
+	},
+	"pnpm 10 setup (bare executable in $PNPM_HOME/.tools)": {
+		bin: "", target: ".tools/pnpm-exe/10.34.6/pnpm", shim: legacyShim(".tools/pnpm-exe/10.34.6/pnpm"), native: true,
+		version: "10.34.6", outcome: "acquired",
+	},
+	"pnpm 12 setup (native pnpm package without engines)": {
+		bin: "bin", target: "global/v11/82859147/node_modules/pnpm/pnpm", shim: setupShim("global/v11/82859147/node_modules/pnpm/pnpm"),
+		native: true, pkg: { dir: "global/v11/82859147/node_modules/pnpm", json: { name: "pnpm", version: "12.10.1", bin: { pnpm: "pnpm", pn: "pnpm" } } },
+		version: "12.10.1", outcome: "acquired",
+	},
+	"pnpm 10 add -g pnpm (JS package in $PNPM_HOME/global/5)": {
+		bin: "", target: "global/5/.pnpm/pnpm@10.34.6/node_modules/pnpm/bin/pnpm.cjs", shim: addGlobalShim("global/5/.pnpm/pnpm@10.34.6/node_modules/pnpm/bin/pnpm.cjs"),
+		native: false, pkg: { dir: "global/5/.pnpm/pnpm@10.34.6/node_modules/pnpm", json: { name: "pnpm", version: "10.34.6", engines: { node: ">=18.12" } } },
+		version: "10.34.6", outcome: "acquired",
+	},
+};
+function pnpmHome(f: ReturnType<typeof fixture>, layout: PnpmHomeLayout) {
+	const home = join(f.root, "Library/pnpm");
+	const dir = join(home, layout.bin);
+	const target = join(home, layout.target);
+	mkdirSync(dir, { recursive: true });
+	if (layout.store) {
+		// pnpm 11 links the global package directory into its store.
+		mkdirSync(join(home, layout.store), { recursive: true });
+		mkdirSync(dirname(dirname(target)), { recursive: true });
+		symlinkSync(join(home, layout.store), dirname(target));
+	} else mkdirSync(dirname(target), { recursive: true });
+	if (layout.pkg) {
+		mkdirSync(join(home, layout.pkg.dir), { recursive: true });
+		writeFileSync(join(home, layout.pkg.dir, "package.json"), JSON.stringify(layout.pkg.json));
+	}
+	writeFileSync(target, layout.native ? Buffer.concat([Buffer.from(nativeHeaders["Mach-O 64-bit"]), Buffer.alloc(64)]) : "#!/usr/bin/env node\n", { mode: 0o755 });
+	writeFileSync(join(dir, "pnpm"), layout.shim(home), { mode: 0o755 });
+	return { shim: join(dir, "pnpm"), env: { PATH: `${dir}:${f.bin}` } };
+}
+posixTest("pnpm installed in $PNPM_HOME by pnpm itself is recognized behind its shim", async () => {
+	for (const [label, layout] of Object.entries(pnpmHomeLayouts)) {
+		const f = fixture();
+		try {
+			const { shim, env } = pnpmHome(f, layout);
+			const calls: string[][] = [];
+			const acquisition = acquisitionAdapters();
+			const adapters = { ...acquisition, process: (command: string, args: string[]) => command === shim
+				? standaloneProcess(layout.version, calls)(command, args) : acquisition.process(command, args) };
+			const result = await ensurePnpm({ tools: f.home, env, nodeVersion: "24.21.0", adapters });
+			assert.equal(result.acquired, layout.outcome === "acquired", label);
+			if (layout.outcome === "reused") assert.deepEqual(calls, [["--version"], ["help", "add"], ["help", "bin"]], label);
+			// An incompatible JS pnpm is judged by its package; a native one only by --version.
+			else assert.deepEqual(calls, layout.native ? [["--version"]] : [], label);
+		} finally { f.cleanup(); }
+	}
+});
+posixTest("pnpm behind a $PNPM_HOME shim still fails closed without matching evidence", async () => {
+	const setup = pnpmHomeLayouts["pnpm 11 setup or self-update (@pnpm/exe in $PNPM_HOME/bin)"];
+	const addGlobal = pnpmHomeLayouts["pnpm 10 add -g pnpm (JS package in $PNPM_HOME/global/5)"];
+	const missing = legacyShim(".tools/pnpm-exe/10.34.6/pnpm");
+	const ambiguous = () => `${legacyShim(".tools/a/pnpm")()}"$basedir/.tools/b/pnpm" "$@"\n`;
+	const cases: [string, PnpmHomeLayout, string | undefined, RegExp][] = [
+		["native version differs from its package", setup, "11.27.0", /pnpm version rejected/],
+		["JS target not named pnpm", { ...addGlobal, pkg: { dir: addGlobal.pkg!.dir, json: { ...addGlobal.pkg!.json, name: "not-pnpm" } } }, undefined, /package engine evidence missing/],
+		["target missing", { bin: "", target: "elsewhere/pnpm", shim: missing, native: true }, undefined, /package engine evidence missing/],
+		["two targets", { bin: "", target: ".tools/a/pnpm", shim: ambiguous, native: true }, undefined, /package engine evidence missing/],
+	];
+	for (const [label, layout, version, error] of cases) {
+		const f = fixture();
+		try {
+			const { shim, env } = pnpmHome(f, layout);
+			const adapters = { process: (command: string, args: string[]) => {
+				if (command !== shim || version === undefined) throw new Error("must not run");
+				return standaloneProcess(version)(command, args);
+			}, download: () => { throw new Error("must not download"); } };
+			await assert.rejects(ensurePnpm({ tools: f.home, env, nodeVersion: "24.21.0", adapters }), error, label);
+			assert.deepEqual(readdirSync(f.home), [], label);
+		} finally { f.cleanup(); }
+	}
 });
 posixTest("missing required shell utility is named", () => {
 	const f = fixture();

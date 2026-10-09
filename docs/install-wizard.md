@@ -874,14 +874,17 @@ With that entry available, the fixed sequence is:
    `>=x.y.z` lower bounds; comparison fills an omitted patch with zero. Actual
    Node versions must remain exact stable versions; other ranges block rather
    than guess. The package is found from the resolved `pnpm` command; when that
-   command is a regular cmd-shim file (as pnpm 11 writes when it installs
-   itself), the search starts from its `# cmd-shim-target=` path. That path only
-   locates `package.json`; `pnpm --version` must still match it. A standalone
-   pnpm (a Mach-O or ELF executable, as mise, asdf and pnpm's own installer
-   provide) embeds its Node runtime and has no `package.json`: it skips the
-   package engine check but must still report an exact stable `--version` and
-   pass the same global `add`/`bin` capability checks. A script or shim without a
-   package still blocks. Prerequisite
+   command is a regular cmd-shim file (as pnpm writes in `$PNPM_HOME` or
+   `$PNPM_HOME/bin` when it installs or updates itself), the search starts from
+   its `# cmd-shim-target=` path or, without one, the single
+   `"$basedir/<target>" "$@"` it runs. That path only locates the evidence;
+   `pnpm --version` must still match it. A standalone pnpm (a Mach-O or ELF
+   executable, directly or as that shim target, as mise, asdf and pnpm's own
+   installer with `@pnpm/exe` provide) embeds its Node runtime: it skips the
+   package engine check but must still report an exact stable `--version`, equal
+   to the version of the `pnpm` or `@pnpm/*` `package.json` beside it when there
+   is one, and pass the same global `add`/`bin` capability checks. A script or
+   shim without a `pnpm` package still blocks. Prerequisite
    checks run from `/`, so a pnpm that switches to a project's `packageManager`
    pin reports its own version.
    A pnpm whose stable version evidence (`package.json`, or a standalone

@@ -127,18 +127,32 @@ function findExecutable(name, env) {
 	}
 	return null;
 }
-// pnpm 11 installs itself behind a regular cmd-shim file, not a symlink; its
-// package lives only in the shim's `# cmd-shim-target=` comment. The target is
-// a starting point for the package search, not proof: provePnpm still runs the
-// command and requires its --version to match that package.json.
+function head(path, size) {
+	const buffer = Buffer.alloc(size);
+	const fd = openSync(path, "r");
+	try {
+		return buffer.subarray(0, readSync(fd, buffer, 0, size, 0));
+	} finally {
+		closeSync(fd);
+	}
+}
+// pnpm installs itself in $PNPM_HOME behind a regular cmd-shim file, not a
+// symlink. pnpm 11 names its target in a `# cmd-shim-target=` comment; older
+// shims only run the single `"$basedir/<target>" "$@"` next to the shim. The
+// target is a starting point for the evidence search, not proof: the command
+// itself still has to print the version that evidence names.
 function shimTarget(command) {
 	if (!regular(command)) return null;
-	const head = readFileSync(command, "utf8").slice(0, 4096);
-	const match = /^# cmd-shim-target=(\/[^\r\n]+)$/m.exec(head);
-	return match && stat(match[1]) ? match[1] : null;
+	const text = head(command, 4096).toString("utf8");
+	const match = /^# cmd-shim-target=(\/[^\r\n]+)$/m.exec(text);
+	if (match) return stat(match[1]) ? match[1] : null;
+	const targets = new Set([...text.matchAll(/"\$basedir\/([^"$`\\]+)"[ \t]+"\$@"/g)]
+		.map(([, target]) => join(realpathSync(dirname(command)), target)));
+	const [target] = targets;
+	return targets.size === 1 && stat(target) ? target : null;
 }
-function packageFor(command) {
-	let directory = dirname(realpathSync(shimTarget(command) ?? command));
+function packageFor(target) {
+	let directory = dirname(target);
 	for (let depth = 0; depth < 4; depth += 1) {
 		const file = join(directory, "package.json");
 		if (regular(file)) {
@@ -151,22 +165,22 @@ function packageFor(command) {
 	}
 	throw new Error("Existing pnpm compatibility is unknown: package engine evidence missing");
 }
-// mise, asdf and pnpm's own installer ship pnpm as a standalone native executable
-// that embeds its own Node runtime, so it has no pnpm package.json and the user's
-// Node engine does not apply to it. Only a Mach-O or ELF header qualifies; scripts
-// and shims without a package still need package engine evidence.
+// mise, asdf and pnpm's own installer (directly or behind its shim, as
+// @pnpm/exe) ship pnpm as a standalone native executable that embeds its own
+// Node runtime, so the user's Node engine does not apply to it. Only a Mach-O
+// or ELF header qualifies; scripts and shims without a package still need
+// package engine evidence.
 const nativeHeaders = ["cffaedfe", "cefaedfe", "feedfacf", "feedface", "cafebabe", "bebafeca", "7f454c46"];
-function standalonePnpm(command) {
-	const target = realpathSync(command);
-	if (!regular(target)) return false;
-	const header = Buffer.alloc(4);
-	const fd = openSync(target, "r");
-	try {
-		if (readSync(fd, header, 0, 4, 0) !== 4) return false;
-	} finally {
-		closeSync(fd);
-	}
-	return nativeHeaders.includes(header.toString("hex"));
+function standalonePnpm(target) {
+	return regular(target) && nativeHeaders.includes(head(target, 4).toString("hex"));
+}
+// The pnpm package a native executable ships in (@pnpm/exe, @pnpm/<platform>,
+// pnpm 12), when there is one: its version is what the executable must print.
+function standaloneVersion(target) {
+	const file = join(dirname(target), "package.json");
+	if (!regular(file)) return null;
+	const metadata = JSON.parse(readFileSync(file, "utf8"));
+	return metadata.name === "pnpm" || /^@pnpm\//.test(metadata.name) ? metadata.version : null;
 }
 function provePnpm(command, prefix, metadata, nodeVersion, env, processAdapter, known = null) {
 	if (metadata && (!parts(metadata.version) || !compatibleEngine(metadata.engines?.node, nodeVersion))) {
@@ -234,10 +248,14 @@ export async function ensurePnpm({ tools, env, nodeVersion, adapters = {} }) {
 	const processAdapter = adapters.process ?? processCheck;
 	const existing = findExecutable("pnpm", env);
 	if (existing) {
-		const metadata = standalonePnpm(existing) ? null : packageFor(existing);
+		const target = realpathSync(shimTarget(existing) ?? existing);
+		const standalone = standalonePnpm(target);
+		const metadata = standalone ? null : packageFor(target);
 		const bound = /^>=(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\.(0|[1-9]\d*))?$/.test(metadata?.engines?.node ?? "");
 		// A standalone pnpm reports its version only by running; that answer is reused.
 		const version = metadata ? null : processAdapter(existing, ["--version"], env);
+		const shipped = standalone ? standaloneVersion(target) : null;
+		if (shipped !== null && version !== shipped) throw new Error("pnpm version rejected");
 		const incompatible = metadata
 			? parts(metadata.version) !== null && bound && (!pinnedPnpmCompatible(metadata.version) || !compatibleEngine(metadata.engines.node, nodeVersion))
 			: parts(version) !== null && !pinnedPnpmCompatible(version);
