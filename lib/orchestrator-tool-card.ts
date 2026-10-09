@@ -1,6 +1,7 @@
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import {
-	CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardRunningLine, cardTop,
+	CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardInnerWidth, cardRunningLine, cardTop,
 	floatRows, markCardResult, type CardRowContext, type CardTheme,
 } from "./shell-card.ts";
 
@@ -89,6 +90,58 @@ function discoveredSessionRows(candidates: unknown[]): string[] {
 		})];
 }
 
+const OVERVIEW_LIMIT = 6;
+interface OverviewRow { name: string; id: string; context: string; tasks: string }
+const shortId = (value: unknown): string => {
+	const id = line(value);
+	return visibleWidth(id) <= 13 ? id : `${Array.from(id).slice(0, 8).join("")}…${Array.from(id).slice(-4).join("")}`;
+};
+const workspaceName = (value: unknown): string => line(value).split(/[\\/]/).filter(Boolean).at(-1) || line(value) || "—";
+const positiveCount = (value: unknown): number => typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 0;
+
+/** One physical row per item, including on narrow terminals; expansion is not an unbounded dump. */
+function overviewTable(rows: OverviewRow[], width: number, work: boolean): string[] {
+	const cell = (value: string, columns: number) => {
+		const clipped = truncateToWidth(value, columns, "…");
+		return clipped + " ".repeat(Math.max(0, columns - visibleWidth(clipped)));
+	};
+	const format = (row: OverviewRow) => {
+		if (width < 40) return truncateToWidth(`${row.id} ${row.name}`, width, "…");
+		if (width < 64) return `${cell(row.name, width - 15)}  ${cell(row.id, 13)}`;
+		const nameWidth = Math.min(36, width - (work ? 37 : 44));
+		return `${cell(row.name, nameWidth)}  ${cell(row.id, 13)}  ${cell(row.context, 20)}${work ? "" : `  ${cell(row.tasks, 5)}`}`;
+	};
+	return rows.length ? [format({ name: "Alias", id: "ID (short)", context: work ? "Work" : "Workspace", tasks: "Tasks" }), ...rows.slice(0, OVERVIEW_LIMIT).map(format)] : [];
+}
+
+function discoveryOverviewRows(candidates: unknown[], width: number): string[] {
+	const recent = candidates.map(record).filter(peer => peer.freshness === "recent");
+	const rows = recent.map(peer => {
+		const catalog = record(peer.catalog);
+		const tasks = Array.isArray(peer.tasks) ? peer.tasks : Array.isArray(catalog.tasks) ? catalog.tasks : undefined;
+		const omitted = Array.isArray(peer.tasks) ? peer.omitted : catalog.omittedTasks;
+		return { name: line(peer.label) || "Unnamed", id: shortId(peer.sessionId), context: workspaceName(peer.workspace), tasks: tasks ? `${tasks.length}${positiveCount(omitted) ? "+" : ""}` : "?" };
+	});
+	return [...overviewTable(rows, width, false),
+		...(recent.length > OVERVIEW_LIMIT ? [`+${recent.length - OVERVIEW_LIMIT} more recorded sessions`] : []),
+		...(candidates.length > recent.length ? [`${candidates.length - recent.length} without recent metadata`] : []),
+		"Detail: consult(full ID)"];
+}
+
+function workOverviewRows(search: Record<string, unknown>, width: number): string[] {
+	const matches = (Array.isArray(search.matches) ? search.matches : []).map(record);
+	const rows = matches.map(match => {
+		const work = record(match.work);
+		return { name: line(match.label) || line(match.taskId) || "Work item", id: shortId(match.sessionId), context: [line(work.area), line(work.topic)].filter(Boolean).join("/") || "—", tasks: "" };
+	});
+	const coverage = record(search.coverage);
+	const limits = [positiveCount(coverage.omittedMatches) && `${coverage.omittedMatches} matches omitted`, positiveCount(coverage.unexaminedPeers) && `${coverage.unexaminedPeers} peers not scanned`, positiveCount(coverage.unknownContext) && `${coverage.unknownContext} unknown contexts`].filter(Boolean).join(" · ");
+	const source = record(search.source);
+	return [...overviewTable(rows, width, true), ...(matches.length > OVERVIEW_LIMIT ? [`+${matches.length - OVERVIEW_LIMIT} more work matches`] : []),
+		...(limits ? [limits] : []), ...(source.status === "unavailable" ? [`Source unavailable: ${line(source.reason) || "unknown"}`] : []),
+		"No authority · detail: consult(full ID)"];
+}
+
 function summary(operation: Operation, args: Record<string, unknown>, result: Result, failed: boolean): string[] {
 	const body = text(result);
 	if (failed) return [line(body) || "Operation failed"];
@@ -144,15 +197,18 @@ export function orchestratorToolRenderers(operation: Operation, hint: (expanded:
 			if (context.state) context.state.orchestratorFailed = failed;
 			const tone = failed ? CARD_TONE.ERROR : CARD_TONE.INFO;
 			const args = context.args ?? {};
+			const data = record(record(result.details).gentleAgents);
+			const discoveryOverview = operation === "list" && !failed && !args.recipient_session_id && Array.isArray(data.candidates);
+			const workOverview = operation === "list" && !failed && Array.isArray(record(data.workSearch).matches);
+			const overview = options.expanded && (discoveryOverview || workOverview);
 			const body = options.isPartial && !failed ? ["Receiving partial result…"] : summary(operation, args, result, failed);
-			if (options.expanded) {
-				const data = record(record(result.details).gentleAgents);
+			if (options.expanded && !overview) {
 				if (operation === "session" && typeof data.alias === "string" && !failed) {
 					if (line(data.senderSessionId)) body.push(`Routing ID: ${line(data.senderSessionId)}`);
 					if (line(args.subject)) body.push(`Requested subject: ${line(args.subject)}`);
 					body.push(...(args.state === null ? ["Published state: withdrawn"] : section("Published state", readableDataRows(args.state))));
 				} else if (operation === "list" && Array.isArray(data.candidates) && !failed) {
-					body.push("Recorded context only; no reachability or ownership guarantee.", ...section("Request", requestRows(args)), ...section("Sessions", discoveredSessionRows(data.candidates)));
+					body.push(...section("Request", requestRows(args)), ...section("Sessions", discoveredSessionRows(data.candidates)));
 				} else if (operation === "consult" && data.receipt !== undefined && !failed) {
 					body.push(...section("Request", requestRows(args)), ...section("Published context / advice", readableDataRows(data.receipt)));
 				} else if (!Object.keys(data).length && typeof parsedOutput(result) === "string") {
@@ -164,11 +220,16 @@ export function orchestratorToolRenderers(operation: Operation, hint: (expanded:
 			return {
 				render(width: number) {
 					if (width <= 0) return [];
-					return floatRows(tone, theme, width, inner => ({
-						afterHeading: true,
-						body: cardBodyRows(body, tone, theme, inner, { expanded: options.expanded, previewRows: 3 }),
-						bottom: cardBottom(tone, theme, inner),
-					}));
+					return floatRows(tone, theme, width, inner => {
+						const columns = cardInnerWidth(inner);
+						const rows = overview ? [...body, ...(discoveryOverview ? discoveryOverviewRows(data.candidates as unknown[], columns) : workOverviewRows(record(data.workSearch), columns))]
+							.map(row => truncateToWidth(row, columns, "…")) : body;
+						return {
+							afterHeading: true,
+							body: cardBodyRows(rows, tone, theme, inner, { expanded: options.expanded, previewRows: 3 }),
+							bottom: cardBottom(tone, theme, inner),
+						};
+					});
 				},
 				invalidate() {},
 			};

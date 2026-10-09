@@ -76,10 +76,17 @@ Expand a completed card to see labelled fields and nested sections rather than
 raw JSON or duplicated result dumps; collapse it to return to the summary.
 Empty request blocks are omitted. Session identity cards separate the current
 alias, requested subject, and stable routing ID, and explain preserved aliases.
-Discovery groups each session's recorded context and reports unavailable metadata
-once, without inferring missing or stale context. Consultation retains coverage
-limits and is not an owner reply; queued messages are not read or delivery
-receipts. Rendering does not change the complete model-facing output or permissions.
+Discovery overviews show at most six records, one physical table row each,
+with short display IDs, workspace basenames, and task counts (`+` marks omitted
+tasks; `?` means the count is unknown). Sessions without recent metadata are
+counted together, not expanded into empty records. Classified-work overviews
+use the same row limit and retain non-exhaustive coverage limits. Long cells
+are clipped rather than wrapped, keeping completed overviews within 16 terminal
+rows including its card frame. Short IDs and basenames are display hints,
+never routing selectors or repository identity: use a full session ID with
+`orchestrator_consult` or targeted `orchestrator_list` for detailed context.
+Consultation is not an owner reply; queued messages are not read or delivery
+receipts. Complete model-facing output and permissions remain unchanged.
 
 ### Publish curated state (Refs #1702; first slice)
 

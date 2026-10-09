@@ -5,7 +5,7 @@ import { orchestratorToolRenderers } from "../lib/orchestrator-tool-card.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
-const theme = { fg: (_role: string, text: string) => text, bg: (_role: string, text: string) => text };
+const theme = { fg: (_role: string, text: string) => text, bg: (_role: string, text: string) => `\x1b[48;2;20;20;20m${text}\x1b[49m` };
 interface Example {
 	kind: Parameters<typeof orchestratorToolRenderers>[0];
 	args: Record<string, unknown>;
@@ -35,7 +35,7 @@ test("orchestrator cards replace JSON calls with semantic headings and useful su
 		const expanded = stripAnsi(card(entry, true).render(140).join("\n"));
 		assert.notEqual(compact, expanded);
 		assert.doesNotMatch(expanded, /Arguments:|Result details:|\{"|^\s*[{}]\s*$/m);
-		assert.ok(expanded.includes(entry.kind === "session" ? "Routing ID:" : entry.kind === "consult" ? "Status:" : "Session ID:"));
+		assert.ok(expanded.includes(entry.kind === "session" ? "Routing ID:" : entry.kind === "consult" ? "Status:" : "without recent metadata"));
 		assert.match(expanded, /collapse/);
 	}
 	const identity = stripAnsi(card(cases[0], true).render(140).join("\n"));
@@ -45,7 +45,7 @@ test("orchestrator cards replace JSON calls with semantic headings and useful su
 	assert.match(identity, /Read-only VM inspection/);
 });
 
-test("expanded discovery groups useful session context without JSON, duplicated output or unknown clutter", () => {
+test("discovery overview uses one row per recorded session and groups unknown sessions", () => {
 	const entry: Example = {
 		...cases[2],
 		result: {
@@ -59,17 +59,10 @@ test("expanded discovery groups useful session context without JSON, duplicated 
 	};
 	const before = structuredClone(entry);
 	const output = stripAnsi(card(entry, true).render(140).join("\n"));
-	assert.match(output, /1\. API team/);
-	assert.match(output, /Session ID: known-id/);
-	assert.match(output, /Workspace: \/work\/api/);
-	assert.match(output, /Tasks:/);
-	assert.match(output, /Check login/);
-	assert.match(output, /Complete: no/);
-	assert.match(output, /Omitted tasks: 2/);
-	assert.match(output, /Metadata unavailable for 2 sessions/);
-	assert.match(output, /Session ID: unknown-id/);
-	assert.match(output, /Session ID: stale-id/);
-	assert.doesNotMatch(output, /Arguments:|raw-output-must-not-repeat|context: unknown|repository: unknown|recorded catalog: unknown|Old alias|stale-workspace|[{}]/);
+	assert.match(output, /API team\s+known-id\s+api\s+1/);
+	assert.match(output, /2 without recent metadata/);
+	assert.match(output, /Detail: consult\(full ID\)/);
+	assert.doesNotMatch(output, /Session ID:|Check login|Complete:|Omitted tasks:|\/work\/api|unknown-id|stale-id|Arguments:|raw-output-must-not-repeat|recorded catalog: unknown|Old alias|stale-workspace|[{}]/);
 	assert.deepEqual(entry, before);
 });
 
@@ -87,21 +80,76 @@ test("consultation, classified work, and missing-detail JSON become labelled row
 	assert.match(outputs[0], /Unknowns:/);
 	assert.match(outputs[0], /private-context/);
 	assert.doesNotMatch(outputs[0], /technical-digest/);
-	assert.match(outputs[1], /Area: Auth/);
-	assert.match(outputs[1], /Exhaustive: no/);
-	assert.match(outputs[1], /Omitted matches: 2/);
+	assert.match(outputs[1], /Auth/);
+	assert.match(outputs[1], /non-exhaustive/);
+	assert.match(outputs[1], /2 matches omitted/);
+	assert.match(outputs[1], /No authority/);
 	assert.match(outputs[2], /Code: not-ready/);
 });
 
-test("recent peers retain concise unknown repository scope and identity limits", () => {
-	const entry: Example = { ...cases[2], result: { content: [], details: { gentleAgents: { candidates: [
+test("targeted discovery retains full identity and concise unknown repository limits", () => {
+	const peers = [
 		{ sessionId: "no-scope", label: "Workspace only", freshness: "recent", workspace: "/work" },
 		{ sessionId: "no-identity", label: "Non-Git workspace", freshness: "recent", scope: { host: { root: null, cloneHash: null, resolvedAt: 1, source: "recorded-workspace/git" }, complete: true } },
-	] } } } };
-	const output = stripAnsi(card(entry, true).render(140).join("\n"));
-	assert.match(output, /Repository scope: unknown/);
-	assert.match(output, /Repository identity: unknown/);
-	assert.doesNotMatch(output, /Root: null|Clone hash: null|[{}]/);
+	];
+	for (const peer of peers) {
+		const entry: Example = { ...cases[2], args: { recipient_session_id: peer.sessionId }, result: { content: [], details: { gentleAgents: { candidates: [peer] } } } };
+		const output = stripAnsi(card(entry, true).render(140).join("\n"));
+		assert.ok(output.includes(`Session ID: ${peer.sessionId}`));
+		assert.match(output, peer.sessionId === "no-scope" ? /Repository scope: unknown/ : /Repository identity: unknown/);
+		assert.doesNotMatch(output, /Root: null|Clone hash: null|[{}]/);
+	}
+});
+
+test("expanded discovery has a fixed height even with dozens of rich records and narrow terminals", () => {
+	const previous = cardStyle();
+	const peers = Array.from({ length: 40 }, (_, index) => ({
+		sessionId: `01a10f0e-b0aa-72f1-951e-${String(index).padStart(12, "0")}`,
+		label: `API 团队 ${index} ${"long label ".repeat(8)}`, freshness: index < 9 ? "unknown" : "recent", reachability: "unknown",
+		workspace: `/home/devel/projects/${"long-parent/".repeat(20)}worktree-${index}`,
+		tasks: Array.from({ length: 8 }, (_, task) => ({ id: `task-${task}`, label: "Verbose task must not be dumped", workspace: "/hidden/task/workspace", status: "running" })), omitted: 2,
+		catalog: { tasks: [{ label: "Duplicated catalog must not appear" }], registered: Array(8).fill("/very/long/registered/worktree/path") },
+	}));
+	const entry: Example = { ...cases[2], result: { content: [], details: { gentleAgents: { candidates: peers } } } };
+	const before = structuredClone(entry);
+	try {
+		for (const style of Object.values(CARD_STYLE)) {
+			setCardStyle(style);
+			for (const width of [140, 80, 48, 24, 8, 1, 0, 140]) {
+				const view = card(entry, true);
+				const rows = view.render(width);
+				assert.ok(rows.length <= 16, `${style}/${width}: ${rows.length} physical rows`);
+				for (const row of rows) assert.ok(visibleWidth(row) <= width);
+				if (style === CARD_STYLE.FLOAT && width === 140) assert.ok(rows.some(row => stripAnsi(row).trimStart().startsWith("▎")), "exercise real float chrome, not its no-background fallback");
+				if (width === 140) {
+					const output = stripAnsi(rows.join("\n"));
+					assert.match(output, /9 without recent metadata/);
+					assert.match(output, /25 more recorded sessions/);
+					assert.match(output, /worktree-9\s+8\+/);
+					assert.doesNotMatch(output, /Verbose task|Duplicated catalog|registered\/worktree|long-parent|Session ID:|ownership guarantee/);
+				}
+			}
+		}
+	} finally { setCardStyle(previous); }
+	assert.deepEqual(entry, before);
+});
+
+test("classified-work overviews are also bounded and do not dump descriptors or coverage trees", () => {
+	const matches = Array.from({ length: 30 }, (_, index) => ({ sessionId: `peer-${index}`, label: `Auth task ${index}`, taskId: `task-${index}`, work: { area: "Auth", topic: "Login", tags: Array(8).fill("Verbose tag must stay hidden") } }));
+	const entry: Example = { ...cases[2], args: { filter: { area: "Auth" } }, result: { content: [], details: { gentleAgents: { workSearch: { matches, coverage: { exhaustive: false, omittedMatches: 2, unexaminedPeers: 3 }, ownerReply: false, authority: "none" } } } } };
+	for (const width of [140, 80, 48, 24, 1, 0]) {
+		const rows = card(entry, true).render(width);
+		assert.ok(rows.length <= 16, `width ${width}: ${rows.length} rows`);
+		for (const row of rows) assert.ok(visibleWidth(row) <= width);
+		if (width === 140) {
+			const output = stripAnsi(rows.join("\n"));
+			assert.match(output, /Auth\/Login/);
+			assert.match(output, /24 more work matches/);
+			assert.match(output, /2 matches omitted/);
+			assert.match(output, /3 peers not scanned/);
+			assert.doesNotMatch(output, /Verbose tag|Coverage:|Work search:|Owner reply:/);
+		}
+	}
 });
 
 test("legacy JSON keys that match object prototypes render as data, never as label functions", () => {
