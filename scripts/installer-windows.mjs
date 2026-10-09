@@ -195,7 +195,11 @@ function findWindowsCommand(env, name = "pnpm") {
 	const path = value("path");
 	const pathExt = value("pathext");
 	if (typeof path !== "string" || typeof pathExt !== "string") throw new Error("Unknown Windows PATH/PATHEXT");
-	const extensions = pathExt.toLowerCase().split(";");
+	// Validate before lowercasing: case folding can map non-ASCII (U+212A KELVIN SIGN)
+	// onto ASCII and make a different name look like a known extension.
+	const entries = pathExt.split(";");
+	if (entries.some((extension) => !/^\.[A-Za-z0-9]+$/.test(extension))) throw new Error("Unknown Windows PATHEXT semantics");
+	const extensions = entries.map((extension) => extension.toLowerCase());
 	// Any well-formed extension is resolved in its PATHEXT place, like CMD does:
 	// Windows PowerShell 5.1 appends .CPL, Python adds .PY and .PYW (#1978), other
 	// runtimes add their own. Resolved is not accepted: a .cpl, .py (or any

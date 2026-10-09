@@ -301,7 +301,7 @@ test("a pnpm.py found first in PATH order fails closed and is never run", async 
 	} finally { f.cleanup(); }
 });
 test("Windows PATHEXT still rejects duplicate, empty and malformed extensions", async () => {
-	for (const PATHEXT of [".EXE;.CMD;.CPL;.cpl", ".EXE;.CMD;.PY;.py", ".EXE;;.CMD", ".EXE;CPL", "", ".", ".EXE;.E XE", ".EXE;.EXE*", ".EXE;..CMD", ".EXE;.CM\\D"]) {
+	for (const PATHEXT of [".EXE;.CMD;.CPL;.cpl", ".EXE;.CMD;.PY;.py", ".EXE;;.CMD", ".EXE;CPL", "", ".", ".EXE;.E XE", ".EXE;.EXE*", ".EXE;..CMD", ".EXE;.CM\\D", ".EXE;.\u212A"]) {
 		await assert.rejects(ensureWindowsPnpm({ tools: "C:\\tools", env: { Path: "C:\\fixture", PATHEXT } }), /Unknown Windows PATHEXT semantics/, PATHEXT);
 	}
 });
@@ -529,7 +529,7 @@ test("Windows helper steps name each pnpm discovery, storage and proof phase", a
 		findCommand: () => "C:\\fixture\\pnpm.cmd", storage: () => { throw Object.assign(new Error("Windows ACL evidence rejected"), { check: "target-owner" }); },
 	} }), (error: { check?: string }) => error.check === "target-owner");
 	assert.deepEqual(steps, ["pnpm-discovery", "wrapper-storage"]);
-	// An extension outside the known Windows set still stops discovery and names the code.
+	// A malformed PATHEXT (here a duplicate extension) still stops discovery and names the code.
 	const unknown: string[] = [];
 	await assert.rejects(ensureWindowsPnpm({ tools: "C:\\tools", env: { Path: "C:\\fixture", PATHEXT: ".EXE;.CMD;.cmd" }, onStep: (step: string) => unknown.push(step) }), /Unknown Windows PATHEXT semantics/);
 	assert.deepEqual(unknown, ["pnpm-discovery"]);
