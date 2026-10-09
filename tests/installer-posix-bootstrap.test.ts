@@ -6,7 +6,8 @@ import { spawn, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import test, { type TestContext } from "node:test";
-import { artifactFor, verifiedDownload, compatibleEngine, ensurePnpm, launchWizard, bootstrap, removeOwnedTools } from "../scripts/installer-downloads.mjs";
+import { crc32, deflateRawSync, gzipSync } from "node:zlib";
+import { artifactFor, verifiedDownload, compatibleEngine, ensurePnpm, launchWizard, bootstrap, removeOwnedTools, acquireGo, installedGo } from "../scripts/installer-downloads.mjs";
 
 const script = resolve("scripts/bootstrap.sh");
 const helper = resolve("scripts/installer-downloads.mjs");
@@ -818,4 +819,219 @@ posixTest("failed pnpm download never reaches archive/process adapters", async (
 		assert.equal(processes, 0);
 		assert.deepEqual(readdirSync(f.home), []);
 	} finally { f.cleanup(); }
+});
+
+// --- Pinned Go toolchain: official go.dev archives, verified, extracted in process ---------------
+const goPins = {
+	"darwin-arm64": ["go1.25.14.darwin-arm64.tar.gz", "5b26c0b6f308240fca2614fb02f622cfcc8c0cc3b69c78bba4845489a4590259", 58123934],
+	"darwin-x64": ["go1.25.14.darwin-amd64.tar.gz", "b09087a67d5792a8b0fcbf74212d62560c94ac8a8fd750ff920d8cb5f1e20118", 60622678],
+	"linux-x64": ["go1.25.14.linux-amd64.tar.gz", "a21ae5633a269bcd7e90cf767e48225633795e99d831742cbf3397064fee7712", 59909419],
+	"linux-arm64": ["go1.25.14.linux-arm64.tar.gz", "9bf234ea70ffec9347fdf6b22ce4add51717d3386a38a441e8c8743fceb5eaee", 57360344],
+	"win32-x64": ["go1.25.14.windows-amd64.zip", "119044a92b3987c341cd6aebb256676dd4780d292f7b4e72a3e9976677841697", 67591780],
+	"win32-arm64": ["go1.25.14.windows-arm64.zip", "96fb31ae26b288b5311bd31d8252d4a62c8a661e4dbb64d504cc646e4d10a57f", 64735369],
+} as const;
+for (const [target, [file, sha256, size]] of Object.entries(goPins)) {
+	test(`fixed Go descriptor for ${target} is the go.dev archive and checksum`, () => {
+		const [platform, arch] = target.split("-");
+		const artifact = artifactFor("go", platform, arch);
+		assert.equal(artifact.version, "1.25.14");
+		assert.equal(artifact.url, `https://dl.google.com/go/${file}`);
+		assert.equal(artifact.integrity, `sha256-${sha256}`);
+		assert.equal(artifact.size, size);
+	});
+}
+test("Go has no descriptor for other targets", () => {
+	for (const [platform, arch] of [["linux", "ia32"], ["freebsd", "x64"], ["win32", "ia32"]]) {
+		assert.throws(() => artifactFor("go", platform, arch), /Unsupported/);
+	}
+});
+
+function tarHeader(name: string, size: number, { type = "0", mode = 0o644, link = "", prefix = "" } = {}) {
+	const header = Buffer.alloc(512);
+	header.write(name, 0, 100, "utf8");
+	header.write(`${mode.toString(8).padStart(7, "0")}\0`, 100);
+	header.write("0000000\0", 108);
+	header.write("0000000\0", 116);
+	header.write(`${size.toString(8).padStart(11, "0")}\0`, 124);
+	header.write("00000000000\0", 136);
+	header.write("        ", 148);
+	header.write(type, 156);
+	header.write(link, 157);
+	header.write("ustar\0", 257);
+	header.write("00", 263);
+	header.write(prefix, 345);
+	let sum = 0;
+	for (const byte of header) sum += byte;
+	header.write(`${sum.toString(8).padStart(6, "0")}\0 `, 148);
+	return header;
+}
+type GoEntry = { name: string; body?: string; type?: string; mode?: number; link?: string; prefix?: string };
+function tarEntry({ name, body = "", ...options }: GoEntry) {
+	const data = Buffer.from(body);
+	return Buffer.concat([tarHeader(name, data.length, options), data, Buffer.alloc((512 - (data.length % 512)) % 512)]);
+}
+function paxPath(path: string) {
+	const record = (length: number) => `${length} path=${path}\n`;
+	let length = Buffer.byteLength(record(0));
+	while (Buffer.byteLength(record(length)) !== length) length = Buffer.byteLength(record(length));
+	return tarEntry({ name: "go/PaxHeaders.0/x", type: "x", body: record(length) });
+}
+const goTarGz = (...entries: Buffer[]) => gzipSync(Buffer.concat([...entries, Buffer.alloc(1024)]));
+function goZip(files: Array<{ name: string; body: string; mode?: number }>) {
+	const locals: Buffer[] = [];
+	const centrals: Buffer[] = [];
+	let offset = 0;
+	for (const { name, body, mode = 0o100644 } of files) {
+		const data = deflateRawSync(Buffer.from(body));
+		const nameBytes = Buffer.from(name);
+		const local = Buffer.alloc(30);
+		local.writeUInt32LE(0x04034b50, 0);
+		local.writeUInt16LE(20, 4);
+		local.writeUInt16LE(0x800, 6);
+		local.writeUInt16LE(8, 8);
+		local.writeUInt32LE(crc32(Buffer.from(body)), 14);
+		local.writeUInt32LE(data.length, 18);
+		local.writeUInt32LE(Buffer.byteLength(body), 22);
+		local.writeUInt16LE(nameBytes.length, 26);
+		const central = Buffer.alloc(46);
+		central.writeUInt32LE(0x02014b50, 0);
+		central.writeUInt16LE((3 << 8) | 20, 4);
+		central.writeUInt16LE(20, 6);
+		central.writeUInt16LE(0x800, 8);
+		central.writeUInt16LE(8, 10);
+		central.writeUInt32LE(crc32(Buffer.from(body)), 16);
+		central.writeUInt32LE(data.length, 20);
+		central.writeUInt32LE(Buffer.byteLength(body), 24);
+		central.writeUInt16LE(nameBytes.length, 28);
+		central.writeUInt32LE((mode << 16) >>> 0, 38);
+		central.writeUInt32LE(offset, 42);
+		locals.push(local, nameBytes, data);
+		centrals.push(central, nameBytes);
+		offset += local.length + nameBytes.length + data.length;
+	}
+	const directory = Buffer.concat(centrals);
+	const end = Buffer.alloc(22);
+	end.writeUInt32LE(0x06054b50, 0);
+	end.writeUInt16LE(files.length, 8);
+	end.writeUInt16LE(files.length, 10);
+	end.writeUInt32LE(directory.length, 12);
+	end.writeUInt32LE(offset, 16);
+	return Buffer.concat([...locals, directory, end]);
+}
+const goVersionFile = "go1.25.14\ntime 2026-10-01T00:00:00Z\n";
+const goTree = (extra: Buffer[] = []) => goTarGz(
+	tarEntry({ name: "go/", type: "5", mode: 0o755 }),
+	tarEntry({ name: "go/VERSION", body: goVersionFile }),
+	tarEntry({ name: "go/bin/go", body: "#!/bin/sh\necho 'go version go1.25.14 darwin/arm64'\n", mode: 0o755 }),
+	tarEntry({ name: "long-name-with-a-ustar-prefix.go", prefix: "go/src/internal/trace/testdata/generators", body: "package x\n" }),
+	paxPath("go/test/fixedbugs/issue27836.dir/\u00defoo.go"),
+	tarEntry({ name: "go/test/fixedbugs/issue27836.dir/foo.go", body: "package foo\n" }),
+	...extra);
+/** Trusted test adapters standing in for the pinned download: the fixture's own size and hash. */
+function goAdapters(bytes: Buffer, counter = { downloads: 0 }) {
+	return {
+		artifact: (name: string, platform: string, arch: string) => ({ ...artifactFor(name, platform, arch), size: bytes.length, maxBytes: bytes.length,
+			integrity: `sha256-${createHash("sha256").update(bytes).digest("hex")}` }),
+		download: async () => { counter.downloads += 1; return bytes; },
+	};
+}
+function goRoot() {
+	const base = mkdtempSync(join(realpathSync(tmpdir()), "pinned-go-"));
+	return { base, root: join(base, "config", "tools", "go"), cleanup: () => rmSync(base, { recursive: true, force: true }) };
+}
+
+test("the pinned Go is verified, extracted in process and published once into the installer's own directory", async () => {
+	const r = goRoot();
+	try {
+		const counter = { downloads: 0 };
+		const result = await acquireGo({ root: r.root, platform: "darwin", arch: "arm64", adapters: goAdapters(goTree(), counter) });
+		const published = join(r.root, "1.25.14");
+		assert.deepEqual(result, { goPath: join(published, "go", "bin", "go"), version: "1.25.14", acquired: true });
+		assert.equal(readFileSync(join(published, "go", "VERSION"), "utf8"), goVersionFile);
+		assert.equal(readFileSync(join(published, "go/src/internal/trace/testdata/generators/long-name-with-a-ustar-prefix.go"), "utf8"), "package x\n");
+		assert.equal(readFileSync(join(published, "go/test/fixedbugs/issue27836.dir/\u00defoo.go"), "utf8"), "package foo\n");
+		assert.equal(existsSync(join(published, "go/test/fixedbugs/issue27836.dir/foo.go")), false);
+		if (process.platform !== "win32") {
+			assert.equal(lstatSync(result.goPath).mode & 0o777, 0o755);
+			assert.equal(lstatSync(join(published, "go", "VERSION")).mode & 0o777, 0o644);
+			assert.equal(lstatSync(published).mode & 0o077, 0);
+		}
+		assert.deepEqual(readdirSync(r.root), ["1.25.14"], "no staging directory is left behind");
+		assert.equal(installedGo(r.root, "darwin", "arm64"), result.goPath);
+		// A later run reuses the published copy: no download, nothing replaced.
+		const again = await acquireGo({ root: r.root, platform: "darwin", arch: "arm64", adapters: goAdapters(goTree(), counter) });
+		assert.deepEqual(again, { ...result, acquired: false });
+		assert.equal(counter.downloads, 1);
+		// The marker names the exact pinned archive, so another target's copy is not reused.
+		assert.equal(installedGo(r.root, "linux", "x64"), null);
+	} finally { r.cleanup(); }
+});
+
+test("the Windows Go zip is extracted in process into go\\bin\\go.exe", async () => {
+	const r = goRoot();
+	try {
+		const bytes = goZip([{ name: "go/VERSION", body: goVersionFile }, { name: "go/bin/go.exe", body: "MZ", mode: 0o100755 },
+			{ name: "go/src/cmd/go/main.go", body: "package main\n" }]);
+		const result = await acquireGo({ root: r.root, platform: "win32", arch: "x64", adapters: goAdapters(bytes) });
+		assert.equal(result.goPath, join(r.root, "1.25.14", "go", "bin", "go.exe"));
+		assert.equal(readFileSync(result.goPath, "utf8"), "MZ");
+		assert.equal(readFileSync(join(r.root, "1.25.14", "go/src/cmd/go/main.go"), "utf8"), "package main\n");
+	} finally { r.cleanup(); }
+});
+
+test("a Go download with the wrong size or checksum fails closed before anything is extracted", async () => {
+	const r = goRoot();
+	try {
+		const bytes = goTree();
+		const wrongHash = { ...goAdapters(bytes), digest: () => Buffer.alloc(32) };
+		const wrongSize = { ...goAdapters(bytes), download: async () => Buffer.concat([bytes, Buffer.from("x")]) };
+		const truncated = { ...goAdapters(bytes), download: async () => bytes.subarray(1) };
+		for (const [adapters, cause] of [[wrongHash, /integrity/], [wrongSize, /size/], [truncated, /size/]] as const) {
+			await assert.rejects(acquireGo({ root: r.root, platform: "darwin", arch: "arm64", adapters }),
+				(error: Error) => /Go verified acquisition failed/.test(error.message) && cause.test(String((error.cause as Error)?.message)));
+			assert.deepEqual(existsSync(r.root) ? readdirSync(r.root) : [], []);
+		}
+		// The production descriptor is the exact pinned size: anything else is rejected.
+		await assert.rejects(acquireGo({ root: r.root, platform: "darwin", arch: "arm64", adapters: { download: async () => bytes } }),
+			/Go verified acquisition failed/);
+	} finally { r.cleanup(); }
+});
+
+test("an unsafe Go archive fails closed and publishes nothing", async () => {
+	const unsafe: Array<[string, Buffer]> = [
+		["traversal", goTree([tarEntry({ name: "go/../escape", body: "x" })])],
+		["absolute", goTree([tarEntry({ name: "/go/escape", body: "x" })])],
+		["outside go/", goTree([tarEntry({ name: "other/file", body: "x" })])],
+		["backslash", goTree([tarEntry({ name: "go\\..\\escape", body: "x" })])],
+		["symlink", goTree([tarEntry({ name: "go/link", type: "2", link: "/etc/passwd" })])],
+		["hard link", goTree([tarEntry({ name: "go/hard", type: "1", link: "go/VERSION" })])],
+		["duplicate", goTree([tarEntry({ name: "go/VERSION", body: "go1.25.14\n" })])],
+		["unknown pax key", goTree([tarEntry({ name: "go/PaxHeaders.0/y", type: "x", body: "19 linkpath=/etc/x\n" }), tarEntry({ name: "go/y", body: "y" })])],
+		["missing go binary", goTarGz(tarEntry({ name: "go/VERSION", body: goVersionFile }))],
+		["other version", goTarGz(tarEntry({ name: "go/VERSION", body: "go1.25.13\n" }), tarEntry({ name: "go/bin/go", body: "x", mode: 0o755 }))],
+		["not a tar", gzipSync(Buffer.from("not a tar archive"))],
+		["zip symlink", goZip([{ name: "go/VERSION", body: goVersionFile }, { name: "go/bin/go.exe", body: "MZ" }, { name: "go/link", body: "/etc", mode: 0o120777 }])],
+		["zip traversal", goZip([{ name: "go/VERSION", body: goVersionFile }, { name: "go/bin/go.exe", body: "MZ" }, { name: "go/../../escape", body: "x" }])],
+	];
+	for (const [label, bytes] of unsafe) {
+		const r = goRoot();
+		try {
+			const platform = label.startsWith("zip") ? "win32" : "darwin";
+			await assert.rejects(acquireGo({ root: r.root, platform, arch: "arm64", adapters: goAdapters(bytes) }), /Go verified acquisition failed/, label);
+			assert.deepEqual(readdirSync(r.root), [], label);
+			assert.equal(existsSync(join(r.base, "escape")), false, label);
+		} finally { r.cleanup(); }
+	}
+});
+
+test("an existing Go destination the installer did not publish is never replaced", async () => {
+	const r = goRoot();
+	try {
+		mkdirSync(join(r.root, "1.25.14", "go", "bin"), { recursive: true });
+		writeFileSync(join(r.root, "1.25.14", "go", "bin", "go"), "user's own");
+		await assert.rejects(acquireGo({ root: r.root, platform: "darwin", arch: "arm64", adapters: goAdapters(goTree()) }), /Go verified acquisition failed/);
+		assert.equal(readFileSync(join(r.root, "1.25.14", "go", "bin", "go"), "utf8"), "user's own");
+		assert.deepEqual(readdirSync(r.root), ["1.25.14"]);
+		assert.equal(installedGo(r.root, "darwin", "arm64"), null);
+	} finally { r.cleanup(); }
 });
