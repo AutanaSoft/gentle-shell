@@ -168,11 +168,11 @@ function standalonePnpm(command) {
 	}
 	return nativeHeaders.includes(header.toString("hex"));
 }
-function provePnpm(command, prefix, metadata, nodeVersion, env, processAdapter) {
+function provePnpm(command, prefix, metadata, nodeVersion, env, processAdapter, known = null) {
 	if (metadata && (!parts(metadata.version) || !compatibleEngine(metadata.engines?.node, nodeVersion))) {
 		throw new Error("pnpm compatibility is unknown or incompatible; refusing replacement");
 	}
-	const version = processAdapter(command, [...prefix, "--version"], env);
+	const version = known ?? processAdapter(command, [...prefix, "--version"], env);
 	if (metadata ? version !== metadata.version : !parts(version)) throw new Error("pnpm version rejected");
 	// Read-only CLI capability checks; do not execute add/bin or write global config.
 	for (const capability of ["add", "bin"]) {
@@ -214,17 +214,39 @@ export function removeOwnedTools(tools, home) {
 	}
 }
 
+/** The pnpm the installer runs: the pinned major (the runner's argv is verified
+ * for it, as installer-probes checks) at the pinned version or newer.
+ */
+export function pinnedPnpmCompatible(version) {
+	const actual = parts(version);
+	return actual !== null && actual[0] === parts(pnpm.version)[0] && compatibleEngine(`>=${pnpm.version}`, version);
+}
+
 /** Reuse only proven engines/capabilities; missing pnpm gets verified registry bytes.
- * Local test adapters cover transport/hash/process. There is no remote command API.
- * `tools` must be a private directory owned by the invoking bootstrap/controller.
+ * An existing pnpm with stable version evidence of another major, older than the
+ * pin, or whose simple engine bound rejects this Node is left as it is, and the
+ * verified pnpm is acquired exactly as when pnpm is missing. Unknown evidence
+ * still refuses. Local test adapters cover transport/hash/process. There is no
+ * remote command API. `tools` is a private directory owned by the invoking
+ * bootstrap/controller, or a function claiming one only when acquisition starts.
  */
 export async function ensurePnpm({ tools, env, nodeVersion, adapters = {} }) {
 	const processAdapter = adapters.process ?? processCheck;
 	const existing = findExecutable("pnpm", env);
 	if (existing) {
-		provePnpm(existing, [], standalonePnpm(existing) ? null : packageFor(existing), nodeVersion, env, processAdapter);
-		return { env, acquired: false };
+		const metadata = standalonePnpm(existing) ? null : packageFor(existing);
+		const bound = /^>=(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\.(0|[1-9]\d*))?$/.test(metadata?.engines?.node ?? "");
+		// A standalone pnpm reports its version only by running; that answer is reused.
+		const version = metadata ? null : processAdapter(existing, ["--version"], env);
+		const incompatible = metadata
+			? parts(metadata.version) !== null && bound && (!pinnedPnpmCompatible(metadata.version) || !compatibleEngine(metadata.engines.node, nodeVersion))
+			: parts(version) !== null && !pinnedPnpmCompatible(version);
+		if (!incompatible) {
+			provePnpm(existing, [], metadata, nodeVersion, env, processAdapter, version);
+			return { env, acquired: false };
+		}
 	}
+	if (typeof tools === "function") tools = tools();
 	const info = stat(tools);
 	if (!info?.isDirectory() || info.isSymbolicLink() || realpathSync(tools) !== resolve(tools) || info.uid !== process.getuid() || (info.mode & 0o077)) {
 		throw new Error("Unsafe private tooling destination");
@@ -287,9 +309,13 @@ export async function bootstrap(bundle, suppliedTools, { env = process.env, adap
 	if (metadata.packageManager !== `pnpm@${pnpm.version}`) throw new Error("pnpm acquisition pin differs from repository; update verified descriptors first");
 	let tools = suppliedTools;
 	let created = false;
+	// Private tools are claimed only when pnpm is acquired (missing or incompatible).
+	const claim = () => {
+		if (!tools) { tools = privateTools(env.HOME); created = true; }
+		return tools;
+	};
 	try {
-		if (!findExecutable("pnpm", env) && !tools) { tools = privateTools(env.HOME); created = true; }
-		const result = await ensurePnpm({ tools, env, nodeVersion: process.versions.node, adapters });
+		const result = await ensurePnpm({ tools: claim, env, nodeVersion: process.versions.node, adapters });
 		await launchWizard({ bundle, env: result.env });
 	} catch (error) {
 		if (created) rmSync(tools, { recursive: true, force: true });
