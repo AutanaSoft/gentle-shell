@@ -1,5 +1,5 @@
 import { sanitizeTerminalText } from "./terminal-theme.ts";
-import { expandedToolRows } from "./orchestrator-tool-card.ts";
+import { readableDataRows } from "./orchestrator-tool-card.ts";
 import {
 	CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardRunningLine, cardTop,
 	floatRows, markCardResult, renderCard, type CardRowContext, type CardTheme,
@@ -84,9 +84,12 @@ export function outgoingMessageResult(result: { content: Array<{ type: string; t
 	const tone = failed ? CARD_TONE.ERROR : CARD_TONE.INFO;
 	const text = result.content.filter(part => part.type === "text").map(part => part.text ?? "").join("\n");
 	const body = accepted ? clean(data.message ?? context.args?.message).split("\n") : clean(text).split("\n");
-	if (expanded) {
-		if (accepted) body.push("", "Queued; not a delivery or read receipt.", ...technicalRows(data));
-		body.push(...expandedToolRows(context.args, result));
+	if (expanded && accepted) {
+		body.push("", "Queued; not a delivery or read receipt.", ...technicalRows(data));
+		const requested = clean(context.args?.recipient_session_id);
+		if (requested && requested !== data.recipientSessionId) body.push(`Requested recipient: ${requested}`);
+	} else if (expanded) {
+		body.push(...readableDataRows({ request: context.args, details: details?.gentleAgents }));
 	}
 	return {
 		render(width: number) {

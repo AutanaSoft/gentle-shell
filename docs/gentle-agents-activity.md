@@ -72,12 +72,14 @@ Headers remain unchanged; the optional sidecar now also carries `scope`.
 ### Read orchestrator tool cards
 
 All four `orchestrator_*` tools use compact operation cards in the terminal.
-Expand a completed card to see its full arguments, result text, and structured
-result details; collapse it to return to the summary. Session identity cards
-separate the current alias, requested subject, and stable routing ID, and explain
-when an existing alias is preserved. Discovery summaries retain unknown
-reachability; consultation is not an owner reply, and queued messages are not
-read or delivery receipts. Rendering does not change tool output or permissions.
+Expand a completed card to see labelled fields and nested sections rather than
+raw JSON or duplicated result dumps; collapse it to return to the summary.
+Empty request blocks are omitted. Session identity cards separate the current
+alias, requested subject, and stable routing ID, and explain preserved aliases.
+Discovery groups each session's recorded context and reports unavailable metadata
+once, without inferring missing or stale context. Consultation retains coverage
+limits and is not an owner reply; queued messages are not read or delivery
+receipts. Rendering does not change the complete model-facing output or permissions.
 
 ### Publish curated state (Refs #1702; first slice)
 

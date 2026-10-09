@@ -76,7 +76,7 @@ test("both peer labels and fallbacks have one renderer-owned robot icon without 
 	} finally { setCardStyle(previous); }
 });
 
-test("short outgoing results expand into complete arguments and result instead of a no-op", () => {
+test("short outgoing results expand into readable routing and reason without duplicated payloads", () => {
 	const args = { message: "Ready", reason: "Peer needs this result", recipient_session_id: "requested-peer" };
 	const payload = { content: [{ type: "text", text: "Accepted notification; receipt-only-marker" }], details: { gentleAgents: { ...data, message: "Ready" } } };
 	const render = (expanded: boolean) => {
@@ -86,10 +86,10 @@ test("short outgoing results expand into complete arguments and result instead o
 		return stripAnsi([...call.render(140), ...result.render(140)].join("\n"));
 	};
 	assert.doesNotMatch(render(false), /requested-peer|receipt-only-marker|Arguments:/);
-	assert.match(render(true), /Arguments:/);
-	assert.match(render(true), /requested-peer/);
-	assert.match(render(true), /receipt-only-marker/);
-	assert.match(render(true), /Result:/);
+	assert.match(render(true), /Requested recipient: requested-peer/);
+	assert.match(render(true), /Reason: Integration needs the test result/);
+	assert.doesNotMatch(render(true), /Arguments:|Result details:|receipt-only-marker|[{}]/);
+	assert.equal(render(true).match(/Ready/g)?.length, 1, "message appears only once");
 });
 
 test("legacy incoming envelopes are removed only when their exact stored binding matches", () => {
