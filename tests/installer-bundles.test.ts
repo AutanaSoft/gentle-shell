@@ -6,12 +6,24 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { INSTALLER_ASSETS, buildInstallerBundles, bundleFiles } from "../scripts/build-installer-bundles.mjs";
+import { INSTALLER_ASSETS, buildInstallerBundles, bundleFiles, relativeReferences } from "../scripts/build-installer-bundles.mjs";
 import { installerPaths } from "../scripts/verify-package-files.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const posixOnly = { skip: process.platform === "win32" };
-const relativeImports = (text: string) => [...text.matchAll(/(?:from\s+|import\s*\(\s*)["'](\.{1,2}\/[^"']+)["']/g)].map((match) => match[1]);
+// Independent of the builder's scanner on purpose: imports and file URLs next to the module.
+const relativeImports = (text: string) => [...text.matchAll(/(?:from\s+|import\s*\(\s*|new URL\(\s*)["'](\.{1,2}\/[^"']+\.[a-z]+)["']/g)].map((match) => match[1]);
+
+test("the scanner follows imports and files a module reads next to itself, but not folders", () => {
+	const text = [
+		'import { a } from "./a.mjs";',
+		'const b = await import("../b.mjs");',
+		'const data = readFileSync(new URL("./data.json", import.meta.url));',
+		'const assets = new URL("../assets/wizard/", import.meta.url);',
+		'import x from "node:fs";',
+	].join("\n");
+	assert.deepEqual(relativeReferences(text), ["./a.mjs", "../b.mjs", "./data.json"]);
+});
 
 test("the bundle holds every wizard file, package.json and everything they import, and nothing from tests", () => {
 	const files = bundleFiles(root);
@@ -57,6 +69,8 @@ test("macOS and Linux double-click launchers are executable and start the bundle
 		const launcher = listing("unzip", ["-p", join(b.out, "gentle-shell-installer-macos.zip"), "Gentle Shell Installer/Install Gentle Shell.command"]);
 		assert.match(launcher, /^#!\/bin\/sh\n/);
 		assert.ok(launcher.includes('sh "./installer/scripts/bootstrap.sh"'));
+		assert.match(launcher, /if \[ "\$status" -eq 0 \]; then/, "only a successful run says the window can be closed");
+		assert.ok(launcher.includes("The installer stopped. Read the messages above"));
 	} finally { b.cleanup(); }
 });
 
@@ -68,6 +82,8 @@ test("the Windows launcher is a CRLF batch file that calls the bundled bootstrap
 		assert.ok(launcher.split("\n").slice(0, -1).every((line: string) => line.endsWith("\r")), "CRLF line endings");
 		assert.ok(launcher.includes('call "%~dp0installer\\scripts\\bootstrap.cmd"'));
 		assert.ok(launcher.includes("pause"));
+		assert.ok(launcher.includes("if errorlevel 1 ("), "a failed bootstrap is reported");
+		assert.ok(launcher.includes("The installer stopped. Read the messages above"));
 		assert.match(listing("unzip", ["-p", zip, "Gentle Shell Installer/installer/scripts/bootstrap.cmd"]), /\r\n/);
 	} finally { b.cleanup(); }
 });

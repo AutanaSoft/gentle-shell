@@ -18,14 +18,21 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { installerPaths } from "./verify-package-files.mjs";
 
 /** Stable names, so `releases/latest/download/<name>` always points at the newest release. */
-export const INSTALLER_ASSETS = Object.freeze([
-	"gentle-shell-installer-macos.zip",
-	"gentle-shell-installer-windows.zip",
-	"gentle-shell-installer-linux.tar.gz",
-]);
+const MACOS_ASSET = "gentle-shell-installer-macos.zip";
+const WINDOWS_ASSET = "gentle-shell-installer-windows.zip";
+const LINUX_ASSET = "gentle-shell-installer-linux.tar.gz";
+export const INSTALLER_ASSETS = Object.freeze([MACOS_ASSET, WINDOWS_ASSET, LINUX_ASSET]);
 export const INSTALLER_CHECKSUMS = "gentle-shell-installers-SHA256SUMS.txt";
 
-const RELATIVE_IMPORT = /(?:from\s+|import\s*\(\s*)["'](\.{1,2}\/[^"']+)["']/g;
+// Static and dynamic imports, and files a module reads next to itself through
+// `new URL("./file.ext", import.meta.url)`. Folder URLs (a trailing slash) are not
+// followed: their files are listed in installerPaths.
+const RELATIVE_REFERENCE = /(?:from\s+|import\s*\(\s*|new URL\(\s*)["'](\.{1,2}\/[^"']*[^/"'])["']/g;
+
+/** Relative module and file references in a module's source. */
+export function relativeReferences(text) {
+	return [...text.matchAll(RELATIVE_REFERENCE)].map((match) => match[1]);
+}
 
 /** Wizard files, package.json and everything their modules import, sorted. */
 export function bundleFiles(root) {
@@ -33,7 +40,7 @@ export function bundleFiles(root) {
 	const pending = [...files].filter((path) => path.endsWith(".mjs"));
 	while (pending.length > 0) {
 		const file = pending.pop();
-		for (const [, specifier] of readFileSync(join(root, file), "utf8").matchAll(RELATIVE_IMPORT)) {
+		for (const specifier of relativeReferences(readFileSync(join(root, file), "utf8"))) {
 			const target = posix.normalize(posix.join(posix.dirname(file), specifier));
 			if (files.has(target)) continue;
 			if (!existsSync(join(root, target))) throw new Error(`${file} imports ${specifier}, which does not exist`);
@@ -51,7 +58,11 @@ const unixLauncher = (title) => [
 	'cd "$(dirname "$0")" || exit 1',
 	'sh "./installer/scripts/bootstrap.sh"',
 	"status=$?",
-	'printf "\\n%s\\n" "You can close this window."',
+	'if [ "$status" -eq 0 ]; then',
+	'	printf "\\n%s\\n" "You can close this window."',
+	"else",
+	'	printf "\\n%s\\n" "The installer stopped. Read the messages above, then close this window."',
+	"fi",
 	'exit "$status"',
 	"",
 ].join("\n");
@@ -62,7 +73,11 @@ const windowsLauncher = [
 	"rem It runs the bundled bootstrap, which opens the installation wizard in your browser.",
 	'call "%~dp0installer\\scripts\\bootstrap.cmd"',
 	"echo.",
-	"echo You can close this window.",
+	"if errorlevel 1 (",
+	"  echo The installer stopped. Read the messages above, then close this window.",
+	") else (",
+	"  echo You can close this window.",
+	")",
 	"pause",
 	"",
 ].join("\r\n");
@@ -96,11 +111,11 @@ export function buildInstallerBundles({ root, outDir }) {
 			rmSync(join(outDir, asset), { force: true });
 			run("zip", ["-q", "-r", join(outDir, asset), folder], join(work, asset));
 		};
-		zipped(INSTALLER_ASSETS[0], "Gentle Shell Installer", { name: "Install Gentle Shell.command", content: unixLauncher("macOS") });
-		zipped(INSTALLER_ASSETS[1], "Gentle Shell Installer", { name: "Install Gentle Shell.cmd", content: windowsLauncher });
-		const linux = join(work, INSTALLER_ASSETS[2]);
+		zipped(MACOS_ASSET, "Gentle Shell Installer", { name: "Install Gentle Shell.command", content: unixLauncher("macOS") });
+		zipped(WINDOWS_ASSET, "Gentle Shell Installer", { name: "Install Gentle Shell.cmd", content: windowsLauncher });
+		const linux = join(work, LINUX_ASSET);
 		stage(root, join(linux, "gentle-shell-installer"), files, { name: "install-gentle-shell.sh", content: unixLauncher("Linux") });
-		run("tar", ["-czf", join(outDir, INSTALLER_ASSETS[2]), "gentle-shell-installer"], linux);
+		run("tar", ["-czf", join(outDir, LINUX_ASSET), "gentle-shell-installer"], linux);
 		const sums = INSTALLER_ASSETS.map((asset) => `${createHash("sha256").update(readFileSync(join(outDir, asset))).digest("hex")}  ${asset}\n`);
 		writeFileSync(join(outDir, INSTALLER_CHECKSUMS), sums.join(""));
 		return [...INSTALLER_ASSETS, INSTALLER_CHECKSUMS].map((asset) => join(outDir, asset));

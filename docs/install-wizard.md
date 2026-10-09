@@ -34,6 +34,13 @@ bootstrap refuses symlinked bundle files. The downloads are **unsigned**:
 macOS Gatekeeper and Windows SmartScreen warn on first run, and the README
 explains how to continue. Signing and notarization are not done yet.
 
+The `installers` job uploads to the release with the tag the `publish` job
+verified (`needs.publish.outputs.tag`). It runs after npm publication, so its
+failure never affects npm, but it marks the run failed: recover with
+`gh run rerun <run id> --failed`, not a new `publish.yml` dispatch (that version
+is already on npm). Each launcher reports whether the bootstrap succeeded before
+it lets the window close.
+
 ## What is available
 
 `scripts/installer-preflight.mjs` exports four small integration surfaces:

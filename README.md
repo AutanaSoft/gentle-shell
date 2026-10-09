@@ -242,15 +242,15 @@ The [v3.5.1 release](https://github.com/Gentleman-Programming/gentle-shell/relea
 
 ### Easiest: download and double-click (no terminal needed)
 
-Download the installer for your computer, double-click it, and follow the steps in your browser. It installs everything Gentle Shell needs (Node.js, pnpm, Pi and Gentle Shell), or updates what you already have, and changes nothing until you confirm.
+Download the installer for your computer, double-click it, and follow the steps in your browser. It installs everything Gentle Shell needs (Node.js, pnpm, Pi and Gentle Shell), or updates what you already have, and installs nothing until you confirm the plan it shows you. (To show that plan it may first download Node.js and pnpm into a temporary folder, which it removes afterwards.)
 
 | Your computer | Download | Then |
 | --- | --- | --- |
 | **macOS** | [gentle-shell-installer-macos.zip](https://github.com/Gentleman-Programming/gentle-shell/releases/latest/download/gentle-shell-installer-macos.zip) | Open the zip, then double-click **Install Gentle Shell.command** inside the *Gentle Shell Installer* folder. |
-| **Windows** | [gentle-shell-installer-windows.zip](https://github.com/Gentleman-Programming/gentle-shell/releases/latest/download/gentle-shell-installer-windows.zip) | Right-click the zip → **Extract All**, open the extracted folder, then double-click **Install Gentle Shell.cmd**. It does not run from inside the zip. |
+| **Windows** | [gentle-shell-installer-windows.zip](https://github.com/Gentleman-Programming/gentle-shell/releases/latest/download/gentle-shell-installer-windows.zip) | Right-click the zip → **Extract All**. Open the extracted folder, then the *Gentle Shell Installer* folder inside it, and double-click **Install Gentle Shell.cmd**. It does not run from inside the zip. |
 | **Linux** | [gentle-shell-installer-linux.tar.gz](https://github.com/Gentleman-Programming/gentle-shell/releases/latest/download/gentle-shell-installer-linux.tar.gz) | Extract it, then double-click **install-gentle-shell.sh**. If your file manager does not run scripts, run `sh install-gentle-shell.sh` in that folder. |
 
-A small window opens, then the installer appears in your browser. Use the tab it opens, and keep the small window open until the installer says it is done.
+A small window opens, then the installer appears in your browser. Use the tab it opens, and keep the small window open until the installer says it is done. If a download link does not open, the newest release does not include the installers yet: use [Path C](#path-c-browser-installer-from-a-checkout) meanwhile.
 
 > **Your computer will warn you the first time.** These installers are not signed with an Apple or Microsoft developer certificate yet, so the system cannot verify who made them. That warning is expected; here is how to continue:
 >

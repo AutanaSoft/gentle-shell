@@ -264,7 +264,9 @@ test("double-click installers are attached to the release only after the verifie
 	assert.match(job, /ref: \$\{\{ github\.sha \}\}/, "the installers come from the verified release commit");
 	assert.match(job, /persist-credentials: false/);
 	assert.match(job, /node scripts\/build-installer-bundles\.mjs --out "\$\{RUNNER_TEMP\}\/installers"/);
-	assert.match(job, /RELEASE_TAG: \$\{\{ inputs\.tag \}\}/);
+	assert.match(job, /RELEASE_TAG: \$\{\{ needs\.publish\.outputs\.tag \}\}/, "the tag the publish job verified, not the raw input");
+	assert.match(job, /package-manager-cache: false/);
+	assert.match(workflow, /^ {4}outputs:\n {6}tag: \$\{\{ steps\.release\.outputs\.tag \}\}$/m, "publish exports its verified tag");
 	assert.match(job, /gh release upload "\$\{RELEASE_TAG\}" "\$\{RUNNER_TEMP\}"\/installers\/\* --repo "\$\{GITHUB_REPOSITORY\}" --clobber/);
 	const publish = workflow.match(/^ {2}publish:\n([\s\S]*?)(?=^ {2}installers:\n)/m)?.[1];
 	assert.ok(publish);
