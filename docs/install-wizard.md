@@ -84,7 +84,7 @@ caller-provided functions; adapter implementations require review.
   block planning. Versions are exact stable `major.minor.patch` strings (optional
   `v` prefix); prereleases and raw command output are unknown, not silently reused.
 - Node may add `persistent` (resolvable from the user's PATH without bootstrap
-  tool directories) and `npm` (a genuine npm resolves there) booleans; pnpm
+  tool directories) and `npm` (a usable npm resolves there) booleans; pnpm
   may add `persistent` (resolvable from the user's PATH). A `false` value
   yields the runtime persistence intents below; absent or `null` values add
   nothing, and the runner's own npm gate still applies.
@@ -145,8 +145,8 @@ A clean target receives these intents in dependency order:
    group, always together: `persist-node` (`persist-runtime`, version
    24.21.0), `persist-package-managers` (`install-global`) and
    `configure-npm-prefix` (`configure`). A persistent Node is never replaced:
-   it gets at most one intent, `persist-npm` (npm 11.19.0) when no genuine
-   npm resolves, `persist-pnpm` (pnpm 11.1.1) when pnpm is bootstrap-only, or
+   it gets at most one intent, `persist-npm` (npm 11.19.0) when no usable
+   npm resolves (on POSIX a working npm from any version manager is usable), `persist-pnpm` (pnpm 11.1.1) when pnpm is bootstrap-only, or
    `persist-package-managers` when both are missing.
 2. On Windows, acquire and verify Go before missing native provisioning.
 3. Install Pi globally, then `gentle-pi` globally (its existing postinstall owns
@@ -220,13 +220,14 @@ Adapters:
   writes anything.
 
 Probes run only fixed argv: `node --version`, `pnpm --version`,
-`pnpm list -g --depth 0 --json` (once, shared), `go version` and npm's
-`npm-cli.js --version`. Deadlines are 10 seconds for versions and 30 seconds for
+`pnpm list -g --depth 0 --json` (once, shared), `go version`, and
+`npm --version` and `npm config get prefix` (POSIX), or npm's
+`npm-cli.js --version` for a pinned or Windows npm. Deadlines are 10 seconds for versions and 30 seconds for
 the listing; truncated, nonzero, signalled or timed-out output is unknown.
 
 | Probe | Evidence |
 | --- | --- |
-| `node` | The first `node` on the user's real PATH (Go `exec.LookPath` order, PATHEXT on Windows), else the bootstrap one. `persistent` says which. `npm` is the runner's genuine-npm proof in the user's real PATH with `$PNPM_HOME/bin` first, so a bootstrap npm never counts. A Windows `.cmd`/`.bat` cannot run with `shell:false` and is unknown. |
+| `node` | The first `node` on the user's real PATH (Go `exec.LookPath` order, PATHEXT on Windows), else the bootstrap one. `persistent` says which. `npm` is the runner's usable-npm proof in the user's real PATH with `$PNPM_HOME/bin` first, so a bootstrap npm never counts. A Windows `.cmd`/`.bat` cannot run with `shell:false` and is unknown. |
 | `pnpm` | The runner's invocation (bootstrap handoff, or a POSIX `pnpm` on PATH). `compatible` requires a successful run (pnpm checks its Node engine at startup) at the pinned major and at least the pin, because the runner's argv is verified for pnpm 11 only. `persistent` is whether any `pnpm` resolves on the real PATH. |
 | `pi`, `shell` | pnpm-global entries from the listing. A package that is not pnpm-global but whose command (`pi`, `gentle-shell`) resolves on the real PATH is unknown, never absent, so another installation is not duplicated. Shell is `usable` only when `$PNPM_HOME/bin/gentle-shell` (`.cmd` on Windows) exists. |
 | `gentleAi` | Absent without gentle-pi or without its package-native binary. Otherwise compatible only for this package version, a listed path that resolves inside PNPM_HOME and `verifyGentleAi` (default `packageNativeGentleAi`) success; anything else is unknown. |
@@ -313,11 +314,14 @@ Pre-install checks, returning `blocked` on a false result or adapter error:
    that can use `npm exec` and stops on failure. The runner resolves `npm` the
    way Go's `exec.LookPath` (used by Gentle AI) does: absolute child PATH
    directories in order and, on Windows, every child PATHEXT extension in
-   PATHEXT order (case-insensitive keys; default `.COM;.EXE;.BAT;.CMD`). That
-   first candidate must be the npm package's own `bin/npm-cli.js` (symlink
-   target on POSIX; on Windows the candidate must be `npm.cmd`, with
-   `node_modules/npm` beside it), its `package.json` must name `npm` with a
-   stable version, and `node npm-cli.js --version` must print that version.
+   PATHEXT order (case-insensitive keys; default `.COM;.EXE;.BAT;.CMD`). On
+   POSIX that first candidate is accepted when it works the way Gentle AI
+   will run it, whatever installed it (Node.js, Homebrew, nvm, fnm, or a
+   mise, asdf or Volta shim): run directly from `/` in the child environment
+   (30-second deadline each), `npm --version` must print a stable version and
+   `npm config get prefix` a single absolute path. On Windows the candidate
+   must be `npm.cmd` with `node_modules/npm` beside it, whose `package.json`
+   names `npm` with a stable version that `node npm-cli.js --version` prints.
    A candidate in `$PNPM_HOME/bin` must instead be pnpm's global npm: a POSIX
    symlink, or a shim whose single quoted `npm-cli.js` target (`$basedir/...`
    on POSIX, `%~dp0\...` or `%dp0%\...` on Windows, or absolute), must
@@ -415,7 +419,7 @@ It skips `install-global` (never `add -g`) and continues with the unchanged
 `verify-global-list`, `verify-shell-bin`, `verify-gentle-ai`, `shell-setup`
 and, when planned, `persist-path`, with the same outcomes. A recovery never
 persists the runtime: the earlier run persisted it before installing the
-stack, and `check-npm` still proves a genuine npm in the child environment.
+stack, and `check-npm` still proves a usable npm in the child environment.
 
 Rerunning `gentle-shell setup` is acceptable because it is the public,
 rerunnable command the clean installation already runs; the runner adds no
@@ -425,7 +429,7 @@ installed; this completes setup" and offers **Complete setup**.
 ### Runtime persistence
 
 A bootstrap-acquired Node lives in a temporary tools directory, so a later
-terminal would not find `node` or the genuine npm that Gentle AI's Engram step
+terminal would not find `node` or the working npm that Gentle AI's Engram step
 needs. Every persistence step uses the same pnpm argv prefix and child
 environment as the stack install, and the runner persists only what is missing.
 
@@ -439,7 +443,8 @@ For a bootstrap-only Node, the full group runs these fixed steps:
 3. `verify-persistent-runtime`: in the child environment both `node` and `npm`
    must resolve (`exec.LookPath` order) from `$PNPM_HOME/bin`, the node must be
    spawnable (`.exe`/`.com` on Windows) and print `v24.21.0`.
-4. `check-npm`: the genuine-npm gate above, now accepting the pinned shim.
+4. `check-npm`: the npm gate above. `$PNPM_HOME/bin` is first in the child
+   environment, so it resolves the pinned shim, never a user npm.
 5. `configure-npm-prefix`: with a pnpm-managed node, npm's default prefix is
    derived from a path inside pnpm's store, so `npm install -g` would write
    there. The runner reads `npm config get prefix` with the persisted node.
@@ -466,7 +471,7 @@ persists it next to the older one, which is left unchanged. One fixed add runs, 
 | `persist-pnpm` | `pnpm add -g pnpm@11.1.1` | `verify-persistent-pnpm` |
 | `persist-package-managers` | `pnpm add -g npm@11.19.0 pnpm@11.1.1` | `check-npm`, `verify-persistent-pnpm` |
 
-`check-npm` is the genuine-npm gate above. `verify-persistent-pnpm` requires
+`check-npm` is the npm gate above. `verify-persistent-pnpm` requires
 the first `pnpm` in the child environment to be in `$PNPM_HOME/bin` (`.cmd`
 on Windows), resolving like the npm shim to `node_modules/pnpm/bin/pnpm.mjs`
 inside PNPM_HOME, with `package.json` `pnpm@11.1.1`, and `node pnpm.mjs
@@ -594,7 +599,7 @@ must establish on real Windows, macOS and Linux machines:
   current-directory handling;
 - the scoped `--allow-build=gentle-pi` postinstall provisions package-native
   Gentle AI, including Windows source builds with the user's Go;
-- `gentle-shell setup` completes the Engram init step with genuine npm, and
+- `gentle-shell setup` completes the Engram init step with the accepted npm, and
   whether Gentle AI selects `pnpm dlx` or `npm exec`;
 - `pnpm setup` makes `gentle-shell` resolvable in a fresh terminal of each
   supported shell (the Linux lab showed it does not make `pnpm` itself

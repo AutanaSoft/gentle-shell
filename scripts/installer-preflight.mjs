@@ -69,7 +69,7 @@ const probeNames = ["node", "pnpm", "pi", "shell", "gentleAi", "go", "globalBin"
  * pnpm also needs compatible:true (runtime/capability evidence), shell global:true,
  * and Gentle AI compatible:true (normal binary resolver/integrity evidence).
  * Node may add persistent (resolvable from the user's PATH without bootstrap
- * tool directories) and npm (a genuine npm resolves there) booleans; pnpm may
+ * tool directories) and npm (a usable npm resolves there) booleans; pnpm may
  * add persistent (resolvable from the user's PATH). A bootstrap-only Node or
  * pnpm may add found: the stable version of the older or incompatible one on the
  * user's PATH that the bootstrap left in place. globalBin returns { available, path, writable, onPath } for
@@ -243,7 +243,7 @@ export function planPreflight(inventory, { channel = "release" } = {}) {
 	acquire("pnpm");
 	if (tools.globalBin.status !== "reusable") action("setup-global-bin", "setup", "globalBin");
 	// A bootstrap Node lives in a temporary tools directory, and Gentle AI's Engram
-	// step needs a genuine npm: persist what is missing under PNPM_HOME through
+	// step needs a working npm: persist what is missing under PNPM_HOME through
 	// pnpm itself. A persistent Node is never replaced or shadowed. A recovery
 	// never persists: the earlier run did that before installing the stack.
 	const node = inventory.node;

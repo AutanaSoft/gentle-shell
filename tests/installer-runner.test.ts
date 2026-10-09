@@ -72,7 +72,7 @@ const W_STORE_PATH = `${W_STORE}\\v11`;
 const W_STORE_PREFIX = `${W_STORE_PATH}\\links\\node\\24.21.0\\hash`;
 const WINDOWS_SHIM = `@IF EXIST "%~dp0\\node.exe" (\r\n  "%~dp0\\node.exe"  "%~dp0\\..\\global\\v11\\abc\\node_modules\\npm\\bin\\npm-cli.js" %*\r\n) ELSE (\r\n  node  "%~dp0\\..\\global\\v11\\abc\\node_modules\\npm\\bin\\npm-cli.js" %*\r\n)\r\n`;
 
-type Call = { command: string; args: string[]; env: Record<string, string>; deadlineMs: number; stderrTail?: number };
+type Call = { command: string; args: string[]; env: Record<string, string>; deadlineMs: number; stderrTail?: number; cwd?: string };
 type Result = { code: number | null; signal?: string | null; timedOut?: boolean; stdout?: string; stderrTail?: string };
 type Layout = { platform: string; node: string; entry: string; npmCli: string; shellEntry: string; bin: string;
 	root: string; env: Record<string, string>; files: string[]; realpaths: Record<string, string>; texts: Record<string, string>;
@@ -143,6 +143,7 @@ function harness({ env = {}, results = {}, files = [] as string[], integrity = {
 	const texts = { ...layout.texts, ...extraTexts };
 	const defaults: Record<string, Result | Result[]> = {
 		"--version": { code: 0, stdout: "11.19.0\n" },
+		"config get prefix": { code: 0, stdout: "/opt/node\n" },
 		"bin -g": { code: 0, stdout: `${layout.bin}\n` },
 		add: { code: 0 },
 		[LIST]: [emptyList, { code: 0, stdout: listing(PI_INSTALL_VERSION, requirements.shell, layout.root) }],
@@ -177,9 +178,10 @@ function harness({ env = {}, results = {}, files = [] as string[], integrity = {
 		platform: layout.platform,
 		nodePath: layout.node,
 		env: { ...layout.env, ...env } as Record<string, string>,
-		run: async (command: string, args: string[], options: { env: Record<string, string>; deadlineMs: number; stderrTail?: number }) => {
+		run: async (command: string, args: string[], options: { env: Record<string, string>; deadlineMs: number; stderrTail?: number; cwd?: string }) => {
 			calls.push({ command, args, env: options.env, deadlineMs: options.deadlineMs,
-				...(options.stderrTail === undefined ? {} : { stderrTail: options.stderrTail }) });
+				...(options.stderrTail === undefined ? {} : { stderrTail: options.stderrTail }),
+				...(options.cwd === undefined ? {} : { cwd: options.cwd }) });
 			const k = key(command, args);
 			const entry = responses[k];
 			assert.ok(entry, `unexpected command ${command} ${args.join(" ")}`);
@@ -334,23 +336,62 @@ test("Windows without the direct pnpm handoff is blocked rather than spawning a 
 	assert.deepEqual(h.calls, []);
 });
 
-test("missing or impersonated npm blocks before installation", async () => {
-	const variants = [
-		(h: ReturnType<typeof harness>) => { h.adapters.env.PATH = `${BIN}:/usr/bin`; },
-		(h: ReturnType<typeof harness>) => { h.adapters.fs.realpath = async () => "/opt/fake/npm-wrapper.sh"; },
-		(h: ReturnType<typeof harness>) => { h.adapters.fs.readText = async () => JSON.stringify({ name: "not-npm", version: "1.0.0" }); },
+// Version-manager npm commands: a mise shim (a symlink to the mise binary) and a Volta-like shim script.
+const MISE_NPM = "/home/u/.local/share/mise/shims/npm";
+const VOLTA_NPM = "/home/u/.volta/bin/npm";
+const userNpm = (npm: string) => ({ env: { PATH: `${BIN}:${npm.slice(0, npm.lastIndexOf("/"))}:/usr/bin` }, files: [npm],
+	realpaths: npm === MISE_NPM ? { [MISE_NPM]: "/home/u/.local/bin/mise" } : {},
+	texts: npm === VOLTA_NPM ? { [VOLTA_NPM]: "#!/bin/sh\nexec volta-shim npm \"$@\"\n" } : {},
+	results: { "--version": { code: 0, stdout: "10.9.2\n" }, "config get prefix": { code: 0, stdout: "/home/u/.local/share/mise/installs/node/22.18.0\n" } } });
+
+test("missing or non-working npm blocks before installation", async () => {
+	const variants: object[] = [
+		{ env: { PATH: `${BIN}:/usr/bin` } },
+		{ results: { "--version": { code: 1, stdout: "" } } },
+		{ results: { "--version": { code: 0, timedOut: true, stdout: "11.19.0\n" } } },
+		{ results: { "--version": { code: 0, stdout: "11.19.0-pre.1\n" } } },
+		{ results: { "--version": { code: 0, stdout: "npm 11\n" } } },
+		{ results: { "config get prefix": { code: 1, stdout: "" } } },
+		{ results: { "config get prefix": { code: 0, stdout: "relative/prefix\n" } } },
+		{ results: { "config get prefix": { code: 0, stdout: "\n" } } },
+		{ results: { "config get prefix": { code: 0, stdout: "/opt/node\n/elsewhere\n" } } },
 	];
-	for (const vary of variants) {
-		const h = harness();
-		vary(h);
+	for (const variant of variants) {
+		const h = harness(variant);
 		const result = await runStandardInstall({ plan: plan(), consent: true }, h.adapters);
-		assert.equal(result.outcome, "blocked");
+		assert.equal(result.outcome, "blocked", JSON.stringify(variant));
 		assert.equal(result.reason, "npm-unavailable");
 		assert.equal(h.pnpmCalls().some((call) => call.startsWith("add")), false);
 	}
-	const lying = harness({ results: { "--version": { code: 0, stdout: "10.0.0\n" } } });
-	assert.equal((await runStandardInstall({ plan: plan(), consent: true }, lying.adapters)).reason, "npm-unavailable");
-	assert.equal(lying.pnpmCalls().some((call) => call.startsWith("add")), false);
+});
+
+test("POSIX accepts the first npm on PATH that works, whatever installed it, by running that npm itself", async () => {
+	for (const npm of ["/opt/node/bin/npm", MISE_NPM, VOLTA_NPM]) {
+		const h = harness(npm === "/opt/node/bin/npm" ? {} : userNpm(npm));
+		const result = await runStandardInstall({ plan: plan(), consent: true }, h.adapters);
+		assert.equal(result.outcome, "ready", npm);
+		assert.equal(result.completed[0], "check-npm");
+		const runs = h.calls.filter((call) => call.command === npm);
+		assert.deepEqual(runs.map((call) => call.args), [["--version"], ["config", "get", "prefix"]]);
+		for (const call of runs) {
+			// The user's env with $PNPM_HOME/bin first, from `/` so no project-local tool config applies.
+			assert.equal(call.cwd, "/");
+			assert.equal(call.env.PATH.split(":")[0], BIN);
+			assert.equal(call.env.HOME, HOME);
+			assert.ok(call.deadlineMs > 0);
+		}
+		// npm's own CLI is never run with the installer's Node: a shim has none to find.
+		assert.equal(h.calls.some((call) => call.command === NODE && /npm-cli\.js$/.test(call.args[0] ?? "")), false);
+		assert.deepEqual(h.pnpmCalls(), ["bin -g", LIST, INSTALL, LIST]);
+	}
+});
+
+test("an npm in $PNPM_HOME/bin still needs the persistence pin even when it works", async () => {
+	const script = harness({ files: [`${BIN}/npm`], texts: { [`${BIN}/npm`]: "#!/bin/sh\nexec /opt/fake/npm \"$@\"\n" } });
+	const blocked = await runStandardInstall({ plan: plan(), consent: true }, script.adapters);
+	assert.equal(blocked.outcome, "blocked");
+	assert.equal(blocked.reason, "npm-unavailable");
+	assert.equal(script.calls.some((call) => call.command === `${BIN}/npm`), false);
 });
 
 test("verified clean install runs one exact add -g with a package-scoped build approval", async () => {
@@ -650,6 +691,18 @@ test("bootstrap-only Node persists node, npm and pnpm under PNPM_HOME before the
 	assert.deepEqual(h.calls.find((call) => call.command === PERSISTENT_NODE)?.args, ["--version"]);
 });
 
+test("after persist-node, check-npm and configure-npm-prefix use the pinned npm even next to a working user npm", async () => {
+	// $PNPM_HOME/bin is first in the child env, so the persisted shim resolves before any user npm.
+	const h = harness({ ...userNpm(MISE_NPM), results: { ...persistedList, ...userNpm(MISE_NPM).results } });
+	const result = await runStandardInstall({ plan: persistPlan(), consent: true }, h.adapters);
+	assert.equal(result.outcome, "ready");
+	assert.equal(result.npmPrefix, "configured");
+	assert.deepEqual(result.completed.slice(0, PERSISTED_STEPS.length), PERSISTED_STEPS);
+	assert.equal(h.calls.some((call) => call.command === MISE_NPM), false);
+	assert.deepEqual(h.calls.filter((call) => call.args.includes("config")).map((call) => [call.command, call.args[0]]),
+		Array(3).fill([PERSISTENT_NODE, PM_NPM_CLI]));
+});
+
 test("an older Node and incompatible pnpm left alongside: the pinned copies run every step and are persisted", async () => {
 	const fixed = plan("linux", { node: { ...bootstrapNode, version: "24.21.0", found: "22.18.0" },
 		pnpm: { ...tool("11.1.1"), compatible: true, persistent: false, found: "10.27.0" } });
@@ -882,7 +935,8 @@ test("persistent Node adds only the missing npm and/or pnpm with exact fixed arg
 		assert.deepEqual(h.pnpmCalls(), ["bin -g", LIST, add, INSTALL, LIST]);
 		assert.deepEqual(result.completed, [...steps, ...AFTER_STACK]);
 		assert.equal(result.npmPrefix, undefined);
-		assert.equal(h.calls.some((call) => call.command === PERSISTENT_NODE || call.args.includes("config")), false);
+		// No runtime and no prefix change: check-npm only reads the user's npm.
+		assert.equal(h.calls.some((call) => call.command === PERSISTENT_NODE || call.args.includes("set")), false);
 		const persisted = h.calls.find((call) => call.args[1] === "add" && call.args.join(" ") !== `${ENTRY} ${INSTALL}`);
 		assert.equal(persisted?.env.PATH.split(":")[0], BIN);
 		if (!pnpmPersistent) assert.ok(h.calls.some((call) => call.command === NODE && call.args.join(" ") === `${PM_PNPM_ENTRY} --version`));
@@ -1324,8 +1378,9 @@ test("an older npm Pi is updated with npm in its own global root, never with pnp
 	assert.equal(result.outcome, "ready");
 	assert.deepEqual(result.completed.slice(3, 6), ["check-installed-pi", "update-pi", "verify-updated-pi"]);
 	const npmCalls = h.calls.filter((call) => call.command === USER_NPM);
-	assert.deepEqual(npmCalls.map((call) => call.args.join(" ")), ["root -g", NPM_PI_UPDATE]);
-	for (const call of npmCalls) assert.deepEqual(call.env, h.adapters.env);
+	// check-npm first reads that same npm in the child env; the update then runs it in the user's env.
+	assert.deepEqual(npmCalls.map((call) => call.args.join(" ")), ["--version", "config get prefix", "root -g", NPM_PI_UPDATE]);
+	for (const call of npmCalls.slice(2)) assert.deepEqual(call.env, h.adapters.env);
 	assert.deepEqual(h.pnpmCalls(), ["bin -g", LIST, SHELL_ONLY_ADD, LIST]);
 });
 
@@ -1425,7 +1480,9 @@ test("with a current Gentle Shell, only the older Pi is updated: no setup, PATH 
 // --- An older Pi that neither pnpm nor npm owns: the installer's Pi is installed alongside ----------
 const externalPi = { available: true, version: "0.87.1", usable: true, external: true };
 const EXTERNAL_PI = "/home/u/.local/share/mise/installs/pi/bin/pi";
-const touchesExternalPi = (calls: Call[]) => calls.some((call) => call.command === EXTERNAL_PI || call.command === USER_NPM ||
+// check-npm's read-only `npm --version` and `npm config get prefix` are not about Pi.
+const touchesExternalPi = (calls: Call[]) => calls.some((call) => call.command === EXTERNAL_PI ||
+	(call.command === USER_NPM && !["--version", "config get prefix"].includes(call.args.join(" "))) ||
 	call.args.some((arg) => arg.includes("mise")));
 
 test("an older Pi that neither pnpm nor npm owns gets the installer's Pi alongside, exactly as when Pi is absent", async () => {

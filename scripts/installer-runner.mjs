@@ -11,7 +11,7 @@ import { GENTLE_AI_REPOSITORY, SHELL_REPOSITORY, installOwner, mainVersion } fro
 // Standard installation runner: one fixed, consented global pnpm installation
 // of Pi plus gentle-pi, then the public `gentle-shell setup`. Every adapter is
 // injected by trusted local code; requests carry no commands, URLs, roots or env.
-// When Node is bootstrap-only or npm is not genuine, fixed steps first persist
+// When Node is bootstrap-only or no usable npm resolves, fixed steps first persist
 // node, npm and pnpm under PNPM_HOME through pnpm itself. When an earlier run
 // installed the pinned stack but stopped in setup, a fixed recovery re-verifies
 // that stack and reruns only `gentle-shell setup` (and `pnpm setup`), never `add -g`.
@@ -324,11 +324,28 @@ function inGlobalBin(file, platform, globalBin) {
 	return globalBin !== null && samePath(path.dirname(file), globalBin.path, platform);
 }
 
-/** Genuine npm: the first resolved npm is the npm package's own CLI, which then runs.
- * Accepted: a Node-bundled npm (POSIX symlink target or Windows `npm.cmd` with
- * `node_modules/npm` beside it), or, for any npm in `$PNPM_HOME/bin` (shim or
- * symlink), pnpm's global npm resolving inside PNPM_HOME at the persistence pin.
- * Returns { cli }, "npm-shadowed" (Windows: an earlier non-.cmd npm wins) or false.
+/** The npm the user runs works in the user's environment: run from `/` with the
+ * child env, `npm --version` prints a stable version and `npm config get prefix`
+ * one absolute path. Whatever installed it (Node, Homebrew, nvm, fnm, or a
+ * mise, asdf or Volta shim), this is how Gentle AI's Engram step will run it.
+ */
+async function worksAsNpm(npm, child, adapters) {
+	const output = async (args) => {
+		const result = await adapters.run(npm, args, { env: child, cwd: "/", deadlineMs: deadlines.probe });
+		return succeeded(result) && result.truncated !== true ? String(result.stdout ?? "").trim() : null;
+	};
+	if (stable(await output(["--version"])) === null) return false;
+	const prefix = await output(["config", "get", "prefix"]);
+	return prefix !== null && posix.isAbsolute(prefix) && !/[\r\n]/.test(prefix);
+}
+
+/** A usable npm: the first npm resolved in the child env.
+ * On POSIX any npm outside `$PNPM_HOME/bin` that works there (worksAsNpm) is
+ * accepted as { command }. Otherwise the npm package's own CLI must resolve and
+ * run, returned as { cli }: for any npm in `$PNPM_HOME/bin` (shim or symlink),
+ * pnpm's global npm resolving inside PNPM_HOME at the persistence pin; on
+ * Windows, `npm.cmd` with `node_modules/npm` beside it.
+ * Returns { command }, { cli }, "npm-shadowed" (Windows: an earlier non-.cmd npm wins) or false.
  */
 export async function genuineNpm(child, platform, nodePath, adapters, globalBin = null) {
 	const path = platform === "win32" ? win32 : posix;
@@ -345,7 +362,7 @@ export async function genuineNpm(child, platform, nodePath, adapters, globalBin 
 	} else if (platform === "win32") {
 		cli = path.join(path.dirname(first), "node_modules", "npm", "bin", "npm-cli.js");
 	} else {
-		cli = await fs.realpath(first);
+		return (await worksAsNpm(first, child, adapters)) ? { command: first } : false;
 	}
 	if (!entryShape(cli, path, "npm", "npm-cli.js")) return false;
 	return (await runsAsPackage(cli, "npm", pinned, nodePath, child, platform, adapters)) ? { cli } : false;
@@ -475,6 +492,8 @@ function explicitNpmPrefix(env, platform) {
  */
 async function configureNpmPrefix({ node, cli, child, platform, globalBin, adapters, storePath }) {
 	const path = platform === "win32" ? win32 : posix;
+	// Only the persisted npm's { cli } reaches this step ($PNPM_HOME/bin is first); anything else fails closed.
+	if (typeof cli !== "string") return null;
 	const npm = (args) => adapters.run(node, [cli, ...args], { env: child, deadlineMs: deadlines.probe });
 	const effective = async () => {
 		const result = await npm(["config", "get", "prefix"]);
@@ -594,7 +613,7 @@ export async function runStandardInstall(request, adapters) {
 	const npmCheck = async () => {
 		const verdict = await genuineNpm(child, platform, adapters.nodePath, adapters, globalBin);
 		if (typeof verdict !== "object" || verdict === null) return verdict;
-		npmCli = verdict.cli;
+		npmCli = verdict.cli ?? null;
 		return true;
 	};
 

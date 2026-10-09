@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -22,7 +22,7 @@ const LIST = "list -g --depth 0 --json";
 const npmPackage = JSON.stringify({ name: "npm", version: "11.19.0" });
 
 type Result = { code: number | null; signal?: string | null; timedOut?: boolean; truncated?: boolean; stdout?: string };
-type Call = { command: string; args: string[]; env: Record<string, string>; deadlineMs: number };
+type Call = { command: string; args: string[]; env: Record<string, string>; deadlineMs: number; cwd?: string };
 
 // A bootstrap-acquired Node and pnpm in the temporary tools directory, ahead of the user's PATH.
 const bootstrapEnv = { HOME, PATH: `${TOOLS}/node/bin:${TOOLS}/pnpm/bin:/usr/bin:/bin` };
@@ -39,8 +39,8 @@ function probes({ env = bootstrapEnv as Record<string, string>, files = [] as st
 	const instance = createProbes({
 		platform,
 		env,
-		run: async (command: string, args: string[], options: { env: Record<string, string>; deadlineMs: number }) => {
-			calls.push({ command, args, env: options.env, deadlineMs: options.deadlineMs });
+		run: async (command: string, args: string[], options: { env: Record<string, string>; deadlineMs: number; cwd?: string }) => {
+			calls.push({ command, args, env: options.env, deadlineMs: options.deadlineMs, ...(options.cwd === undefined ? {} : { cwd: options.cwd }) });
 			const key = [command, ...args].join(" ");
 			const entry = results[key];
 			if (!entry) {
@@ -83,7 +83,27 @@ const userNode = {
 	realpaths: { "/usr/bin/npm": USER_NPM_CLI },
 	texts: { "/usr/lib/node_modules/npm/package.json": JSON.stringify({ name: "npm", version: "10.9.2" }) },
 	results: { [`${USER_NODE} --version`]: { code: 0, stdout: "v24.18.0\n" },
-		[`${USER_NODE} ${USER_NPM_CLI} --version`]: { code: 0, stdout: "10.9.2\n" } } as Record<string, Result>,
+		"/usr/bin/npm --version": { code: 0, stdout: "10.9.2\n" },
+		"/usr/bin/npm config get prefix": { code: 0, stdout: "/usr\n" } } as Record<string, Result>,
+};
+// npm from a version manager: a mise shim (a symlink to the mise binary) or a Volta-like shim script.
+const MISE_SHIMS = "/home/u/.local/share/mise/shims";
+const managedNpm = (directory: string, results: Record<string, Result> = {}) => probes({
+	env: { HOME, PATH: `${TOOLS}/pnpm/bin:${directory}:/usr/bin` },
+	files: [`${directory}/node`, `${directory}/npm`, TOOLS_PNPM],
+	realpaths: { [`${directory}/npm`]: "/home/u/.local/bin/mise" },
+	results: { [`${directory}/node --version`]: { code: 0, stdout: "v24.18.0\n" },
+		[`${directory}/npm --version`]: { code: 0, stdout: "10.9.2\n" },
+		[`${directory}/npm config get prefix`]: { code: 0, stdout: "/home/u/.local/share/mise/installs/node/24.18.0\n" }, ...results },
+});
+// A clean installation plan for that Node; everything else is ready to install.
+const npmPlan = async (h: ReturnType<typeof probes>) => {
+	const plan = planPreflight({ platform: "linux", arch: "x64", node: await h.probes.node(),
+		pnpm: { available: true, version: "11.1.1", usable: true, compatible: true, persistent: true }, pi: { available: false },
+		shell: { available: false }, gentleAi: { available: false }, go: { available: false },
+		globalBin: { available: true, path: BIN, writable: true, onPath: true }, setup: false });
+	assert.deepEqual(plan.blockers, []);
+	return plan.actions.map((action: { id: string }) => action.id);
 };
 
 test("bootstrap tool roots come from GENTLE_BOOTSTRAP_TOOLS and PATH segments, and are removed from the user PATH", () => {
@@ -102,6 +122,62 @@ test("node on the user's real PATH is persistent with genuine npm evidence", asy
 	assert.deepEqual(await h.probes.node(), { available: true, version: "24.18.0", usable: true, persistent: true, npm: true });
 	assert.deepEqual(h.unexpected, []);
 	for (const call of h.calls) assert.ok(call.deadlineMs > 0);
+});
+
+test("a working npm from a version manager is usable: no npm is persisted for it", async () => {
+	for (const directory of [MISE_SHIMS, "/home/u/.volta/bin"]) {
+		const h = managedNpm(directory);
+		assert.deepEqual(await h.probes.node(), { available: true, version: "24.18.0", usable: true, persistent: true, npm: true });
+		assert.deepEqual(h.unexpected, []);
+		// That npm itself runs from `/` in the user's env with $PNPM_HOME/bin first, never npm-cli.js with another Node.
+		const runs = h.calls.filter((call) => call.command === `${directory}/npm`);
+		assert.deepEqual(runs.map((call) => call.args.join(" ")), ["--version", "config get prefix"]);
+		for (const call of runs) {
+			assert.equal(call.cwd, "/");
+			assert.equal(call.env.PATH, `${BIN}:${directory}:/usr/bin`);
+		}
+		assert.deepEqual(await npmPlan(managedNpm(directory)), ["install-pi", "install-shell", "setup-shell", "verify-readiness"]);
+	}
+});
+
+test("an npm that fails, prints no stable version or no absolute prefix is not usable: persist-npm is planned", async () => {
+	const failures: Record<string, Result>[] = [
+		{ [`${MISE_SHIMS}/npm --version`]: { code: 1, stdout: "" } },
+		{ [`${MISE_SHIMS}/npm --version`]: { code: 0, stdout: "11.0.0-pre.1\n" } },
+		{ [`${MISE_SHIMS}/npm --version`]: { code: 0, truncated: true, stdout: "10.9.2" } },
+		{ [`${MISE_SHIMS}/npm config get prefix`]: { code: 0, stdout: "relative/prefix\n" } },
+		{ [`${MISE_SHIMS}/npm config get prefix`]: { code: 0, timedOut: true, stdout: "/opt/node\n" } },
+	];
+	for (const results of failures) {
+		assert.equal((await managedNpm(MISE_SHIMS, results).probes.node()).npm, false, JSON.stringify(results));
+		assert.ok((await npmPlan(managedNpm(MISE_SHIMS, results))).includes("persist-npm"));
+	}
+});
+
+test("a mise-like npm shim runs for real: a symlink to a non-npm executable that behaves like npm", async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX shims");
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-probe-npm-")));
+	try {
+		const shims = join(root, "shims");
+		mkdirSync(shims);
+		// Like mise, one executable dispatches on the name it was run as, and reads the global config only from `/`.
+		const mise = join(root, "mise");
+		writeFileSync(mise, `#!/bin/sh\n[ "$(basename "$0")" = npm ] || exit 9\n[ "$(pwd)" = / ] || exit 8\n` +
+			`case "$*" in\n  --version) echo 10.9.2 ;;\n  "config get prefix") echo /opt/mise/node ;;\n  *) exit 7 ;;\nesac\n`);
+		chmodSync(mise, 0o755);
+		symlinkSync(mise, join(shims, "npm"));
+		symlinkSync(process.execPath, join(shims, "node"));
+		const { run, fs } = hostAdapters();
+		const env = { HOME: root, PNPM_HOME: join(root, "pnpm"), PATH: `${shims}:/usr/bin:/bin` };
+		const node = await createProbes({ platform: process.platform, env, run, fs }).node();
+		assert.equal(node.npm, true);
+		assert.equal(node.persistent, true);
+		// The same shim answering a relative prefix is not usable.
+		writeFileSync(mise, readFileSync(mise, "utf8").replace("echo /opt/mise/node", "echo opt/mise/node"));
+		assert.equal((await createProbes({ platform: process.platform, env, run, fs }).node()).npm, false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 test("a node only inside the bootstrap tools directory is bootstrap-only and its npm does not count", async () => {

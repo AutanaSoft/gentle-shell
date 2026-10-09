@@ -21,7 +21,8 @@ import {
 
 // Real host probes for collectInventory. Every effect goes through injected
 // adapters; probes only run fixed read-only argv (`--version`, `go version`,
-// `pnpm list -g`) and never write, create directories or run setup/postinstall.
+// `pnpm list -g`, `npm config get prefix`, `npm root -g`) and never write,
+// create directories or run setup/postinstall.
 
 const SECOND = 1000;
 const deadlines = Object.freeze({ version: 10 * SECOND, list: 30 * SECOND });
@@ -315,7 +316,7 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 				const pinned = await nodeVersion(bootstrap);
 				if (pinned && atLeast(pinned, requirements.node)) [found, node, version] = [version, bootstrap, pinned];
 			}
-			// A genuine npm must resolve without bootstrap tools, as in a fresh terminal.
+			// A usable npm must resolve without bootstrap tools, as in a fresh terminal.
 			let npm = null;
 			try {
 				npm = typeof (await genuineNpm(userChild, platform, node, { run, fs }, globalBin)) === "object";

@@ -96,7 +96,7 @@ export const guidance = Object.freeze({
 		"pnpm-home-unknown": "The pnpm home directory could not be determined. Set PNPM_HOME to an absolute directory, then run the installer again.",
 		"node-unavailable": "The installer could not find its own Node.js executable. Run the installer again from the bootstrap script.",
 		"pnpm-unavailable": "pnpm could not be started. Run the installer again from the bootstrap script so it can provide pnpm.",
-		"npm-unavailable": "A genuine npm was not found on PATH. Gentle AI needs it; reinstall Node.js with npm, then run the installer again.",
+		"npm-unavailable": "No working npm was found on PATH. Gentle AI needs it; check that `npm --version` works in a new terminal, then run the installer again.",
 		"npm-shadowed": "Another `npm` program appears on PATH before Node.js's npm. Remove or reorder it, then run the installer again.",
 		"global-bin-mismatch": "pnpm reported a different global bin directory than expected. Check PNPM_HOME, then run the installer again.",
 		"global-list-unavailable": "pnpm could not list global packages. Check that `pnpm list -g` works, then run the installer again.",
