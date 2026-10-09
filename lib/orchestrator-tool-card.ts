@@ -1,8 +1,8 @@
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import {
-	CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardInnerWidth, cardRunningLine, cardTop,
-	floatRows, markCardResult, type CardRowContext, type CardTheme,
+	CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardInnerWidth, cardLine, cardRunningLine, cardTop,
+	floatRows, markCardResult, type CardRowContext, type CardTheme, type CardTone,
 } from "./shell-card.ts";
 
 type Operation = "session" | "consult" | "list";
@@ -155,6 +155,22 @@ function overviewSummary(row: string, theme: CardTheme): string {
 	return count ? theme.fg(count[1] === "0" ? "muted" : "syntaxNumber", count[1]) + theme.fg("muted", count[2]) : theme.fg("muted", row);
 }
 
+function identityBodyRows(rows: string[], tone: CardTone, theme: CardTheme, width: number, expanded: boolean): string[] {
+	// Wrap plain text before coloring: ANSI can otherwise add empty rows at narrow widths.
+	const wrapped = rows.flatMap(row => row.split("\n").flatMap(source => {
+		const field = /^(Current alias|Routing ID|Requested subject): (.*)$/.exec(source);
+		let offset = 0;
+		return (source === "" ? [""] : wrapTextWithAnsi(source, cardInnerWidth(width))).map(fragment => {
+			if (!field) return source === "Existing alias preserved; subject does not rename it." ? theme.fg("muted", fragment) : fragment;
+			const start = source.indexOf(fragment, offset);
+			offset = start + fragment.length;
+			const labelLength = Math.max(0, Math.min(fragment.length, field[1].length + 2 - start));
+			return theme.fg("muted", fragment.slice(0, labelLength)) + theme.fg(field[1] === "Routing ID" ? "dim" : "accent", fragment.slice(labelLength));
+		});
+	}));
+	return (expanded ? wrapped : wrapped.slice(0, 3)).map(row => cardLine(row, tone, theme, width));
+}
+
 function summary(operation: Operation, args: Record<string, unknown>, result: Result, failed: boolean): string[] {
 	const body = text(result);
 	if (failed) return [line(body) || "Operation failed"];
@@ -240,7 +256,9 @@ export function orchestratorToolRenderers(operation: Operation, hint: (expanded:
 							.map(row => truncateToWidth(row, columns, "…")) : summaries;
 						return {
 							afterHeading: true,
-							body: cardBodyRows(rows, tone, theme, inner, { expanded: options.expanded, previewRows: 3 }),
+							body: operation === "session" && !failed && typeof data.alias === "string"
+								? identityBodyRows(body, tone, theme, inner, options.expanded)
+								: cardBodyRows(rows, tone, theme, inner, { expanded: options.expanded, previewRows: 3 }),
 							bottom: cardBottom(tone, theme, inner),
 						};
 					});

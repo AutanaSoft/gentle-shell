@@ -76,6 +76,9 @@ Expand a completed card to see labelled fields and nested sections rather than
 raw JSON or duplicated result dumps; collapse it to return to the summary.
 Empty request blocks are omitted. Session identity cards separate the current
 alias, requested subject, and stable routing ID, and explain preserved aliases.
+Alias and subject values use accent; labels and the preserved-alias note use
+muted, while the routing ID uses dim. Plain text is wrapped before these colors
+are applied, preserving the same height even in narrow terminals.
 Discovery overviews show at most six records, one physical table row each,
 with short display IDs, workspace basenames, and task counts (`+` marks omitted
 tasks; `?` means the count is unknown). Sessions without recent metadata are

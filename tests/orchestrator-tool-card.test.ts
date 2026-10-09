@@ -196,6 +196,45 @@ test("overview colors create hierarchy without changing text, column widths, or 
 	} finally { setCardStyle(previous); }
 });
 
+test("session identity highlights alias and subject without changing content or wrapping", () => {
+	let accent = 34;
+	const colors: Record<string, number> = { muted: 37, dim: 90 };
+	const colored = { ...theme, fg: (role: string, value: string) => `\x1b[${role === "accent" ? accent : colors[role] ?? 39}m${value}\x1b[39m` };
+	const entry: Example = { ...cases[0], args: { subject: "Inspeccionar Windows — demo 团队" }, result: { content: [], details: { gentleAgents: { alias: "Prueba visual", senderSessionId: "01a11f31-f3a7-71e9-ba8a-4649a0cf8c11" } } } };
+	const before = structuredClone(entry);
+	const previous = cardStyle();
+	try {
+		for (const style of Object.values(CARD_STYLE)) {
+			setCardStyle(style);
+			for (const expanded of [false, true]) {
+				const renderer = orchestratorToolRenderers("session", open => open ? "collapse" : "expand");
+				const context = { args: entry.args, state: {}, expanded, isPartial: false };
+				const call = renderer.renderCall(entry.args, colored, context);
+				const result = renderer.renderResult(entry.result, { expanded, isPartial: false }, colored, context);
+				for (const width of [140, 80, 48, 24, 8, 1, 0, 140]) {
+					const rows = [...call.render(width), ...result.render(width)];
+					assert.deepEqual(rows.map(stripAnsi), card(entry, expanded).render(width).map(stripAnsi));
+					for (const row of rows) assert.ok(visibleWidth(row) <= width);
+					if (width === 140) {
+						const output = rows.join("\n");
+						assert.ok(output.includes("\x1b[37mCurrent alias: \x1b[39m\x1b[34mPrueba visual\x1b[39m"));
+						assert.ok(output.includes("\x1b[37mExisting alias preserved; subject does not rename it.\x1b[39m"));
+						if (expanded) {
+							assert.ok(output.includes("\x1b[90m01a11f31-f3a7-71e9-ba8a-4649a0cf8c11\x1b[39m"));
+							assert.ok(output.includes("\x1b[34mInspeccionar Windows — demo 团队\x1b[39m"));
+						}
+					}
+				}
+				accent = 35;
+				result.invalidate();
+				assert.ok(result.render(140).join("\n").includes("\x1b[35mPrueba visual\x1b[39m"));
+				accent = 34;
+			}
+		}
+	} finally { setCardStyle(previous); }
+	assert.deepEqual(entry, before);
+});
+
 test("classified-work limits use warning rather than success colors", () => {
 	const calls: Array<{ role: string; value: string }> = [];
 	const colors = { ...theme, fg: (role: string, value: string) => { calls.push({ role, value }); return value; } };
