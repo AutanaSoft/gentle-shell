@@ -92,6 +92,7 @@ function discoveredSessionRows(candidates: unknown[]): string[] {
 
 const OVERVIEW_LIMIT = 6;
 interface OverviewRow { name: string; id: string; context: string; tasks: string }
+interface OverviewTheme extends CardTheme { bold?(value: string): string }
 const shortId = (value: unknown): string => {
 	const id = line(value);
 	return visibleWidth(id) <= 13 ? id : `${Array.from(id).slice(0, 8).join("")}…${Array.from(id).slice(-4).join("")}`;
@@ -100,21 +101,28 @@ const workspaceName = (value: unknown): string => line(value).split(/[\\/]/).fil
 const positiveCount = (value: unknown): number => typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 0;
 
 /** One physical row per item, including on narrow terminals; expansion is not an unbounded dump. */
-function overviewTable(rows: OverviewRow[], width: number, work: boolean): string[] {
-	const cell = (value: string, columns: number) => {
+function overviewTable(rows: OverviewRow[], width: number, work: boolean, theme: OverviewTheme): string[] {
+	const cell = (value: string, columns: number, role: string, heading: boolean) => {
 		const clipped = truncateToWidth(value, columns, "…");
-		return clipped + " ".repeat(Math.max(0, columns - visibleWidth(clipped)));
+		const styled = theme.fg(heading ? "toolTitle" : role, clipped);
+		return (heading && theme.bold ? theme.bold(styled) : styled) + " ".repeat(Math.max(0, columns - visibleWidth(clipped)));
 	};
-	const format = (row: OverviewRow) => {
-		if (width < 40) return truncateToWidth(`${row.id} ${row.name}`, width, "…");
-		if (width < 64) return `${cell(row.name, width - 15)}  ${cell(row.id, 13)}`;
+	const format = (row: OverviewRow, heading = false) => {
+		if (width < 40) {
+			const styled = truncateToWidth(`${theme.fg(heading ? "toolTitle" : "dim", row.id)} ${theme.fg(heading ? "toolTitle" : "accent", row.name)}`, width, "…");
+			return heading && theme.bold ? theme.bold(styled) : styled;
+		}
+		const name = (columns: number) => cell(row.name, columns, "accent", heading);
+		const id = cell(row.id, 13, "dim", heading);
+		if (width < 64) return `${name(width - 15)}  ${id}`;
 		const nameWidth = Math.min(36, width - (work ? 37 : 44));
-		return `${cell(row.name, nameWidth)}  ${cell(row.id, 13)}  ${cell(row.context, 20)}${work ? "" : `  ${cell(row.tasks, 5)}`}`;
+		const tasksRole = row.tasks === "?" ? "warning" : row.tasks === "0" ? "muted" : "syntaxNumber";
+		return `${name(nameWidth)}  ${id}  ${cell(row.context, 20, "muted", heading)}${work ? "" : `  ${cell(row.tasks, 5, tasksRole, heading)}`}`;
 	};
-	return rows.length ? [format({ name: "Alias", id: "ID (short)", context: work ? "Work" : "Workspace", tasks: "Tasks" }), ...rows.slice(0, OVERVIEW_LIMIT).map(format)] : [];
+	return rows.length ? [format({ name: "Alias", id: "ID (short)", context: work ? "Work" : "Workspace", tasks: "Tasks" }, true), ...rows.slice(0, OVERVIEW_LIMIT).map(row => format(row))] : [];
 }
 
-function discoveryOverviewRows(candidates: unknown[], width: number): string[] {
+function discoveryOverviewRows(candidates: unknown[], width: number, theme: OverviewTheme): string[] {
 	const recent = candidates.map(record).filter(peer => peer.freshness === "recent");
 	const rows = recent.map(peer => {
 		const catalog = record(peer.catalog);
@@ -122,13 +130,13 @@ function discoveryOverviewRows(candidates: unknown[], width: number): string[] {
 		const omitted = Array.isArray(peer.tasks) ? peer.omitted : catalog.omittedTasks;
 		return { name: line(peer.label) || "Unnamed", id: shortId(peer.sessionId), context: workspaceName(peer.workspace), tasks: tasks ? `${tasks.length}${positiveCount(omitted) ? "+" : ""}` : "?" };
 	});
-	return [...overviewTable(rows, width, false),
-		...(recent.length > OVERVIEW_LIMIT ? [`+${recent.length - OVERVIEW_LIMIT} more recorded sessions`] : []),
-		...(candidates.length > recent.length ? [`${candidates.length - recent.length} without recent metadata`] : []),
-		"Detail: consult(full ID)"];
+	return [...overviewTable(rows, width, false, theme),
+		...(recent.length > OVERVIEW_LIMIT ? [theme.fg("muted", `+${recent.length - OVERVIEW_LIMIT} more recorded sessions`)] : []),
+		...(candidates.length > recent.length ? [theme.fg("muted", `${candidates.length - recent.length} without recent metadata`)] : []),
+		theme.fg("dim", "Detail: consult(full ID)")];
 }
 
-function workOverviewRows(search: Record<string, unknown>, width: number): string[] {
+function workOverviewRows(search: Record<string, unknown>, width: number, theme: OverviewTheme): string[] {
 	const matches = (Array.isArray(search.matches) ? search.matches : []).map(record);
 	const rows = matches.map(match => {
 		const work = record(match.work);
@@ -137,9 +145,14 @@ function workOverviewRows(search: Record<string, unknown>, width: number): strin
 	const coverage = record(search.coverage);
 	const limits = [positiveCount(coverage.omittedMatches) && `${coverage.omittedMatches} matches omitted`, positiveCount(coverage.unexaminedPeers) && `${coverage.unexaminedPeers} peers not scanned`, positiveCount(coverage.unknownContext) && `${coverage.unknownContext} unknown contexts`].filter(Boolean).join(" · ");
 	const source = record(search.source);
-	return [...overviewTable(rows, width, true), ...(matches.length > OVERVIEW_LIMIT ? [`+${matches.length - OVERVIEW_LIMIT} more work matches`] : []),
-		...(limits ? [limits] : []), ...(source.status === "unavailable" ? [`Source unavailable: ${line(source.reason) || "unknown"}`] : []),
-		"No authority · detail: consult(full ID)"];
+	return [...overviewTable(rows, width, true, theme), ...(matches.length > OVERVIEW_LIMIT ? [theme.fg("muted", `+${matches.length - OVERVIEW_LIMIT} more work matches`)] : []),
+		...(limits ? [theme.fg("warning", limits)] : []), ...(source.status === "unavailable" ? [theme.fg("warning", `Source unavailable: ${line(source.reason) || "unknown"}`)] : []),
+		theme.fg("dim", "No authority · detail: consult(full ID)")];
+}
+
+function overviewSummary(row: string, theme: CardTheme): string {
+	const count = /^(\d+)(.*)$/.exec(row);
+	return count ? theme.fg(count[1] === "0" ? "muted" : "syntaxNumber", count[1]) + theme.fg("muted", count[2]) : theme.fg("muted", row);
 }
 
 function summary(operation: Operation, args: Record<string, unknown>, result: Result, failed: boolean): string[] {
@@ -222,8 +235,9 @@ export function orchestratorToolRenderers(operation: Operation, hint: (expanded:
 					if (width <= 0) return [];
 					return floatRows(tone, theme, width, inner => {
 						const columns = cardInnerWidth(inner);
-						const rows = overview ? [...body, ...(discoveryOverview ? discoveryOverviewRows(data.candidates as unknown[], columns) : workOverviewRows(record(data.workSearch), columns))]
-							.map(row => truncateToWidth(row, columns, "…")) : body;
+						const summaries = discoveryOverview || workOverview ? body.map(row => overviewSummary(row, theme)) : body;
+						const rows = overview ? [...summaries, ...(discoveryOverview ? discoveryOverviewRows(data.candidates as unknown[], columns, theme) : workOverviewRows(record(data.workSearch), columns, theme))]
+							.map(row => truncateToWidth(row, columns, "…")) : summaries;
 						return {
 							afterHeading: true,
 							body: cardBodyRows(rows, tone, theme, inner, { expanded: options.expanded, previewRows: 3 }),

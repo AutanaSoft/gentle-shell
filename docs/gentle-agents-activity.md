@@ -85,6 +85,12 @@ are clipped rather than wrapped, keeping completed overviews within 16 terminal
 rows including its card frame. Short IDs and basenames are display hints,
 never routing selectors or repository identity: use a full session ID with
 `orchestrator_consult` or targeted `orchestrator_list` for detailed context.
+Overview headers use the theme's tool-title color and bold when available;
+aliases use accent, IDs use dim, and workspace/work values use muted. Quantities
+use the numeric color; zero stays muted and unknown task counts use warning.
+Limits use warning, while extra-record and missing-metadata notices remain muted.
+These roles create visual hierarchy, not a green/live reachability indication,
+and are recomputed when rendered so theme changes do not leave stale colors.
 Consultation is not an owner reply; queued messages are not read or delivery
 receipts. Complete model-facing output and permissions remain unchanged.
 

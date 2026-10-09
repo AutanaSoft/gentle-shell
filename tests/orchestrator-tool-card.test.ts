@@ -152,6 +152,77 @@ test("classified-work overviews are also bounded and do not dump descriptors or 
 	}
 });
 
+test("overview colors create hierarchy without changing text, column widths, or height", () => {
+	const colors: Record<string, number> = { accent: 34, toolTitle: 35, dim: 90, muted: 37, syntaxNumber: 36, warning: 33 };
+	const calls: Array<{ role: string; value: string }> = [];
+	const colored = {
+		...theme,
+		fg: (role: string, value: string) => { calls.push({ role, value }); return `\x1b[${colors[role] ?? 39}m${value}\x1b[39m`; },
+		bold: (value: string) => `\x1b[1m${value}\x1b[22m`,
+	};
+	const entry: Example = { ...cases[2], result: { content: [], details: { gentleAgents: { candidates: [
+		{ sessionId: "peer-1", label: "API 团队", workspace: "/work/api", freshness: "recent", tasks: [{}, {}, {}] },
+		{ sessionId: "peer-2", label: "No tasks", freshness: "recent", tasks: [] },
+		{ sessionId: "peer-3", label: "Unknown count", freshness: "recent" },
+		{ sessionId: "hidden-peer", freshness: "unknown" },
+	] } } } };
+	const renderer = orchestratorToolRenderers("list", open => open ? "collapse" : "expand");
+	const context = { args: entry.args, state: {}, expanded: true, isPartial: false };
+	const call = renderer.renderCall(entry.args, colored, context);
+	const result = renderer.renderResult(entry.result, { expanded: true, isPartial: false }, colored, context);
+	const previous = cardStyle();
+	try {
+		for (const style of Object.values(CARD_STYLE)) {
+			setCardStyle(style);
+			for (const width of [140, 80, 48, 24, 8, 1, 0, 140]) {
+				calls.length = 0;
+				const rows = [...call.render(width), ...result.render(width)];
+				assert.deepEqual(rows.map(stripAnsi), card(entry, true).render(width).map(stripAnsi));
+				assert.ok(rows.length <= 16);
+				for (const row of rows) assert.ok(visibleWidth(row) <= width);
+				if (width === 140) {
+					const output = rows.join("\n");
+					assert.ok(output.includes("\x1b[34mAPI 团队\x1b[39m"));
+					assert.ok(output.includes("\x1b[90mpeer-1\x1b[39m"));
+					assert.ok(calls.some(call => call.role === "toolTitle" && call.value === "Alias"));
+					assert.ok(calls.some(call => call.role === "syntaxNumber" && call.value === "3"));
+					assert.ok(calls.some(call => call.role === "muted" && call.value === "0"));
+					assert.ok(calls.some(call => call.role === "warning" && call.value === "?"));
+					assert.ok(calls.some(call => call.role === "muted" && call.value.includes("without recent metadata")));
+					assert.ok(!calls.some(call => call.role === "success"), "colors must not suggest confirmed live reachability");
+				}
+			}
+		}
+	} finally { setCardStyle(previous); }
+});
+
+test("classified-work limits use warning rather than success colors", () => {
+	const calls: Array<{ role: string; value: string }> = [];
+	const colors = { ...theme, fg: (role: string, value: string) => { calls.push({ role, value }); return value; } };
+	const result = { content: [], details: { gentleAgents: { workSearch: { matches: [{ sessionId: "peer-1", label: "Auth task", work: { area: "Auth" } }], coverage: { omittedMatches: 2 }, source: { status: "unavailable", reason: "source-unclassified" } } } } };
+	const component = orchestratorToolRenderers("list", () => "collapse").renderResult(result, { expanded: true, isPartial: false }, colors, { args: { filter: {} }, state: {} });
+	component.render(140);
+	assert.ok(calls.some(call => call.role === "warning" && call.value === "2 matches omitted"));
+	assert.ok(calls.some(call => call.role === "warning" && call.value.includes("Source unavailable")));
+	assert.ok(calls.some(call => call.role === "accent" && call.value === "Auth task"));
+	assert.ok(!calls.some(call => call.role === "success"));
+});
+
+test("overview styles are recomputed on render after a theme changes", () => {
+	let accent = 34;
+	const changing = { ...theme, fg: (role: string, value: string) => role === "accent" ? `\x1b[${accent}m${value}\x1b[39m` : value };
+	const entry: Example = { ...cases[2], result: { content: [], details: { gentleAgents: { candidates: [{ sessionId: "peer-1", label: "API team", freshness: "recent", tasks: [] }] } } } };
+	const context = { args: {}, state: {}, expanded: true, isPartial: false };
+	const component = orchestratorToolRenderers("list", () => "collapse").renderResult(entry.result, { expanded: true, isPartial: false }, changing, context);
+	const before = component.render(140);
+	assert.ok(before.join("\n").includes("\x1b[34mAPI team\x1b[39m"));
+	accent = 31;
+	component.invalidate();
+	const after = component.render(140);
+	assert.ok(after.join("\n").includes("\x1b[31mAPI team\x1b[39m"));
+	assert.deepEqual(before.map(stripAnsi), after.map(stripAnsi));
+});
+
 test("legacy JSON keys that match object prototypes render as data, never as label functions", () => {
 	const entry: Example = { ...cases[1], result: { content: [{ type: "text", text: '{"status":"unavailable","constructor":"Visible constructor","__proto__":{"prototype":"Visible prototype"}}' }] } };
 	const output = stripAnsi(card(entry, true).render(140).join("\n"));
