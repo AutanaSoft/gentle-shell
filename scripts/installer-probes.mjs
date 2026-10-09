@@ -267,6 +267,12 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 		return path.isAbsolute(line) ? fs.realpath(line).catch(() => null) : null;
 	})());
 	const shellBin = () => path.join(globalBin.path, platform === "win32" ? "gentle-shell.cmd" : "gentle-shell");
+	/** The Pi on the user's PATH outside pnpm: real root, its package version and owner (npm or null). */
+	const piOnPath = async () => {
+		const found = await packageOnPath("pi", PI_PACKAGE);
+		if (!found) return null;
+		return { root: found.root, version: found.version, owner: installOwner({ packageRoot: found.root, pnpmHome: null, npmRoot: await npmGlobalRoot(), name: PI_PACKAGE }) };
+	};
 
 	const probes = {
 		/** The installed Gentle Shell for an update: real root, version and owner (pnpm, npm or null). */
@@ -279,6 +285,14 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 			const found = await packageOnPath("gentle-shell", SHELL_PACKAGE);
 			if (!found) return null;
 			return { root: found.root, version: found.version, owner: installOwner({ packageRoot: found.root, pnpmHome: null, npmRoot: await npmGlobalRoot() }) };
+		},
+		/** The single installed Pi for an update: real root, version and owner (pnpm, npm or null). */
+		async locatePi() {
+			const pi = await globalPackage(PI_PACKAGE, "pi");
+			if (pi.state === "present" && typeof pi.entry.path === "string" && path.isAbsolute(pi.entry.path)) {
+				return { root: await fs.realpath(pi.entry.path), version: pi.version, owner: "pnpm" };
+			}
+			return pi.state === "unknown" && pi.outsidePnpm ? piOnPath() : null;
 		},
 		async node() {
 			const persistent = await lookPath("node", user, platform, fs);
@@ -306,14 +320,21 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 			const compatible = Number(version.split(".")[0]) === PNPM_MAJOR && atLeast(version, requirements.pnpm);
 			return { available: true, version, usable: true, compatible, persistent: await persistentOn("pnpm") };
 		},
+		// Only a Pi older than the minimum reports its owner (pnpm or npm): the one the installer updates.
 		async pi() {
 			const pi = await globalPackage(PI_PACKAGE, "pi");
-			if (pi.state === "present") return { available: true, version: pi.version, usable: true };
+			const older = (version) => !MAIN_BUILD.test(version) && !atLeast(version, requirements.pi);
+			if (pi.state === "present") return { available: true, version: pi.version, usable: true, ...(older(pi.version) ? { owner: "pnpm" } : {}) };
 			if (pi.state === "absent" || !pi.outsidePnpm) return pi.state === "absent" ? absent() : unknown();
 			// Another installation of Pi: reused as long as it reports a stable version.
 			const command = await lookPath("pi", user, platform, fs);
 			const version = command ? /(?:^|\s|v)(\d+\.\d+\.\d+)(?:\s|$)/.exec(await output(command, ["--version"], user, deadlines.version) ?? "") : null;
-			return version ? { available: true, version: version[1], usable: true, external: true } : notPnpmGlobal(pi);
+			if (!version) return notPnpmGlobal(pi);
+			const found = { available: true, version: version[1], usable: true, external: true };
+			if (!older(found.version)) return found;
+			// npm owns it only when its package in npm's global root reports that same version.
+			const located = await piOnPath().catch(() => null);
+			return located?.owner === "npm" && located.version === found.version ? { ...found, owner: "npm" } : found;
 		},
 		async shell() {
 			const shell = await globalPackage(SHELL_PACKAGE, "gentle-shell");

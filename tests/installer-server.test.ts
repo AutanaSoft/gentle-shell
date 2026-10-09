@@ -9,7 +9,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { exitCodeFor, openBrowser, openerFor, redirectPage, runnerEnvironment, writeRedirect } from "../bin/gentle-shell-install.mjs";
 import { planPreflight, requirements } from "../scripts/installer-preflight.mjs";
-import { blockedReasons, failedSteps } from "../scripts/installer-runner.mjs";
+import { PI_INSTALL_VERSION, blockedReasons, failedSteps } from "../scripts/installer-runner.mjs";
 import { createInstallerServer, guidance } from "../scripts/installer-server.mjs";
 
 type Response = { status: number; headers: Record<string, string | string[] | undefined>; body: string };
@@ -295,14 +295,35 @@ test("/api/plan names the found and required version of an older Gentle Shell an
 	}
 });
 
-test("/api/plan names the found and required version of another older tool", async () => {
-	const { host, port, login } = await start({ collect: async () => collected({ pi: { available: true, version: "0.99.0", usable: true } }) });
+test("/api/plan installs the installer's Pi alongside an older Pi that neither pnpm nor npm manages, and says so before consent", async () => {
+	const { host, port, login, runs } = await start({ collect: async () => collected({ pi: { available: true, version: "0.99.0", usable: true, external: true } }) });
 	try {
 		const view = await plan(port, await login());
-		const blocker = view.blockers.find((item: { tool: string }) => item.tool === "pi");
-		assert.equal(blocker.guidance, "Pi 0.99.0 is installed, but this installer needs 0.99.1 or newer. Nothing was replaced. Update it, then select Check again.");
+		assert.deepEqual(view.blockers, []);
+		const install = view.actions.find((action: { id: string }) => action.id === "install-pi");
+		assert.equal(install.description, `Install Pi ${PI_INSTALL_VERSION} globally with pnpm for Gentle Shell. The Pi 0.99.0 already on this computer ` +
+			"was not installed with pnpm or npm, so it is left unchanged. Gentle Shell uses the installer's Pi; the `pi` command in a terminal may still run the older one.");
+		assert.deepEqual(runs, []);
 	} finally {
 		await host.close("test");
+	}
+});
+
+test("/api/plan shows an older Pi's update with its found and target versions and package manager, before consent", async () => {
+	for (const owner of ["pnpm", "npm"]) {
+		const { host, port, login, runs } = await start({ collect: async () => collected({ pi: { available: true, version: "0.87.1", usable: true, owner } }) });
+		try {
+			const view = await plan(port, await login());
+			assert.deepEqual(view.blockers, []);
+			const update = view.actions.find((action: { id: string }) => action.id === "update-pi");
+			assert.equal(update.description, `Update Pi 0.87.1 to ${PI_INSTALL_VERSION} with ${owner}, the package manager that installed it. ` +
+				`Gentle Shell needs Pi ${requirements.pi} or newer.`);
+			assert.ok(view.actions.findIndex((action: { id: string }) => action.id === "update-pi") <
+				view.actions.findIndex((action: { id: string }) => action.id === "install-shell"));
+			assert.deepEqual(runs, []);
+		} finally {
+			await host.close("test");
+		}
 	}
 });
 

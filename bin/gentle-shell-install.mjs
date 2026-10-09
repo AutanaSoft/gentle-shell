@@ -145,6 +145,8 @@ async function main() {
 			fs,
 			// An existing Gentle Shell: fresh probes find it, `gentle-shell upgrade`'s logic updates it.
 			locateShell: () => createProbes({ platform, env, run, fs }).locateShell(),
+			// An older Pi: fresh probes find it before its update and confirm it afterwards.
+			locatePi: () => createProbes({ platform, env, run, fs }).locatePi(),
 			upgradeShell: async ({ channel, packageRoot, currentVersion }) => (await runUpgrade({
 				args: ["--channel", channel],
 				ctx: { env: runnerEnv, home: runnerEnv.HOME ?? env.HOME ?? env.USERPROFILE },

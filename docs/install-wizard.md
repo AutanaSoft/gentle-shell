@@ -117,13 +117,15 @@ caller-provided functions; adapter implementations require review.
 ## Reading a plan
 
 Tool statuses distinguish `unavailable`, `unknown`, `incompatible`, `reusable`,
-`needs-setup` and `not-required`. A known version below the minimum is `incompatible` even when the tool cannot
+`needs-setup`, `needs-update`, `needs-install` and `not-required`. A known version below the minimum is `incompatible` even when the tool cannot
 run (for example an older Shell whose global command is missing); Gentle AI and
 setup add no separate `unknown` blocker then, because they are only checked for
 the pinned Shell. When Node.js, Pi or Gentle Shell is simply older than its
 minimum, the wizard's guidance names the found and required versions (for the
 Shell, also the pnpm commands that update or remove it); other blockers keep
-their fixed guidance. A Pi or Shell command on PATH that pnpm does not manage
+their fixed guidance. An older Pi is not a blocker: one that pnpm or npm owns is
+`needs-update`, and one neither owns is `needs-install` (see
+[Existing installations](#existing-installations)). A Pi or Shell command on PATH that pnpm does not manage
 stays `unknown` (never replaced), and its probe adds `outsidePnpm: true` so the
 guidance can say so; Gentle AI and setup add no separate blocker while the Shell
 blocks. Any blocker suppresses all actions: repairing an
@@ -280,10 +282,16 @@ No-process gates, all returning `blocked`:
    `verify-readiness`, plus optional `setup-global-bin`, and nothing else.
    Prerequisite acquisition intents (Node, pnpm, Go), `provision-native`, any
    other persistence combination, other partial existing stacks and fully
-   reused stacks are `unsupported-plan`.
+   reused stacks are `unsupported-plan`. `update-pi` (an
+   [older Pi](#existing-installations)) needs `tools.pi` to be `needs-update`
+   and never comes with `install-pi`; it may precede `install-shell` or an
+   update of Gentle Shell, or form a plan of its own with only `verify-readiness`.
+   With a reusable Gentle Shell, `install-pi` and `verify-readiness` alone are
+   supported too (`tools.pi` `unavailable` or `needs-install`).
 3. On Windows, Go must be `reusable` in a clean-stack plan because gentle-pi's
    postinstall may build Gentle AI from source; the runner never acquires Go
-   (`go-required`). A recovery runs no postinstall, so it needs no Go.
+   (`go-required`). A recovery or a Pi-only update runs no postinstall, so it
+   needs no Go.
 4. `pnpmGlobalBin` resolves PNPM_HOME (`pnpm-home-unknown` otherwise) and
    `nodePath` is absolute.
 5. pnpm comes from the bootstrap handoff `GENTLE_INSTALL_PNPM_NODE` +
@@ -463,14 +471,16 @@ the store is indistinguishable from the default and would be replaced.
 
 ### Existing installations
 
-The wizard installs what is missing and updates what exists; it never reinstalls
-or downgrades Pi, and nothing changes before consent.
+The wizard installs what is missing and updates what exists; it updates an older
+Pi but never reinstalls or downgrades it, and nothing changes before consent.
 
 | Found | Plan |
 | --- | --- |
 | A compatible Pi (pnpm-global, or any `pi` on PATH whose `pi --version` reports a stable version ≥ the minimum) and no Gentle Shell | Install only Gentle Shell: `pnpm add -g gentle-pi@<version> --allow-build=gentle-pi`, after checking that pnpm lists no gentle-pi (`check-existing-shell`). Pi is left as it is. |
 | A Gentle Shell that pnpm or npm owns | `update-shell-release` when it is older, unusable or a main build; `update-shell-main` on the main channel (needs Go). Then `setup-shell`. A missing Pi is installed first (`install-pi`). |
 | A current Gentle Shell that npm owns, on release | Nothing to do. |
+| A Pi older than the minimum that pnpm or npm owns | `update-pi` to `PI_INSTALL_VERSION` with that package manager (`pnpm add -g @earendil-works/pi-coding-agent@<version>` or `npm install -g …`), before any Gentle Shell step: ahead of `install-shell` or `update-shell-*`, or alone when Gentle Shell is current. The plan names the found and target versions and the manager. |
+| A Pi older than the minimum that neither pnpm nor npm owns (mise, Homebrew, a standalone binary, a Windows npm) | Left unchanged. `install-pi` adds the installer's Pi with pnpm exactly as when Pi is absent (in the same `pnpm add -g` as gentle-pi, before an update of Gentle Shell, or alone when Gentle Shell is current), and the plan says so before consent. |
 | A Gentle Shell neither pnpm nor npm owns (an `npm link` of a source checkout, for example) | Blocked with an explanation; never reinstalled. |
 
 Ownership comes from real paths ([`installOwner`](../scripts/main-channel.mjs)):
@@ -482,6 +492,32 @@ the same code as `gentle-shell upgrade --channel <channel>`
 the same owner and a stable version not older than before (release) or a
 `-main.<sha12>` version (main); release also re-runs `verify-gentle-ai`. An
 update never runs `pnpm setup`: the existing installation already has its PATH.
+
+An older Pi uses the same ownership rule with its own package name
+(`<npm root -g>/@earendil-works/pi-coding-agent` for npm). Its probe reports
+`owner` only when Pi is older than the minimum, and the plan records the found
+version and owner in `tools.pi`. Before any change, `check-installed-pi` finds
+Pi again and requires that same version and owner, a stable version below the
+minimum (so the update never downgrades), and for npm an `npm root -g` that
+holds it. `update-pi` then runs `pnpm add -g` through the runner's pnpm, or the
+user's `npm install -g` with the user's environment. `verify-updated-pi`
+requires one Pi from the same owner (pnpm listing it twice makes it ambiguous),
+at `PI_INSTALL_VERSION` or newer, and for npm at the same root. A failure stops
+before any Gentle Shell step. With pnpm 11.1.1, `pnpm add -g` of a newer Pi
+replaces the existing global package in place (its isolated global directory is
+swapped), whether Pi was added alone or together with gentle-pi, so the next run
+sees a single Pi; `npm install -g` replaces it in npm's global root.
+
+An older Pi that neither pnpm nor npm owns is never run, changed or removed. The
+plan's `install-pi` description names its version and the version the installer
+adds. Alone, `install-pi` is checked like a shell-only installation:
+`check-existing-pi` requires pnpm to list no Pi, `pnpm add -g` adds it, and
+`verify-installed-pi` requires one pnpm-global Pi at `PI_INSTALL_VERSION` or
+newer. The `pi` probe reads pnpm's global list before PATH, so the next run
+reuses the pnpm-global Pi and no longer looks at the other one. pnpm 11 also
+installs gentle-pi's optional Pi peer next to gentle-pi, and Gentle Shell
+prefers that adjacent Pi over any `pi` on PATH; a terminal's `pi` command may
+still run the older one when it comes first on PATH.
 
 ### Main channel
 

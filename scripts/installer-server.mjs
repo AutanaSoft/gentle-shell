@@ -2,7 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
-import { requirements } from "./installer-preflight.mjs";
+import { PI_INSTALL_VERSION, requirements } from "./installer-preflight.mjs";
 
 // Local wizard host: a dependency-free loopback HTTP server with a fixed route
 // allowlist. The browser never sends commands, paths, plans or environment:
@@ -81,6 +81,7 @@ export const actionDescriptions = Object.freeze({
 	"record-channel": "Remember the `main` channel, so `gentle-shell upgrade` keeps following `main`.",
 	"update-shell-release": "Update Gentle Shell to the latest release with the package manager that installed it (pnpm or npm).",
 	"update-shell-main": "Update Gentle Shell and Gentle AI to the latest commits of `main`, built on this computer, with the package manager that installed Gentle Shell.",
+	"update-pi": "Update Pi with the package manager that installed it (pnpm or npm).",
 });
 
 const tryAgain = "Fix the cause, then run the installer again.";
@@ -123,6 +124,9 @@ export const guidance = Object.freeze({
 		"install-pi": `Installing Pi with pnpm failed. Your existing Gentle Shell was not changed. Check your network connection. ${tryAgain}`,
 		"update-shell": "Updating Gentle Shell failed. Run `gentle-shell upgrade` in a terminal to see the details.",
 		"verify-updated-shell": "Gentle Shell did not report the expected version after the update. Run `gentle-shell --version`, then `gentle-shell upgrade` in a terminal.",
+		"update-pi": `Updating Pi with the package manager that installed it failed. Gentle Shell was not changed. Check your network connection. ${tryAgain}`,
+		"verify-updated-pi": "After the update, this installer could not find a single Pi at the expected version from the same package manager. Gentle Shell was not changed. Run `pi --version` in a terminal, then run the installer again.",
+		"verify-installed-pi": "After installing Pi, this installer could not find it at the expected version in pnpm's global packages. Gentle Shell and your other Pi were not changed. Run `pnpm list -g` in a terminal, then run the installer again.",
 	}),
 	blockers: Object.freeze({
 		"unsupported-target": "This operating system or CPU is not supported by the wizard. Follow the README for a manual installation.",
@@ -220,6 +224,24 @@ function blockerGuidance(blocker, inventory, plan) {
 	return `${tool.label} ${version} is installed${tool.where}, but this installer needs ${required} or newer. Nothing was replaced. ${remedy}, then select Check again.`;
 }
 
+/** An older Pi's update names its found and target versions and the package
+ * manager that owns it, and the installer's Pi added next to an older one names
+ * both versions, from the plan's own record; anything else is fixed text. */
+function actionDescription(action, plan) {
+	const pi = plan.tools?.pi;
+	const stable = (...versions) => versions.every((version) => typeof version === "string" && STABLE.test(version));
+	const bare = (version) => version.replace(/^v/, "");
+	if (action.id === "update-pi" && ["pnpm", "npm"].includes(pi?.owner) && stable(pi.version, pi.required, action.version)) {
+		return `Update Pi ${bare(pi.version)} to ${bare(action.version)} with ${pi.owner}, the package manager that installed it. ` +
+			`Gentle Shell needs Pi ${bare(pi.required)} or newer.`;
+	}
+	if (action.id === "install-pi" && pi?.status === "needs-install" && stable(pi.version)) {
+		return `Install Pi ${PI_INSTALL_VERSION} globally with pnpm for Gentle Shell. The Pi ${bare(pi.version)} already on this computer ` +
+			"was not installed with pnpm or npm, so it is left unchanged. Gentle Shell uses the installer's Pi; the `pi` command in a terminal may still run the older one.";
+	}
+	return actionDescriptions[action.id] ?? "Prepare the installation.";
+}
+
 function planView(planId, { inventory, plan }) {
 	const ids = plan.actions.map((action) => action.id);
 	const binDir = typeof inventory?.globalBin?.path === "string" ? inventory.globalBin.path : null;
@@ -235,7 +257,7 @@ function planView(planId, { inventory, plan }) {
 		ready: plan.ready === true,
 		actions: plan.actions.map((action) => ({
 			id: identifier(action.id),
-			description: actionDescriptions[action.id] ?? "Prepare the installation.",
+			description: actionDescription(action, plan),
 		})),
 		blockers: plan.blockers.map((blocker) => ({
 			code: identifier(blocker.code),

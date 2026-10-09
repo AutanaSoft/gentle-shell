@@ -20,6 +20,11 @@ export const requirements = Object.freeze({
 	go: GENTLE_AI_WINDOWS_MINIMUM_GO_VERSION,
 });
 
+/** Pi version the installer installs next to gentle-pi, and the version an older
+ * Pi is updated to (never below requirements.pi; the runner asserts it).
+ */
+export const PI_INSTALL_VERSION = "1.0.0";
+
 /** Runtime persisted under PNPM_HOME. Bootstrap-only Node: `pnpm runtime set
  * node <node> -g`, then `pnpm add -g npm@<npm> pnpm@<pnpm>`. Persistent Node:
  * one `pnpm add -g` of only the missing npm and/or bootstrap-only pnpm.
@@ -150,7 +155,23 @@ export function planPreflight(inventory, { channel = "release" } = {}) {
 			blockers.push({ code: `${status}-tool`, tool: name });
 		}
 	}
-	for (const name of ["node", "pi"]) record(name, classify(inventory[name], requirements[name]), requirements[name]);
+	record("node", classify(inventory.node, requirements.node), requirements.node);
+	// An older Pi whose owner (pnpm or npm) is known is updated with that package
+	// manager to PI_INSTALL_VERSION instead of blocking; the plan records the
+	// found version and owner the update must still match. An older Pi neither
+	// owns (mise, Homebrew, a binary) is left as it is: the installer's Pi is
+	// installed alongside, exactly as when Pi is absent.
+	const piSeen = inventory.pi;
+	const piStatus = classify(piSeen, requirements.pi);
+	if (piStatus === "incompatible" && piSeen.usable === true && (piSeen.owner === "pnpm" || piSeen.owner === "npm")) {
+		tools.pi = { status: "needs-update", required: requirements.pi, version: piSeen.version, owner: piSeen.owner };
+	} else if (piStatus === "incompatible" && piSeen.usable === true) {
+		tools.pi = { status: "needs-install", required: requirements.pi, version: piSeen.version };
+	} else {
+		record("pi", piStatus, requirements.pi);
+	}
+	const updatePi = tools.pi.status === "needs-update";
+	const installPi = tools.pi.status === "unavailable" || tools.pi.status === "needs-install";
 	if (update) record("shell", "needs-update", requirements.shell);
 	else if (npmCurrent) record("shell", "reusable", requirements.shell);
 	else record("shell", classify(inventory.shell, requirements.shell, (o) => o.global), requirements.shell);
@@ -183,10 +204,15 @@ export function planPreflight(inventory, { channel = "release" } = {}) {
 	function action(id, kind, target, version) {
 		actions.push({ id, kind, target, ...(version ? { version } : {}) });
 	}
-	// Existing Gentle Shell: update it (installing a missing Pi first), then set it up.
+	// Existing Gentle Shell: update it (installing a missing Pi or updating an older
+	// one first), then set it up. A current npm Shell only gets its Pi updated or
+	// the installer's Pi added.
 	if (update || npmCurrent) {
+		if (updatePi) action("update-pi", "upgrade", "pi", PI_INSTALL_VERSION);
+		// A current npm Shell next to an older Pi neither manager owns gets the installer's Pi.
+		if (!update && tools.pi.status === "needs-install") action("install-pi", "install-global", "pi", requirements.pi);
 		if (update) {
-			if (tools.pi.status === "unavailable") action("install-pi", "install-global", "pi", requirements.pi);
+			if (installPi) action("install-pi", "install-global", "pi", requirements.pi);
 			action(`update-shell-${update}`, "upgrade", "shell");
 			action("setup-shell", "normal-setup", "shell");
 		}
@@ -219,7 +245,8 @@ export function planPreflight(inventory, { channel = "release" } = {}) {
 		else if (pnpm) action("persist-pnpm", "install-global", "pnpm", persistencePins.pnpm);
 	}
 	acquire("go");
-	if (tools.pi.status === "unavailable") action("install-pi", "install-global", "pi", requirements.pi);
+	if (installPi) action("install-pi", "install-global", "pi", requirements.pi);
+	if (updatePi) action("update-pi", "upgrade", "pi", PI_INSTALL_VERSION);
 	if (missingShell) action("install-shell", "install-global", "shell", requirements.shell);
 	// Global gentle-pi postinstall owns native provisioning when Shell is missing.
 	// Otherwise the later runner must reuse that existing installer, not duplicate it.

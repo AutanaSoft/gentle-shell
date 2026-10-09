@@ -275,6 +275,62 @@ test("a Pi on PATH that pnpm does not manage is reused with the version it repor
 	}
 });
 
+const PI_PACKAGE = "@earendil-works/pi-coding-agent";
+const PI_ROOT = `${PNPM_HOME}/global/v11/abc/node_modules/${PI_PACKAGE}`;
+const NPM_PI = `${NPM_ROOT}/${PI_PACKAGE}`;
+// A Pi on PATH outside pnpm: npm's own global root, or another installation such as mise.
+const outsidePi = (version: string, root = NPM_PI) => probes({
+	env: { HOME, PATH: `${TOOLS}/pnpm/bin:/usr/local/bin:/usr/bin` },
+	files: [TOOLS_PNPM, "/usr/local/bin/pi", "/usr/local/bin/npm"],
+	dirs: [HOME, NPM_ROOT],
+	realpaths: { "/usr/local/bin/pi": `${root}/dist/cli.js` },
+	texts: { [`${root}/package.json`]: JSON.stringify({ name: PI_PACKAGE, version }) },
+	results: { ...pnpmVersion, "/usr/local/bin/npm root -g": { code: 0, stdout: `${NPM_ROOT}\n` },
+		"/usr/local/bin/pi --version": { code: 0, stdout: `${version}\n` } },
+});
+
+test("an older pnpm-global Pi reports pnpm as its owner, and locatePi finds its real root", async () => {
+	const older = probes({ files: [TOOLS_PNPM], dirs: [HOME, PI_ROOT], results: { [`${TOOLS_PNPM} ${LIST}`]: { code: 0,
+		stdout: listing({ [PI_PACKAGE]: { version: "0.87.1", path: PI_ROOT } }) } } });
+	assert.deepEqual(await older.probes.pi(), { available: true, version: "0.87.1", usable: true, owner: "pnpm" });
+	assert.deepEqual(await older.probes.locatePi(), { root: PI_ROOT, version: "0.87.1", owner: "pnpm" });
+	// A current Pi keeps its shape: nothing about it is updated.
+	const current = probes({ files: [TOOLS_PNPM], dirs: [HOME, PI_ROOT], results: { [`${TOOLS_PNPM} ${LIST}`]: { code: 0,
+		stdout: listing({ [PI_PACKAGE]: { version: PI_INSTALL_VERSION, path: PI_ROOT } }) } } });
+	assert.deepEqual(await current.probes.pi(), { available: true, version: PI_INSTALL_VERSION, usable: true });
+	assert.deepEqual(await current.probes.locatePi(), { root: PI_ROOT, version: PI_INSTALL_VERSION, owner: "pnpm" });
+	// Listed twice (two global projects): ambiguous, so nothing is located.
+	const twice = probes({ files: [TOOLS_PNPM], dirs: [HOME, PI_ROOT], results: { [`${TOOLS_PNPM} ${LIST}`]: { code: 0,
+		stdout: JSON.stringify([{ dependencies: { [PI_PACKAGE]: { version: "0.87.1", path: PI_ROOT } } },
+			{ dependencies: { [PI_PACKAGE]: { version: PI_INSTALL_VERSION, path: PI_ROOT } } }]) } } });
+	assert.deepEqual(await twice.probes.pi(), { available: null });
+	assert.equal(await twice.probes.locatePi(), null);
+});
+
+test("an older Pi in npm's global root reports npm as its owner; one elsewhere has no owner", async () => {
+	const npm = outsidePi("0.87.1");
+	assert.deepEqual(await npm.probes.pi(), { available: true, version: "0.87.1", usable: true, external: true, owner: "npm" });
+	assert.deepEqual(await npm.probes.locatePi(), { root: NPM_PI, version: "0.87.1", owner: "npm" });
+	const mise = outsidePi("0.87.1", "/home/u/.local/share/mise/installs/pi/lib/node_modules/@earendil-works/pi-coding-agent");
+	assert.deepEqual(await mise.probes.pi(), { available: true, version: "0.87.1", usable: true, external: true });
+	assert.equal((await mise.probes.locatePi())?.owner, null);
+	// A current npm Pi is reused as before, without asking npm where its global root is.
+	const current = outsidePi(PI_INSTALL_VERSION);
+	assert.deepEqual(await current.probes.pi(), { available: true, version: PI_INSTALL_VERSION, usable: true, external: true });
+	assert.equal(current.calls.some((call) => call.args.join(" ") === "root -g"), false);
+	// No Pi at all: nothing is located.
+	assert.equal(await probes({ files: [TOOLS_PNPM], results: pnpmVersion }).probes.locatePi(), null);
+});
+
+test("after the installer's Pi is added next to another one, the next probe reuses the pnpm-global Pi and never runs the other", async () => {
+	const h = probes({ env: { HOME, PATH: `${TOOLS}/pnpm/bin:/home/u/.local/share/mise/shims:/usr/bin` },
+		files: [TOOLS_PNPM, "/home/u/.local/share/mise/shims/pi"], dirs: [HOME, PI_ROOT],
+		results: { [`${TOOLS_PNPM} ${LIST}`]: { code: 0, stdout: listing({ [PI_PACKAGE]: { version: PI_INSTALL_VERSION, path: PI_ROOT } }) } } });
+	assert.deepEqual(await h.probes.pi(), { available: true, version: PI_INSTALL_VERSION, usable: true });
+	assert.equal(h.calls.some((call) => call.command.includes("mise")), false);
+	assert.equal(planPreflight({ platform: "linux", arch: "x64", pi: await h.probes.pi() }).tools.pi.status, "reusable");
+});
+
 test("a Gentle Shell installed by npm reports its version and npm as its owner", async () => {
 	for (const version of ["3.9.0", `${requirements.shell}-main.6e7e3a18f794`]) {
 		assert.deepEqual(await outside(version).probes.shell(), { available: true, version, usable: true, global: true, owner: "npm" }, version);
