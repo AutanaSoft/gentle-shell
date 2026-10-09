@@ -191,6 +191,7 @@ const minimumTools = Object.freeze({
 	pi: { label: "Pi", where: "" },
 	shell: { label: "Gentle Shell", where: " globally with pnpm",
 		remedy: (required) => `Update it with \`pnpm add -g gentle-pi@${required}\`, or remove it with \`pnpm remove -g gentle-pi\`` },
+	go: { label: "Go", where: "", remedy: () => "This installer does not download Go: update it the way you installed it" },
 });
 // A Pi whose version cannot be read, or a Gentle Shell neither pnpm nor npm manages.
 const unmanaged = Object.freeze({
@@ -216,7 +217,8 @@ function blockerGuidance(blocker, inventory, plan) {
 	}
 	const tool = Object.hasOwn(minimumTools, blocker.tool) ? minimumTools[blocker.tool] : null;
 	if (blocker.code !== "incompatible-tool" || tool === null) return fixed;
-	const found = inventory?.[blocker.tool]?.version;
+	// An older Node left next to the bootstrap's copy is recorded in the plan.
+	const found = plan.tools?.[blocker.tool]?.found ?? inventory?.[blocker.tool]?.version;
 	const required = plan.tools?.[blocker.tool]?.required;
 	if (typeof found !== "string" || typeof required !== "string" || !older(found, required)) return fixed;
 	const version = found.replace(/^v/, "");
@@ -242,12 +244,33 @@ function actionDescription(action, plan) {
 	return actionDescriptions[action.id] ?? "Prepare the installation.";
 }
 
+/** An older Node or incompatible pnpm the plan records as left in place next to
+ * the installer's pinned copy: found and pinned versions, from the plan itself.
+ * Nothing promises PATH precedence: a version manager may prepend its own again.
+ */
+function alongsideNotes(plan) {
+	const notes = [];
+	const node = plan.tools?.node;
+	if (STABLE.test(node?.found ?? "") && STABLE.test(node.version ?? "")) {
+		notes.push(`Node.js ${node.found} on this computer is older than ${node.required}, so the installer uses its pinned Node.js ${node.version} ` +
+			`and installs it under $PNPM_HOME. Your Node.js ${node.found} is left unchanged.`);
+	}
+	const pnpm = plan.tools?.pnpm;
+	if (STABLE.test(pnpm?.found ?? "") && STABLE.test(pnpm.version ?? "")) {
+		notes.push(`pnpm ${pnpm.found} on this computer is not a pnpm ${pnpm.version.split(".")[0]} release this installer can use, ` +
+			`so the installer uses its pinned pnpm ${pnpm.version} and installs it under $PNPM_HOME. Your pnpm ${pnpm.found} is left unchanged.`);
+	}
+	if (notes.length > 0) notes.push("A version manager such as `mise activate` may still put your own versions first on PATH in new terminals.");
+	return notes;
+}
+
 function planView(planId, { inventory, plan }) {
 	const ids = plan.actions.map((action) => action.id);
 	const binDir = typeof inventory?.globalBin?.path === "string" ? inventory.globalBin.path : null;
 	const pnpmHome = binDir === null ? null : dirname(binDir);
 	const changesProfile = ids.includes("setup-global-bin");
 	let tools = [];
+	const alongside = alongsideNotes(plan);
 	if (ids.includes("persist-node")) tools = ["node", "npm", "pnpm"];
 	else if (ids.includes("persist-package-managers")) tools = ["npm", "pnpm"];
 	else if (ids.includes("persist-npm")) tools = ["npm"];
@@ -276,7 +299,7 @@ function planView(planId, { inventory, plan }) {
 			tools,
 			pnpmHome,
 			description: tools.length > 0
-				? `${tools.join(", ")} will be installed under $PNPM_HOME (${pnpmHome ?? "pnpm's home directory"}) so new terminals keep working after the temporary installer tools are removed. Existing installations are not replaced.`
+				? [`${tools.join(", ")} will be installed under $PNPM_HOME (${pnpmHome ?? "pnpm's home directory"}) so new terminals keep working after the temporary installer tools are removed. Existing installations are not replaced.`, ...alongside].join(" ")
 				: "No runtime needs to be installed under $PNPM_HOME; your existing Node.js, npm and pnpm are reused.",
 		},
 	};

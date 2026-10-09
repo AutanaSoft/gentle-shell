@@ -198,6 +198,11 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 		return succeeded(result) && result.truncated !== true ? String(result.stdout ?? "").trim() : null;
 	};
 	const persistentOn = async (name) => (await lookPath(name, user, platform, fs)) !== null;
+	const roots = bootstrapRoots({ platform, env });
+	const marker = platform === "win32" ? new RegExp(BOOTSTRAP_TOOLS.source, "i") : BOOTSTRAP_TOOLS;
+	/** A file inside the bootstrap's temporary tools directory. */
+	const fromBootstrap = (file) => path.isAbsolute(file) && (roots.some((root) => contains(root, file, platform)) ||
+		path.normalize(file).split(path.sep).some((part) => marker.test(part)));
 
 	let listing;
 	/** Output of the single `list -g` call, or null when it is unavailable. */
@@ -296,11 +301,20 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 		},
 		async node() {
 			const persistent = await lookPath("node", user, platform, fs);
-			const node = persistent ?? await lookPath("node", env, platform, fs);
+			const bootstrap = await lookPath("node", env, platform, fs);
+			let node = persistent ?? bootstrap;
 			if (!node) return absent();
 			if (!spawnable(node, platform)) return unknown();
-			const version = exactVersion(await output(node, ["--version"], env, deadlines.version), NODE_VERSION);
+			const nodeVersion = async (file) => exactVersion(await output(file, ["--version"], env, deadlines.version), NODE_VERSION);
+			let version = await nodeVersion(node);
 			if (!version) return unknown();
+			// An older Node on the user's PATH is left as it is: the bootstrap's verified
+			// Node runs the installer, so it is reported (bootstrap-only) with the older one found.
+			let found = null;
+			if (persistent && bootstrap && persistent !== bootstrap && !atLeast(version, requirements.node) && spawnable(bootstrap, platform)) {
+				const pinned = await nodeVersion(bootstrap);
+				if (pinned && atLeast(pinned, requirements.node)) [found, node, version] = [version, bootstrap, pinned];
+			}
 			// A genuine npm must resolve without bootstrap tools, as in a fresh terminal.
 			let npm = null;
 			try {
@@ -308,7 +322,7 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 			} catch {
 				npm = null;
 			}
-			return { available: true, version, usable: true, persistent: persistent !== null, npm };
+			return { available: true, version, usable: true, persistent: persistent !== null && found === null, npm, ...(found ? { found } : {}) };
 		},
 		async pnpm() {
 			const pnpm = await pnpmInvocation(env, platform, fs);
@@ -318,7 +332,17 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 			if (!version) return unknown();
 			// pnpm checks its Node engine at startup; the runner's argv is verified for pnpm 11 only.
 			const compatible = Number(version.split(".")[0]) === PNPM_MAJOR && atLeast(version, requirements.pnpm);
-			return { available: true, version, usable: true, compatible, persistent: await persistentOn("pnpm") };
+			// The bootstrap's own pnpm (POSIX PATH or Windows handoff entry) is bootstrap-only
+			// even next to the user's pnpm, which it acquired because that one is incompatible.
+			if (!fromBootstrap(pnpm.prefix[0] ?? pnpm.command)) {
+				return { available: true, version, usable: true, compatible, persistent: await persistentOn("pnpm") };
+			}
+			// That pnpm's version, read in the user's environment (POSIX: a Windows .cmd needs a shell).
+			const own = platform === "win32" ? null : await lookPath("pnpm", user, platform, fs);
+			const result = own ? await run(own, ["--version"], { env: user, cwd: path.parse(own).root, deadlineMs: deadlines.version }) : null;
+			const found = succeeded(result) && result.truncated !== true ? exactVersion(result.stdout, STABLE) : null;
+			const replaced = found !== null && !(Number(found.split(".")[0]) === PNPM_MAJOR && atLeast(found, requirements.pnpm));
+			return { available: true, version, usable: true, compatible, persistent: false, ...(replaced ? { found } : {}) };
 		},
 		// Only a Pi older than the minimum reports its owner (pnpm or npm): the one the installer updates.
 		async pi() {

@@ -70,7 +70,9 @@ const probeNames = ["node", "pnpm", "pi", "shell", "gentleAi", "go", "globalBin"
  * and Gentle AI compatible:true (normal binary resolver/integrity evidence).
  * Node may add persistent (resolvable from the user's PATH without bootstrap
  * tool directories) and npm (a genuine npm resolves there) booleans; pnpm may
- * add persistent (resolvable from the user's PATH). globalBin returns { available, path, writable, onPath } for
+ * add persistent (resolvable from the user's PATH). A bootstrap-only Node or
+ * pnpm may add found: the stable version of the older or incompatible one on the
+ * user's PATH that the bootstrap left in place. globalBin returns { available, path, writable, onPath } for
  * pnpmGlobalBin's `$PNPM_HOME/bin` directory; setup returns boolean, or
  * { available: true, recoverable: true } for the pinned stack this pnpm installed
  * whose setup did not finish (only its setup is then planned).
@@ -178,6 +180,19 @@ export function planPreflight(inventory, { channel = "release" } = {}) {
 	// packageManager pins the acquisition choice, not a minimum supported pnpm.
 	// Existing versions require explicit engine/capability evidence from the probe.
 	record("pnpm", classify(inventory.pnpm, "0.0.0", (o) => o.compatible), requirements.pnpm);
+	// An older Node or an incompatible pnpm on the user's PATH is left as it is: the
+	// bootstrap acquired its pinned copy, which the probe reports (bootstrap-only)
+	// with the user's stable version as `found`. That copy runs the installer and
+	// is persisted below; the plan records both versions. An update persists
+	// nothing, so it keeps blocking as before.
+	for (const name of ["node", "pnpm"]) {
+		const seen = inventory[name];
+		const found = versionParts(seen?.found);
+		const replaced = name === "node" ? found !== null && compareVersions(found, versionParts(requirements.node)) < 0 : found !== null;
+		if (tools[name].status !== "reusable" || seen.persistent !== false || !replaced) continue;
+		tools[name] = { ...tools[name], found: found.join("."), version: persistencePins[name] };
+		if (update || npmCurrent) blockers.push({ code: "incompatible-tool", tool: name });
+	}
 	record("gentleAi", classify(inventory.gentleAi, requirements.gentleAi, (o) => o.compatible, true), requirements.gentleAi);
 	const needsNative = tools.gentleAi.status === "unavailable";
 	// The main channel builds Gentle AI from source on every platform.

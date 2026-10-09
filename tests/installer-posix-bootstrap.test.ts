@@ -113,7 +113,7 @@ test("download helper validates bytes before returning them", async () => {
 posixTest("compatible existing tools are reused with whitespace and Unicode paths", () => {
 	const f = fixture();
 	try {
-		f.addNode(); f.addPnpm("12.0.0"); f.wizard();
+		f.addNode(); f.addPnpm("11.5.0"); f.wizard();
 		const result = f.run();
 		assert.equal(result.status, 0, result.stderr);
 		assert.match(result.stdout, /wizard-child:/);
@@ -188,7 +188,7 @@ for (const extra of [{ FAKE_HASH: "0".repeat(64) }, { DOWNLOAD_STATUS: "18" }, {
 		} finally { f.cleanup(); }
 	});
 }
-for (const version of ["v22.18.0", "v24.1.0-rc.1", "v25.00.1", "banana"]) {
+for (const version of ["v24.1.0-rc.1", "v25.00.1", "banana"]) {
 	posixTest(`existing Node ${version} is rejected without replacement`, () => {
 		const f = fixture();
 		try {
@@ -200,6 +200,20 @@ for (const version of ["v22.18.0", "v24.1.0-rc.1", "v25.00.1", "banana"]) {
 		} finally { f.cleanup(); }
 	});
 }
+posixTest("an older stable Node is left unchanged and a verified Node runs the helper and wizard instead", () => {
+	const f = fixture();
+	try {
+		f.addPnpm(); f.wizard();
+		const older = `#!/bin/sh\nif [ "$1" = --version ]; then echo v22.18.0; else echo user-node-ran >&2; exit 9; fi\n`;
+		writeFileSync(join(f.bin, "node"), older, { mode: 0o755 });
+		const result = f.run();
+		assert.equal(result.status, 0, result.stderr);
+		assert.match(result.stdout, /wizard-child:[^:\n]*\.gentle-shell-bootstrap-tools\.[^:\n]*\/node\/bin:/);
+		assert.doesNotMatch(result.stderr, /user-node-ran/);
+		assert.equal(readFileSync(join(f.bin, "node"), "utf8"), older);
+		assert.deepEqual(readdirSync(f.home), [], "successful wizard exit removes the owned tools");
+	} finally { f.cleanup(); }
+});
 posixTest("existing pnpm with unknown engine blocks instead of acquisition", () => {
 	const f = fixture();
 	try {
@@ -270,7 +284,7 @@ posixTest("a standalone native pnpm (mise, pnpm installer) is reused after versi
 				standalonePnpm(f, header, linked);
 				const calls: string[][] = [];
 				const result = await ensurePnpm({ tools: f.home, env: { PATH: f.bin }, nodeVersion: "24.21.0", adapters: {
-					process: standaloneProcess("10.27.0", calls), download: () => { throw new Error("must not download"); },
+					process: standaloneProcess("11.5.0", calls), download: () => { throw new Error("must not download"); },
 				} });
 				assert.equal(result.acquired, false, `${label} linked=${linked}`);
 				assert.deepEqual(calls, [["--version"], ["help", "add"], ["help", "bin"]], `${label} linked=${linked}`);
@@ -278,6 +292,45 @@ posixTest("a standalone native pnpm (mise, pnpm installer) is reused after versi
 			} finally { f.cleanup(); }
 		}
 	}
+});
+posixTest("an existing pnpm of another major, older than the pin or engine-incompatible is left unchanged and the verified pnpm is acquired", async () => {
+	for (const [version, engine] of [["10.27.0", ">=18.12"], ["11.0.0", ">=22.13"], ["12.0.0", ">=22.13"], ["11.5.0", ">=99.0.0"]]) {
+		const f = fixture();
+		try {
+			f.addPnpm(version, engine);
+			const metadata = readFileSync(join(f.root, "pnpm package/package.json"), "utf8");
+			const adapters = acquisitionAdapters();
+			const result = await ensurePnpm({ tools: f.home, env: { PATH: f.bin }, nodeVersion: "24.21.0", adapters });
+			assert.equal(result.acquired, true, version);
+			assert.ok(result.env.PATH.startsWith(`${join(f.home, "pnpm/bin")}:`), version);
+			assert.equal(readFileSync(join(f.root, "pnpm package/package.json"), "utf8"), metadata);
+			assert.ok(lstatSync(join(f.bin, "pnpm")).isSymbolicLink());
+			assert.ok(adapters.calls.every((call) => !call.startsWith(join(f.bin, "pnpm"))), version);
+		} finally { f.cleanup(); }
+	}
+	// A standalone native pnpm (mise) of another major: only its version is read.
+	const f = fixture();
+	try {
+		standalonePnpm(f, nativeHeaders.ELF);
+		const calls: string[][] = [];
+		const adapters = acquisitionAdapters();
+		const standalone = { ...adapters, process: (command: string, args: string[]) => command === join(f.bin, "pnpm")
+			? standaloneProcess("10.27.0", calls)(command, args) : adapters.process(command, args) };
+		const result = await ensurePnpm({ tools: f.home, env: { PATH: f.bin }, nodeVersion: "24.21.0", adapters: standalone });
+		assert.equal(result.acquired, true);
+		assert.deepEqual(calls, [["--version"]]);
+	} finally { f.cleanup(); }
+});
+posixTest("the bootstrap claims private tools for the verified pnpm when the existing one is incompatible", async () => {
+	const f = fixture();
+	try {
+		f.addPnpm("10.27.0", ">=18.12");
+		writeFileSync(join(f.bundle, "bin/gentle-shell-install.mjs"), "import { writeFileSync } from 'node:fs';\n" +
+			`writeFileSync(${JSON.stringify(join(f.root, "wizard-path"))}, process.env.PATH);\n`);
+		await bootstrap(f.bundle, "", { env: { PATH: f.bin, HOME: f.home }, adapters: acquisitionAdapters() });
+		assert.match(readFileSync(join(f.root, "wizard-path"), "utf8"), /^[^:]*\.gentle-shell-bootstrap-tools\.[^:]*\/pnpm\/bin:/);
+		assert.deepEqual(readdirSync(f.home), [], "the helper-created tools are removed after the wizard");
+	} finally { f.cleanup(); }
 });
 posixTest("a standalone native pnpm without a semver version or global capability still blocks", async () => {
 	const f = fixture();
@@ -287,7 +340,7 @@ posixTest("a standalone native pnpm without a semver version or global capabilit
 		for (const version of ["", "10.27", "not pnpm", "10.27.0-beta.1"]) {
 			await assert.rejects(ensurePnpm({ tools: f.home, env: { PATH: f.bin }, nodeVersion: "24.21.0", adapters: adapters(standaloneProcess(version)) }), /pnpm version rejected/, version);
 		}
-		await assert.rejects(ensurePnpm({ tools: f.home, env: { PATH: f.bin }, nodeVersion: "24.21.0", adapters: adapters((_c, args) => args.at(-1) === "--version" ? "10.27.0" : "no global flag") }),
+		await assert.rejects(ensurePnpm({ tools: f.home, env: { PATH: f.bin }, nodeVersion: "24.21.0", adapters: adapters((_c, args) => args.at(-1) === "--version" ? "11.5.0" : "no global flag") }),
 			/pnpm global-install capability evidence missing/);
 	} finally { f.cleanup(); }
 });

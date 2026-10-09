@@ -650,6 +650,20 @@ test("bootstrap-only Node persists node, npm and pnpm under PNPM_HOME before the
 	assert.deepEqual(h.calls.find((call) => call.command === PERSISTENT_NODE)?.args, ["--version"]);
 });
 
+test("an older Node and incompatible pnpm left alongside: the pinned copies run every step and are persisted", async () => {
+	const fixed = plan("linux", { node: { ...bootstrapNode, version: "24.21.0", found: "22.18.0" },
+		pnpm: { ...tool("11.1.1"), compatible: true, persistent: false, found: "10.27.0" } });
+	assert.equal(fixed.tools.node.found, "22.18.0");
+	const h = harness({ results: persistedList });
+	const result = await runStandardInstall({ plan: fixed, consent: true }, h.adapters);
+	assert.equal(result.outcome, "ready");
+	assert.deepEqual(h.pnpmCalls(), ["bin -g", LIST, RUNTIME_SET, PM_ADD, "store path", INSTALL, LIST]);
+	// pnpm always runs through the installer's own copy, never a pnpm found on PATH.
+	for (const call of h.calls.filter((c) => c.args[0] === ENTRY)) assert.equal(call.command, NODE);
+	assert.equal(h.calls.some((call) => /\/pnpm$/.test(call.command)), false);
+	assert.equal(h.calls.at(-1)?.command, NODE);
+});
+
 test("the full persistence group runs exactly when Node is bootstrap-only", async () => {
 	for (const pnpm of [{ ...tool("11.1.1"), compatible: true, persistent: true }, { ...tool("11.1.1"), compatible: true, persistent: false }]) {
 		const h = harness({ results: persistedList });

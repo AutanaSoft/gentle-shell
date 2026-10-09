@@ -385,3 +385,69 @@ test("runtime persistence intents persist only what is missing", async () => {
 		globalBin: { available: true, path: "/disposable/bin", writable: true, onPath: false } };
 	assert.deepEqual(ids(unreachable).slice(0, 4), ["setup-global-bin", ...full]);
 });
+
+// An older Node or an incompatible pnpm on the user's PATH: the bootstrap's
+// pinned copy runs the installer (the probe's version) and the probe reports
+// the user's version as `found`. That copy is persisted; the user's stays.
+const runtimeStack = (node: object, pnpm: object) => ({ ...clean(), node, pnpm,
+	globalBin: { available: true, path: "/disposable/bin", writable: true, onPath: true } });
+const pinnedNode = (found?: string) => ({ ...tool("24.21.0"), persistent: false, npm: false, ...(found ? { found } : {}) });
+const pinnedPnpm = (found?: string) => ({ ...tool("11.1.1"), compatible: true, persistent: false, ...(found ? { found } : {}) });
+const rest = ["install-pi", "install-shell", "setup-shell", "verify-readiness"];
+
+test("an older Node is left as it is: the pinned Node is persisted alongside instead of blocking", () => {
+	const plan = planPreflight(runtimeStack(pinnedNode("22.18.0"), { ...pinnedPnpm(), persistent: true }));
+	assert.deepEqual(plan.blockers, []);
+	assert.deepEqual(plan.tools.node, { status: "reusable", required: requirements.node, found: "22.18.0", version: "24.21.0" });
+	assert.deepEqual(updateIds(plan), ["persist-node", "persist-package-managers", "configure-npm-prefix", ...rest]);
+});
+
+test("an incompatible pnpm is left as it is: the pinned pnpm is persisted alongside instead of blocking", () => {
+	for (const found of ["10.27.0", "12.0.0", "11.0.0"]) {
+		const persistentNode = { ...tool("24.18.0"), persistent: true, npm: true };
+		const plan = planPreflight(runtimeStack(persistentNode, pinnedPnpm(found)));
+		assert.deepEqual(plan.blockers, [], found);
+		assert.deepEqual(plan.tools.pnpm, { status: "reusable", required: requirements.pnpm, found, version: requirements.pnpm });
+		assert.deepEqual(updateIds(plan), ["persist-pnpm", ...rest]);
+		// Without a genuine npm both managers are added in one step, as when pnpm is absent.
+		assert.deepEqual(updateIds(planPreflight(runtimeStack({ ...persistentNode, npm: false }, pinnedPnpm(found)))), ["persist-package-managers", ...rest]);
+	}
+	const both = planPreflight(runtimeStack(pinnedNode("20.0.0"), pinnedPnpm("10.27.0")));
+	assert.equal(both.tools.node.found, "20.0.0");
+	assert.equal(both.tools.pnpm.found, "10.27.0");
+	assert.deepEqual(updateIds(both), ["persist-node", "persist-package-managers", "configure-npm-prefix", ...rest]);
+});
+
+test("a found version is recorded only for a bootstrap copy replacing a stable older or incompatible one", () => {
+	// A tool that meets the requirement is untouched, with or without a stray `found`.
+	for (const node of [{ ...tool("24.18.0"), persistent: true, npm: true, found: "20.0.0" }, pinnedNode("24.18.0"), pinnedNode("banana")]) {
+		const plan = planPreflight(runtimeStack(node, { ...pinnedPnpm(), persistent: true }));
+		assert.equal(plan.tools.node.found, undefined, JSON.stringify(node));
+	}
+	assert.equal(planPreflight(runtimeStack(pinnedNode(), pinnedPnpm("10.27.0-beta.1"))).tools.pnpm.found, undefined);
+	// The older tool itself (no bootstrap copy) or one of unknown version keeps blocking.
+	for (const node of [tool("22.18.0"), { available: null }]) {
+		const plan = planPreflight(runtimeStack(node, pinnedPnpm()));
+		assert.ok(plan.blockers.some((b: { tool: string }) => b.tool === "node"), JSON.stringify(node));
+		assert.deepEqual(plan.actions, []);
+	}
+	for (const pnpm of [{ ...tool("10.27.0"), compatible: false }, { available: null }]) {
+		assert.ok(planPreflight(runtimeStack(pinnedNode(), pnpm)).blockers.some((b: { tool: string }) => b.tool === "pnpm"));
+	}
+});
+
+test("an update of an existing installation persists nothing, so an older Node or incompatible pnpm still blocks it", () => {
+	for (const [name, change] of [["node", { node: pinnedNode("22.18.0") }], ["pnpm", { pnpm: pinnedPnpm("10.27.0") }]] as const) {
+		const plan = planPreflight({ ...installed(), shell: owned("3.9.0"), gentleAi: unchecked, setup: unchecked, ...change });
+		assert.deepEqual(plan.blockers, [{ code: "incompatible-tool", tool: name }]);
+		assert.deepEqual(plan.actions, []);
+	}
+});
+
+test("an older Go keeps blocking: the installer never downloads Go", () => {
+	for (const [platform, channel, change] of [["win32", "release", { gentleAi: absent }], ["darwin", "main", {}]] as const) {
+		const plan = planPreflight({ ...installed(platform), ...change, go: tool("1.24.0") }, { channel });
+		assert.ok(plan.blockers.some((b: { code: string; tool: string }) => b.code === "incompatible-tool" && b.tool === "go"), platform);
+		assert.equal(plan.actions.some((action: { id: string }) => action.id === "acquire-go"), false);
+	}
+});

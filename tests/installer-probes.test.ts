@@ -111,6 +111,27 @@ test("a node only inside the bootstrap tools directory is bootstrap-only and its
 	assert.equal(h.calls.some((call) => call.args[0] === TOOLS_NPM_CLI), false);
 });
 
+test("an older Node on the user's PATH is left as it is: the bootstrap's Node is reported with the older version found", async () => {
+	const older = { ...userNode.results, [`${USER_NODE} --version`]: { code: 0, stdout: "v22.18.0\n" } };
+	const h = probes({ files: [...userNode.files, ...bootstrapNode.files], realpaths: { ...userNode.realpaths, ...bootstrapNode.realpaths },
+		texts: { ...userNode.texts, ...bootstrapNode.texts }, results: { ...older, [`${TOOLS_NODE} --version`]: { code: 0, stdout: "v24.21.0\n" },
+			[`${TOOLS_NODE} ${USER_NPM_CLI} --version`]: { code: 0, stdout: "10.9.2\n" } } });
+	const node = await h.probes.node();
+	assert.equal(node.version, "24.21.0");
+	assert.equal(node.persistent, false);
+	assert.equal(node.found, "22.18.0");
+	// A current user Node is reused as before, and an older one without a bootstrap copy is reported as it is.
+	const current = probes({ files: [...userNode.files, ...bootstrapNode.files], realpaths: userNode.realpaths, texts: userNode.texts,
+		results: { ...userNode.results, [`${TOOLS_NODE} --version`]: { code: 0, stdout: "v24.21.0\n" } } });
+	assert.deepEqual(await current.probes.node(), { available: true, version: "24.18.0", usable: true, persistent: true, npm: true });
+	const alone = probes({ ...userNode, env: { HOME, PATH: "/usr/bin" }, results: older });
+	assert.deepEqual(await alone.probes.node(), { available: true, version: "22.18.0", usable: true, persistent: true, npm: true });
+	// A bootstrap copy that is itself not newer is no replacement.
+	const stale = probes({ files: [...userNode.files, ...bootstrapNode.files], realpaths: userNode.realpaths, texts: userNode.texts,
+		results: { ...older, [`${TOOLS_NODE} --version`]: { code: 0, stdout: "v22.0.0\n" } } });
+	assert.equal((await stale.probes.node()).found, undefined);
+});
+
 test("node absent, unparseable, failing, timed out or truncated", async () => {
 	assert.deepEqual(await probes({ env: { HOME, PATH: "/usr/bin" } }).probes.node(), { available: false });
 	for (const result of [{ code: 0, stdout: "v24\n" }, { code: 0, stdout: "v24.18.0-nightly\n" }, { code: 1, stdout: "v24.18.0" },
@@ -148,6 +169,28 @@ test("pnpm outside the verified major, unparseable, timed out or absent", async 
 		assert.deepEqual(await h.probes.pnpm(), { available: null });
 	}
 	assert.deepEqual(await probes({ env: { HOME, PATH: "/usr/bin" } }).probes.pnpm(), { available: false });
+});
+
+test("the bootstrap's pnpm next to an incompatible pnpm on the user's PATH is bootstrap-only and reports the version found", async () => {
+	const results = { [`${TOOLS_PNPM} --version`]: { code: 0, stdout: "11.1.1\n" } };
+	for (const [own, found] of [["10.27.0", "10.27.0"], ["12.0.0", "12.0.0"], ["11.1.1", undefined], ["not a version", undefined]] as const) {
+		const h = probes({ files: [TOOLS_PNPM, "/usr/bin/pnpm"], results: { ...results, "/usr/bin/pnpm --version": { code: 0, stdout: `${own}\n` } } });
+		assert.deepEqual(await h.probes.pnpm(), { available: true, version: "11.1.1", usable: true, compatible: true, persistent: false,
+			...(found ? { found } : {}) }, own);
+		// The user's pnpm runs only for its version, with the user's own environment.
+		const own_ = h.calls.find((call) => call.command === "/usr/bin/pnpm");
+		assert.deepEqual(own_?.args, ["--version"]);
+		assert.equal(own_?.env.PATH, "/usr/bin:/bin");
+	}
+	// The Windows handoff from the bootstrap tools is bootstrap-only even with a pnpm.cmd on the user's Path.
+	const local = "C:\\Users\\u\\AppData\\Local";
+	const tools = `${local}\\.gentle-shell-bootstrap-tools.1`;
+	const node = `${tools}\\node\\node.exe`;
+	const entry = `${tools}\\pnpm\\package\\bin\\pnpm.mjs`;
+	const env = { LOCALAPPDATA: local, USERPROFILE: "C:\\Users\\u", Path: "C:\\Tools", GENTLE_BOOTSTRAP_TOOLS: tools,
+		GENTLE_INSTALL_PNPM_NODE: node, GENTLE_INSTALL_PNPM_ENTRY: entry };
+	const windows = probes({ platform: "win32", env, files: ["C:\\Tools\\pnpm.cmd"], results: { [`${node} ${entry} --version`]: { code: 0, stdout: "11.1.1\r\n" } } });
+	assert.deepEqual(await windows.probes.pnpm(), { available: true, version: "11.1.1", usable: true, compatible: true, persistent: false });
 });
 
 test("Windows pnpm uses the direct bootstrap handoff; a .cmd shim alone is unknown", async () => {
