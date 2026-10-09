@@ -1,4 +1,5 @@
 import { sanitizeTerminalText } from "./terminal-theme.ts";
+import { expandedToolRows } from "./orchestrator-tool-card.ts";
 import {
 	CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardRunningLine, cardTop,
 	floatRows, markCardResult, renderCard, type CardRowContext, type CardTheme,
@@ -19,7 +20,7 @@ export interface OrchestratorMessageDetails {
 interface MessageRowContext extends CardRowContext {
 	expanded?: boolean;
 	isError?: boolean;
-	args?: { message?: unknown; reason?: unknown };
+	args?: Record<string, unknown>;
 	state?: { orchestratorMessage?: OrchestratorMessageDetails; messageError?: boolean };
 }
 
@@ -83,7 +84,10 @@ export function outgoingMessageResult(result: { content: Array<{ type: string; t
 	const tone = failed ? CARD_TONE.ERROR : CARD_TONE.INFO;
 	const text = result.content.filter(part => part.type === "text").map(part => part.text ?? "").join("\n");
 	const body = accepted ? clean(data.message ?? context.args?.message).split("\n") : clean(text).split("\n");
-	if (expanded && accepted) body.push("", "Queued; not a delivery or read receipt.", ...technicalRows(data));
+	if (expanded) {
+		if (accepted) body.push("", "Queued; not a delivery or read receipt.", ...technicalRows(data));
+		body.push(...expandedToolRows(context.args, result));
+	}
 	return {
 		render(width: number) {
 			if (width <= 0) return [];

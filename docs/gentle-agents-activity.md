@@ -69,6 +69,16 @@ An unnamed session retains its workspace-basename display fallback. Session repl
 or shutdown disposes the previous publisher; a stale name source stops publication.
 Headers remain unchanged; the optional sidecar now also carries `scope`.
 
+### Read orchestrator tool cards
+
+All four `orchestrator_*` tools use compact operation cards in the terminal.
+Expand a completed card to see its full arguments, result text, and structured
+result details; collapse it to return to the summary. Session identity cards
+separate the current alias, requested subject, and stable routing ID, and explain
+when an existing alias is preserved. Discovery summaries retain unknown
+reachability; consultation is not an owner reply, and queued messages are not
+read or delivery receipts. Rendering does not change tool output or permissions.
+
 ### Publish curated state (Refs #1702; first slice)
 
 `orchestrator_session_id` also accepts optional `state`: strings named `objective`,
