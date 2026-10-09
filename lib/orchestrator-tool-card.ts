@@ -155,17 +155,20 @@ function overviewSummary(row: string, theme: CardTheme): string {
 	return count ? theme.fg(count[1] === "0" ? "muted" : "syntaxNumber", count[1]) + theme.fg("muted", count[2]) : theme.fg("muted", row);
 }
 
+const taskIdentity = (data: Record<string, unknown>): boolean => Object.hasOwn(data, "sessionName") || Object.hasOwn(data, "currentAlias") || Object.hasOwn(data, "initialAlias");
+
 function identityBodyRows(rows: string[], tone: CardTone, theme: CardTheme, width: number, expanded: boolean): string[] {
 	// Wrap plain text before coloring: ANSI can otherwise add empty rows at narrow widths.
 	const wrapped = rows.flatMap(row => row.split("\n").flatMap(source => {
-		const field = /^(Current alias|Routing ID|Requested subject): (.*)$/.exec(source);
+		const field = /^(Current alias|Initial alias|Session name|Routing ID|Requested subject): (.*)$/.exec(source);
 		let offset = 0;
 		return (source === "" ? [""] : wrapTextWithAnsi(source, cardInnerWidth(width))).map(fragment => {
-			if (!field) return source === "Existing alias preserved; subject does not rename it." ? theme.fg("muted", fragment) : fragment;
+			if (!field) return source === "Existing alias preserved; subject does not rename it." || source === "Session name preserved; subject updates task aliases." ? theme.fg("muted", fragment) : fragment;
 			const start = source.indexOf(fragment, offset);
 			offset = start + fragment.length;
 			const labelLength = Math.max(0, Math.min(fragment.length, field[1].length + 2 - start));
-			return theme.fg("muted", fragment.slice(0, labelLength)) + theme.fg(field[1] === "Routing ID" ? "dim" : "accent", fragment.slice(labelLength));
+			const role = field[1] === "Routing ID" ? "dim" : field[2] === "unknown" ? "muted" : "accent";
+			return theme.fg("muted", fragment.slice(0, labelLength)) + theme.fg(role, fragment.slice(labelLength));
 		});
 	}));
 	return (expanded ? wrapped : wrapped.slice(0, 3)).map(row => cardLine(row, tone, theme, width));
@@ -176,6 +179,12 @@ function summary(operation: Operation, args: Record<string, unknown>, result: Re
 	if (failed) return [line(body) || "Operation failed"];
 	const data = record(record(result.details).gentleAgents);
 	if (operation === "session" && typeof data.alias === "string") {
+		if (taskIdentity(data)) {
+			const name = line(data.sessionName) || line(data.alias) || "unnamed";
+			const rows = [`Current alias: ${line(data.currentAlias) || "unknown"}`, `Session name: ${name}`];
+			if (line(args.subject) && name !== "unnamed" && name !== line(args.subject)) rows.push("Session name preserved; subject updates task aliases.");
+			return rows;
+		}
 		const rows = [`Current alias: ${line(data.alias) || "unnamed"}`];
 		if (line(data.alias) && line(args.subject) && line(args.subject) !== line(data.alias)) rows.push("Existing alias preserved; subject does not rename it.");
 		return rows;
@@ -233,8 +242,9 @@ export function orchestratorToolRenderers(operation: Operation, hint: (expanded:
 			const body = options.isPartial && !failed ? ["Receiving partial result…"] : summary(operation, args, result, failed);
 			if (options.expanded && !overview) {
 				if (operation === "session" && typeof data.alias === "string" && !failed) {
+					if (taskIdentity(data)) body.push(`Initial alias: ${line(data.initialAlias) || "unknown"}`);
 					if (line(data.senderSessionId)) body.push(`Routing ID: ${line(data.senderSessionId)}`);
-					if (line(args.subject)) body.push(`Requested subject: ${line(args.subject)}`);
+					if (line(args.subject) && (!taskIdentity(data) || line(args.subject) !== line(data.currentAlias))) body.push(`Requested subject: ${line(args.subject)}`);
 					body.push(...(args.state === null ? ["Published state: withdrawn"] : section("Published state", readableDataRows(args.state))));
 				} else if (operation === "list" && Array.isArray(data.candidates) && !failed) {
 					body.push(...section("Request", requestRows(args)), ...section("Sessions", discoveredSessionRows(data.candidates)));

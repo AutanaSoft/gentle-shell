@@ -235,6 +235,26 @@ test("session identity highlights alias and subject without changing content or 
 	assert.deepEqual(entry, before);
 });
 
+test("session identity preserves main's separate task aliases and human session name", () => {
+	const entry: Example = { ...cases[0], args: { subject: "Inspect project" }, result: { content: [], details: { gentleAgents: { alias: "Demo session", sessionName: "Demo session", currentAlias: "Inspect project", initialAlias: "First task", senderSessionId: "stable-routing-id" } } } };
+	const compact = stripAnsi(card(entry, false).render(140).join("\n"));
+	assert.match(compact, /Current alias: Inspect project/);
+	assert.match(compact, /Session name: Demo session/);
+	assert.doesNotMatch(compact, /Current alias: Demo session|Existing alias preserved/);
+	const expanded = stripAnsi(card(entry, true).render(140).join("\n"));
+	assert.match(expanded, /Initial alias: First task/);
+	assert.match(expanded, /Session name preserved; subject updates task aliases/);
+	assert.match(expanded, /Routing ID: stable-routing-id/);
+	assert.doesNotMatch(expanded, /Requested subject: Inspect project/);
+	for (const expanded of [false, true]) {
+		const unknown: Example = { ...entry, result: { content: [], details: { gentleAgents: { alias: "Demo session", sessionName: "Demo session", currentAlias: null, initialAlias: null } } } };
+		const output = stripAnsi(card(unknown, expanded).render(140).join("\n"));
+		assert.match(output, /Current alias: unknown/);
+		assert.doesNotMatch(output, /Current alias: Demo session|Current alias: Inspect project/);
+		if (expanded) assert.match(output, /Initial alias: unknown/);
+	}
+});
+
 test("classified-work limits use warning rather than success colors", () => {
 	const calls: Array<{ role: string; value: string }> = [];
 	const colors = { ...theme, fg: (role: string, value: string) => { calls.push({ role, value }); return value; } };

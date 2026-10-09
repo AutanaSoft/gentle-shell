@@ -75,8 +75,11 @@ All four `orchestrator_*` tools use compact operation cards in the terminal.
 Expand a completed card to see labelled fields and nested sections rather than
 raw JSON or duplicated result dumps; collapse it to return to the summary.
 Empty request blocks are omitted. Session identity cards separate the current
-alias, requested subject, and stable routing ID, and explain preserved aliases.
-Alias and subject values use accent; labels and the preserved-alias note use
+task aliases, human session name, requested subject, and stable routing ID.
+Initial/current aliases remain unknown for legacy history rather than being
+inferred from the human name. Requests matching the returned current alias are
+not repeated. Older identity results retain their preserved-alias explanation.
+Alias and subject values use accent; labels and the preserved-name note use
 muted, while the routing ID uses dim. Plain text is wrapped before these colors
 are applied, preserving the same height even in narrow terminals.
 Discovery overviews show at most six records, one physical table row each,
