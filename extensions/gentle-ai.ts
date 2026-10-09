@@ -3795,6 +3795,7 @@ class ProfilesPanel implements OverlayComponent {
 	// Actions reopen the panel, refreshing this snapshot without disk reads during rendering.
 	private readonly pinStatus: ProfilePinStatus | undefined;
 	private readonly sessionBoundName: string | undefined;
+	private readonly liveOrchestrator: (() => AgentRoutingEntry | undefined) | undefined;
 
 	constructor(
 		file: AgentProfilesFile,
@@ -3809,6 +3810,7 @@ class ProfilesPanel implements OverlayComponent {
 		requestRender: () => void,
 		pinStatus: () => ProfilePinStatus | undefined,
 		sessionBound: () => string | undefined,
+		liveOrchestrator?: () => AgentRoutingEntry | undefined,
 		feedback?: string,
 	) {
 		this.file = file;
@@ -3822,6 +3824,7 @@ class ProfilesPanel implements OverlayComponent {
 		this.orchestratorSettings = orchestratorSettings;
 		this.pinStatus = pinStatus();
 		this.sessionBoundName = sessionBound();
+		this.liveOrchestrator = liveOrchestrator;
 		const items = buildProfileListItems(file, evaluateProfilePin(this.pinStatus, file.profiles).winner?.profile, this.sessionBoundName);
 		this.listItems = items;
 		this.list = new NativeChoiceList<ProfileListItem>(
@@ -4047,10 +4050,13 @@ class ProfilesPanel implements OverlayComponent {
 			// any invalid or stale layer, and the scope sentence all come from the shared
 			// precedence rule the launch resolver uses.
 			...profilePinDetailLines(this.pinStatus, this.file.profiles).map((line) => this.renderLine(line, width, "muted")),
-			// The session snapshot overrides subagent routing without changing pin layers.
+			// gentle-shell#1064: the binding is stored for this session and outranks
+			// the pin in the panel list, so it is named right after the pin layers.
+			// Since #1558 launches resolve it ahead of pins and the global default,
+			// and nothing was written to make that true.
 			...(this.sessionBoundName === undefined
 				? []
-				: [this.renderLine(`session        ${sanitizeTerminalText(this.sessionBoundName)} (session) — stored for this session; nothing was written`, width, "muted")]),
+				: [this.renderLine(`session        ${sanitizeTerminalText(this.sessionBoundName)} (session) — launches resolve it ahead of pins and the global default; nothing was written`, width, "muted")]),
 			"",
 			this.renderLine("Profile routing", width, "accent"),
 			...this.indentLines(this.routingLines(profileRows, widths), width),
@@ -4061,6 +4067,13 @@ class ProfilesPanel implements OverlayComponent {
 	}
 
 	private effectiveOrchestratorLabel(): string {
+		// The now line answers what this session runs: the live orchestrator wins
+		// when one exists, and the settings read only stands in for sessions
+		// without a live model (and still surfaces an unreadable settings file).
+		const live = this.liveOrchestrator?.();
+		if (live !== undefined) {
+			return formatOrchestratorSelection(live);
+		}
 		const settings = this.orchestratorSettings;
 		if (settings.status === "invalid") {
 			return `unreadable (${sanitizeTerminalText(settings.reason)})`;
@@ -4114,6 +4127,7 @@ async function showProfilesPanel(
 	currentConfig: AgentModelConfig,
 	selectedName: string | undefined,
 	saveSnapshot: ProfilesSnapshotHandler,
+	live: LiveSession,
 	status?: string,
 	sessionBoundName?: string,
 ): Promise<ProfilesPanelResult> {
@@ -4135,6 +4149,7 @@ async function showProfilesPanel(
 				() => tui.requestRender(),
 				() => readProfilePinStatus(ctx.cwd),
 				() => sessionBoundName,
+				() => liveOrchestratorSnapshot(ctx, live)?.entry,
 				status,
 			);
 			const container = createNativeFullscreenInteraction({
@@ -4221,13 +4236,32 @@ async function switchLiveOrchestrator(ctx: ExtensionContext, live: LiveSession, 
 	return `\nThis session now runs on ${label} · ${entry.thinking}.`;
 }
 
+/**
+ * The live session's orchestrator entry, when a model is running. `s` captures
+ * what the session actually runs rather than the default new sessions would
+ * get from settings.json; an unreadable thinking level still snapshots the
+ * model, just without a thinking claim.
+ */
+/** The live session's orchestrator: a snapshot result shaped for `s`, not a settings-file read. */
+interface LiveOrchestratorSnapshot {
+	readonly status: "valid";
+	readonly entry: AgentRoutingEntry;
+}
+
+function liveOrchestratorSnapshot(ctx: ExtensionContext, live: LiveSession): LiveOrchestratorSnapshot | undefined {
+	if (ctx.model === undefined || typeof ctx.model.provider !== "string" || typeof ctx.model.id !== "string") return undefined;
+	let thinking: unknown;
+	try { thinking = live.getThinkingLevel(); } catch { thinking = undefined; }
+	return { status: "valid", entry: { model: `${ctx.model.provider}/${ctx.model.id}`, thinking: isThinkingLevel(thinking) ? thinking : undefined } };
+}
+
 function profileSnapshotFrom(
 	current: AgentModelConfig,
-	settings: OrchestratorSettingsReadResult,
+	orchestrator: LiveOrchestratorSnapshot | OrchestratorSettingsReadResult,
 ): AgentModelConfig {
 	const snapshot = cloneModelConfig(current);
-	if (settings.status === "valid" && settings.entry !== undefined) {
-		snapshot[PROFILE_ORCHESTRATOR_KEY] = { ...settings.entry };
+	if (orchestrator.status === "valid" && orchestrator.entry !== undefined) {
+		snapshot[PROFILE_ORCHESTRATOR_KEY] = { ...orchestrator.entry };
 	}
 	return snapshot;
 }
@@ -4842,7 +4876,11 @@ async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): 
 				// so a session binding outranks the shared layers here too.
 				readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.modelProfiles
 					?? readEffectiveModelConfig(ctx.cwd),
-				readOrchestratorSettings(orchestratorSettingsPath()),
+				// The orchestrator follows the same honesty rule: capture what the
+				// session actually runs (ctx.model plus the live thinking level)
+				// when a live model exists; settings.json defaults stand in only
+				// when it does not (LCubero's finding on #1064).
+				liveOrchestratorSnapshot(ctx, live) ?? readOrchestratorSettings(orchestratorSettingsPath()),
 			),
 		);
 		writeProfilesFileSync(path, next);
@@ -4864,6 +4902,7 @@ async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): 
 		await currentRoutingForPanel(),
 		selectedName,
 		saveSnapshot,
+		live,
 		undefined,
 		sessionBoundName(),
 	);
@@ -4877,6 +4916,7 @@ async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): 
 			await currentRoutingForPanel(),
 			selectedName,
 			saveSnapshot,
+			live,
 			report.status,
 			sessionBoundName(),
 		);
