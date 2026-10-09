@@ -254,6 +254,23 @@ test("package verification names the native review runtime boundary and packaged
 	);
 });
 
+test("double-click installers are attached to the release only after the verified publication", () => {
+	const workflow = readFileSync(join(PACKAGE_ROOT, ".github", "workflows", "publish.yml"), "utf8");
+	const job = workflow.match(/^ {2}installers:\n([\s\S]*?)(?=^ {2}[A-Za-z0-9_-]+:\n|(?![\s\S]))/m)?.[1];
+	assert.ok(job, "publish.yml has an installers job");
+	assert.match(job, /^ {4}needs: publish$/m, "installers wait for the verified npm publication");
+	assert.match(job, /^ {4}if: github\.repository == 'Gentleman-Programming\/gentle-shell'$/m);
+	assert.match(job, /^ {6}contents: write$/m, "only this job may write the release");
+	assert.match(job, /ref: \$\{\{ github\.sha \}\}/, "the installers come from the verified release commit");
+	assert.match(job, /persist-credentials: false/);
+	assert.match(job, /node scripts\/build-installer-bundles\.mjs --out "\$\{RUNNER_TEMP\}\/installers"/);
+	assert.match(job, /RELEASE_TAG: \$\{\{ inputs\.tag \}\}/);
+	assert.match(job, /gh release upload "\$\{RELEASE_TAG\}" "\$\{RUNNER_TEMP\}"\/installers\/\* --repo "\$\{GITHUB_REPOSITORY\}" --clobber/);
+	const publish = workflow.match(/^ {2}publish:\n([\s\S]*?)(?=^ {2}installers:\n)/m)?.[1];
+	assert.ok(publish);
+	assert.doesNotMatch(publish, /contents: write/, "the npm publication job keeps read-only contents");
+});
+
 test("npm publication is bound to the exact package tag and triggering commit", () => {
 	const workflow = readFileSync(join(PACKAGE_ROOT, ".github", "workflows", "publish.yml"), "utf8");
 	const packageJson = readPackageJson();
