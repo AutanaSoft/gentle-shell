@@ -72,7 +72,9 @@ const probeNames = ["node", "pnpm", "pi", "shell", "gentleAi", "go", "globalBin"
  * tool directories) and npm (a usable npm resolves there) booleans; pnpm may
  * add persistent (resolvable from the user's PATH). A bootstrap-only Node or
  * pnpm may add found: the stable version of the older or incompatible one on the
- * user's PATH that the bootstrap left in place. globalBin returns { available, path, writable, onPath } for
+ * user's PATH that the bootstrap left in place; a pnpm probe for the user's own
+ * pnpm in `$PNPM_HOME/bin` (where persisting pnpm writes) adds inGlobalBin:true
+ * and reports that pnpm itself, never as found. globalBin returns { available, path, writable, onPath } for
  * pnpmGlobalBin's `$PNPM_HOME/bin` directory; setup returns boolean, or
  * { available: true, recoverable: true } for the pinned stack this pnpm installed
  * whose setup did not finish (only its setup is then planned).
@@ -183,15 +185,15 @@ export function planPreflight(inventory, { channel = "release" } = {}) {
 	// An older Node or an incompatible pnpm on the user's PATH is left as it is: the
 	// bootstrap acquired its pinned copy, which the probe reports (bootstrap-only)
 	// with the user's stable version as `found`. That copy runs the installer and
-	// is persisted below; the plan records both versions. An update persists
-	// nothing, so it keeps blocking as before.
+	// is persisted below; the plan records both versions.
+	const replacedRuntimes = [];
 	for (const name of ["node", "pnpm"]) {
 		const seen = inventory[name];
 		const found = versionParts(seen?.found);
 		const replaced = name === "node" ? found !== null && compareVersions(found, versionParts(requirements.node)) < 0 : found !== null;
 		if (tools[name].status !== "reusable" || seen.persistent !== false || !replaced) continue;
 		tools[name] = { ...tools[name], found: found.join("."), version: persistencePins[name] };
-		if (update || npmCurrent) blockers.push({ code: "incompatible-tool", tool: name });
+		replacedRuntimes.push(name);
 	}
 	record("gentleAi", classify(inventory.gentleAi, requirements.gentleAi, (o) => o.compatible, true), requirements.gentleAi);
 	const needsNative = tools.gentleAi.status === "unavailable";
@@ -214,6 +216,13 @@ export function planPreflight(inventory, { channel = "release" } = {}) {
 	if (missingShell || needsNative || inventory.setup === false || recovering) setupStatus = "needs-setup";
 	else if (inventory.setup === true) setupStatus = "reusable";
 	record("setup", setupStatus);
+	// Runtimes are persisted only while installing Gentle Shell (the runner's
+	// persistence variants): with an existing Shell, updated or current, a replaced
+	// Node or pnpm keeps blocking as before. A setup recovery persists nothing and
+	// runs with the bootstrap's copy.
+	if (["needs-update", "reusable"].includes(tools.shell.status) && !recovering) {
+		for (const name of replacedRuntimes) blockers.push({ code: "incompatible-tool", tool: name });
+	}
 	if (blockers.length) return { tools, blockers, actions, ready: false };
 
 	function action(id, kind, target, version) {

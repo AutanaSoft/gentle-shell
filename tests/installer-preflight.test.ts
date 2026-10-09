@@ -444,6 +444,39 @@ test("an update of an existing installation persists nothing, so an older Node o
 	}
 });
 
+test("a current Gentle Shell persists nothing either, so an older Node or incompatible pnpm blocks before consent", () => {
+	// The runner persists runtimes only while installing Gentle Shell (planGate):
+	// these plans would otherwise be rejected as unsupported after consent.
+	const current = { ...installed(), shell: owned(requirements.shell) };
+	const cases = [
+		["node", { node: pinnedNode("22.18.0") }],
+		["node", { node: pinnedNode("22.18.0"), pi: { ...tool("0.87.1"), owner: "pnpm" } }],
+		["node", { node: pinnedNode("22.18.0"), setup: false }],
+		["pnpm", { node: { ...tool("24.18.0"), persistent: true, npm: true }, pnpm: pinnedPnpm("10.27.0") }],
+	] as const;
+	for (const [name, change] of cases) {
+		const plan = planPreflight({ ...current, ...change });
+		assert.deepEqual(plan.blockers, [{ code: "incompatible-tool", tool: name }], JSON.stringify(change));
+		assert.deepEqual(plan.actions, []);
+	}
+	// A setup recovery persists nothing and runs with the bootstrap's Node, as before.
+	const recovery = planPreflight({ ...current, node: pinnedNode("22.18.0"), setup: recoverable });
+	assert.deepEqual(recovery.blockers, []);
+	assert.deepEqual(updateIds(recovery), ["setup-shell", "verify-readiness"]);
+});
+
+test("a user's pnpm in $PNPM_HOME/bin is never persisted over: an older or newer-major one blocks", () => {
+	const node = { ...tool("24.18.0"), persistent: true, npm: true };
+	for (const version of ["11.0.5", "12.0.0"]) {
+		for (const n of [node, pinnedNode("22.18.0")]) {
+			const plan = planPreflight(runtimeStack(n, { ...tool(version), compatible: false, persistent: true, inGlobalBin: true }));
+			assert.ok(plan.blockers.some((b: { code: string; tool: string }) => b.code === "incompatible-tool" && b.tool === "pnpm"), version);
+			assert.deepEqual(plan.actions, []);
+		}
+	}
+	assert.deepEqual(planPreflight(runtimeStack(node, { available: null, inGlobalBin: true })).blockers, [{ code: "unknown-tool", tool: "pnpm" }]);
+});
+
 test("an older Go keeps blocking: the installer never downloads Go", () => {
 	for (const [platform, channel, change] of [["win32", "release", { gentleAi: absent }], ["darwin", "main", {}]] as const) {
 		const plan = planPreflight({ ...installed(platform), ...change, go: tool("1.24.0") }, { channel });

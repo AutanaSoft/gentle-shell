@@ -15,6 +15,7 @@ import {
 	packageNativeGentleAi,
 	pnpmInvocation,
 	recoverableStackRoot,
+	samePath,
 	spawnable,
 	succeeded,
 } from "./installer-runner.mjs";
@@ -339,10 +340,17 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 				return { available: true, version, usable: true, compatible, persistent: await persistentOn("pnpm") };
 			}
 			// That pnpm's version, read in the user's environment (POSIX: a Windows .cmd needs a shell).
-			const own = platform === "win32" ? null : await lookPath("pnpm", user, platform, fs);
-			const result = own ? await run(own, ["--version"], { env: user, cwd: path.parse(own).root, deadlineMs: deadlines.version }) : null;
+			const own = await lookPath("pnpm", user, platform, fs);
+			const result = own && platform !== "win32" ? await run(own, ["--version"], { env: user, cwd: path.parse(own).root, deadlineMs: deadlines.version }) : null;
 			const found = succeeded(result) && result.truncated !== true ? exactVersion(result.stdout, STABLE) : null;
-			const replaced = found !== null && !(Number(found.split(".")[0]) === PNPM_MAJOR && atLeast(found, requirements.pnpm));
+			const usableFound = found !== null && Number(found.split(".")[0]) === PNPM_MAJOR && atLeast(found, requirements.pnpm);
+			// Persisting pnpm writes $PNPM_HOME/bin: a user's pnpm there is reported as it is
+			// (incompatible, or unknown without a version), never replaced or downgraded.
+			if (own && globalBin && samePath(path.dirname(own), globalBin.path, platform)) {
+				return found ? { available: true, version: found, usable: true, compatible: usableFound, persistent: true, inGlobalBin: true }
+					: { ...unknown(), inGlobalBin: true };
+			}
+			const replaced = found !== null && !usableFound;
 			return { available: true, version, usable: true, compatible, persistent: false, ...(replaced ? { found } : {}) };
 		},
 		// Only a Pi older than the minimum reports its owner (pnpm or npm): the one the installer updates.

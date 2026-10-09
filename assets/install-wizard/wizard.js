@@ -455,7 +455,7 @@ export function renderPlan(doc, model, handlers) {
 			lead: "Gentle Shell is already installed, but Pi is older than it needs. This updates Pi with the package manager that installed it; your settings and sessions stay. Nothing changes until you confirm." }
 		: installingPi
 		? { title: "Install Pi for Gentle Shell",
-			lead: "Gentle Shell is already installed, but it needs a newer Pi. This installs Pi globally with pnpm; any other Pi on this computer is left unchanged. Nothing changes until you confirm." }
+			lead: "Gentle Shell is already installed, but Pi is missing or older than it needs. This installs Pi globally with pnpm; any other Pi on this computer is left unchanged. Nothing changes until you confirm." }
 		: { title: "Review the installation plan",
 			lead: "Nothing changes until you confirm. This is exactly what the installer will do on this computer." };
 	return panel(doc, { stage: "review", eyebrow: "Step 2 of 4 · Review", ...heading },

@@ -269,6 +269,47 @@ test("the bootstrap's pnpm next to an incompatible pnpm on the user's PATH is bo
 	assert.deepEqual(await windows.probes.pnpm(), { available: true, version: "11.1.1", usable: true, compatible: true, persistent: false });
 });
 
+test("a user's pnpm in $PNPM_HOME/bin is reported as it is next to the bootstrap's pnpm, never as replaced", async () => {
+	// Persisting pnpm writes $PNPM_HOME/bin/pnpm: the user's own pnpm there is never replaced or downgraded.
+	const env = { HOME, PATH: `${TOOLS}/node/bin:${TOOLS}/pnpm/bin:${BIN}:/usr/bin:/bin` };
+	const results = { [`${TOOLS_PNPM} --version`]: { code: 0, stdout: "11.1.1\n" } };
+	for (const own of ["11.0.5", "12.0.0", "10.27.0"]) {
+		const h = probes({ env, files: [TOOLS_PNPM, `${BIN}/pnpm`], results: { ...results, [`${BIN}/pnpm --version`]: { code: 0, stdout: `${own}\n` } } });
+		assert.deepEqual(await h.probes.pnpm(), { available: true, version: own, usable: true, compatible: false, persistent: true, inGlobalBin: true }, own);
+	}
+	// Without a version it is unknown, still never replaced.
+	const unread = probes({ env, files: [TOOLS_PNPM, `${BIN}/pnpm`], results: { ...results, [`${BIN}/pnpm --version`]: { code: 2 } } });
+	assert.deepEqual(await unread.probes.pnpm(), { available: null, inGlobalBin: true });
+	// A compatible one there needs nothing persisted over it.
+	const current = probes({ env, files: [TOOLS_PNPM, `${BIN}/pnpm`], results: { ...results, [`${BIN}/pnpm --version`]: { code: 0, stdout: "11.5.0\n" } } });
+	assert.deepEqual(await current.probes.pnpm(), { available: true, version: "11.5.0", usable: true, compatible: true, persistent: true, inGlobalBin: true });
+	// Through the planner: a blocker before consent, and nothing persisted over it.
+	for (const own of ["11.0.5", "12.0.0"]) {
+		const h = probes({ env, files: [TOOLS_PNPM, `${BIN}/pnpm`], results: { ...results, [`${BIN}/pnpm --version`]: { code: 0, stdout: `${own}\n` } } });
+		const inventory = await collectInventory({ platform: "linux", arch: "x64", probes: { pnpm: h.probes.pnpm,
+			node: async () => ({ available: true, version: "24.18.0", usable: true, persistent: true, npm: true }),
+			pi: async () => ({ available: false }), shell: async () => ({ available: false }), gentleAi: async () => ({ available: false }),
+			go: async () => ({ available: false }), globalBin: async () => ({ available: true, path: BIN, writable: true, onPath: true }),
+			setup: async () => false } });
+		const plan = planPreflight(inventory);
+		assert.deepEqual(plan.blockers, [{ code: "incompatible-tool", tool: "pnpm" }], own);
+		assert.deepEqual(plan.actions, []);
+	}
+	// The same user pnpm outside $PNPM_HOME/bin keeps the pinned copy alongside.
+	const outside = probes({ files: [TOOLS_PNPM, "/usr/bin/pnpm"], results: { ...results, "/usr/bin/pnpm --version": { code: 0, stdout: "11.0.5\n" } } });
+	assert.deepEqual(await outside.probes.pnpm(), { available: true, version: "11.1.1", usable: true, compatible: true, persistent: false, found: "11.0.5" });
+	// Windows cannot run the user's pnpm.cmd for its version: one in $PNPM_HOME\bin is unknown.
+	const local = "C:\\Users\\u\\AppData\\Local";
+	const tools = `${local}\\.gentle-shell-bootstrap-tools.1`;
+	const node = `${tools}\\node\\node.exe`;
+	const entry = `${tools}\\pnpm\\package\\bin\\pnpm.mjs`;
+	const windowsEnv = { LOCALAPPDATA: local, USERPROFILE: "C:\\Users\\u", Path: `${local}\\pnpm\\bin`, GENTLE_BOOTSTRAP_TOOLS: tools,
+		GENTLE_INSTALL_PNPM_NODE: node, GENTLE_INSTALL_PNPM_ENTRY: entry };
+	const windows = probes({ platform: "win32", env: windowsEnv, files: [`${local}\\pnpm\\bin\\pnpm.cmd`],
+		results: { [`${node} ${entry} --version`]: { code: 0, stdout: "11.1.1\r\n" } } });
+	assert.deepEqual(await windows.probes.pnpm(), { available: null, inGlobalBin: true });
+});
+
 test("Windows pnpm uses the direct bootstrap handoff; a .cmd shim alone is unknown", async () => {
 	const local = "C:\\Users\\u\\AppData\\Local";
 	const node = `${local}\\.gentle-shell-bootstrap-tools.1\\node\\node.exe`;

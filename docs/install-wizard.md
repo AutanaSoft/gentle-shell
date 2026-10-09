@@ -128,7 +128,14 @@ older Node.js or an incompatible pnpm on the user's PATH is not a blocker when
 the bootstrap's pinned copy runs the wizard: the probe reports that copy
 (bootstrap-only) with the user's stable version as `found`, and `tools.node` or
 `tools.pnpm` records `found` and the persisted pin as `version` (see
-[Existing installations](#existing-installations)). An older Pi is not a blocker: one that pnpm or npm owns is
+[Existing installations](#existing-installations)). That copy is persisted
+only for a new installation of Gentle Shell: with an existing Shell (updated or
+current) the replaced runtime is an `incompatible-tool` blocker before consent,
+except for a setup recovery, which persists nothing. A user's pnpm in
+`$PNPM_HOME/bin`, where persisting pnpm writes, is never reported as `found`:
+the probe reports that pnpm itself with `inGlobalBin: true` (unknown without a
+version, always on Windows), so an older or newer-major one blocks and the
+guidance names both versions and, for an older one, `pnpm self-update <pin>`. An older Pi is not a blocker: one that pnpm or npm owns is
 `needs-update`, and one neither owns is `needs-install` (see
 [Existing installations](#existing-installations)). A Pi or Shell command on PATH that pnpm does not manage
 stays `unknown` (never replaced), and its probe adds `outsidePnpm: true` so the
@@ -496,6 +503,8 @@ Pi but never reinstalls or downgrades it, and nothing changes before consent.
 | A Gentle Shell neither pnpm nor npm owns (an `npm link` of a source checkout, for example) | Blocked with an explanation; never reinstalled. |
 | A Node.js older than the minimum with a stable version (mise, nvm, Homebrew, an old installer) | Left unchanged. The POSIX bootstrap acquires its verified Node 24.21.0 as when Node is absent, and the plan persists it (`persist-node`, `persist-package-managers`, `configure-npm-prefix`). The plan says so before consent. An unknown or prerelease version still blocks. Windows: `bootstrap.cmd` still refuses an older Node. |
 | A pnpm of another major, older than 11.1.1, or whose engine rejects the bootstrap's Node | Left unchanged. Both bootstraps acquire the verified pnpm 11.1.1 as when pnpm is absent, and the plan persists it (`persist-pnpm`, or `persist-package-managers` with npm). The plan says so before consent. Unknown evidence still blocks. |
+| That pnpm in `$PNPM_HOME/bin` itself (where persisting pnpm writes) | Blocked before consent, never replaced or downgraded. The guidance names the found and required versions; an older one is updated with `pnpm self-update 11.1.1`, a newer major is never downgraded. |
+| An older Node.js or incompatible pnpm next to an existing Gentle Shell (updated or current) | Blocked before consent: runtimes are persisted only while installing Gentle Shell. A setup recovery is not blocked and persists nothing. |
 | A Go older than the minimum (main channel, or a Windows build) | Blocked: the installer never downloads Go (`acquire-go` is never run), and the guidance names both versions. |
 
 Ownership comes from real paths ([`installOwner`](../scripts/main-channel.mjs)):

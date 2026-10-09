@@ -207,11 +207,35 @@ function older(found, required) {
 	}
 	return false;
 }
+/** A user's pnpm in $PNPM_HOME/bin, where the installer would persist its own:
+ * never replaced or downgraded, so the guidance says how to update an older one
+ * with pnpm itself (`pnpm self-update <version>`). */
+function globalBinPnpm(blocker, found, required) {
+	const where = "is installed in the pnpm global bin directory, where this installer would put its own pnpm,";
+	const update = `\`pnpm self-update ${required}\``;
+	if (blocker.code === "unknown-tool" || !STABLE.test(found ?? "")) {
+		return `A pnpm ${where} but its version could not be checked. Nothing was replaced. ` +
+			`If \`pnpm --version\` reports a version older than ${required}, update it with ${update}, then select Check again.`;
+	}
+	const major = required.split(".")[0];
+	if (older(found, required)) {
+		return `pnpm ${found} ${where} but this installer needs pnpm ${required} or a newer ${major}.x. Nothing was replaced. ` +
+			`Update it with ${update}, then select Check again.`;
+	}
+	return `pnpm ${found} ${where} but this installer only runs pnpm ${major} (${required} or a newer ${major}.x). ` +
+		`Nothing was replaced, and this installer never downgrades pnpm. To use it, make a pnpm ${major} release your global pnpm the way you prefer, then select Check again.`;
+}
+
 /** Names the found and required versions when an incompatible tool is simply
- * older than its minimum, and explains a Pi or Shell installed outside pnpm;
- * anything else keeps the fixed guidance. */
+ * older than its minimum, and explains a Pi or Shell installed outside pnpm or
+ * a pnpm in the global bin directory; anything else keeps the fixed guidance. */
 function blockerGuidance(blocker, inventory, plan) {
 	const fixed = guidance.blockers[blocker.code] ?? guidance.fallback;
+	const pnpmRequired = plan.tools?.pnpm?.required;
+	if (blocker.tool === "pnpm" && ["incompatible-tool", "unknown-tool"].includes(blocker.code) &&
+		inventory?.pnpm?.inGlobalBin === true && STABLE.test(pnpmRequired ?? "")) {
+		return globalBinPnpm(blocker, inventory.pnpm.version, pnpmRequired);
+	}
 	if (blocker.code === "unknown-tool" && Object.hasOwn(unmanaged, blocker.tool) && inventory?.[blocker.tool]?.outsidePnpm === true) {
 		return unmanaged[blocker.tool];
 	}

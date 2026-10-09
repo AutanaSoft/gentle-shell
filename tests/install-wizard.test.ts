@@ -519,6 +519,9 @@ test("a plan that only updates an older Pi is reviewed as a Pi update, with an U
 	const installView = wizard.renderPlan(document, alongside, { install: () => {}, reload: () => {}, close: () => {} });
 	assert.ok(headings(installView)[0].textContent.includes("Install Pi"));
 	assert.ok(button(installView, "Install Pi"));
+	// The same plan serves a missing Pi and an older one neither pnpm nor npm owns.
+	assert.ok(installView.textContent.includes("Pi is missing or older than it needs"));
+	assert.equal(installView.textContent.includes("needs a newer Pi"), false);
 	// Combined with a Gentle Shell installation or update, the plan keeps its usual kind.
 	const install = wizard.planModel({ planId: "p", blockers: [], actions: [{ id: "update-pi" }, { id: "install-shell" }, { id: "setup-shell" },
 		{ id: "verify-readiness" }] });

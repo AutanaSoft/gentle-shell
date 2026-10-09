@@ -368,6 +368,33 @@ test("/api/plan names the found and required Go and says the installer does not 
 	}
 });
 
+test("/api/plan explains a pnpm in $PNPM_HOME/bin that the installer will not replace, with how to update it", async () => {
+	const inGlobalBin = (pnpm: object) => ({ pnpm: { ...pnpm, inGlobalBin: true } });
+	const cases = [
+		[inGlobalBin({ available: true, version: "11.0.5", usable: true, compatible: false, persistent: true }), "incompatible-tool",
+			`pnpm 11.0.5 is installed in the pnpm global bin directory, where this installer would put its own pnpm, but this installer needs pnpm ${requirements.pnpm} or a newer 11.x. ` +
+			`Nothing was replaced. Update it with \`pnpm self-update ${requirements.pnpm}\`, then select Check again.`],
+		[inGlobalBin({ available: true, version: "12.0.0", usable: true, compatible: false, persistent: true }), "incompatible-tool",
+			`pnpm 12.0.0 is installed in the pnpm global bin directory, where this installer would put its own pnpm, but this installer only runs pnpm 11 (${requirements.pnpm} or a newer 11.x). ` +
+			"Nothing was replaced, and this installer never downgrades pnpm. To use it, make a pnpm 11 release your global pnpm the way you prefer, then select Check again."],
+		[inGlobalBin({ available: null }), "unknown-tool",
+			"A pnpm is installed in the pnpm global bin directory, where this installer would put its own pnpm, but its version could not be checked. " +
+			`Nothing was replaced. If \`pnpm --version\` reports a version older than ${requirements.pnpm}, update it with \`pnpm self-update ${requirements.pnpm}\`, then select Check again.`],
+	] as const;
+	for (const [change, code, text] of cases) {
+		const { host, port, login } = await start({ collect: async () => collected({ ...change, node: { available: true, version: "24.18.0", usable: true, persistent: true, npm: true } }) });
+		try {
+			const view = await plan(port, await login());
+			assert.deepEqual(view.actions, []);
+			const blocker = view.blockers.find((item: { tool: string }) => item.tool === "pnpm");
+			assert.equal(blocker.code, code);
+			assert.equal(blocker.guidance, text);
+		} finally {
+			await host.close("test");
+		}
+	}
+});
+
 test("/api/plan explains a Gentle Shell that neither pnpm nor npm manages", async () => {
 	const { host, port, login } = await start({ collect: async () => collected({
 		pi: { available: true, version: "1.0.4", usable: true },
