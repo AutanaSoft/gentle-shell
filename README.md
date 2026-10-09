@@ -240,6 +240,28 @@ The [v3.5.1 release](https://github.com/Gentleman-Programming/gentle-shell/relea
 
 > **Naming transition:** The product is called `gentle-shell`; the current npm package and repository remain `gentle-pi` until migration.
 
+### Easiest: download and double-click (no terminal needed)
+
+Download the installer for your computer, double-click it, and follow the steps in your browser. It installs everything Gentle Shell needs (Node.js, pnpm, Pi and Gentle Shell), or updates what you already have, and changes nothing until you confirm.
+
+| Your computer | Download | Then |
+| --- | --- | --- |
+| **macOS** | [gentle-shell-installer-macos.zip](https://github.com/Gentleman-Programming/gentle-shell/releases/latest/download/gentle-shell-installer-macos.zip) | Open the zip, then double-click **Install Gentle Shell.command** inside the *Gentle Shell Installer* folder. |
+| **Windows** | [gentle-shell-installer-windows.zip](https://github.com/Gentleman-Programming/gentle-shell/releases/latest/download/gentle-shell-installer-windows.zip) | Right-click the zip → **Extract All**, open the extracted folder, then double-click **Install Gentle Shell.cmd**. It does not run from inside the zip. |
+| **Linux** | [gentle-shell-installer-linux.tar.gz](https://github.com/Gentleman-Programming/gentle-shell/releases/latest/download/gentle-shell-installer-linux.tar.gz) | Extract it, then double-click **install-gentle-shell.sh**. If your file manager does not run scripts, run `sh install-gentle-shell.sh` in that folder. |
+
+A small window opens, then the installer appears in your browser. Use the tab it opens, and keep the small window open until the installer says it is done.
+
+> **Your computer will warn you the first time.** These installers are not signed with an Apple or Microsoft developer certificate yet, so the system cannot verify who made them. That warning is expected; here is how to continue:
+>
+> - **macOS:** you see *"Install Gentle Shell.command" Not Opened* (or *cannot be opened because Apple cannot check it*). Click **Done**, open **System Settings → Privacy & Security**, scroll down to the message about *Install Gentle Shell.command*, click **Open Anyway**, and confirm with your password. On older macOS versions you can instead right-click the file, choose **Open**, then **Open** again. You only do this once.
+> - **Windows:** you see *Windows protected your PC*: click **More info**, then **Run anyway**. If you see *Open File – Security Warning* instead, click **Run**.
+> - **Linux:** if double-click opens the file in an editor, run `sh install-gentle-shell.sh` in that folder instead.
+>
+> Only download from this repository's [Releases](https://github.com/Gentleman-Programming/gentle-shell/releases) page. To check a download, compare its SHA-256 with [gentle-shell-installers-SHA256SUMS.txt](https://github.com/Gentleman-Programming/gentle-shell/releases/latest/download/gentle-shell-installers-SHA256SUMS.txt).
+
+The installer is a preview: it is tested on Linux and in CI, while clean-machine runs on macOS and Windows are still being verified. How it works and what it changes: **[installation wizard](docs/install-wizard.md)**.
+
 ### Path A: standalone `gentle-shell` (recommended, no pi changes)
 
 `gentle-shell` opens Pi with the Gentle Shell package loaded, without installing it into your pi agent or editing its `settings.json`.
@@ -289,9 +311,9 @@ See the [v3.5.1 release notes](https://github.com/Gentleman-Programming/gentle-s
 
 **Builtin codemode warning.** gentle-pi replaces Pi's builtin `codemode` with its compact renderer, so Pi warns at startup that the builtin was not loaded. In your own Pi home (`pi` with this package, or `gentle-shell --link`), gentle-pi asks once in the interactive TUI whether to add `"-builtin:codemode"` to `extensions` in the agent `settings.json` (usually `~/.pi/agent/settings.json`); it writes only if you accept, and the warning disappears from the next launch. A declined prompt is not repeated. To silence it by hand, add the entry yourself, for example `"extensions": ["-builtin:codemode"]`. Isolated `gentle-shell` homes already carry it.
 
-### Path C: browser installer (preview)
+### Path C: browser installer from a checkout
 
-The browser installer sets up Gentle Shell on a new computer or one that already has some of it: it installs what is missing (Node.js, pnpm, Pi, Gentle Shell) and updates an existing Gentle Shell. It checks the machine, shows exactly what it will change, and changes nothing until you confirm.
+The same installer as the [download above](#easiest-download-and-double-click-no-terminal-needed), started from a clone instead of a download:
 
 ```bash
 git clone https://github.com/Gentleman-Programming/gentle-shell.git
@@ -304,7 +326,7 @@ sh scripts/bootstrap.sh
 scripts\bootstrap.cmd
 ```
 
-The bootstrap gets Node.js and pnpm into a temporary folder if they are missing, then opens the wizard in your browser at a private `127.0.0.1` address. Use the tab it opens: the link works once and expires after 2 minutes. On the review screen, choose what to install:
+It installs what is missing (Node.js, pnpm, Pi, Gentle Shell) and updates an existing Gentle Shell; nothing changes until you confirm. The bootstrap gets Node.js and pnpm into a temporary folder if they are missing, then opens the wizard in your browser at a private `127.0.0.1` address. Use the tab it opens: the link works once and expires after 2 minutes. On the review screen, choose what to install:
 
 - **Latest release** (recommended): the published Gentle Shell with its pinned Gentle AI binary.
 - **Latest main**: development builds of Gentle Shell and Gentle AI from the latest commit of `main`, built on your computer. Needs Go.
