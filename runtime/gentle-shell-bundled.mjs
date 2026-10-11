@@ -58,7 +58,9 @@ function parseJson(text                    )      {
 // is this package, and which `current` names (a relative symlink on POSIX, a
 // pointer file on Windows) or `verifying` names (BUNDLED_VERIFY_ENV, for a
 // `--version` check only). Undefined otherwise.
-export function resolveBundledInstall(input                                                                              )                             {
+// `kept` accepts any finished version of the prefix, whether `current` names it
+// or not (runningBundledPrefix; never the launcher's own choice of version).
+export function resolveBundledInstall(input                                                                                              )                             {
 	const path = pathFor(input.platform);
 	const real = input.fs.realpath(input.packageRoot) ?? input.packageRoot;
 	for (let dir = path.dirname(real); path.dirname(dir) !== dir; dir = path.dirname(dir)) {
@@ -70,7 +72,7 @@ export function resolveBundledInstall(input                                     
 		if (input.fs.realpath(path.join(dir, "node_modules", "gentle-pi")) !== real) return undefined;
 		const current = path.join(root, "current");
 		const active = input.platform === "win32" ? input.fs.readText(current) === `${id}\n` : input.fs.readLink(current) === `versions/${id}`;
-		return active || input.verifying === id ? { root, id, versionDir: dir } : undefined;
+		return active || input.verifying === id || input.kept === true ? { root, id, versionDir: dir } : undefined;
 	}
 	return undefined;
 }
@@ -125,8 +127,10 @@ export function resetRunningBundledPrefixForTesting()       {
 
 // S9: the prefix of the bundled install this gentle-pi runs from, or
 // undefined. Both must hold: GENTLE_SHELL_PREFIX is absolute and names that
-// install's root, and resolveBundledInstall finds a valid install around the
-// package (its version marker, and `current` naming it). A gentle-pi elsewhere
+// install's root, and resolveBundledInstall finds a finished version of the
+// prefix around the package (its version marker). `current` need not name it:
+// a subagent started after `gentle-shell upgrade` moved `current` still runs
+// from the previous, kept version, and stays bundled. A gentle-pi elsewhere
 // (npm, pnpm, nvm), started from the agent's shell that inherits the variable,
 // gets undefined. The answer is remembered per package root and prefix value,
 // so a `gentle-shell upgrade` that moves `current` while Pi runs does not
@@ -141,16 +145,25 @@ export function runningBundledPrefix(env     , options                          
 	const key = `${packageRoot}\0${prefix}`;
 	const remember = options.fs === undefined;
 	if (remember && runningMemo.has(key)) return runningMemo.get(key);
-	const install = overlay !== undefined ? overlay ?? undefined : resolveBundledInstall({ packageRoot, platform, fs });
+	const install = overlay !== undefined ? overlay ?? undefined : resolveBundledInstall({ packageRoot, platform, fs, kept: true });
 	const real = fs.realpath(prefix);
 	const root = install !== undefined && real !== undefined && real === (fs.realpath(install.root) ?? install.root) ? install.root : undefined;
 	if (remember) runningMemo.set(key, root);
 	return root;
 }
 
-// gentle-pi's config folder inside a bundled prefix.
+// The parent of gentle-pi's bundled config folder. Gentle AI 4.0.0 reads
+// GENTLE_PI_CONFIG_HOME as this parent and writes <parent>/gentle-ai
+// (internal/cli/pi_background.go), so only the Gentle AI processes Gentle Shell
+// starts get it (gentleAiIsolationEnv).
+export function bundledPiConfigParent(prefix        , platform         = process.platform)         {
+	return pathFor(platform).join(prefix, "config");
+}
+
+// gentle-pi's config folder inside a bundled prefix: <prefix>/config/gentle-ai,
+// the folder a Gentle AI given that parent writes, with or without #5462.
 export function bundledPiConfigDir(prefix        , platform         = process.platform)         {
-	return pathFor(platform).join(prefix, "gentle-pi");
+	return pathFor(platform).join(bundledPiConfigParent(prefix, platform), "gentle-ai");
 }
 
 // The config home of a bundled gentle-pi, or undefined outside one. It is

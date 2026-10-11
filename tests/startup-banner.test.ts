@@ -478,7 +478,7 @@ function configHomeCase(t: { after: (fn: () => void) => void }, kind: ConfigHome
 	const prefix = join(base, "prefix");
 	mkdirSync(prefix);
 	setBundledInstallForTesting({ root: prefix });
-	return { env: { GENTLE_SHELL_PREFIX: prefix, GENTLE_PI_CONFIG_HOME: userConfig }, dir: join(prefix, "gentle-pi"), userConfig };
+	return { env: { GENTLE_SHELL_PREFIX: prefix, GENTLE_PI_CONFIG_HOME: userConfig }, dir: join(prefix, "config", "gentle-ai"), userConfig };
 }
 
 for (const kind of ["unset", "empty", "bundled"] as const) {

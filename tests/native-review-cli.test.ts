@@ -1065,7 +1065,8 @@ test("the central gentle-ai environment carries Gentle AI's isolation variables 
 	const { prefix, env } = bundledIsolation(t);
 	const bundled = gentleAiProcessEnvironment(env);
 	assert.equal(bundled.GENTLE_AI_HOME, join(prefix, "gentle-ai"));
-	assert.equal(bundled.GENTLE_AI_PI_CONFIG_DIR, join(prefix, "gentle-pi"));
+	assert.equal(bundled.GENTLE_AI_PI_CONFIG_DIR, join(prefix, "config", "gentle-ai"));
+	assert.equal(bundled.GENTLE_PI_CONFIG_HOME, join(prefix, "config"), "the parent Gentle AI 4.0.0 reads it as");
 	assert.equal(bundled.GENTLE_AI_NO_SELF_UPDATE, "1");
 	assert.equal(bundled.GENTLE_PI_REVIEW_RELAY_CONTRACT, "gentle-pi.review-relay/v1");
 	const ordinary = gentleAiProcessEnvironment({ PATH: "/usr/bin" });

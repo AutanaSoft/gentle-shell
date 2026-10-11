@@ -14,7 +14,7 @@ import {
 	resolveGentleAiReleaseAsset,
 } from "../scripts/gentle-ai-installer.mjs";
 import { engramPinVersion } from "../scripts/installer-downloads.mjs";
-import { bundledGentlePiConfigHome, bundledPiConfigDir, runningBundledPrefix } from "./gentle-shell-bundled.ts";
+import { bundledGentlePiConfigHome, bundledPiConfigDir, bundledPiConfigParent, runningBundledPrefix } from "./gentle-shell-bundled.ts";
 import { fileURLToPath } from "node:url";
 
 export const GENTLE_AI_BINARY_MISSING_CODE = "package-local-binary-missing";
@@ -52,7 +52,8 @@ export function gentleAiBinaryPath(
 // and setup GENTLE_SHELL_PREFIX, its prefix. Every gentle-ai run a bundled
 // gentle-pi starts gets Gentle AI's own variables (gentle-ai #5462): its state,
 // backups and telemetry under <prefix>/gentle-ai, the gentle-pi config folder
-// <prefix>/gentle-pi for its persona and background subagent files, the pinned
+// <prefix>/config/gentle-ai for its persona and background subagent files
+// (and, for Gentle AI 4.0.0, GENTLE_PI_CONFIG_HOME=<prefix>/config), the pinned
 // Engram in runtime/ with no Engram acquisition or dependency probe, and no
 // self-update. They are never put in Pi's own environment: the agent's shell
 // inherits it, and a gentle-ai the user runs there stays the user's. A
@@ -62,7 +63,9 @@ export function gentleAiBinaryPath(
 export interface BundledGentleAiPaths {
 	/** GENTLE_AI_HOME. */
 	home: string;
-	/** GENTLE_AI_PI_CONFIG_DIR: gentle-pi's own bundled config home. */
+	/** GENTLE_PI_CONFIG_HOME for Gentle AI only: the parent Gentle AI 4.0.0 appends gentle-ai to. */
+	piConfigParent: string;
+	/** GENTLE_AI_PI_CONFIG_DIR: gentle-pi's own bundled config home, <piConfigParent>/gentle-ai. */
 	piConfig: string;
 	/** The Engram scripts/bundled-install.mjs publishes (prefixLayout's `engram`). */
 	engram: string;
@@ -72,6 +75,7 @@ export function bundledGentleAiPaths(prefix: string, platform: string = process.
 	const path = platform === "win32" ? win32 : posix;
 	return {
 		home: path.join(prefix, "gentle-ai"),
+		piConfigParent: bundledPiConfigParent(prefix, platform),
 		piConfig: bundledPiConfigDir(prefix, platform),
 		engram: path.join(prefix, "runtime", `engram-${engramPinVersion}`, platform === "win32" ? "engram.exe" : "engram"),
 	};
@@ -79,7 +83,8 @@ export function bundledGentleAiPaths(prefix: string, platform: string = process.
 
 /**
  * `env` plus GENTLE_AI_HOME, GENTLE_AI_PI_CONFIG_DIR, GENTLE_AI_ENGRAM_BIN
- * (only when the pinned Engram is published) and GENTLE_AI_NO_SELF_UPDATE=1
+ * (only when the pinned Engram is published), GENTLE_AI_NO_SELF_UPDATE=1 and
+ * GENTLE_PI_CONFIG_HOME (the parent of GENTLE_AI_PI_CONFIG_DIR)
  * when this gentle-pi runs from the valid bundled install GENTLE_SHELL_PREFIX
  * names (runningBundledPrefix). Otherwise `env` itself, unchanged: a gentle-pi
  * installed elsewhere (the user's own, started from the agent's shell, which
@@ -105,6 +110,10 @@ export function gentleAiIsolationEnv(
 		GENTLE_AI_PI_CONFIG_DIR: paths.piConfig,
 		...(engram ? { GENTLE_AI_ENGRAM_BIN: paths.engram } : {}),
 		GENTLE_AI_NO_SELF_UPDATE: "1",
+		// Gentle AI 4.0.0 knows no GENTLE_AI_PI_CONFIG_DIR: it writes gentle-pi's
+		// background-subagents policy to <GENTLE_PI_CONFIG_HOME>/gentle-ai, the same
+		// folder. Only these Gentle AI processes get it, never Pi or its shell.
+		GENTLE_PI_CONFIG_HOME: paths.piConfigParent,
 	};
 }
 

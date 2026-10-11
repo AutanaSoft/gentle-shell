@@ -30,10 +30,14 @@ function bundledPrefix(t: test.TestContext, { marked = true, current = ID } = {}
 	return { prefix, packageRoot, engram };
 }
 
-test("bundledGentleAiPaths names the prefix's Gentle AI home, gentle-pi config folder and pinned Engram", () => {
+// B2a: gentle-pi's bundled config folder is <prefix>/config/gentle-ai, so a
+// Gentle AI 4.0.0 given GENTLE_PI_CONFIG_HOME=<prefix>/config (its parent, the
+// way 4.0.0 reads it) writes the background-subagents policy into it.
+test("bundledGentleAiPaths names the prefix's Gentle AI home, gentle-pi config folder and its parent, and pinned Engram", () => {
 	assert.deepEqual(bundledGentleAiPaths("/home/ana/.gentle-shell", "linux"), {
 		home: "/home/ana/.gentle-shell/gentle-ai",
-		piConfig: "/home/ana/.gentle-shell/gentle-pi",
+		piConfigParent: "/home/ana/.gentle-shell/config",
+		piConfig: "/home/ana/.gentle-shell/config/gentle-ai",
 		engram: `/home/ana/.gentle-shell/runtime/engram-${engramPinVersion}/engram`,
 	});
 	assert.equal(bundledGentleAiPaths("C:\\Users\\Ana\\AppData\\Local\\gentle-shell", "win32").engram,
@@ -47,9 +51,10 @@ test("gentleAiIsolationEnv adds the four Gentle AI variables for this package in
 	assert.deepEqual(env, {
 		...base,
 		GENTLE_AI_HOME: join(prefix, "gentle-ai"),
-		GENTLE_AI_PI_CONFIG_DIR: join(prefix, "gentle-pi"),
+		GENTLE_AI_PI_CONFIG_DIR: join(prefix, "config", "gentle-ai"),
 		GENTLE_AI_ENGRAM_BIN: engram,
 		GENTLE_AI_NO_SELF_UPDATE: "1",
+		GENTLE_PI_CONFIG_HOME: join(prefix, "config"),
 	});
 	assert.equal("GENTLE_AI_HOME" in base, false, "the caller's environment is not changed");
 	// Without the published Engram, Gentle AI gets no Engram to use.
@@ -73,18 +78,16 @@ test("gentleAiIsolationEnv returns the environment unchanged outside a bundled i
 });
 
 // A2: only a valid bundled install, never a folder that merely sits under a versions/.
-test("gentleAiIsolationEnv gives nothing to an nvm gentle-pi, an unmarked version or one current does not name", (t) => {
+test("gentleAiIsolationEnv gives nothing to an nvm gentle-pi or an unmarked version", (t) => {
 	const nvm = realpathSync(mkdtempSync(join(tmpdir(), "gentle-ai-isolation-nvm-")));
 	t.after(() => rmSync(nvm, { recursive: true, force: true }));
 	const nvmPackage = join(nvm, ".nvm", "versions", "node", "v24.21.0", "lib", "node_modules", "gentle-pi");
 	mkdirSync(nvmPackage, { recursive: true });
 	const nvmEnv = { GENTLE_SHELL_PREFIX: join(nvm, ".nvm") };
 	assert.equal(gentleAiIsolationEnv(nvmEnv, { packageRoot: nvmPackage }), nvmEnv);
-	for (const options of [{ marked: false }, { current: "4.0.0-1.0.0" }]) {
-		const { prefix, packageRoot } = bundledPrefix(t, options);
-		const env = { GENTLE_SHELL_PREFIX: prefix };
-		assert.equal(gentleAiIsolationEnv(env, { packageRoot }), env, JSON.stringify(options));
-	}
+	const { prefix: unmarked, packageRoot: unmarkedRoot } = bundledPrefix(t, { marked: false });
+	const unmarkedEnv = { GENTLE_SHELL_PREFIX: unmarked };
+	assert.equal(gentleAiIsolationEnv(unmarkedEnv, { packageRoot: unmarkedRoot }), unmarkedEnv);
 	// A valid install, but the variable names another folder.
 	const { packageRoot } = bundledPrefix(t);
 	const other = { GENTLE_SHELL_PREFIX: nvm };
@@ -108,7 +111,20 @@ test("runningBundledPrefix answers per env in one process and keeps a remembered
 	rmSync(join(prefix, "current"));
 	if (process.platform === "win32") writeFileSync(join(prefix, "current"), "4.2.0-1.1.0\n");
 	else symlinkSync("versions/4.2.0-1.1.0", join(prefix, "current"));
+	// The version stops being a finished install (its marker is gone).
+	rmSync(join(prefix, "versions", ID, ".gentle-shell-version"));
 	assert.equal(runningBundledPrefix({ GENTLE_SHELL_PREFIX: prefix }, { packageRoot }), prefix, "remembered");
 	resetRunningBundledPrefixForTesting();
 	assert.equal(runningBundledPrefix({ GENTLE_SHELL_PREFIX: prefix }, { packageRoot }), undefined, "decided again after a reset");
+});
+
+// N1: a subagent started after `gentle-shell upgrade` moved `current` runs from
+// the previous version, which the prefix still keeps: it stays bundled.
+test("a kept, marked version that current no longer names is still bundled for its own runs", (t) => {
+	resetRunningBundledPrefixForTesting();
+	t.after(resetRunningBundledPrefixForTesting);
+	const { prefix, packageRoot } = bundledPrefix(t, { current: "4.2.0-1.1.0" });
+	const env = { GENTLE_SHELL_PREFIX: prefix };
+	assert.equal(runningBundledPrefix(env, { packageRoot }), prefix);
+	assert.equal(gentleAiIsolationEnv(env, { packageRoot }).GENTLE_AI_HOME, join(prefix, "gentle-ai"));
 });

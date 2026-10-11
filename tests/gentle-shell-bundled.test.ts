@@ -16,10 +16,13 @@ import {
 	parseBundledUpgradeArgs,
 	withBundledNpmCommand,
 	resolveBundledInstall,
+	setBundledInstallForTesting,
 	type BundledFs,
 	type BundledPi,
 } from "../lib/gentle-shell-bundled.ts";
 import { artifactFor, engramPinVersion } from "../scripts/installer-downloads.mjs";
+import { gentlePiConfigHome } from "../lib/agent-home.ts";
+import { resolveBackgroundSubagentsPolicy } from "../lib/background-subagents-policy.ts";
 
 // A fake filesystem keyed by exact paths, so every platform's paths are plain
 // strings on every runner: realpath maps a link to its target, and any other
@@ -331,7 +334,7 @@ test("bundled setup runs Gentle AI with the prefix's isolation variables and kee
 	writeFileSync(fakeGentleAi, ["#!/bin/sh", `env > "${probe}"`, 'config="${GENTLE_AI_PI_CONFIG_DIR:-$HOME/no-config-dir}"', 'mkdir -p "$config" "$HOME/.pi/gentle-ai"',
 		'echo rewritten > "$config/persona.json"', 'echo rewritten > "$HOME/.pi/gentle-ai/persona.json"', ""].join("\n"), { mode: 0o755 });
 	const userPersona = join(prefix.home, ".pi", "gentle-ai", "persona.json");
-	const prefixPersona = join(prefix.root, "gentle-pi", "persona.json");
+	const prefixPersona = join(prefix.root, "config", "gentle-ai", "persona.json");
 	for (const path of [userPersona, prefixPersona]) {
 		mkdirSync(dirname(path), { recursive: true });
 		writeFileSync(path, "{\"mode\":\"chosen\"}\n");
@@ -340,12 +343,35 @@ test("bundled setup runs Gentle AI with the prefix's isolation variables and kee
 	assert.equal(result.status, 0, result.stderr);
 	const seen = Object.fromEntries(readFileSync(probe, "utf8").trim().split("\n").map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
 	assert.equal(seen.GENTLE_AI_HOME, join(prefix.root, "gentle-ai"));
-	assert.equal(seen.GENTLE_AI_PI_CONFIG_DIR, join(prefix.root, "gentle-pi"));
+	assert.equal(seen.GENTLE_AI_PI_CONFIG_DIR, join(prefix.root, "config", "gentle-ai"));
 	assert.equal(seen.GENTLE_AI_ENGRAM_BIN, prefix.engram);
 	assert.equal(seen.GENTLE_AI_NO_SELF_UPDATE, "1");
 	assert.equal(seen.PI_CODING_AGENT_DIR, join(prefix.home, ".gentle-shell", "agent"));
-	assert.equal(seen.GENTLE_PI_CONFIG_HOME, undefined, "Gentle AI 4.0.0 would read it as a parent folder");
+	// Only setup's Gentle AI gets it, as the parent Gentle AI 4.0.0 reads it as.
+	assert.equal(seen.GENTLE_PI_CONFIG_HOME, join(prefix.root, "config"));
 	for (const path of [userPersona, prefixPersona]) assert.equal(readFileSync(path, "utf8"), "{\"mode\":\"chosen\"}\n", path);
+});
+
+// B2a: a Gentle AI that knows no GENTLE_AI_PI_CONFIG_DIR (the pinned 4.0.0,
+// internal/cli/pi_background.go piBackgroundPolicyPath) writes the managed
+// background-subagents policy to <GENTLE_PI_CONFIG_HOME>/gentle-ai, else to
+// ~/.pi/gentle-ai. Bundled setup makes that the bundled gentle-pi's own config
+// folder, and the user's ~/.pi/gentle-ai stays untouched.
+test("bundled setup puts Gentle AI 4.0.0's background-subagents policy where the bundled gentle-pi reads it", { skip: posixHost }, async (t) => {
+	const prefix = bundledPrefix(t);
+	const fakeGentleAi = join(prefix.userBin, "gentle-ai");
+	writeFileSync(fakeGentleAi, ["#!/bin/sh", 'base="${GENTLE_PI_CONFIG_HOME:-$HOME/.pi}"', 'mkdir -p "$base/gentle-ai"',
+		`printf '%s' '{"schema":"gentle-pi.background-subagents/v1","policy":"on"}' > "$base/gentle-ai/background-subagents.json"`, ""].join("\n"), { mode: 0o755 });
+	const result = prefix.run(["setup"], { GENTLE_SHELL_GENTLE_AI_BIN: fakeGentleAi });
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(existsSync(join(prefix.home, ".pi", "gentle-ai")), false, "the user's config folder is untouched");
+	// The bundled gentle-pi's own reading: its config home is derived from the prefix.
+	setBundledInstallForTesting({ root: prefix.root });
+	t.after(() => setBundledInstallForTesting(undefined));
+	const env = { GENTLE_SHELL_PREFIX: prefix.root };
+	const resolution = resolveBackgroundSubagentsPolicy(prefix.home, { env, gentlePiConfigHome: gentlePiConfigHome(env) });
+	assert.deepEqual([resolution.policy, resolution.source], ["on", "global_file"]);
+	assert.equal(resolution.globalFile, join(prefix.root, "config", "gentle-ai", "background-subagents.json"));
 });
 
 test("a home holding the npmCommand written before the npm entry existed gets only that key updated", { skip: posixHost }, (t) => {
