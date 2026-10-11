@@ -172,13 +172,19 @@ Model, effort, and who does what should be choices, not accidents. Named profile
 
 ---
 
-### 🚀 YOLO 🔥 — Session permission, destructive guards intact
+### Permission modes — Normal, Auto, or YOLO
+
+Choose `/gentle:mode auto` to check eligible actions with an independent, tool-free inference using the current session model. Auto covers primary file/shell/custom/MCP tools and nested calls through the SDK pipeline while retaining explicit restrictions, destructive guards and independent consent. It adds separately recorded inference cost and latency; unavailable or stale decisions do not run the action. This is not a sandbox or a claim of proprietary classifier parity.
+
+Save `/gentle:mode default auto` or `/gentle:mode default yolo` to use either optional mode in new primary sessions. `/gentle:mode normal` changes only this session; `/gentle:mode default normal` changes future sessions. Children retain their existing delegation rules, not the parent's elevated mode. **[Commands, scope, cost and limits →](docs/permission-modes.md)**
+
+### 🚀 YOLO 🔥 — Scoped permission, destructive guards intact
 
 > 🚀 **Full speed, destructive actions still ask.** YOLO removes repeated permission questions for ordinary already-scoped work, which suits long autonomous runs. Destructive operations still require fresh confirmation.
 
-`/gentle:yolo enable` supplies standing permission for ordinary already-scoped implementation, checks, commits, non-force pushes and PR creation. Default **OFF**, interactive primary TUI only, bound to the live session and Git clone; `/gentle:yolo disable` revokes it and `/gentle:yolo status` checks it. With no argument, `/gentle:yolo` opens a menu (`enable`, `disable`, `status`) showing the current state; cancelling changes nothing, and without an interactive menu it reports status. Reload and session replacement reset it. Active status plus a separate widget show **🚀 YOLO ON 🔥 — destructive confirmations remain**. Explicit restrictions, configured confirmations/blocks, consequential unresolved choices, destination/credential ambiguity and native consent/recovery decisions remain mandatory. Children get no independent delivery grant. This is not a sandbox.
+`/gentle:yolo enable` supplies standing permission for ordinary already-scoped implementation, checks, commits, non-force pushes and PR creation. **OFF** unless selected or saved as the global default, with interactive primary TUI controls and live session/workspace binding; `/gentle:yolo disable` revokes it and `/gentle:yolo status` checks it. With no argument, `/gentle:yolo` opens a menu (`enable`, `disable`, `status`) showing the current state; cancelling changes nothing, and without an interactive menu it reports status. Reload and session replacement revoke live grants; new primary instances may apply the saved global default. Active status plus a separate widget show **🚀 YOLO ON 🔥 — destructive confirmations remain**. Explicit restrictions, configured confirmations/blocks, consequential unresolved choices, destination/credential ambiguity and native consent/recovery decisions remain mandatory. Children get no independent delivery grant. This is not a sandbox.
 
-Or open `/gentle:customize` → **Editor** and select **YOLO: OFF · session only**, immediately below Vim. Enter or Space toggles the same live-session permission as `/gentle:yolo`; browsing and previews never activate it. Unlike Vim, YOLO is not saved in preferences or visual profiles.
+Or open `/gentle:customize` → **Editor** and select **YOLO: OFF · session only**, immediately below Vim. Enter or Space toggles the same live-session permission as `/gentle:yolo`; browsing and previews never activate it. This live toggle does not save a preference. The separate **Session permissions** and **Default permissions** rows select a current mode or save a user-global default, respectively; repository settings and visual profiles cannot grant either mode.
 
 **[Use and limits →](docs/yolo-mode.md)**
 
