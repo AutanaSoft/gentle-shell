@@ -466,6 +466,16 @@ package.
   keeping two versions. An already current release changes nothing, and a failure
   leaves `current` untouched. `--rollback` switches back to the previous kept
   version. Details: [Bundled install](bundled-install.md#gentle-shell-upgrade-in-a-bundled-install).
+- **Migration to the bundled install**: on release, when the latest release
+  publishes the bundled distribution, a global pnpm or npm installation moves to
+  the bundled one. `upgrade` explains the move, installs the bundled prefix and
+  checks its launcher. Then it asks once whether to remove the old global
+  `gentle-pi` with its own manager (default No; without a terminal it only prints
+  the command). If the move fails, it names the step and why, leaves the global
+  package as it is, and updates it the usual way for that run. Your Pi and
+  `~/.gentle-shell/agent` are not touched. An `npm link`
+  is named and keeps the path above. Details:
+  [Migration](bundled-install.md#migration-from-a-global-install).
 
 `gentle-shell update` is different: it is Pi's own `update`, forwarded to the
 resolved home. In a bundled install Pi ships pinned with Gentle Shell, so

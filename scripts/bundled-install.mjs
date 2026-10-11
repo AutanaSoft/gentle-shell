@@ -5,7 +5,7 @@
 // Shared by the web installer and `gentle-shell upgrade`; every effect outside
 // plain path arithmetic goes through an injectable adapter for tests.
 import { createHash, randomBytes } from "node:crypto";
-import { accessSync, chmodSync, closeSync, constants, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync,
+import { accessSync, chmodSync, closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync,
 	rmSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { posix, win32 } from "node:path";
 import { spawn } from "node:child_process";
@@ -87,6 +87,21 @@ function privateDirectory(path) {
 	const info = stat(path);
 	if (!info?.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid() || (info.mode & 0o022)) throw new Error(`Unsafe bundled prefix: ${path}`);
 }
+/** POSIX: removes group and other write access from a real directory of this
+ * user, through a descriptor opened without following links; anything else is
+ * left for privateDirectory to refuse.
+ */
+function tightenOwnDirectory(path) {
+	let fd;
+	try { fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW); }
+	catch { return; }
+	try {
+		const info = fstatSync(fd);
+		if (info.isDirectory() && info.uid === process.getuid() && (info.mode & 0o022)) fchmodSync(fd, info.mode & 0o7755);
+	} finally {
+		closeSync(fd);
+	}
+}
 function ensureDirectory(path, platform) {
 	try { mkdirSync(path, { mode: 0o700 }); }
 	catch (error) { if (error.code !== "EEXIST") throw error; }
@@ -103,8 +118,9 @@ function prepareFolders(layout) {
 }
 
 /** Claims the prefix and returns its layout. POSIX: `~/.gentle-shell` is created
- * 0700, or kept when it is a real directory of this user that no one else can
- * write (the agent home lives there). Windows: each candidate's nearest existing
+ * 0700, or kept when it is a real directory of this user (the agent home lives
+ * there); group or other write access, which umask 002 leaves, is removed
+ * (go-w). A link, a non-folder or another owner's folder is refused. Windows: each candidate's nearest existing
  * folder is walked like the bootstrap's tools (owner, ACL, reparse); only an
  * untrusted owner or ACL on %LOCALAPPDATA% moves to the profile candidate. The
  * chosen folder is claimed with the bootstrap's protected DACL and marked
@@ -119,6 +135,7 @@ export function claimPrefix({ platform, env = {}, home, root, adapters = {} }) {
 		if (realpathSync(home) !== posix.resolve(home)) throw new Error(`Unsafe bundled prefix: ${home}`);
 		const info = lstatSync(home);
 		if (!info.isDirectory() || info.uid !== process.getuid() || (info.mode & 0o022)) throw new Error(`Unsafe bundled prefix: ${home}`);
+		if (stat(layout.root)?.isDirectory()) tightenOwnDirectory(layout.root);
 		ensureDirectory(layout.root, platform);
 		(adapters.prepare ?? prepareFolders)(layout);
 		return layout;
@@ -851,18 +868,10 @@ export async function upgradeBundled({ layout, home, platform = layout.platform,
 	try {
 		const loaded = await loadRelease({ layout, id, home, platform, env, adapters, active });
 		await loaded.module.ensureRuntime({ layout: loaded.next, platform, arch, go, env });
-		// The environment our pnpm ran in, without any Pi or Gentle override that
-		// could point the launcher at another Pi or agent home, plus the one input
-		// that runs this version in bundled mode for its --version.
-		const launchEnv = { ...Object.fromEntries(Object.entries(pnpmEnvironment(loaded.next, { platform, env })).filter(([key]) => !/^(?:gentle_|pi_)/i.test(key))),
-			[VERIFY_ENV]: id };
-		const entry = path.join(version.path, "node_modules", "gentle-pi", "bin", "gentle-shell.mjs");
-		const result = await (adapters.run ?? runCommand)(loaded.next.node, [entry, "--version"], { cwd: layout.root, env: launchEnv, timeout: 120000 });
-		const reported = String(result.stdout ?? "").trim();
-		const [shellLine, piLine] = reported.split(/\r?\n/);
-		if (result.status !== 0 || shellLine !== `gentle-shell ${shell}` || piLine !== `pi ${pi}`) {
-			throw Object.assign(new Error(`Gentle Shell ${id} reported ${JSON.stringify(reported)}, not gentle-shell ${shell} with pi ${pi}; current stays at ${active}`),
-				{ stderr: String(result.stderr ?? "").slice(-4000) });
+		const check = await checkLauncher(loaded.next, { id, shell, pi, platform, env, run: adapters.run });
+		if (!check.ok) {
+			throw Object.assign(new Error(`Gentle Shell ${id} reported ${JSON.stringify(check.reported)}, not gentle-shell ${shell} with pi ${pi}; current stays at ${active}`),
+				{ stderr: check.stderr });
 		}
 		activateWithLauncher(layout, id, active, loaded);
 	} catch (error) {
@@ -877,6 +886,27 @@ export async function upgradeBundled({ layout, home, platform = layout.platform,
 		out(`warning: ${warning}`);
 		return { id, changed: true, previous: active, removed: [], warning };
 	}
+}
+
+/** Whether version `id` reports exactly `gentle-shell <shell>` and `pi <pi>` to
+ * `--version`: its entry run by our Node, or with `launcher` on POSIX the
+ * bin/gentle-shell launcher itself (it runs the version `current` names).
+ * The environment is the one our pnpm ran in, without any Pi or Gentle override
+ * that could point the launcher at another Pi or agent home.
+ * Returns { ok, reported, stderr }.
+ */
+export async function checkLauncher(layout, { id, shell, pi, platform = layout.platform, env = {}, run = runCommand, launcher = false }) {
+	// The environment our pnpm ran in, without any Pi or Gentle override that
+	// could point the launcher at another Pi or agent home, plus the one input
+	// that runs this version in bundled mode for its --version (exact Pi).
+	const launchEnv = { ...Object.fromEntries(Object.entries(pnpmEnvironment(layout, { platform, env })).filter(([key]) => !/^(?:gentle_|pi_)/i.test(key))),
+		[VERIFY_ENV]: id };
+	const entry = pathFor(platform).join(layout.versions, id, "node_modules", "gentle-pi", "bin", "gentle-shell.mjs");
+	const [command, args] = launcher && platform !== "win32" ? [layout.launcher, ["--version"]] : [layout.node, [entry, "--version"]];
+	const result = await (run ?? runCommand)(command, args, { cwd: layout.root, env: launchEnv, timeout: 120000 });
+	const reported = String(result.stdout ?? "").trim();
+	const [shellLine, piLine] = reported.split(/\r?\n/);
+	return { ok: result.status === 0 && shellLine === `gentle-shell ${shell}` && piLine === `pi ${pi}`, reported, stderr: String(result.stderr ?? "").slice(-4000) };
 }
 
 /** `gentle-shell upgrade --rollback`: `current` switches back to the most
