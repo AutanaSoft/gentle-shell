@@ -862,7 +862,13 @@ test("scheduleWindowsRemoval starts one detached Windows PowerShell that waits f
 	assert.equal(calls.length, 1);
 	const [{ command, args, options }] = calls;
 	assert.equal(command, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
-	assert.deepEqual(args.slice(0, 4), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]);
+	// The script travels base64-encoded (UTF-16LE): Windows PowerShell 5.1 does not
+	// read Node's escaped quotes in a -Command argument, so a plain script arrives broken.
+	assert.deepEqual(args.slice(0, 4), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"]);
+	assert.equal(args.length, 5);
+	const script = Buffer.from(args[4], "base64").toString("utf16le");
+	assert.match(script, /Wait-Process -Id \$waitFor/);
+	assert.match(script, /GENTLE_SHELL_REMOVE_FILES/);
 	for (const path of [...files, ...directories]) assert.equal(args.join(" ").includes(path), false, path);
 	assert.deepEqual([options.detached, options.stdio, options.windowsHide, options.cwd, unref], [true, "ignore", true, "C:\\Windows", true]);
 	assert.deepEqual([options.env.GENTLE_SHELL_REMOVE_AFTER_PID, options.env.GENTLE_SHELL_REMOVE_FILES, options.env.GENTLE_SHELL_REMOVE_DIRECTORIES, options.env.Path],

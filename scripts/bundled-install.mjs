@@ -1248,13 +1248,15 @@ exit 0`;
 /** Windows self-uninstall: the running node.exe and the .cmd launcher cannot
  * delete themselves, so one detached, hidden Windows PowerShell removes `files`,
  * then the empty `directories` (deepest first), after process `pid` exits.
- * Absolute local paths only; `spawn` is injectable for tests.
+ * The script goes as -EncodedCommand (UTF-16LE base64): Windows PowerShell 5.1
+ * does not read Node's escaped quotes in a -Command argument. Absolute local
+ * paths only, passed in the environment; `spawn` is injectable for tests.
  */
 export function scheduleWindowsRemoval({ pid, files, directories, env = {}, spawn: start = spawn }) {
 	const systemRoot = envValue(env, "SYSTEMROOT", "win32");
 	const safe = (path) => typeof path === "string" && win32.isAbsolute(path) && !path.startsWith("\\\\") && !/[\r\n]/.test(path);
 	if (!Number.isInteger(pid) || pid <= 0 || !safe(systemRoot) || ![...files, ...directories].every(safe)) throw new Error("Unsafe deferred removal request");
-	const child = start(win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", deferredRemovalScript], {
+	const child = start(win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(deferredRemovalScript, "utf16le").toString("base64")], {
 		cwd: systemRoot, detached: true, stdio: "ignore", windowsHide: true,
 		env: { ...env, GENTLE_SHELL_REMOVE_AFTER_PID: String(pid), GENTLE_SHELL_REMOVE_FILES: files.join("\n"), GENTLE_SHELL_REMOVE_DIRECTORIES: directories.join("\n") },
 	});
