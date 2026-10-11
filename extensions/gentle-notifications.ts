@@ -44,8 +44,8 @@ export function createNotificationExtension(pi: ExtensionAPI, deps: Notification
 	remember(pi.on("session_start", (event, ctx) => {
 		if (!owner.current()) return;
 		stopBus(); main.reset(); runId = undefined;
-		contextHigh.rearm(); contextSequence = 0;
 		const nextSession = ctx.sessionManager.getSessionId();
+		if (nextSession !== sessionId) { contextHigh.rearm(); contextSequence = 0; }
 		sessionId = nextSession; contextRunId = `${nextSession}:context`;
 		if (!owner.attach(ctx)) return;
 		attachedAt = owner.now();
@@ -95,6 +95,7 @@ export function createNotificationExtension(pi: ExtensionAPI, deps: Notification
 	remember(pi.on("session_shutdown", () => {
 		if (!owner.current()) return;
 		stopBus(); main.reset(); runId = undefined; owner.shutdown();
+		sessionId = undefined;
 		// No quit sound: mandatory immediate cancellation must not wait for lazy detection.
 		// Native lifecycle hooks remain dormant for the next session; lease retirement removes them.
 	}));

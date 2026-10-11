@@ -128,6 +128,40 @@ test("context.high warns once per high episode and rearms only below the thresho
 	} finally { h.retire(); }
 });
 
+test("same-session reload preserves the context episode until usage drops below 90%", async () => {
+	const h = harness({ percent: 93 }); try {
+		await h.start(); await h.emit("turn_end");
+		assert.equal(h.played.length, 1); assert.equal(h.notes.length, 1);
+		await h.start("reload"); await h.emit("turn_end");
+		assert.equal(h.played.length, 1, "same-session reload must not repeat audio");
+		assert.equal(h.notes.length, 1, "same-session reload must not repeat the visual notice");
+		h.setPercent(40); await h.emit("turn_end");
+		h.setPercent(93); await h.emit("turn_end");
+		assert.equal(h.played.length, 2); assert.equal(h.notes.length, 2);
+	} finally { h.retire(); }
+});
+
+test("shutdown followed by the same session ID rearms the context episode", async () => {
+	const h = harness({ percent: 93 }); try {
+		await h.start(); await h.emit("turn_end");
+		assert.equal(h.played.length, 1); assert.equal(h.notes.length, 1);
+		await h.emit("session_shutdown", { reason: "reload" });
+		await h.start("reload"); await h.emit("turn_end");
+		assert.equal(h.played.length, 2, "a restarted owner warns even with the same ID");
+		assert.equal(h.notes.length, 2);
+	} finally { h.retire(); }
+});
+
+test("changed session ID without shutdown rearms the context episode", async () => {
+	const h = harness({ percent: 93 }); try {
+		await h.start(); await h.emit("turn_end");
+		const fresh = { ...h.ctx, sessionManager: { ...h.ctx.sessionManager, getSessionId: () => "fresh-without-shutdown" } };
+		await h.emit("session_start", { reason: "new" }, fresh);
+		await h.emit("turn_end", {}, fresh);
+		assert.equal(h.played.length, 2); assert.equal(h.notes.length, 2);
+	} finally { h.retire(); }
+});
+
 test("successful compaction rearms while a canceled compaction preserves the latch", async () => {
 	const h = harness(); try {
 		await h.start();
