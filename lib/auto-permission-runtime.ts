@@ -19,7 +19,6 @@ export type AutoRuntimeClassifier = {run(request: any): Promise<Verdict>; cancel
 type Classifier = AutoRuntimeClassifier;
 type BranchItem = {id: string; type: string; message?: {role: string; content: unknown}};
 type AuthoredInput = {text: string; before: Set<string>; entryId?: string};
-const FILE_TOOLS = new Set(["read", "grep", "find", "ls"]);
 // These are independent authority/dialog/delegation surfaces, not Auto approvals.
 const OWNED_CONTROL_TOOLS = new Set([
  "ask_user_choice", "ask_user_question", "gentle_review", "gentle_review_capture", "gentle_review_capture_group",
@@ -132,21 +131,6 @@ export class AutoPermissionRuntime {
   }
   return false;
  }
- private fastPath(event: Pick<ToolCallEvent,"toolName"|"input">, ctx: ExtensionContext): boolean {
-  if (!FILE_TOOLS.has(event.toolName)) return false;
-  const args=event.input as Record<string,unknown>;
-  if (!args || typeof args!=="object") return false;
-  const path=typeof args.path==="string" ? args.path : ["grep","find","ls"].includes(event.toolName) ? "." : undefined;
-  if (!path) return false;
-  try {
-   const target=canonical(resolve(ctx.cwd,path)), root=canonical(ctx.cwd);
-   if(!within(target,root)) return false;
-   // Permission/configuration and instruction files never use the edit fast path.
-   const segments=relative(root,target).split(sep);
-   if(segments.some(p=>[".git",".pi",".agents",".claude",".codex",".ssh",".aws"].includes(p)) || /(?:^|[\\/])(?:AGENTS\.md|CLAUDE\.md|\.env(?:\..*)?)$/.test(target)) return false;
-   return true;
-  } catch { return false; }
- }
  private record(ctx: ExtensionContext, event: Pick<ToolCallEvent,"toolName"|"toolCallId">, result: Verdict, late=false): void {
   const usage=numericUsage(result.usage);
   // Receipts carry no raw command, input, transcript, or provider-generated rationale.
@@ -163,16 +147,19 @@ export class AutoPermissionRuntime {
   if(!primary)return undefined;
   this.own(ctx);
   if(this.protectedMutation(event,ctx))return block("Permission configuration is human-controlled. Use the mode settings UI; model tools cannot change it.");
+  // Revocation while identity lookup is pending must not become a fresh grant.
+  const generation=this.generation, epoch=this.modes.epoch(), owner=this.owner;
   const mode=await this.modes.mode(ctx);
+  if(generation!==this.generation || epoch!==this.modes.epoch() || owner!==this.owner || ctx.signal?.aborted)
+   return block("Auto decision expired during mode lookup. The action was not run.");
   if(mode!=="auto")return undefined;
   // Independent executors retain their own consent and delegation authorities.
   if(OWNED_CONTROL_TOOLS.has(event.toolName))return undefined;
   if(this.consecutive>=DENIAL_LIMIT || this.total>=TOTAL_DENIAL_LIMIT || this.unavailable>=DENIAL_LIMIT)
    return block("Auto mode is paused after repeated denials or unavailable checks. Stop this attempt and ask the user for a safer, specific instruction; do not route around the boundary.");
-  if(this.fastPath(event,ctx))return undefined;
+  // Local reads can disclose explicitly forbidden data; they need the same check.
   if(this.overflow)return block("Auto cannot retain all live user restrictions within its context limit. Continue with manual permissions or start a new session with an explicit scoped request.");
   if(!ctx.model)return block("Auto could not evaluate this action: no session model is available. The action was not run.");
-  const generation=this.generation, epoch=this.modes.epoch(), owner=this.owner;
   // Copy identity values: a host can update its model object in place.
   const model={id:ctx.model.id,provider:ctx.model.provider};
   const trustedMessages=this.trusted(ctx);

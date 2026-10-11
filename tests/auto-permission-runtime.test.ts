@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AutoPermissionRuntime } from "../lib/auto-permission-runtime.ts";
 
-function fixture(t: test.TestContext) {
+function fixture(t: test.TestContext, modeLookup?: () => Promise<string>) {
  const cwd = mkdtempSync(join(tmpdir(), "auto-runtime-"));
  t.after(() => rmSync(cwd, {recursive:true,force:true}));
  let sessionId = "session-a", mode = "auto", epoch = 1;
@@ -14,7 +14,7 @@ function fixture(t: test.TestContext) {
  const manager = {getSessionId:()=>sessionId,getBranch:()=>entries};
  const ctx: any = {cwd,sessionManager:manager,model:{id:"test",provider:"test"},signal:new AbortController().signal,ui:{setStatus(){},notify(){}}};
  const runtime = new AutoPermissionRuntime({appendEntry:(...args:any[])=>records.push(args)} as any,
- {mode:async()=>mode,epoch:()=>epoch} as any,
+ {mode:()=>modeLookup ? modeLookup() : Promise.resolve(mode),epoch:()=>epoch} as any,
  {run:async (request:any)=>{requests.push(request);return typeof response === "function" ? response(request) : response;},cancel(){}} as any,
  {configHome:join(cwd,"config")});
  const input = (text:string, source="interactive") => {
@@ -28,19 +28,47 @@ function fixture(t: test.TestContext) {
  return {cwd,ctx,runtime,entries,records,requests,input,execute,setResponse:(v:any)=>response=v,setMode:(v:string)=>{mode=v;epoch++;},replace:()=>sessionId="session-b"};
 }
 
-test("Auto allows local read fast paths and classifies edits, shell, custom and MCP before execution", async t=>{
+test("Auto classifies local reads, edits, shell, custom and MCP before execution", async t=>{
  const f=fixture(t); f.input("Implement the change locally; do not publish.");
  assert.equal((await f.execute("read",{path:join(f.cwd,"file.ts")})).executions,1);
- assert.equal(f.requests.length,0);
+ assert.equal(f.requests.length,1);
  for(const name of ["write","edit","bash","bash_background","monitor","mcp__service__update","custom_tool"]){ assert.equal((await f.execute(name,{command:"npm test",path:join(f.cwd,"file.ts")})).executions,1); }
- assert.equal(f.requests.length,7);assert.deepEqual(f.requests[0].trustedMessages,["Implement the change locally; do not publish."]);
- assert.equal(f.records.length,7,"classification records exist without tool_result");
+ assert.equal(f.requests.length,8);assert.deepEqual(f.requests[0].trustedMessages,["Implement the change locally; do not publish."]);
+ assert.equal(f.records.length,8,"classification records exist without tool_result");
 });
 
 test("An explicit read-only request reaches the classifier before a local edit", async t=>{
  const f=fixture(t);f.input("Investigate only. Do not edit files.");f.setResponse({status:"available",decision:"deny",reason:"User forbids edits"});
  assert.equal((await f.execute("edit",{path:join(f.cwd,"app.ts"),oldText:"x",newText:"y"})).executions,0);
  assert.equal(f.requests.length,1);
+});
+
+test("Explicit human restrictions deny an ordinary local read before execution", async t=>{
+ const f=fixture(t);f.input("Investigate source code, but do not read private-notes.txt.");
+ f.setResponse({status:"available",decision:"deny",reason:"User forbids reading this file"});
+ const result=await f.execute("read",{path:join(f.cwd,"private-notes.txt")});
+ assert.equal(result.executions,0);assert.match(result.denied!.reason,/User forbids/);
+ assert.equal(f.requests.length,1);assert.deepEqual(f.requests[0].trustedMessages,["Investigate source code, but do not read private-notes.txt."]);
+ assert.equal(f.records.length,1);
+});
+
+test("Cancellation during initial mode lookup denies without classification or execution", async t=>{
+ let resume!: (value:string)=>void;
+ const mode=new Promise<string>(resolve=>{resume=resolve;});
+ const f=fixture(t,()=>mode);f.input("Read the local source file.");
+ const pending=f.execute("read",{path:join(f.cwd,"file.ts")});
+ f.runtime.cancelPending();resume("auto");
+ const result=await pending;
+ assert.equal(result.executions,0);assert.match(result.denied!.reason,/expired/);
+ assert.equal(f.requests.length,0);assert.equal(f.records.length,0);
+});
+
+test("Overflowed live restrictions deny a local read without classification or execution", async t=>{
+ const f=fixture(t);f.input("Inspect source code.");
+ f.input("Do not read private-notes.txt. "+"x".repeat(24_000));
+ const result=await f.execute("read",{path:join(f.cwd,"private-notes.txt")});
+ assert.equal(result.executions,0);assert.match(result.denied!.reason,/context limit/);
+ assert.equal(f.requests.length,0);assert.equal(f.records.length,0);
 });
 
 test("Auto never treats synthetic user-role entries or extension input as human authorization", async t=>{
