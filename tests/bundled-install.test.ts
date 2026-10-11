@@ -927,12 +927,18 @@ test("scheduleWindowsRemoval starts one detached Windows PowerShell that waits f
 	scheduleWindowsRemoval({ pid: 4242, files, last, directories, env: { SystemRoot: "C:\\Windows", Path: "C:\\Windows" }, spawn });
 	assert.equal(calls.length, 1);
 	const [{ command, args, options }] = calls;
-	assert.equal(command, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+	// cmd.exe, detached, starts PowerShell with `start`: a detached PowerShell never ran on
+	// the Windows runner, and one in Node's job object died with the exiting launcher.
+	assert.equal(command, "C:\\Windows\\System32\\cmd.exe");
+	assert.deepEqual(args.slice(0, 6), ["/d", "/c", "start", "\"\"", "/min", "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"]);
+	const shellArgs = args.slice(6);
+	// Only fixed tokens and base64 reach cmd's command line: no cmd metacharacter.
+	assert.equal(shellArgs.every((arg) => /^[-A-Za-z0-9+/=]+$/.test(arg)), true);
 	// The script travels base64-encoded (UTF-16LE): Windows PowerShell 5.1 does not
 	// read Node's escaped quotes in a -Command argument, so a plain script arrives broken.
-	assert.deepEqual(args.slice(0, 4), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"]);
-	assert.equal(args.length, 5);
-	const script = Buffer.from(args[4], "base64").toString("utf16le");
+	assert.deepEqual(shellArgs.slice(0, 6), ["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-EncodedCommand"]);
+	assert.equal(shellArgs.length, 7);
+	const script = Buffer.from(shellArgs[6], "base64").toString("utf16le");
 	assert.match(script, /Wait-Process -Id \$waitFor/);
 	assert.match(script, /GENTLE_SHELL_REMOVE_FILES/);
 	// A4: the marker goes only once every listed file is gone, so a retry still finds the install.

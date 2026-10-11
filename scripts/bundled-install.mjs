@@ -1280,8 +1280,8 @@ exit 0`;
  * delete themselves, so one detached, hidden Windows PowerShell removes `files`,
  * then `last` once nothing is left at those paths, then the empty
  * `directories` (deepest first), after process `pid` exits.
- * The script goes as -EncodedCommand (UTF-16LE base64): Windows PowerShell 5.1
- * does not read Node's escaped quotes in a -Command argument. Absolute local
+ * cmd.exe (detached) starts it with `start`, so it outlives the launcher; the
+ * script goes as -EncodedCommand (UTF-16LE base64). Absolute local
  * paths only, passed in the environment; `spawn` is injectable for tests.
  */
 export function scheduleWindowsRemoval({ pid, files, last, directories, env = {}, spawn: start = spawn }) {
@@ -1290,7 +1290,14 @@ export function scheduleWindowsRemoval({ pid, files, last, directories, env = {}
 	if (!Number.isInteger(pid) || pid <= 0 || !safe(systemRoot) || ![...files, ...directories, ...(last === undefined ? [] : [last])].every(safe)) {
 		throw new Error("Unsafe deferred removal request");
 	}
-	const child = start(win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(deferredRemovalScript, "utf16le").toString("base64")], {
+	// A detached PowerShell never ran on the Windows runner, and a non-detached one
+	// sits in Node's job object and dies with the exiting launcher. A detached
+	// cmd.exe leaves that job and `start` gives PowerShell its own console, so it
+	// outlives the launcher. Only fixed tokens and base64 reach cmd's command line.
+	const powershell = win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+	const encoded = Buffer.from(deferredRemovalScript, "utf16le").toString("base64");
+	const child = start(win32.join(systemRoot, "System32", "cmd.exe"), ["/d", "/c", "start", "\"\"", "/min", powershell,
+		"-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-EncodedCommand", encoded], {
 		cwd: systemRoot, detached: true, stdio: "ignore", windowsHide: true,
 		env: { ...env, GENTLE_SHELL_REMOVE_AFTER_PID: String(pid), GENTLE_SHELL_REMOVE_FILES: files.join("\n"), GENTLE_SHELL_REMOVE_DIRECTORIES: directories.join("\n"),
 			GENTLE_SHELL_REMOVE_LAST: last ?? "" },
