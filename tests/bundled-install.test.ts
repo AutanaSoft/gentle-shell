@@ -3,11 +3,11 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, rmSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join, posix } from "node:path";
+import { join, posix, win32 } from "node:path";
 import test, { after, type TestContext } from "node:test";
 import { crc32, gzipSync } from "node:zlib";
 import { activateVersion, activeVersion, applyPathEntry, claimPrefix, prefixRoot, distributionFiles, ensureLauncher, ensureRuntime, filterNpmrc, installVersion, nodeExecutable,
-	nodeRuntimeFiles, pathEntryPlan, pnpmEnvironment, prefixLayout, pruneVersions, removePathEntry, rollbackBundled, setupEnvironment, upgradeBundled, userNpmrc, writeNpmrcAuth }
+	nodeRuntimeFiles, pathEntryPlan, pnpmEnvironment, prefixLayout, pruneVersions, removePathEntry, rollbackBundled, setupEnvironment, bundledNpmCommand, ensureNpmShim, upgradeBundled, userNpmrc, writeNpmrcAuth }
 	from "../scripts/bundled-install.mjs";
 
 // Real directories, modes, symlinks and uids need a POSIX host.
@@ -263,7 +263,9 @@ posixTest("ensureRuntime installs the verified Node and pnpm into runtime/ and r
 	assert.equal(lstatSync(join(layout.pnpmDir, "package", "dist", "node-gyp-bin", "node-gyp")).mode & 0o777, 0o700);
 	assert.equal(lstatSync(join(layout.pnpmDir, "package", "package.json")).mode & 0o777, 0o600);
 	// The Node executable and its npm are published, no links: npm and npx are our own wrappers.
-	assert.deepEqual(readdirSync(join(layout.runtime, `node-${NODE}`)).sort(), [".gentle-shell-runtime", "bin", "lib"]);
+	assert.deepEqual(readdirSync(join(layout.runtime, `node-${NODE}`)).sort(), [".gentle-shell-runtime", "bin", "gentle-shell", "lib"]);
+	// Pi's npmCommand entry, named npm (ensureNpmShim).
+	assert.match(readFileSync(layout.npmShim, "utf8"), /npm-cli\.js/);
 	assert.deepEqual(readdirSync(join(layout.runtime, `node-${NODE}`, "bin")).sort(), ["node", "npm", "npx"]);
 	assert.deepEqual(readdirSync(join(layout.runtime, `node-${NODE}`, "lib", "node_modules")), ["npm"]);
 	assert.deepEqual(readdirSync(join(layout.runtime, `node-${NODE}`, "lib", "node_modules", "npm", "bin")).sort(), ["npm-cli.js", "npx-cli.js"]);
@@ -841,6 +843,8 @@ posixTest("upgradeBundled installs the latest release beside the active one, ver
 	assert.deepEqual(verify.args, [join(layout.versions, "4.2.0-1.0.2", "node_modules", "gentle-pi", "bin", "gentle-shell.mjs"), "--version"]);
 	assert.equal(verify.env.GENTLE_SHELL_PI, undefined);
 	assert.equal(verify.env.PI_CODING_AGENT_DIR, undefined);
+	// The check runs that version in bundled mode, as if current named it (only for --version).
+	assert.equal(verify.env.GENTLE_SHELL_VERIFY_VERSION, "4.2.0-1.0.2");
 	assert.match(lines.join("\n"), /Gentle Shell 4\.2\.0 with Pi 1\.0\.2.*4\.1\.0-1\.0\.1.*--rollback/s);
 });
 
@@ -896,14 +900,137 @@ posixTest("upgradeBundled installs a new release's own pinned runtime and launch
 	assert.equal(activeVersion(layout), "4.2.0-1.0.2");
 });
 
-posixTest("rollbackBundled switches current to the kept previous version, and back", async () => {
-	const { layout } = await activeInstall();
-	assert.deepEqual(rollbackBundled(layout), { from: "4.1.0-1.0.1", to: "4.0.0-1.0.0" });
+posixTest("upgradeBundled puts current back when the new launcher cannot be written", async () => {
+	const { user, layout } = await activeInstall();
+	const { adapters } = upgradeAdapters(layout, { module: { ensureLauncher: () => { throw new Error("Conflicting launcher: /x"); } } });
+	await assert.rejects(upgradeBundled({ layout, home: user, platform: "darwin", arch: "arm64", env: {}, adapters }), /launcher.*current stays at 4\.1\.0-1\.0\.1/s);
+	assert.equal(activeVersion(layout), "4.1.0-1.0.1");
+	assert.deepEqual(readdirSync(layout.versions).sort(), ["4.0.0-1.0.0", "4.1.0-1.0.1"]);
+});
+
+posixTest("upgradeBundled reports success with a warning when only pruning fails", async () => {
+	const { user, layout } = await activeInstall();
+	const { adapters } = upgradeAdapters(layout);
+	const lines: string[] = [];
+	const result = await upgradeBundled({ layout, home: user, platform: "darwin", arch: "arm64", env: {}, adapters: { ...adapters, prune: () => { throw new Error("EBUSY"); } },
+		out: (line: string) => lines.push(line) });
+	assert.deepEqual(result, { id: "4.2.0-1.0.2", changed: true, previous: "4.1.0-1.0.1", removed: [], warning: "older versions were not removed (EBUSY)" });
+	assert.equal(activeVersion(layout), "4.2.0-1.0.2");
+	assert.match(lines.join("\n"), /Upgraded to Gentle Shell 4\.2\.0.*warning: older versions were not removed \(EBUSY\)/s);
+});
+
+function rollbackAdapters(module: Record<string, unknown> = {}) {
+	const calls: { loaded: string[]; runtimes: unknown[]; launchers: unknown[] } = { loaded: [], runtimes: [], launchers: [] };
+	const releaseModule = { prefixLayout, ensureRuntime: async (options: { layout: unknown }) => { calls.runtimes.push(options.layout); return { go: null }; },
+		ensureLauncher: (next: unknown) => { calls.launchers.push(next); return { written: true }; }, ...module };
+	return { calls, adapters: { load: async (file: string) => { calls.loaded.push(file); return releaseModule; } } };
+}
+
+posixTest("rollbackBundled switches current to the kept previous version with its own launcher, and back", async () => {
+	const { user, layout } = await activeInstall();
+	const { calls, adapters } = rollbackAdapters();
+	const options = { layout, home: user, platform: "darwin", arch: "arm64", env: {}, adapters };
+	assert.deepEqual(await rollbackBundled(options), { from: "4.1.0-1.0.1", to: "4.0.0-1.0.0" });
 	assert.equal(activeVersion(layout), "4.0.0-1.0.0");
-	assert.deepEqual(rollbackBundled(layout), { from: "4.0.0-1.0.0", to: "4.1.0-1.0.1" });
-	const single = claimed().layout;
-	await installed(single, [["4.0.0", "1.0.0"]]);
-	activateVersion(single, "4.0.0-1.0.0");
-	assert.throws(() => rollbackBundled(single), /No previous Gentle Shell version/);
-	assert.equal(activeVersion(single), "4.0.0-1.0.0");
+	assert.deepEqual(calls.loaded, [releaseModuleFile(layout, "4.0.0-1.0.0")]);
+	assert.equal(calls.runtimes.length, 1);
+	assert.equal(calls.launchers.length, 1);
+	assert.deepEqual(await rollbackBundled(options), { from: "4.0.0-1.0.0", to: "4.1.0-1.0.1" });
+	assert.equal(calls.loaded[1], releaseModuleFile(layout, "4.1.0-1.0.1"));
+	const single = claimed();
+	await installed(single.layout, [["4.0.0", "1.0.0"]]);
+	activateVersion(single.layout, "4.0.0-1.0.0");
+	await assert.rejects(rollbackBundled({ ...options, layout: single.layout, home: single.home }), /No previous Gentle Shell version/);
+	assert.equal(activeVersion(single.layout), "4.0.0-1.0.0");
+});
+
+posixTest("rollbackBundled fails closed without the target's own module and puts current back when its launcher fails", async () => {
+	const { user, layout } = await activeInstall();
+	for (const module of [{ ensureLauncher: undefined }, { ensureRuntime: 1 }]) {
+		const { calls, adapters } = rollbackAdapters(module);
+		await assert.rejects(rollbackBundled({ layout, home: user, platform: "darwin", arch: "arm64", env: {}, adapters }), /4\.0\.0-1\.0\.0.*bundled-install\.mjs/s);
+		assert.equal(calls.launchers.length, 0);
+		assert.equal(activeVersion(layout), "4.1.0-1.0.1");
+	}
+	// The real loader: these fixture versions ship no module at all.
+	await assert.rejects(rollbackBundled({ layout, home: user, platform: "darwin", arch: "arm64", env: {} }), /bundled-install\.mjs/);
+	const failing = rollbackAdapters({ ensureLauncher: () => { throw new Error("Conflicting launcher: /x"); } });
+	await assert.rejects(rollbackBundled({ layout, home: user, platform: "darwin", arch: "arm64", env: {}, adapters: failing.adapters }), /launcher.*current stays at 4\.1\.0-1\.0\.1/s);
+	assert.equal(activeVersion(layout), "4.1.0-1.0.1");
+	assert.deepEqual(readdirSync(layout.versions).sort(), ["4.0.0-1.0.0", "4.1.0-1.0.1"]);
+});
+
+test("bundledNpmCommand runs our npm through an entry named npm, with only the prefix configuration", () => {
+	const layout = prefixLayout({ platform: "linux", env: {}, home: "/home/me" });
+	const root = "/home/me/.gentle-shell";
+	assert.deepEqual(bundledNpmCommand(layout), [`${root}/runtime/node-${NODE}/bin/node`, `${root}/runtime/node-${NODE}/gentle-shell/npm`,
+		`--userconfig=${root}/pnpm/config/npmrc`, `--globalconfig=${root}/npm/npmrc`, `--cache=${root}/npm/cache`, "--update-notifier=false"]);
+	// A --prefix flag would also set npm's local prefix: Pi's git-extension
+	// install (npm install in the clone, no --prefix of its own) would land there.
+	assert.equal(bundledNpmCommand(layout).some((part) => /^--prefix(?:=|$)/.test(part)), false);
+	const windows = bundledNpmCommand(prefixLayout({ platform: "win32", env: { LOCALAPPDATA: "C:\\L" }, home: "C:\\U" }));
+	assert.deepEqual(windows.slice(0, 2), [`C:\\L\\gentle-shell\\runtime\\node-${NODE}\\node.exe`, `C:\\L\\gentle-shell\\runtime\\node-${NODE}\\gentle-shell\\npm`]);
+});
+
+// N1: Pi 1.1.0 names the package manager from the basenames in npmCommand
+// (DefaultPackageManager.getPackageManagerName) and picks its install flags from
+// that name. Its own code, on this host's paths.
+const PI_PACKAGE_MANAGER = new URL("../node_modules/@earendil-works/pi-coding-agent/dist/core/package-manager.js", import.meta.url);
+async function piPackageManager(command: string[]) {
+	const { DefaultPackageManager } = await import(PI_PACKAGE_MANAGER.href);
+	return new DefaultPackageManager({ cwd: tmpdir(), agentDir: tmpdir(), settingsManager: { getNpmCommand: () => command } });
+}
+// The same rule with Windows paths, on any runner: Pi calls node:path's
+// basename, which is win32's on Windows, and strips only .cmd and .exe.
+function windowsPackageManagerName(command: string[]) {
+	const name = (part: string) => win32.basename(part).replace(/\.(cmd|exe)$/i, "");
+	const supported = new Set(["npm", "pnpm", "bun"]);
+	if (supported.has(name(command[0]))) return name(command[0]);
+	const wrapped = [...new Set(command.slice(1).map(name).filter((part) => supported.has(part)))];
+	if (wrapped.length > 1) throw new Error(`Ambiguous npmCommand package managers: ${wrapped.join(", ")}`);
+	return wrapped[0] ?? name(command[0]);
+}
+
+test("Pi reads the bundled npmCommand as npm and installs git extensions with npm's flags", async () => {
+	const host = process.platform === "win32"
+		? prefixLayout({ platform: "win32", env: { LOCALAPPDATA: "C:\\Users\\Ana Li\\AppData\\Local" }, home: "C:\\Users\\Ana Li" })
+		: prefixLayout({ platform: process.platform, env: {}, home: "/home/npm" });
+	const pi = await piPackageManager(bundledNpmCommand(host));
+	assert.equal(pi.getPackageManagerName(), "npm");
+	assert.deepEqual(pi.getGitDependencyInstallArgs(), ["install", "--omit=dev", "--legacy-peer-deps"]);
+	// The command before N1 read as `node`: plain `npm install` for git extensions.
+	const before = await piPackageManager([host.node, host.npmCli, ...bundledNpmCommand(host).slice(2)]);
+	assert.equal(before.getPackageManagerName(), "node");
+	assert.deepEqual(before.getGitDependencyInstallArgs(), ["install"]);
+	// Windows-shaped paths, whatever the folder names (here "npm" and "pnpm" ones).
+	const windows = prefixLayout({ platform: "win32", env: { LOCALAPPDATA: "C:\\pnpm\\npm" }, home: "C:\\Users\\bun" });
+	assert.equal(windowsPackageManagerName(bundledNpmCommand(windows)), "npm");
+	assert.equal(windowsPackageManagerName([windows.node, windows.npmCli]), "node");
+});
+
+posixTest("ensureNpmShim writes one regular npm entry that runs our npm-cli.js, rewritten only when it differs", () => {
+	const { layout } = claimed();
+	assert.throws(() => ensureNpmShim(layout), /npm/);
+	mkdirSync(posix.dirname(layout.npmCli), { recursive: true });
+	// Prints its version and the arguments it got, like npm --version.
+	writeFileSync(layout.npmCli, "console.log(process.argv.slice(2).includes('--version') ? '11.19.0' : JSON.stringify(process.argv.slice(2)));\n");
+	// A user's package.json with type module above the prefix must not make the entry an ES module.
+	writeFileSync(join(layout.root, "..", "package.json"), JSON.stringify({ type: "module" }));
+	assert.deepEqual(ensureNpmShim(layout), { written: true });
+	assert.equal(posix.basename(layout.npmShim), "npm");
+	assert.equal(lstatSync(layout.npmShim).isFile(), true);
+	const version = spawnSync(process.execPath, [layout.npmShim, "--version"], { encoding: "utf8" });
+	assert.equal(version.status, 0, version.stderr);
+	assert.equal(version.stdout, "11.19.0\n");
+	assert.equal(spawnSync(process.execPath, [layout.npmShim, "install", "--omit=dev"], { encoding: "utf8" }).stdout, '["install","--omit=dev"]\n');
+	const text = readFileSync(layout.npmShim, "utf8");
+	assert.deepEqual(ensureNpmShim(layout), { written: false });
+	writeFileSync(layout.npmShim, "// stale\n");
+	assert.deepEqual(ensureNpmShim(layout), { written: true });
+	assert.equal(readFileSync(layout.npmShim, "utf8"), text);
+	// A link or a folder in its place is never written through or replaced.
+	rmSync(layout.npmShim);
+	symlinkSync(layout.npmCli, layout.npmShim);
+	assert.throws(() => ensureNpmShim(layout), /Conflicting npm entry/);
+	assert.equal(readlinkSync(layout.npmShim), layout.npmCli);
 });
