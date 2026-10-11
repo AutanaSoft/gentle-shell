@@ -2005,3 +2005,25 @@ test("helpText documents pi's own package-management subcommands", () => {
 	assert.match(text, /\bconfig\b/);
 	assert.match(text, /\bauth\b/);
 });
+
+// T3 B3: the isolated-home bootstrap creates ~/.gentle-shell private (0700) even under
+// umask 002, so the bundled prefix claim (which refuses group/other-writable folders) accepts it.
+test("the isolated-home bootstrap creates ~/.gentle-shell as 0700 under umask 002", { skip: process.platform === "win32" ? "POSIX modes" : false }, async () => {
+	const { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } = await import("node:fs");
+	const { spawnSync } = await import("node:child_process");
+	const { tmpdir } = await import("node:os");
+	const root = mkdtempSync(join(tmpdir(), "gentle-shell-umask-"));
+	try {
+		const piScript = join(root, "fake-pi.mjs");
+		writeFileSync(piScript, "#!/usr/bin/env node\nif (process.argv.includes('--version')) console.log('0.99.1');\n");
+		chmodSync(piScript, 0o755);
+		const binPath = fileURLToPath(new URL("../bin/gentle-shell.mjs", import.meta.url));
+		const env = { HOME: root, USERPROFILE: root, PATH: process.env.PATH ?? "/usr/bin:/bin", GENTLE_SHELL_PI: piScript, GENTLE_SHELL_NO_AUTO_SETUP: "1" };
+		const result = spawnSync("/bin/sh", ["-c", 'umask 002; exec "$0" "$@"', process.execPath, binPath, "hello"], { env, encoding: "utf8", input: "" });
+		assert.equal(result.status, 0, result.stderr);
+		assert.equal(statSync(join(root, ".gentle-shell")).mode & 0o777, 0o700);
+		assert.equal(statSync(join(root, ".gentle-shell", "agent")).mode & 0o777, 0o700);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});

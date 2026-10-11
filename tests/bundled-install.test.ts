@@ -167,7 +167,7 @@ test("prefixLayout uses the Windows private folder and a pointer file for curren
 	assert.equal(fallback.versions, "C:\\Users\\me\\.gentle-shell-bundle\\versions");
 });
 
-posixTest("claimPrefix creates a private root and refuses one another account can change", () => {
+posixTest("claimPrefix creates a private root, tightens its own group- or other-writable root and refuses a link or a non-folder", () => {
 	const user = home();
 	const layout = claimPrefix({ platform: "darwin", env: { HOME: user }, home: user });
 	const info = lstatSync(layout.root);
@@ -180,10 +180,20 @@ posixTest("claimPrefix creates a private root and refuses one another account ca
 	const linked = home();
 	symlinkSync(layout.root, join(linked, ".gentle-shell"));
 	assert.throws(() => claimPrefix({ platform: "darwin", env: { HOME: linked }, home: linked }), /Unsafe bundled prefix/);
-	const shared = home();
-	mkdirSync(join(shared, ".gentle-shell"));
-	chmodSync(join(shared, ".gentle-shell"), 0o777);
-	assert.throws(() => claimPrefix({ platform: "darwin", env: { HOME: shared }, home: shared }), /Unsafe bundled prefix/);
+	// T3 B3: a real folder of this user that umask 002 (or chmod) left group- or other-writable is
+	// tightened (go-w), not refused, and its contents stay.
+	for (const mode of [0o775, 0o777]) {
+		const shared = home();
+		mkdirSync(join(shared, ".gentle-shell"));
+		writeFileSync(join(shared, ".gentle-shell", "config.json"), "{}");
+		chmodSync(join(shared, ".gentle-shell"), mode);
+		assert.equal(claimPrefix({ platform: "darwin", env: { HOME: shared }, home: shared }).root, join(shared, ".gentle-shell"));
+		assert.equal(lstatSync(join(shared, ".gentle-shell")).mode & 0o777, mode & ~0o022);
+		assert.equal(readFileSync(join(shared, ".gentle-shell", "config.json"), "utf8"), "{}");
+	}
+	const file = home();
+	writeFileSync(join(file, ".gentle-shell"), "");
+	assert.throws(() => claimPrefix({ platform: "darwin", env: { HOME: file }, home: file }), /Unsafe bundled prefix|EEXIST|ENOTDIR/);
 });
 
 test("claimPrefix on Windows walks then claims %LOCALAPPDATA%, falling back to the profile only on an untrusted owner or ACL", () => {

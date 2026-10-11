@@ -1558,7 +1558,9 @@ async function main() {
 	// Isolated-home bootstrap: only on a home gentle-shell has not seen before
 	// (link never bootstraps — it reuses the user's own pi agent home as-is).
 	if ((home.mode === "isolated" || home.mode === "path") && !existsSync(home.dir)) {
-		mkdirSync(home.dir, { recursive: true });
+		// 0700: under umask 002 a default mode would leave ~/.gentle-shell group-writable,
+		// which the bundled install's prefix claim must tighten or refuse.
+		mkdirSync(home.dir, { recursive: true, mode: 0o700 });
 		await installIsolatedTuiModeSetting(home.dir);
 		writeHomeOwnershipMarker(home); // R3-001: lets a failed first auto-provision attempt still be retried later
 		process.stderr.write(`gentle-shell: using a separate home at ${home.dir}. Run 'gentle-shell --link' to reuse your pi sign-ins and chats.\n`);

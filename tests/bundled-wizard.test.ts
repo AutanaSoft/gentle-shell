@@ -301,10 +301,18 @@ test("runBundledInstall for a migration checks the launcher's versions, then rem
 		removeGlobal: { status: "removed", command: "pnpm remove -g gentle-pi" } });
 	assert.deepEqual(h.calls.slice(-4), ["check 4.1.0-1.0.2 4.1.0 1.0.2 launcher=true", "path profile true", "setup", "remove pnpm"]);
 	// A launcher that does not report both versions: no PATH change, and the old global gentle-pi is never removed.
-	const broken = harness({ migrate: { manager: "pnpm", removal: "plan" }, launcher: { ok: false, reported: "gentle-shell 4.0.0", stderr: "Error: no Pi\n" } });
-	assert.deepEqual(await broken.run(), { outcome: "failed", failedStep: "verify-launcher", completed: steps.slice(0, 6), detail: "Error: no Pi" });
+	// The detail names what the launcher reported and what was expected (A1).
+	const broken = harness({ migrate: { manager: "pnpm", removal: "plan" }, launcher: { ok: false, reported: "gentle-shell 4.0.0\npi 1.0.0", stderr: "Error: no Pi\n" } });
+	assert.deepEqual(await broken.run(), { outcome: "failed", failedStep: "verify-launcher", completed: steps.slice(0, 6),
+		detail: 'gentle-shell --version reported "gentle-shell 4.0.0 / pi 1.0.0" instead of "gentle-shell 4.1.0 / pi 1.0.2"' });
+	const silent = harness({ migrate: { manager: "pnpm", removal: "plan" }, launcher: { ok: false, reported: "", stderr: "Error: Cannot find module /home/u/x\n" } });
+	assert.equal((await silent.run()).detail, 'gentle-shell --version reported nothing instead of "gentle-shell 4.1.0 / pi 1.0.2": Error: Cannot find module ~/x');
 	assert.equal(broken.calls.some((call) => call.startsWith("remove") || call.startsWith("path ")), false);
 	assert.ok(bundledFailedSteps.includes("verify-launcher"));
+	// B3: any failed migration step carries its error message as the detail; a new install's does not.
+	assert.deepEqual(await harness({ migrate: { manager: "pnpm", removal: "plan" }, failAt: "claim" }).run(),
+		{ outcome: "failed", failedStep: "claim-prefix", completed: [], detail: "claim failed" });
+	assert.deepEqual(await harness({ failAt: "claim" }).run(), { outcome: "failed", failedStep: "claim-prefix", completed: [] });
 	// A failed removal keeps the bundled install and names the manual command.
 	const kept = await harness({ migrate: { manager: "npm", removal: "plan" }, removed: false }).run();
 	assert.equal(kept.outcome, "terminal-action-required");
@@ -336,6 +344,16 @@ test("shadowingCommand names the old gentle-shell a new terminal would still fin
 	assert.equal(check("profile"), null);
 	assert.equal(check("manual"), null);
 	assert.equal(check("symlink", { env: { PATH: "/home/u/.local/bin:/home/u/Library/pnpm" } }), null);
+	// zsh (.zshrc, after .zprofile) and bash (the login file or .bashrc, our line appended last) put the bundled bin first.
+	for (const profile of ["/home/u/.zshrc", "/home/u/.bash_profile", "/home/u/.bashrc", "/home/u/.profile"]) {
+		assert.equal(check("profile", { profile }), null, profile);
+	}
+	// B1: fish reads conf.d/gentle-shell.fish before config.fish, so anything config.fish prepends
+	// (pnpm setup's PNPM_HOME block) comes first: the bundled bin counts as last.
+	const fish = "/home/u/.config/fish/conf.d/gentle-shell.fish";
+	assert.equal(check("profile", { profile: fish }), oldBin);
+	assert.equal(check("manual", { profile: fish }), oldBin);
+	assert.equal(check("profile", { profile: fish, fs: lookup({ [launcher]: launcher }) }), null);
 	assert.equal(check("none", { env: { PATH: `/home/u/Library/pnpm:${posixLayout.bin}` } }), oldBin);
 	assert.equal(check("none", { fs: lookup({ [launcher]: launcher, "/home/u/.local/bin/gentle-shell": launcher }) }), null);
 	// Windows: the user Path entry comes after everything already on PATH.
@@ -348,18 +366,25 @@ test("shadowingCommand names the old gentle-shell a new terminal would still fin
 
 /** migrateGlobalShell with fake operations: the bundled steps and the manager run are recorded. */
 function migration({ owner = "pnpm" as string | null, distribution = published as Record<string, unknown>, interactive = true, answer = "y", removal = 0,
-	failAt = "", pathKind = "profile", shadow = false } = {}) {
+	failAt = "", pathKind = "profile", shadow = false, currentVersion = "4.0.0", fish = false } = {}) {
 	const calls: string[] = [];
+	let ownerCalls = 0;
 	const lines: string[] = [];
 	const asked: string[] = [];
-	const path = pathKind === "profile" ? profile : { kind: pathKind };
+	const fishLine = "set -gx PATH '/home/u/.gentle-shell/bin' $PATH # gentle-shell bundled install";
+	const path = pathKind === "profile" ? (fish ? { kind: "profile", path: "/home/u/.config/fish/conf.d/gentle-shell.fish", line: fishLine, create: true } : profile)
+		: { kind: pathKind };
 	const home = "/home/u";
 	const oldBin = "/home/u/Library/pnpm/gentle-shell";
 	const files: Record<string, string> = { [posixLayout.launcher]: posixLayout.launcher, ...(shadow ? { [oldBin]: oldBin } : {}) };
 	const manager = { name: owner, command: `/usr/bin/${owner}`, prefix: [] };
 	const operations = {
 		prefixRoot: () => undefined,
-		claimPrefix: () => { calls.push("claim"); return posixLayout; },
+		claimPrefix: () => {
+			calls.push("claim");
+			if (failAt === "claim") throw new Error("Unsafe bundled prefix: /home/u/.gentle-shell");
+			return posixLayout;
+		},
 		userNpmrc: () => "",
 		writeNpmrcAuth: () => calls.push("npmrc"),
 		ensureRuntime: async () => { calls.push("runtime"); return { node: posixLayout.node, pnpm: posixLayout.pnpm, go: null }; },
@@ -376,12 +401,12 @@ function migration({ owner = "pnpm" as string | null, distribution = published a
 		run: async () => { calls.push("setup"); return { status: 0 }; },
 	};
 	const run = async (command: string, argv: string[]) => { calls.push(`${command} ${argv.join(" ")}`); return { code: removal, stdout: "" }; };
-	const migrate = () => migrateGlobalShell({ latest: "4.1.0", currentVersion: "4.0.0", platform: "linux", arch: "x64",
+	const migrate = () => migrateGlobalShell({ latest: "4.1.0", currentVersion, platform: "linux", arch: "x64",
 		env: { PATH: "/home/u/Library/pnpm:/usr/bin", HOME: home }, home, interactive,
 		ask: async (question: string) => { asked.push(question); return answer; }, out: (line: string) => lines.push(line),
-		adapters: { owner: async () => { if (!owner) throw new Error("neither pnpm nor npm owns /src/gentle-shell"); return manager; },
+		adapters: { owner: async () => { ownerCalls += 1; if (!owner) throw new Error("neither pnpm nor npm owns /src/gentle-shell"); return manager; },
 			distribution: async (version: string) => { calls.push(`assets ${version}`); return distribution; }, run, operations, fs: lookup(files) } });
-	return { calls, lines, asked, migrate };
+	return { calls, lines, asked, migrate, owners: () => ownerCalls };
 }
 
 test("migrateGlobalShell explains, installs the bundled prefix, checks the launcher, then asks once and removes the old gentle-pi with its own manager", async () => {
@@ -415,13 +440,18 @@ test("migrateGlobalShell keeps the old gentle-pi on No, on EOF and without a ter
 	assert.match(batch.lines.join("\n"), /To remove it, run: pnpm remove -g gentle-pi/);
 });
 
-test("migrateGlobalShell never removes after a failed install or launcher check, and names the command when removal fails", async () => {
-	for (const failAt of ["plan", "install", "check"]) {
+test("migrateGlobalShell never removes after a failed step: it names the step and its detail, then hands back to the global update", async () => {
+	// B3: null, so `gentle-shell upgrade` continues with the global package's own update this run.
+	const expected: Record<string, RegExp> = { plan: /could not be planned: Unsafe bundled bin path/, claim: /stopped at claim-prefix: Unsafe bundled prefix: ~\/\.gentle-shell/,
+		install: /stopped at install-version/, check: /stopped at verify-launcher/ };
+	for (const failAt of ["plan", "claim", "install", "check"]) {
 		const m = migration({ failAt });
-		assert.deepEqual(await m.migrate(), { code: 1, installed: false }, failAt);
+		assert.equal(await m.migrate(), null, failAt);
 		assert.deepEqual(m.asked, []);
 		assert.equal(m.calls.some((call) => call.includes(" remove ")), false);
-		assert.match(m.lines.join("\n"), /global Gentle Shell was not changed/);
+		const text = m.lines.join("\n");
+		assert.match(text, expected[failAt], failAt);
+		assert.match(text, /global gentle-pi was left untouched/);
 	}
 	const npm = migration({ owner: "npm", removal: 1 });
 	assert.deepEqual(await npm.migrate(), { code: 1, installed: true });
@@ -434,10 +464,23 @@ test("migrateGlobalShell leaves an npm link, a release without the assets and ma
 	assert.equal(await linked.migrate(), null);
 	assert.deepEqual(linked.calls, ["assets 4.1.0"]);
 	assert.match(linked.lines.join("\n"), /not a global pnpm or npm package/);
+	// B2: without published assets, or with a newer installed Gentle Shell, the owner (npm root -g) is never probed.
 	for (const status of ["missing", "unavailable", "rejected"]) {
 		const m = migration({ distribution: { status } });
 		assert.equal(await m.migrate(), null, status);
 		assert.deepEqual(m.calls, ["assets 4.1.0"]);
 		assert.deepEqual(m.lines, []);
+		assert.equal(m.owners(), 0, status);
 	}
+	const newer = migration({ currentVersion: "4.2.0" });
+	assert.equal(await newer.migrate(), null);
+	assert.equal(newer.owners(), 0);
+	assert.equal(linked.owners(), 1);
+});
+
+test("migrateGlobalShell in fish reports the kept old gentle-shell, which config.fish puts before the conf.d line", async () => {
+	const m = migration({ fish: true, shadow: true, answer: "n" });
+	assert.deepEqual(await m.migrate(), { code: 0, installed: true });
+	assert.match(m.lines.join("\n"), /New terminals still run \/home\/u\/Library\/pnpm\/gentle-shell/);
+	assert.match(m.lines.join("\n"), /pnpm remove -g gentle-pi/);
 });

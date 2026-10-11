@@ -259,7 +259,9 @@ export function progressModel(steps, entries, { running = false, outcome = null 
 
 const detailCommands = new Map([["shell-setup", "gentle-shell setup"], ["install-version", "pnpm install"], ["persist-path", "pnpm setup"], ["acquire-go", "the Go download"],
 	["install-global", "pnpm add -g"], ["install-shell-main", "the Gentle Shell main install"], ["build-gentle-ai-main", "the Gentle AI main build"],
-	["update-shell", "the Gentle Shell update"]]);
+	["update-shell", "the Gentle Shell update"], ["claim-prefix", "the bundled install"], ["copy-npm-settings", "the bundled install"],
+	["install-runtime", "the bundled install"], ["activate-version", "the bundled install"], ["write-launcher", "the bundled install"],
+	["verify-launcher", "gentle-shell --version"], ["bundled-path", "the bundled install"]]);
 
 /** Final screen model for every runner outcome. Guidance always comes from the host. */
 export function outcomeModel(outcome) {

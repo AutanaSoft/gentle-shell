@@ -343,13 +343,18 @@ test("a release upgrade that migrates installs nothing globally, records the rel
 		assert.equal(existsSync(registration), false);
 		assert.deepEqual(await readChannel(w.ctx, fsPromises), { channel: "release" });
 	} finally { w.cleanup(); }
-	// A failed migration returns its code and records nothing.
-	const failed = world({ migrate: async () => ({ code: 1, installed: false }) });
+	// A migration whose removal failed keeps the bundled install: its exit code, and the release channel recorded.
+	const kept = world({ migrate: async () => ({ code: 1, installed: true }) });
 	try {
-		assert.equal(await failed.upgrade([]), 1);
-		assert.deepEqual(failed.installs(), []);
-		assert.deepEqual(await readChannel(failed.ctx, fsPromises), { channel: "release" });
-		assert.equal(existsSync(join(failed.home, ".pi", "gentle-ai", "channel.json")), false);
+		assert.equal(await kept.upgrade([]), 1);
+		assert.deepEqual(kept.installs(), []);
+		assert.equal(existsSync(join(kept.home, ".pi", "gentle-ai", "channel.json")), true);
+	} finally { kept.cleanup(); }
+	// B3: a migration that failed (it printed why and returns null) leaves this run to the global update.
+	const failed = world({ migrate: async () => null });
+	try {
+		assert.equal(await failed.upgrade([]), 0);
+		assert.deepEqual(failed.installs(), ["/usr/bin/pnpm add -g gentle-pi@4.1.0 --allow-build=gentle-pi"]);
 	} finally { failed.cleanup(); }
 });
 

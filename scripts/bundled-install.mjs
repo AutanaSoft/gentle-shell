@@ -5,7 +5,7 @@
 // Shared by the web installer and `gentle-shell upgrade`; every effect outside
 // plain path arithmetic goes through an injectable adapter for tests.
 import { createHash, randomBytes } from "node:crypto";
-import { accessSync, chmodSync, closeSync, constants, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync,
+import { accessSync, chmodSync, closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync,
 	rmSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { posix, win32 } from "node:path";
 import { spawn } from "node:child_process";
@@ -90,6 +90,21 @@ function privateDirectory(path) {
 	const info = stat(path);
 	if (!info?.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid() || (info.mode & 0o022)) throw new Error(`Unsafe bundled prefix: ${path}`);
 }
+/** POSIX: removes group and other write access from a real directory of this
+ * user, through a descriptor opened without following links; anything else is
+ * left for privateDirectory to refuse.
+ */
+function tightenOwnDirectory(path) {
+	let fd;
+	try { fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW); }
+	catch { return; }
+	try {
+		const info = fstatSync(fd);
+		if (info.isDirectory() && info.uid === process.getuid() && (info.mode & 0o022)) fchmodSync(fd, info.mode & 0o7755);
+	} finally {
+		closeSync(fd);
+	}
+}
 function ensureDirectory(path, platform) {
 	try { mkdirSync(path, { mode: 0o700 }); }
 	catch (error) { if (error.code !== "EEXIST") throw error; }
@@ -106,8 +121,9 @@ function prepareFolders(layout) {
 }
 
 /** Claims the prefix and returns its layout. POSIX: `~/.gentle-shell` is created
- * 0700, or kept when it is a real directory of this user that no one else can
- * write (the agent home lives there). Windows: each candidate's nearest existing
+ * 0700, or kept when it is a real directory of this user (the agent home lives
+ * there); group or other write access, which umask 002 leaves, is removed
+ * (go-w). A link, a non-folder or another owner's folder is refused. Windows: each candidate's nearest existing
  * folder is walked like the bootstrap's tools (owner, ACL, reparse); only an
  * untrusted owner or ACL on %LOCALAPPDATA% moves to the profile candidate. The
  * chosen folder is claimed with the bootstrap's protected DACL and marked
@@ -122,6 +138,7 @@ export function claimPrefix({ platform, env = {}, home, root, adapters = {} }) {
 		if (realpathSync(home) !== posix.resolve(home)) throw new Error(`Unsafe bundled prefix: ${home}`);
 		const info = lstatSync(home);
 		if (!info.isDirectory() || info.uid !== process.getuid() || (info.mode & 0o022)) throw new Error(`Unsafe bundled prefix: ${home}`);
+		if (stat(layout.root)?.isDirectory()) tightenOwnDirectory(layout.root);
 		ensureDirectory(layout.root, platform);
 		(adapters.prepare ?? prepareFolders)(layout);
 		return layout;

@@ -191,7 +191,10 @@ const goConflict = (detail) => detail.startsWith("Conflicting Go destination: ")
 // The main channel's typed error when GitHub refused the latest main commit with HTTP 403.
 const githubLimited = (detail) => rateLimited(detail) || (/\bmain-commit-unavailable\b/.test(detail) && /\bHTTP 403\b/.test(detail));
 // Fixed steps whose sanitized last error line may reach the browser.
-const detailSteps = Object.freeze({ "shell-setup": rateLimited, "install-version": () => false, "verify-launcher": () => false, "persist-path": unknownShell, "acquire-go": goConflict,
+// The bundled steps send a detail only for a migration (its error message); a new install's send none.
+const bundledDetail = Object.fromEntries(["claim-prefix", "copy-npm-settings", "install-runtime", "activate-version", "write-launcher", "verify-launcher", "bundled-path"]
+	.map((step) => [step, () => false]));
+const detailSteps = Object.freeze({ ...bundledDetail, "shell-setup": rateLimited, "install-version": () => false, "persist-path": unknownShell, "acquire-go": goConflict,
 	"install-global": githubLimited, "install-shell-main": githubLimited, "build-gentle-ai-main": githubLimited, "update-shell": githubLimited });
 const detailGuidance = Object.freeze({ "shell-setup": "setupRateLimit", "persist-path": "persistPathShell", "acquire-go": "goDestinationConflict",
 	"install-global": "githubRateLimit", "install-shell-main": "githubRateLimit", "build-gentle-ai-main": "githubRateLimit", "update-shell": "githubRateLimit" });
