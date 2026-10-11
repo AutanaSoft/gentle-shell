@@ -469,9 +469,14 @@ package.
 
 `gentle-shell update` is different: it is Pi's own `update`, forwarded to the
 resolved home. In a bundled install Pi ships pinned with Gentle Shell, so
-`update` without a package (or with `--self`, `self`, `pi` or `--all`) explains
-that and runs `gentle-shell upgrade` (in a terminal) or names it; package
-updates still reach Pi. The browser installation wizard offers the same main channel; see
+every `update` form that updates Pi itself explains that and runs
+`gentle-shell upgrade` (in a terminal) or names it. Those forms are no target,
+`--self`, `self` or `pi`, `--all`, and `self` or `pi` with `--extensions`. The
+extension part of an "all" form, and every package update, still reaches Pi.
+In a bundled install Pi and the agent's commands keep your own environment;
+Pi installs packages with Gentle Shell's npm through the `npmCommand` setting
+of its own home. Details: [Bundled install](bundled-install.md#launcher-in-a-bundled-install).
+The browser installation wizard offers the same main channel; see
 [Installation wizard](install-wizard.md#main-channel).
 
 ### `self-uninstall` subcommand

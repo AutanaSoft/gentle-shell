@@ -712,24 +712,66 @@ const UNPUBLISHED = Object.freeze({
 	rejected: (version) => `the bundled distribution of release v${version} did not verify`,
 });
 const RELEASE_EXPORTS = Object.freeze(["prefixLayout", "ensureRuntime", "ensureLauncher"]);
+/** The variable that makes a version's launcher run in bundled mode for
+ * `--version` only, as if `current` named that version (lib/gentle-shell-bundled.ts).
+ */
+const VERIFY_ENV = "GENTLE_SHELL_VERIFY_VERSION";
 
-/** The module a freshly installed version ships (its own pins and launcher),
- * only from a regular file whose real path stays inside that version folder.
+/** The command Pi runs for npm in a bundled install (its `npmCommand` setting):
+ * our npm on our Node, reading only the prefix npmrc and global config, with its
+ * cache and global prefix inside the prefix. npm ranks command-line flags above
+ * npm_config_* variables, so the user's environment cannot redirect these.
+ */
+export function bundledNpmCommand(layout) {
+	return [layout.node, layout.npmCli, `--userconfig=${layout.npmrc}`, `--globalconfig=${layout.npmGlobalConfig}`, `--cache=${layout.npmCache}`,
+		`--prefix=${layout.npmPrefix}`, "--update-notifier=false"];
+}
+
+/** The module an installed version ships (its own pins and launcher), only from
+ * a regular file whose real path stays inside that version folder.
  */
 async function releaseModule(file, versionPath) {
 	if (!regular(file) || !realpathSync(file).startsWith(`${realpathSync(versionPath)}${pathFor(process.platform).sep}`)) return null;
 	return import(pathToFileURL(file).href);
+}
+/** An installed version's own scripts/bundled-install.mjs and its layout of this
+ * prefix; it must export prefixLayout, ensureRuntime and ensureLauncher as
+ * functions. `active` names the version `current` stays at otherwise.
+ */
+async function loadRelease({ layout, id, home, platform, env, adapters, active }) {
+	const path = pathFor(process.platform);
+	const versionPath = versionDirectory(layout, id);
+	const file = path.join(versionPath, "node_modules", "gentle-pi", "scripts", "bundled-install.mjs");
+	const module = await (adapters.load ?? releaseModule)(file, versionPath);
+	if (!module || RELEASE_EXPORTS.some((name) => typeof module[name] !== "function")) {
+		throw new Error(`Gentle Shell ${id} has no usable scripts/bundled-install.mjs (${RELEASE_EXPORTS.join(", ")}); current stays at ${active}`);
+	}
+	return { module, next: module.prefixLayout({ platform, env, home, root: layout.root }) };
+}
+/** Switches `current` to `id` and writes that version's launcher; when the
+ * launcher cannot be written, `current` goes back to `active` (one rename each).
+ */
+function activateWithLauncher(layout, id, active, { module, next }) {
+	activateVersion(layout, id);
+	try {
+		module.ensureLauncher(next);
+	} catch (error) {
+		if (active) activateVersion(layout, active);
+		else unlinkSync(layout.current);
+		throw new Error(`the launcher for Gentle Shell ${id} could not be written (${error.message}); current stays at ${active}`);
+	}
 }
 
 /** `gentle-shell upgrade` in a bundled install (S5, S6, S8): the latest
  * release's distribution assets (adapters.latest, adapters.distribution) are
  * installed beside the active version with our runtime, then the new version's
  * own module (loaded only from that version folder) installs its pinned runtime
- * when the pins moved; its launcher must print exactly the release's gentle-pi
- * and Pi before `current` switches. Two versions are kept, and the launcher is
- * refreshed for the new runtime. An already current release changes nothing;
- * any failure leaves `current` untouched and removes a version this call
- * installed. Returns { id, changed, previous?, removed? }.
+ * when the pins moved. Its launcher, run in bundled mode for that version, must
+ * print exactly the release's gentle-pi and Pi before `current` switches; the
+ * release's launcher is then written (a failure puts `current` back) and two
+ * versions are kept (a pruning failure is only a warning). An already current
+ * release changes nothing; any failure leaves `current` as it was and removes a
+ * version this call installed. Returns { id, changed, previous?, removed?, warning? }.
  */
 export async function upgradeBundled({ layout, home, platform = layout.platform, arch = process.arch, env = {}, adapters, out = () => {} }) {
 	const path = pathFor(process.platform);
@@ -746,47 +788,50 @@ export async function upgradeBundled({ layout, home, platform = layout.platform,
 	const go = platform === "win32";
 	const runtime = await (adapters.ensureRuntime ?? ensureRuntime)({ layout, platform, arch, go, env });
 	const version = await installVersion({ layout, manifest, lockfile, platform, env, go: runtime.go, adapters: adapters.install ?? {} });
-	let verified;
 	try {
-		const file = path.join(version.path, "node_modules", "gentle-pi", "scripts", "bundled-install.mjs");
-		const module = await (adapters.load ?? releaseModule)(file, version.path);
-		if (!module || RELEASE_EXPORTS.some((name) => typeof module[name] !== "function")) {
-			throw new Error(`Gentle Shell ${id} has no usable scripts/bundled-install.mjs (${RELEASE_EXPORTS.join(", ")}); current stays at ${active}`);
-		}
-		const next = module.prefixLayout({ platform, env, home, root: layout.root });
-		await module.ensureRuntime({ layout: next, platform, arch, go, env });
+		const loaded = await loadRelease({ layout, id, home, platform, env, adapters, active });
+		await loaded.module.ensureRuntime({ layout: loaded.next, platform, arch, go, env });
 		// The environment our pnpm ran in, without any Pi or Gentle override that
-		// could point the launcher at another Pi or agent home.
-		const launchEnv = Object.fromEntries(Object.entries(pnpmEnvironment(next, { platform, env })).filter(([key]) => !/^(?:gentle_|pi_)/i.test(key)));
+		// could point the launcher at another Pi or agent home, plus the one input
+		// that runs this version in bundled mode for its --version.
+		const launchEnv = { ...Object.fromEntries(Object.entries(pnpmEnvironment(loaded.next, { platform, env })).filter(([key]) => !/^(?:gentle_|pi_)/i.test(key))),
+			[VERIFY_ENV]: id };
 		const entry = path.join(version.path, "node_modules", "gentle-pi", "bin", "gentle-shell.mjs");
-		const result = await (adapters.run ?? runCommand)(next.node, [entry, "--version"], { cwd: layout.root, env: launchEnv, timeout: 120000 });
+		const result = await (adapters.run ?? runCommand)(loaded.next.node, [entry, "--version"], { cwd: layout.root, env: launchEnv, timeout: 120000 });
 		const reported = String(result.stdout ?? "").trim();
 		const [shellLine, piLine] = reported.split(/\r?\n/);
 		if (result.status !== 0 || shellLine !== `gentle-shell ${shell}` || piLine !== `pi ${pi}`) {
 			throw Object.assign(new Error(`Gentle Shell ${id} reported ${JSON.stringify(reported)}, not gentle-shell ${shell} with pi ${pi}; current stays at ${active}`),
 				{ stderr: String(result.stderr ?? "").slice(-4000) });
 		}
-		verified = { module, next };
+		activateWithLauncher(layout, id, active, loaded);
 	} catch (error) {
 		if (version.installed && activeVersion(layout) !== id) rmSync(version.path, { recursive: true, force: true });
 		throw error;
 	}
-	activateVersion(layout, id);
-	verified.module.ensureLauncher(verified.next);
-	const removed = pruneVersions(layout, 2);
 	out(`Upgraded to Gentle Shell ${shell} with Pi ${pi} (from ${active ?? "no active version"}). Run 'gentle-shell upgrade --rollback' to switch back.`);
-	return { id, changed: true, previous: active, removed };
+	try {
+		return { id, changed: true, previous: active, removed: (adapters.prune ?? pruneVersions)(layout, 2) };
+	} catch (error) {
+		const warning = `older versions were not removed (${error.message})`;
+		out(`warning: ${warning}`);
+		return { id, changed: true, previous: active, removed: [], warning };
+	}
 }
 
 /** `gentle-shell upgrade --rollback`: `current` switches back to the most
- * recently active other version still installed (activateVersion, one rename).
- * Returns { from, to }.
+ * recently active other version still installed, with that version's own
+ * launcher and runtime pins (its own scripts/bundled-install.mjs, loaded like
+ * upgradeBundled loads it). Without a usable module nothing changes; when its
+ * launcher cannot be written `current` goes back. Returns { from, to }.
  */
-export function rollbackBundled(layout) {
+export async function rollbackBundled({ layout, home, platform = layout.platform, arch = process.arch, env = {}, adapters = {} }) {
 	const active = activeVersion(layout);
 	const previous = readHistory(layout).find((id) => id !== active && installedVersion(layout, id));
 	if (!previous) throw new Error("No previous Gentle Shell version is kept to roll back to");
-	activateVersion(layout, previous);
+	const loaded = await loadRelease({ layout, id: previous, home, platform, env, adapters, active });
+	await loaded.module.ensureRuntime({ layout: loaded.next, platform, arch, go: platform === "win32", env });
+	activateWithLauncher(layout, previous, active, loaded);
 	return { from: active, to: previous };
 }
 

@@ -154,7 +154,7 @@ Each kept line is copied verbatim, so `${VAR}` references stay for pnpm and npm 
 
 ## Setup environment
 
-`setupEnvironment(layout, { platform, env, id })` is the environment `gentle-shell setup` runs in. Its PATH, in order:
+`setupEnvironment(layout, { platform, env, id })` is the environment the web installer runs `gentle-shell setup` in. The launcher itself then gives its children the user's environment ([Launcher in a bundled install](#launcher-in-a-bundled-install)). Its PATH, in order:
 
 1. Our Node's folder, which holds npm on POSIX and `npm.cmd` on Windows.
 2. `versions/<id>/node_modules/.bin`, which holds the version's `pi`.
@@ -197,8 +197,19 @@ Dropped: inherited npm and pnpm settings, `NODE_OPTIONS`, `NODE_PATH`, and the w
 `bin/gentle-shell.mjs` runs in bundled mode only when it runs from a bundled install. Its real package root must be `versions/<id>/node_modules/gentle-pi` of a version whose `.gentle-shell-version` marker reads `<id>`, and `current` must name that version. `resolveBundledInstall` in `lib/gentle-shell-bundled.ts` decides this. Any other installation keeps the launcher's ordinary behavior, including a kept version that `current` does not name.
 
 - **Exact Pi (S8).** The launcher runs only the Pi that the version's `package.json` pins: `versions/<id>/node_modules/@earendil-works/pi-coding-agent`, inside the version folder, with that exact version and Pi's `dist/bundle/cli.js` bin. `GENTLE_SHELL_PI`, an adjacent fallback and `PATH` are never used. A missing or different Pi stops with a message that names the version and the pinned Pi, and says to run `gentle-shell upgrade` or the installer again.
-- **Child environment.** Pi, `setup` and the version probe all start from `setupEnvironment`. That puts our Node and npm first on `PATH`, then the version's `node_modules/.bin`, and keeps npm's settings inside the prefix. `bundledChildEnv` then removes `GENTLE_SHELL_PI`, sets `GENTLE_PI_AGENTS_PI` to our node and the bundled `cli.js` so subagents never run a `pi` from `PATH`, and sets `PI_SKIP_VERSION_CHECK=1`. The subagent runner splits that variable on whitespace, so a path with a space leaves it unset. The runner then falls back to the running node and `cli.js`, which are the same pair.
-- **Pi updates (S5).** `gentle-shell update`, with no package or with `--self`, `self`, `pi` or `--all`, says that Pi ships pinned with Gentle Shell. In a terminal it then runs `gentle-shell upgrade`; otherwise it names the command. The extension part of `--all` still goes to Pi as `update --extensions`. Package, `--models` and help forms go to Pi unchanged.
+- **Child environment (S9).** Pi's bash tool passes its own environment to every command the agent runs in the user's projects. Pi and its subagents therefore get the user's environment unchanged: `PATH`, `NODE_OPTIONS` and `npm_config_*` stay the user's, so `git`, `gh`, `node` and `npm` there are the user's own. `bundledChildEnv` adds only Gentle Shell's own variables:
+  - `GENTLE_SHELL_PI` is removed.
+  - `GENTLE_PI_AGENTS_PI` is set to our node and the bundled `cli.js`, so subagents never run a `pi` from `PATH`. The subagent runner splits that variable on whitespace, so a path with a space leaves it unset. The runner then falls back to the running node and `cli.js`, which are the same pair.
+  - `PI_SKIP_VERSION_CHECK=1`.
+  - The launcher still sets the agent home variables (`PI_CODING_AGENT_DIR`, `GENTLE_PI_AGENT_HOME`) as always.
+
+  Pi itself needs no `PATH` entry, because it is started as our node with the bundled `cli.js`.
+- **Pi's own npm.** Pi runs npm through its `npmCommand` setting (`getNpmCommand` in Pi's `core/package-manager.js`). For a home Gentle Shell owns, the launcher sets that key in its `settings.json` to `bundledNpmCommand(layout)`: our node, our `npm-cli.js`, `--userconfig=<prefix npmrc>`, `--globalconfig`, `--cache` and `--prefix` inside `~/.gentle-shell/npm/`, and `--update-notifier=false`. "Owns" means the isolated home, or a `--home` it created or provisioned. It never sets the key for `--link`, a foreign home, or the user's `~/.pi`.
+  - Only that key is written, and only when it differs. A file that already holds the command keeps its bytes, and one that is not a JSON object is left alone with a warning.
+  - npm ranks command-line flags above `npm_config_*` variables, so the user's environment cannot redirect these four settings. An `npm_config_*` key that has no flag here (for example `npm_config_registry`) still reaches our npm, as the user's own network setting would.
+  - Pi passes its own `--prefix <agent home>/npm` after these flags for package installs, and the later flag wins.
+- **Setup.** `gentle-shell setup` runs Gentle AI, which finds `pi` on `PATH`. pnpm's `.bin/pi` shim runs the first `node` on `PATH`. So setup alone gets our node's folder, then the version's `node_modules/.bin`, ahead of the user's `PATH` (`bundledSetupEnv`). Everything else in its environment is the same as Pi's.
+- **Pi updates (S5).** Some `gentle-shell update` forms make Pi update itself: no target, `--self`, `self` or `pi` as the target, `--all`, and `self` or `pi` with `--extensions`. Pi reads the last two as "all" (`package-manager-cli.js`). For these forms the launcher says that Pi ships pinned with Gentle Shell. In a terminal it then runs `gentle-shell upgrade`; otherwise it names the command. For an "all" form, Pi still gets `update --extensions`, even when the upgrade could not complete; the launcher reports that and the extensions still update. Package, `--models`, help, and forms Pi refuses (conflicting or unknown options) go to Pi unchanged.
 - **What cannot be intercepted.** A `pi update` that someone runs directly with the bundled `pi` (for example the agent's shell, which finds it through `node_modules/.bin`) is Pi's own command. In Pi 1.1.0, `PI_SKIP_VERSION_CHECK` hides only the startup "Update Available" notice (`utils/version-check.js`). For the update itself, `package-manager-cli.js` detects a pnpm install from the `.pnpm` path, and `config.js` (`getSelfUpdateCommand`) finds no global pnpm root that owns `versions/<id>`. Pi then prints `cannot self-update this installation` and changes nothing.
 
 ### `gentle-shell upgrade` in a bundled install
@@ -209,10 +220,13 @@ Dropped: inherited npm and pnpm settings, `NODE_OPTIONS`, `NODE_PATH`, and the w
 2. When that release is the active version, the command says it is already current and changes nothing.
 3. Otherwise `ensureRuntime` runs (with Go on Windows), and `installVersion` installs the release in place beside the active version.
 4. The new version's own `scripts/bundled-install.mjs` is loaded, only from that freshly installed folder, and only when its real path stays inside it. Its `prefixLayout`, `ensureRuntime` and `ensureLauncher` must all be functions; otherwise the upgrade stops. Its `ensureRuntime` installs that release's pinned Node and pnpm beside ours when the pins moved, and reuses them otherwise.
-5. The new version's launcher must print exactly `gentle-shell <shell>` and `pi <pi>`. It runs with the release's Node, in the pnpm environment, with no `GENTLE_*` or `PI_*` overrides.
-6. Only then does `current` switch (`activateVersion`, one rename). The launcher is refreshed by the release's own `ensureLauncher`, and `pruneVersions(layout, 2)` keeps the new version and the previous one.
+5. The new version's launcher must print exactly `gentle-shell <shell>` and `pi <pi>`. It runs with the release's Node, in the pnpm environment, with no `GENTLE_*` or `PI_*` overrides. It runs in bundled mode for that version, with its exact Pi: the only extra variable, `GENTLE_SHELL_VERIFY_VERSION=<id>`, makes `resolveBundledInstall` treat that id as current. The launcher honors it for `--version` only, and never passes it to a child. A `pi` on `PATH` cannot pass this check.
+6. Only then does `current` switch (`activateVersion`, one rename), and the release's own `ensureLauncher` writes the launcher for its Node. If the launcher cannot be written, `current` switches back and the command fails.
+7. `pruneVersions(layout, 2)` keeps the new version and the previous one. If pruning fails, the upgrade still succeeds and prints a warning.
 
-Any failure before step 6 leaves `current` untouched and removes a version folder this command installed. `gentle-shell upgrade --rollback` switches `current` to the most recently active other version that is still installed, again with one rename. Running it twice returns to the first version.
+Any failure before step 7 leaves `current` as it was and removes a version folder this command installed.
+
+`gentle-shell upgrade --rollback` switches `current` to the most recently active other version that is still installed. It uses that version's own `scripts/bundled-install.mjs`, loaded and checked as in step 4. Its `ensureRuntime` makes sure its pinned runtime is present, and its `ensureLauncher` writes the launcher for its Node. Without a usable module, nothing changes. If the launcher cannot be written, `current` switches back. Running `--rollback` twice returns to the first version.
 
 Known limits: a release whose lockfile needs a newer pnpm than ours cannot be installed by this upgrade, because the release's own runtime is installed only after its version folder exists. Older runtimes under `runtime/` are never removed.
 

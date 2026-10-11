@@ -7,7 +7,7 @@ import { join, posix } from "node:path";
 import test, { after, type TestContext } from "node:test";
 import { crc32, gzipSync } from "node:zlib";
 import { activateVersion, activeVersion, applyPathEntry, claimPrefix, prefixRoot, distributionFiles, ensureLauncher, ensureRuntime, filterNpmrc, installVersion, nodeExecutable,
-	nodeRuntimeFiles, pathEntryPlan, pnpmEnvironment, prefixLayout, pruneVersions, removePathEntry, rollbackBundled, setupEnvironment, upgradeBundled, userNpmrc, writeNpmrcAuth }
+	nodeRuntimeFiles, pathEntryPlan, pnpmEnvironment, prefixLayout, pruneVersions, removePathEntry, rollbackBundled, setupEnvironment, bundledNpmCommand, upgradeBundled, userNpmrc, writeNpmrcAuth }
 	from "../scripts/bundled-install.mjs";
 
 // Real directories, modes, symlinks and uids need a POSIX host.
@@ -841,6 +841,8 @@ posixTest("upgradeBundled installs the latest release beside the active one, ver
 	assert.deepEqual(verify.args, [join(layout.versions, "4.2.0-1.0.2", "node_modules", "gentle-pi", "bin", "gentle-shell.mjs"), "--version"]);
 	assert.equal(verify.env.GENTLE_SHELL_PI, undefined);
 	assert.equal(verify.env.PI_CODING_AGENT_DIR, undefined);
+	// The check runs that version in bundled mode, as if current named it (only for --version).
+	assert.equal(verify.env.GENTLE_SHELL_VERIFY_VERSION, "4.2.0-1.0.2");
 	assert.match(lines.join("\n"), /Gentle Shell 4\.2\.0 with Pi 1\.0\.2.*4\.1\.0-1\.0\.1.*--rollback/s);
 });
 
@@ -896,14 +898,71 @@ posixTest("upgradeBundled installs a new release's own pinned runtime and launch
 	assert.equal(activeVersion(layout), "4.2.0-1.0.2");
 });
 
-posixTest("rollbackBundled switches current to the kept previous version, and back", async () => {
-	const { layout } = await activeInstall();
-	assert.deepEqual(rollbackBundled(layout), { from: "4.1.0-1.0.1", to: "4.0.0-1.0.0" });
+posixTest("upgradeBundled puts current back when the new launcher cannot be written", async () => {
+	const { user, layout } = await activeInstall();
+	const { adapters } = upgradeAdapters(layout, { module: { ensureLauncher: () => { throw new Error("Conflicting launcher: /x"); } } });
+	await assert.rejects(upgradeBundled({ layout, home: user, platform: "darwin", arch: "arm64", env: {}, adapters }), /launcher.*current stays at 4\.1\.0-1\.0\.1/s);
+	assert.equal(activeVersion(layout), "4.1.0-1.0.1");
+	assert.deepEqual(readdirSync(layout.versions).sort(), ["4.0.0-1.0.0", "4.1.0-1.0.1"]);
+});
+
+posixTest("upgradeBundled reports success with a warning when only pruning fails", async () => {
+	const { user, layout } = await activeInstall();
+	const { adapters } = upgradeAdapters(layout);
+	const lines: string[] = [];
+	const result = await upgradeBundled({ layout, home: user, platform: "darwin", arch: "arm64", env: {}, adapters: { ...adapters, prune: () => { throw new Error("EBUSY"); } },
+		out: (line: string) => lines.push(line) });
+	assert.deepEqual(result, { id: "4.2.0-1.0.2", changed: true, previous: "4.1.0-1.0.1", removed: [], warning: "older versions were not removed (EBUSY)" });
+	assert.equal(activeVersion(layout), "4.2.0-1.0.2");
+	assert.match(lines.join("\n"), /Upgraded to Gentle Shell 4\.2\.0.*warning: older versions were not removed \(EBUSY\)/s);
+});
+
+function rollbackAdapters(module: Record<string, unknown> = {}) {
+	const calls: { loaded: string[]; runtimes: unknown[]; launchers: unknown[] } = { loaded: [], runtimes: [], launchers: [] };
+	const releaseModule = { prefixLayout, ensureRuntime: async (options: { layout: unknown }) => { calls.runtimes.push(options.layout); return { go: null }; },
+		ensureLauncher: (next: unknown) => { calls.launchers.push(next); return { written: true }; }, ...module };
+	return { calls, adapters: { load: async (file: string) => { calls.loaded.push(file); return releaseModule; } } };
+}
+
+posixTest("rollbackBundled switches current to the kept previous version with its own launcher, and back", async () => {
+	const { user, layout } = await activeInstall();
+	const { calls, adapters } = rollbackAdapters();
+	const options = { layout, home: user, platform: "darwin", arch: "arm64", env: {}, adapters };
+	assert.deepEqual(await rollbackBundled(options), { from: "4.1.0-1.0.1", to: "4.0.0-1.0.0" });
 	assert.equal(activeVersion(layout), "4.0.0-1.0.0");
-	assert.deepEqual(rollbackBundled(layout), { from: "4.0.0-1.0.0", to: "4.1.0-1.0.1" });
-	const single = claimed().layout;
-	await installed(single, [["4.0.0", "1.0.0"]]);
-	activateVersion(single, "4.0.0-1.0.0");
-	assert.throws(() => rollbackBundled(single), /No previous Gentle Shell version/);
-	assert.equal(activeVersion(single), "4.0.0-1.0.0");
+	assert.deepEqual(calls.loaded, [releaseModuleFile(layout, "4.0.0-1.0.0")]);
+	assert.equal(calls.runtimes.length, 1);
+	assert.equal(calls.launchers.length, 1);
+	assert.deepEqual(await rollbackBundled(options), { from: "4.0.0-1.0.0", to: "4.1.0-1.0.1" });
+	assert.equal(calls.loaded[1], releaseModuleFile(layout, "4.1.0-1.0.1"));
+	const single = claimed();
+	await installed(single.layout, [["4.0.0", "1.0.0"]]);
+	activateVersion(single.layout, "4.0.0-1.0.0");
+	await assert.rejects(rollbackBundled({ ...options, layout: single.layout, home: single.home }), /No previous Gentle Shell version/);
+	assert.equal(activeVersion(single.layout), "4.0.0-1.0.0");
+});
+
+posixTest("rollbackBundled fails closed without the target's own module and puts current back when its launcher fails", async () => {
+	const { user, layout } = await activeInstall();
+	for (const module of [{ ensureLauncher: undefined }, { ensureRuntime: 1 }]) {
+		const { calls, adapters } = rollbackAdapters(module);
+		await assert.rejects(rollbackBundled({ layout, home: user, platform: "darwin", arch: "arm64", env: {}, adapters }), /4\.0\.0-1\.0\.0.*bundled-install\.mjs/s);
+		assert.equal(calls.launchers.length, 0);
+		assert.equal(activeVersion(layout), "4.1.0-1.0.1");
+	}
+	// The real loader: these fixture versions ship no module at all.
+	await assert.rejects(rollbackBundled({ layout, home: user, platform: "darwin", arch: "arm64", env: {} }), /bundled-install\.mjs/);
+	const failing = rollbackAdapters({ ensureLauncher: () => { throw new Error("Conflicting launcher: /x"); } });
+	await assert.rejects(rollbackBundled({ layout, home: user, platform: "darwin", arch: "arm64", env: {}, adapters: failing.adapters }), /launcher.*current stays at 4\.1\.0-1\.0\.1/s);
+	assert.equal(activeVersion(layout), "4.1.0-1.0.1");
+	assert.deepEqual(readdirSync(layout.versions).sort(), ["4.0.0-1.0.0", "4.1.0-1.0.1"]);
+});
+
+test("bundledNpmCommand runs our npm on our Node with only the prefix configuration", () => {
+	const layout = prefixLayout({ platform: "linux", env: {}, home: "/home/me" });
+	const root = "/home/me/.gentle-shell";
+	assert.deepEqual(bundledNpmCommand(layout), [`${root}/runtime/node-${NODE}/bin/node`, `${root}/runtime/node-${NODE}/lib/node_modules/npm/bin/npm-cli.js`,
+		`--userconfig=${root}/pnpm/config/npmrc`, `--globalconfig=${root}/npm/npmrc`, `--cache=${root}/npm/cache`, `--prefix=${root}/npm/prefix`, "--update-notifier=false"]);
+	const windows = bundledNpmCommand(prefixLayout({ platform: "win32", env: { LOCALAPPDATA: "C:\\L" }, home: "C:\\U" }));
+	assert.deepEqual(windows.slice(0, 2), [`C:\\L\\gentle-shell\\runtime\\node-${NODE}\\node.exe`, `C:\\L\\gentle-shell\\runtime\\node-${NODE}\\node_modules\\npm\\bin\\npm-cli.js`]);
 });
