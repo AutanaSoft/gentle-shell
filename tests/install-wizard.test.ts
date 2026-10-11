@@ -1196,4 +1196,10 @@ test("expectedSteps mirrors a migration's steps, and a failed removal shows its 
 	const model = wizard.outcomeModel({ outcome: "ready", completed: [], guidance: "g", removeCommand: "pnpm remove -g gentle-pi" });
 	assert.ok(model.notes.some((note: string) => note.includes("`pnpm remove -g gentle-pi`")));
 	assert.deepEqual(wizard.outcomeModel({ outcome: "ready", completed: [], guidance: "g" }).notes, []);
+	// B3: a failed migration step shows the host's detail line.
+	for (const id of ["claim-prefix", "copy-npm-settings", "install-runtime", "activate-version", "write-launcher", "verify-launcher", "bundled-path"]) {
+		const failed = wizard.outcomeModel({ outcome: "failed", failedStep: id, completed: [], guidance: "g", detail: "Unsafe bundled prefix: ~/.gentle-shell" });
+		assert.equal(failed.detail, "Unsafe bundled prefix: ~/.gentle-shell", id);
+		assert.equal(typeof failed.detailCommand, "string", id);
+	}
 });

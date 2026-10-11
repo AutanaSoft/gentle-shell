@@ -386,7 +386,9 @@ async function mainGo({ userGo, pinnedGo, run }) {
  * adapters: { fetch, run, fs, which, invocation?, migrate? }; npm and pnpm run as
  * invocationOf resolves them (Windows hosts pass `invocation`). On release,
  * `migrate({ latest, owner })` (S4) may move this installation to the bundled
- * one first: null keeps the path below, otherwise { code, installed }.
+ * one first: null (no migration, or one that failed and left this package
+ * untouched) keeps the path below for this run, otherwise { code, installed }.
+ * `owner` is called only when a migration can happen.
  */
 export async function runUpgrade({ args, ctx, platform, arch = process.arch, packageRoot, currentVersion, adapters, out }) {
 	const { fetch, run, fs, which } = adapters;

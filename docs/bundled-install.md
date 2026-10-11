@@ -248,18 +248,29 @@ An existing Gentle Shell that a global pnpm or npm owns moves to the bundled ins
 
 Otherwise both entries keep their current path, unchanged.
 
-**`gentle-shell upgrade` (`migrateGlobalShell`).** `runUpgrade` offers the migration on the release channel only, through its `migrate` adapter, before its own update.
+**The prefix folder.** The launcher creates the isolated home `~/.gentle-shell/agent` (and `~/.gentle-shell`) with mode 0700, whatever the umask. An existing `~/.gentle-shell` that is a real folder of this user but group- or other-writable (umask 002 before this fix) loses that write access (`go-w`, through a descriptor that does not follow links) when the prefix is claimed. A link, a non-folder or another owner's folder is still refused.
+
+**`gentle-shell upgrade` (`migrateGlobalShell`).** `runUpgrade` offers the migration on the release channel only, through its `migrate` adapter, before its own update. The owner probe (`ownerManager`, which runs the user's `npm root -g`) runs only after the assets read as published and the versions allow a migration; otherwise nothing is probed.
 
 1. A few lines explain the move: the prefix, the exact Pi, the user's Node, npm, pnpm and Pi untouched, and `~/.gentle-shell/agent` staying where it is.
 2. `runBundledInstall` runs the bundled steps with a plan whose removal is `ask`: claim, npm settings, runtime, version, activate, launcher, then `verify-launcher` (the launcher's own `--version`, `checkLauncher`), then the PATH entry, so a launcher that fails its check is never put on PATH. There is no setup step: the launcher's automatic setup runs on first use.
 3. Then one question: `Remove the old global gentle-pi with <manager> (<command>)? [y/N]`. End of input or Ctrl+C answers No. Without a terminal, nothing is removed and the exact command is printed.
 4. A yes runs `pnpm remove -g gentle-pi` or `npm uninstall -g gentle-pi`, through `ownerManager`'s verified invocation (`removeGlobalShell`).
 
-A failed install or launcher check stops with exit 1, and the old package stays. A failed removal keeps the bundled install, names the manual command and exits 1. After a successful install, the release channel is recorded and a main override this module made is removed.
+A failed plan or step (including the launcher check) prints the step and its detail, which is the error message with the home shown as `~`, and says the global gentle-pi was left untouched. The upgrade then continues with the global package's own update for this run, and exits with that path's code. A failed removal keeps the bundled install, names the manual command and exits 1. After a successful install, the release channel is recorded and a main override this module made is removed.
 
-When the old package stays, `shadowingCommand` predicts which `gentle-shell` a new terminal runs. It takes this PATH with the planned change applied: a profile line goes first, the Windows user Path entry last, and a `~/.local/bin` link stays where it is. If the old one still wins, the command names it and says how to change that.
+When the old package stays, `shadowingCommand` predicts which `gentle-shell` a new terminal runs. It takes this PATH with the planned change applied. If the old one still wins, the command names it and says how to change that. The order it assumes per startup file:
 
-**The web installer.** An existing Gentle Shell that pnpm or npm owns gets the bundled plan with removal `plan`. In that plan, `verify-launcher` runs before `bundled-path`, and a final `remove-global-shell` action follows. Consenting to the plan is the one confirmation. The removal runs only after every step passed. It finds the installed Gentle Shell again, and runs only when the same manager still owns it. A failed removal keeps the outcome and adds `removeGlobal { status: "failed", command }`; the outcome screen shows that command.
+| Planned change | Position | Why |
+|---|---|---|
+| zsh line in `$ZDOTDIR/.zshrc` | first | zsh reads `.zshrc` after `.zprofile` (and macOS `path_helper` in `/etc/zprofile`); our line is appended after `pnpm setup`'s block. Only `~/.zlogin`, read later, could prepend again. |
+| bash line in the macOS login file, or `~/.bashrc` | first | Appended last to the one file bash reads for terminals; `pnpm setup` writes earlier. A Linux `~/.profile` that sources `.bashrc` and then prepends `~/bin` or `~/.local/bin` could precede it. |
+| fish line in `conf.d/gentle-shell.fish` | last | fish reads `conf.d` before `config.fish`, so whatever `config.fish` prepends (`pnpm setup`'s `$PNPM_HOME/bin`) comes first. The current PATH already shows those entries, so the bundled `bin` counts after all of them. This may report a shadow for an entry that `config.fish` did not add. |
+| Windows user Path entry | last | Appended to the user Path, after the machine Path. |
+| `~/.local/bin` link, or no change | where it already is | |
+
+
+**The web installer.** An existing Gentle Shell that pnpm or npm owns gets the bundled plan with removal `plan`. In that plan, `verify-launcher` runs before `bundled-path`, and a final `remove-global-shell` action follows. A failed step keeps the failed outcome and carries its detail (the error message; for `verify-launcher`, the versions the launcher reported against the expected ones), which the outcome screen shows. Consenting to the plan is the one confirmation. The removal runs only after every step passed. It finds the installed Gentle Shell again, and runs only when the same manager still owns it. A failed removal keeps the outcome and adds `removeGlobal { status: "failed", command }`; the outcome screen shows that command.
 
 Only the PATH entry and the old global gentle-pi change outside the prefix. The user's Pi and `~/.gentle-shell/agent` are never touched.
 

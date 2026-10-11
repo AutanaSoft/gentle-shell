@@ -471,7 +471,9 @@ package.
   the bundled one. `upgrade` explains the move, installs the bundled prefix and
   checks its launcher. Then it asks once whether to remove the old global
   `gentle-pi` with its own manager (default No; without a terminal it only prints
-  the command). Your Pi and `~/.gentle-shell/agent` are not touched. An `npm link`
+  the command). If the move fails, it names the step and why, leaves the global
+  package as it is, and updates it the usual way for that run. Your Pi and
+  `~/.gentle-shell/agent` are not touched. An `npm link`
   is named and keeps the path above. Details:
   [Migration](bundled-install.md#migration-from-a-global-install).
 

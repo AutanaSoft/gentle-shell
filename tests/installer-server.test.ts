@@ -1480,6 +1480,10 @@ test("bundled outcomes: every bundled step has guidance, pnpm's error line is sh
 			(view) => { assert.equal("removeCommand" in view, false); assert.equal(view.guidance, guidance.outcomes.ready); }],
 		[{ outcome: "failed", failedStep: "verify-launcher", completed: [], detail: "Error: no Pi" },
 			(view) => { assert.equal(view.detail, "Error: no Pi"); assert.match(String(view.guidance), /old global Gentle Shell was kept/); }],
+		// B3: a migration's failed bundled step shows its detail; a new install's sends none, so nothing changes there.
+		[{ outcome: "failed", failedStep: "claim-prefix", completed: [], detail: "Unsafe bundled prefix: ~/.gentle-shell" },
+			(view) => { assert.equal(view.detail, "Unsafe bundled prefix: ~/.gentle-shell"); assert.equal(view.guidance, guidance.failed["claim-prefix"]); }],
+		[{ outcome: "failed", failedStep: "claim-prefix", completed: [] }, (view) => { assert.equal("detail" in view, false); }],
 	];
 	for (const [result, check] of cases) {
 		const { host, port, login } = await start({ runInstall: async () => result as never });
