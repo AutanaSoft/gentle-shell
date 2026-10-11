@@ -1,0 +1,158 @@
+import { posix, win32 } from "node:path";
+
+// The launcher in a bundled install (S5, S8): pure decisions over an injected
+// filesystem. bin/gentle-shell.mjs wires them to the real one. A bundled install
+// is `<prefix>/versions/<id>/` with this gentle-pi in its node_modules, marked by
+// scripts/bundled-install.mjs, and `current` naming it; anything else keeps the
+// launcher's ordinary behavior unchanged.
+
+export interface BundledFs {
+	// The canonical path, or undefined when it does not exist.
+	realpath: (path: string) => string | undefined;
+	// A regular file's text, or undefined.
+	readText: (path: string) => string | undefined;
+	// A symbolic link's target, or undefined.
+	readLink: (path: string) => string | undefined;
+}
+
+export interface BundledInstall {
+	root: string;
+	id: string;
+	versionDir: string;
+}
+
+type Env = Record<string, string | undefined>;
+
+// The same rules scripts/bundled-install.mjs writes versions and markers with.
+const VERSION_ID = /^[0-9A-Za-z][0-9A-Za-z.-]*$/;
+const VERSION_MARKER = ".gentle-shell-version";
+const PI_PACKAGE = "@earendil-works/pi-coding-agent";
+const PI_BIN = "dist/bundle/cli.js";
+
+const pathFor = (platform: string) => (platform === "win32" ? win32 : posix);
+
+function inside(path: typeof posix, parent: string, child: string): boolean {
+	const rest = path.relative(parent, child);
+	return rest !== "" && !rest.startsWith("..") && !path.isAbsolute(rest);
+}
+
+function parseJson(text: string | undefined): any {
+	if (text === undefined) return undefined;
+	try {
+		return JSON.parse(text);
+	} catch {
+		return undefined;
+	}
+}
+
+// The bundled install this package runs from: the nearest `versions/<id>`
+// ancestor of its real root whose marker names it, whose node_modules/gentle-pi
+// is this package, and which `current` names (a relative symlink on POSIX, a
+// pointer file on Windows). Undefined otherwise.
+export function resolveBundledInstall(input: { packageRoot: string; platform: string; fs: BundledFs }): BundledInstall | undefined {
+	const path = pathFor(input.platform);
+	const real = input.fs.realpath(input.packageRoot) ?? input.packageRoot;
+	for (let dir = path.dirname(real); path.dirname(dir) !== dir; dir = path.dirname(dir)) {
+		if (path.basename(path.dirname(dir)) !== "versions") continue;
+		const id = path.basename(dir);
+		const root = path.dirname(path.dirname(dir));
+		if (!VERSION_ID.test(id) || id.includes("..")) return undefined;
+		if (input.fs.readText(path.join(dir, VERSION_MARKER)) !== `${id}\n`) return undefined;
+		if (input.fs.realpath(path.join(dir, "node_modules", "gentle-pi")) !== real) return undefined;
+		const current = path.join(root, "current");
+		const active = input.platform === "win32" ? input.fs.readText(current) === `${id}\n` : input.fs.readLink(current) === `versions/${id}`;
+		return active ? { root, id, versionDir: dir } : undefined;
+	}
+	return undefined;
+}
+
+export type BundledPi = { ok: true; cli: string; version: string } | { ok: false; message: string };
+
+// The exact Pi of the version (S8): the Pi the version's package.json pins,
+// installed inside the version folder with Pi's own bin entry. Never another Pi.
+export function bundledPi(install: BundledInstall, input: { platform: string; fs: BundledFs }): BundledPi {
+	const path = pathFor(input.platform);
+	const pinned = parseJson(input.fs.readText(path.join(install.versionDir, "package.json")))?.dependencies?.[PI_PACKAGE];
+	const failure = (found?: string): BundledPi => ({
+		ok: false,
+		message: [
+			`gentle-shell: Gentle Shell ${install.id} needs its bundled Pi ${pinned ?? "(unknown pin)"} in ${install.versionDir}, ${found ? `but found Pi ${found}` : "but it is missing"}.`,
+			"Run 'gentle-shell upgrade' to install the latest release, or run the Gentle Shell installer again to repair this version.",
+		].join("\n"),
+	});
+	const dir = input.fs.realpath(path.join(install.versionDir, "node_modules", ...PI_PACKAGE.split("/")));
+	if (typeof pinned !== "string" || dir === undefined || !inside(path, input.fs.realpath(install.versionDir) ?? install.versionDir, dir)) return failure();
+	const metadata = parseJson(input.fs.readText(path.join(dir, "package.json")));
+	if (metadata?.name !== PI_PACKAGE || metadata.bin?.pi !== PI_BIN) return failure();
+	if (metadata.version !== pinned) return failure(String(metadata.version));
+	const cli = path.join(dir, ...PI_BIN.split("/"));
+	if (input.fs.realpath(cli) !== cli || input.fs.readText(cli) === undefined) return failure();
+	return { ok: true, cli, version: pinned };
+}
+
+// What every child of a bundled launch adds to the bundled environment: no Pi
+// override, subagents on the same node and Pi (the subagent runner splits
+// GENTLE_PI_AGENTS_PI on whitespace, so a spaced path is left to its default,
+// the running node and cli.js), and no Pi update check, since Pi only updates
+// with Gentle Shell (S5).
+export function bundledChildEnv(base: Env, input: { node: string; cli: string }): Env {
+	const env: Env = { ...base, PI_SKIP_VERSION_CHECK: "1" };
+	delete env.GENTLE_SHELL_PI;
+	if (/\s/.test(`${input.node}${input.cli}`)) delete env.GENTLE_PI_AGENTS_PI;
+	else env.GENTLE_PI_AGENTS_PI = `${input.node} ${input.cli}`;
+	return env;
+}
+
+export interface BundledUpdatePlan {
+	// Pi's own update was asked for: redirect it to `gentle-shell upgrade`.
+	self: boolean;
+	// What Pi still runs, if anything: the extension part of `--all`, or the
+	// whole command when it never updates Pi itself.
+	piArgs?: string[];
+}
+
+// `gentle-shell update [target]` in a bundled install. Pi updates itself for a
+// bare `update`, `--self`, `self`/`pi`, and `--all` (or `--self --extensions`);
+// only that part is redirected. Packages, models and help still reach Pi.
+export function bundledUpdatePlan(passthrough: string[]): BundledUpdatePlan {
+	const rest = passthrough.slice(1);
+	const passThrough = { self: false, piArgs: passthrough };
+	if (rest.some((token) => token === "--models" || token === "--extension" || token.startsWith("--extension=") || token === "--help" || token === "-h")) {
+		return passThrough;
+	}
+	const positional = rest.filter((token) => !token.startsWith("-"));
+	const flags = rest.filter((token) => token.startsWith("-"));
+	const named = positional.length === 1 && (positional[0] === "self" || positional[0] === "pi");
+	const extensions = flags.includes("--all") || flags.includes("--extensions");
+	if ((positional.length > 0 && !named) || (named && extensions)) return passThrough;
+	const all = flags.includes("--all") || (flags.includes("--self") && flags.includes("--extensions"));
+	if (all) return { self: true, piArgs: ["update", "--extensions", ...flags.filter((flag) => !["--all", "--self", "--extensions"].includes(flag))] };
+	return extensions ? passThrough : { self: true };
+}
+
+export function bundledUpdateNotice(input: { piVersion: string; interactive: boolean }): string[] {
+	return [
+		`Pi ships pinned with Gentle Shell (Pi ${input.piVersion}): a newer Pi arrives with a Gentle Shell release.`,
+		input.interactive
+			? "Running 'gentle-shell upgrade'..."
+			: "Run 'gentle-shell upgrade' to install the latest Gentle Shell release and its Pi.",
+	];
+}
+
+export type BundledUpgradeAction = { action: "upgrade" } | { action: "rollback" } | { error: string; usage: boolean };
+
+export const BUNDLED_UPGRADE_USAGE = "usage: gentle-shell upgrade [--channel release] | gentle-shell upgrade --rollback";
+
+// `gentle-shell upgrade` arguments in a bundled install, which follows the
+// release channel only (the main channel builds from source).
+export function parseBundledUpgradeArgs(args: string[]): BundledUpgradeAction {
+	if (args.length === 0) return { action: "upgrade" };
+	if (args.length === 1 && args[0] === "--rollback") return { action: "rollback" };
+	const channel = args.length === 1 && args[0].startsWith("--channel=") ? args[0].slice("--channel=".length)
+		: args.length === 2 && args[0] === "--channel" ? args[1] : undefined;
+	if (channel === "release") return { action: "upgrade" };
+	if (channel === "main") {
+		return { error: "this bundled installation follows the release channel only; the main channel needs a pnpm or npm installation of Gentle Shell", usage: false };
+	}
+	return { error: BUNDLED_UPGRADE_USAGE, usage: true };
+}

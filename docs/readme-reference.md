@@ -296,6 +296,7 @@ gentle-shell [options] [-- pi-args...]
 gentle-shell home [link|isolated|<path>]
 gentle-shell [home selectors] setup [--dry-run]
 gentle-shell upgrade [--channel release|main]
+gentle-shell upgrade --rollback
 gentle-shell self-uninstall [--dry-run] [--yes] [--include-shared]
 ```
 
@@ -421,8 +422,19 @@ package.
   JavaScript entry, or a native `pnpm.exe`). A package manager that resolves only
   to an unrecognized shim counts as missing. macOS and Linux are unchanged.
 
+- **Bundled install** (the web installer's own Node, pnpm and Pi): `upgrade`
+  follows the release channel only and refuses `--channel main`. It installs the
+  latest release beside the active version, checks that the new launcher reports
+  exactly that release's Gentle Shell and Pi, and only then switches `current`,
+  keeping two versions. An already current release changes nothing, and a failure
+  leaves `current` untouched. `--rollback` switches back to the previous kept
+  version. Details: [Bundled install](bundled-install.md#gentle-shell-upgrade-in-a-bundled-install).
+
 `gentle-shell update` is different: it is Pi's own `update`, forwarded to the
-resolved home. The browser installation wizard offers the same main channel; see
+resolved home. In a bundled install Pi ships pinned with Gentle Shell, so
+`update` without a package (or with `--self`, `self`, `pi` or `--all`) explains
+that and runs `gentle-shell upgrade` (in a terminal) or names it; package
+updates still reach Pi. The browser installation wizard offers the same main channel; see
 [Installation wizard](install-wizard.md#main-channel).
 
 ### `self-uninstall` subcommand

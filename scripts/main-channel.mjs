@@ -249,7 +249,8 @@ function inside(parent, child) {
 	return path !== "" && !path.startsWith("..") && !isAbsolute(path);
 }
 
-async function latestRelease(fetch) {
+/** The latest stable gentle-pi release on the npm registry. */
+export async function latestRelease(fetch) {
 	let version = null;
 	try {
 		const response = await fetch("https://registry.npmjs.org/gentle-pi/latest", { headers: { Accept: "application/json" } });

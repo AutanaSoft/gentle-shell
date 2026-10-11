@@ -192,6 +192,13 @@ test("help text documents gentle-shell upgrade and its channels", () => {
 	assert.ok(text.includes("  upgrade          Update Gentle Shell along its channel: the latest release, or the latest"));
 });
 
+test("help text documents the bundled upgrade, its rollback and the pinned Pi update", () => {
+	const text = helpText();
+	assert.ok(text.includes("       gentle-shell upgrade --rollback"));
+	assert.match(text, /bundled install.*release channel only.*--rollback switches back to the previous kept version/s);
+	assert.match(text, /In a bundled install Pi ships pinned: 'update' without a package\n\s+runs 'gentle-shell upgrade'/);
+});
+
 test("parseLauncherArgs treats home as a plain passthrough token when it is not argv[0]", () => {
 	const parsed = parseLauncherArgs(["--isolated", "home"]);
 	assert.equal(parsed.command, undefined);
