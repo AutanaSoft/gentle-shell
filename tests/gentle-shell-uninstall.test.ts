@@ -688,7 +688,7 @@ function bundledWorld({ platform = "darwin" } = {}) {
 	const prefix = windows ? join(home, "AppData", "Local", "gentle-shell") : shellHome;
 	const node = windows ? join(prefix, "runtime", "node-24.21.0", "node.exe") : join(prefix, "runtime", "node-24.21.0", "bin", "node");
 	const launcher = join(prefix, "bin", windows ? "gentle-shell.cmd" : "gentle-shell");
-	const own = ["bin", "current", "versions", "versions.history", "runtime", "pnpm", "npm", "gentle-ai", "gentle-pi", "tmp", "path-entry.json",
+	const own = ["bin", "current", "versions", "versions.history", "runtime", "pnpm", "npm", "gentle-ai", "config", "tmp", "path-entry.json",
 		...(windows ? [".gentle-shell-bundle"] : [])].map((name) => join(prefix, name));
 	write(launcher, "launcher\n");
 	write(join(prefix, "versions", BUNDLED_ID, ".gentle-shell-version"), `${BUNDLED_ID}\n`);
@@ -701,7 +701,7 @@ function bundledWorld({ platform = "darwin" } = {}) {
 	write(join(prefix, "pnpm", "store", "v10", "index"));
 	write(join(prefix, "npm", "cache", "index"));
 	write(join(prefix, "gentle-ai", "state.json"));
-	write(join(prefix, "gentle-pi", "persona.json"));
+	write(join(prefix, "config", "gentle-ai", "persona.json"));
 	mkdirSync(join(prefix, "tmp"));
 	write(join(prefix, "path-entry.json"));
 	if (windows) write(join(prefix, ".gentle-shell-bundle"), "gentle-shell bundled install");

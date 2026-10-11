@@ -94,7 +94,7 @@ test("a bundled install derives the config home inside its prefix and the agent 
 	isolatedHome(t);
 	const prefix = bundledInstall(t);
 	const env = { GENTLE_SHELL_PREFIX: prefix, GENTLE_PI_CONFIG_HOME: "/home/ana/.pi/gentle-ai", PI_CODING_AGENT_DIR: "/agent" };
-	assert.equal(gentlePiConfigHome(env), join(prefix, "gentle-pi"));
+	assert.equal(gentlePiConfigHome(env), join(prefix, "config", "gentle-ai"));
 	assert.equal(bundledGentlePiAgentHome(env), "/agent");
 	// Another prefix, or none, is not this install: everything stays as before.
 	for (const other of [{ GENTLE_PI_CONFIG_HOME: "/custom" }, { GENTLE_SHELL_PREFIX: join(prefix, "other"), GENTLE_PI_CONFIG_HOME: "/custom" }]) {

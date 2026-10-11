@@ -595,7 +595,7 @@ const BUNDLED_OWN: readonly { name: string; label: string; kind: "dir" | "file" 
 	{ name: "pnpm", label: "pnpm's store, cache, state and settings", kind: "dir" },
 	{ name: "npm", label: "npm's cache, prefix and settings", kind: "dir" },
 	{ name: "gentle-ai", label: "Gentle AI's state for this install", kind: "dir" },
-	{ name: "gentle-pi", label: "Gentle Shell's settings for this install", kind: "dir" },
+	{ name: "config", label: "Gentle Shell's settings for this install (config/gentle-ai)", kind: "dir" },
 	{ name: "tmp", label: "temporary files", kind: "dir" },
 	{ name: "path-entry.json", label: "the PATH entry receipt", kind: "file" },
 ]);
