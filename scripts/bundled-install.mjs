@@ -9,6 +9,7 @@ import { accessSync, chmodSync, closeSync, constants, lstatSync, mkdirSync, mkdt
 	rmSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { posix, win32 } from "node:path";
 import { spawn } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { crc32, gunzipSync, inflateRawSync } from "node:zlib";
 import { acquireGo, artifactFor, verifiedDownload } from "./installer-downloads.mjs";
 import { ensureWindowsPrivateFolder, readWindowsPnpmArchive, verifyWindowsStorage } from "./installer-windows.mjs";
@@ -67,6 +68,8 @@ export function prefixLayout({ platform, env = {}, home, root }) {
 		nodeDir, node: windows ? path.join(nodeDir, "node.exe") : path.join(nodeDir, "bin", "node"),
 		// The npm bundled in the same Node archive, for Pi's own package installs.
 		npmCli: path.join(nodeDir, ...(windows ? [] : ["lib"]), "node_modules", "npm", "bin", "npm-cli.js"),
+		// The entry Pi's npmCommand runs that npm through (ensureNpmShim).
+		npmShim: path.join(nodeDir, "gentle-shell", "npm"),
 		npmHome, npmPrefix: path.join(npmHome, "prefix"), npmCache: path.join(npmHome, "cache"), npmGlobalConfig: path.join(npmHome, "npmrc"),
 		pnpmDir, pnpm: path.join(pnpmDir, "package", "bin", "pnpm.mjs"),
 		// acquireGo publishes `<goRoot>/<version>/go`.
@@ -316,6 +319,22 @@ export function runCommand(command, args, { cwd, env, timeout = 15000 }) {
 }
 const ownedRuntime = (directory, url, entry) => read(pathFor(process.platform).join(directory, RUNTIME_MARKER)) === `${url}\n` && regular(entry);
 
+// Windows publication can lose a race with the node.exe just run from the
+// staging folder or a real-time scanner still holding it (EPERM, EBUSY,
+// EACCES). Only those codes, and only on Windows, are retried after each
+// delay; a lock that never clears surfaces the original error.
+const WINDOWS_RENAME_RETRY_DELAYS_MS = [200, 400, 800, 1600];
+export async function renameWithWindowsRetry(from, to, { platform = process.platform, rename = renameSync, delays = WINDOWS_RENAME_RETRY_DELAYS_MS } = {}) {
+	if (platform !== "win32") return rename(from, to);
+	for (let attempt = 0; ; attempt += 1) {
+		try { return rename(from, to); }
+		catch (error) {
+			if (attempt >= delays.length || !["EPERM", "EBUSY", "EACCES"].includes(error?.code)) throw error;
+			await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+		}
+	}
+}
+
 /** Publishes one verified runtime as `directory`: an existing one marked with the
  * same pinned URL is reused, an unmarked one is never replaced. `fill` writes and
  * checks the staging folder; one rename publishes it. Renaming is safe here,
@@ -334,7 +353,7 @@ async function publishRuntime(layout, name, directory, entry, { platform, arch, 
 		await fill(stage, bytes, descriptor);
 		writeFileSync(pathFor(process.platform).join(stage, RUNTIME_MARKER), `${descriptor.url}\n`, { flag: "wx", mode: 0o600 });
 		if (stat(directory)) throw new Error(`Conflicting runtime destination: ${directory}`);
-		renameSync(stage, directory);
+		await renameWithWindowsRetry(stage, directory);
 		stage = null;
 		return true;
 	} finally {
@@ -366,6 +385,9 @@ export async function ensureRuntime({ layout, platform, arch, go = false, env = 
 		if (npm.status !== 0 || String(npm.stdout).trim() !== files.npm) throw new Error("Bundled npm verification failed");
 	});
 	if (node) acquired.push("node");
+	// Also for a runtime published before the entry existed; one from before npm
+	// was published (T1a) has no npm to run, and the launcher then gives Pi none.
+	if (regular(layout.npmCli)) ensureNpmShim(layout);
 	const pnpm = await publishRuntime(layout, "pnpm", layout.pnpmDir, layout.pnpm, { platform, arch, adapters }, async (stage, bytes, descriptor) => {
 		// The tarball's executable bits are kept (bin/pnpm.mjs, dist/node-gyp-bin), for the owner only.
 		const modes = new Map([...tarMembers(bytes, "pnpm archive rejected")].map((member) => [member.name, member.mode]));
@@ -703,6 +725,174 @@ export function pruneVersions(layout, keep = 2) {
 	}
 	if (removed.length > 0) replaceAtomically(layout.history, (temp) => writeFileSync(temp, `${readHistory(layout).filter((id) => !removed.includes(id)).join("\n")}\n`, { flag: "wx", mode: 0o600 }));
 	return removed;
+}
+
+const UNPUBLISHED = Object.freeze({
+	missing: (version) => `release v${version} does not publish the bundled distribution yet; try again later`,
+	unavailable: (version) => `the bundled distribution of release v${version} could not be downloaded`,
+	rejected: (version) => `the bundled distribution of release v${version} did not verify`,
+});
+const RELEASE_EXPORTS = Object.freeze(["prefixLayout", "ensureRuntime", "ensureLauncher"]);
+/** The variable that makes a version's launcher run in bundled mode for
+ * `--version` only, as if `current` named that version (lib/gentle-shell-bundled.ts).
+ */
+const VERIFY_ENV = "GENTLE_SHELL_VERIFY_VERSION";
+
+const NPM_SHIM_MARK = "gentle-shell bundled npm entry (generated; do not edit)";
+/** Writes runtime/node-<v>/gentle-shell/npm, a CommonJS file that runs the npm
+ * bundled with that Node, and a package.json beside it that keeps it CommonJS
+ * under any package.json with "type": "module" above the prefix. Pi names the
+ * package manager from the basenames in npmCommand (getPackageManagerName in
+ * Pi's core/package-manager.js), so this entry is named exactly `npm`; on
+ * Windows it also avoids npm.cmd, which prefers an npm in the global prefix.
+ * Each file is replaced with one rename, only when its content differs; a link
+ * or anything but a regular file in its place stops it. Returns { written }.
+ */
+export function ensureNpmShim(layout) {
+	const path = pathFor(layout.platform);
+	if (!regular(layout.npmCli)) throw new Error(`Bundled npm missing: ${layout.npmCli}`);
+	const folder = path.dirname(layout.npmShim);
+	const cli = path.relative(folder, layout.npmCli).split(path.sep).map((part) => JSON.stringify(part)).join(", ");
+	const files = {
+		"package.json": '{ "type": "commonjs" }\n',
+		[path.basename(layout.npmShim)]: [`// ${NPM_SHIM_MARK}`, `require(require("node:path").join(__dirname, ${cli}));`, ""].join("\n"),
+	};
+	const info = stat(folder);
+	if (!info) mkdirSync(folder, { mode: 0o700 });
+	else if (!info.isDirectory()) throw new Error(`Conflicting npm entry: ${folder}`);
+	let written = false;
+	for (const [name, text] of Object.entries(files)) {
+		const target = path.join(folder, name);
+		const existing = stat(target);
+		if (existing && !existing.isFile()) throw new Error(`Conflicting npm entry: ${target}`);
+		if (existing && readFileSync(target, "utf8") === text) continue;
+		replaceAtomically(target, (temp) => writeFileSync(temp, text, { flag: "wx", mode: 0o600 }));
+		written = true;
+	}
+	return { written };
+}
+
+/** The command Pi runs for npm in a bundled install (its `npmCommand` setting):
+ * our npm on our Node, through the entry named npm (ensureNpmShim), so Pi treats
+ * it as npm; it reads only the prefix npmrc and global config, with its cache
+ * inside the prefix. npm ranks command-line flags above npm_config_* variables,
+ * so the user's environment cannot redirect these. No --prefix: on the command
+ * line it also sets npm's local prefix, and Pi installs a git extension's
+ * dependencies with `npm install` in the clone, without a --prefix of its own
+ * (its npm: installs pass one). No other part's basename is npm, pnpm or bun,
+ * which Pi would reject as ambiguous.
+ */
+export function bundledNpmCommand(layout) {
+	return [layout.node, layout.npmShim, `--userconfig=${layout.npmrc}`, `--globalconfig=${layout.npmGlobalConfig}`, `--cache=${layout.npmCache}`,
+		"--update-notifier=false"];
+}
+
+/** The module an installed version ships (its own pins and launcher), only from
+ * a regular file whose real path stays inside that version folder.
+ */
+async function releaseModule(file, versionPath) {
+	if (!regular(file) || !realpathSync(file).startsWith(`${realpathSync(versionPath)}${pathFor(process.platform).sep}`)) return null;
+	return import(pathToFileURL(file).href);
+}
+/** An installed version's own scripts/bundled-install.mjs and its layout of this
+ * prefix; it must export prefixLayout, ensureRuntime and ensureLauncher as
+ * functions. `active` names the version `current` stays at otherwise.
+ */
+async function loadRelease({ layout, id, home, platform, env, adapters, active }) {
+	const path = pathFor(process.platform);
+	const versionPath = versionDirectory(layout, id);
+	const file = path.join(versionPath, "node_modules", "gentle-pi", "scripts", "bundled-install.mjs");
+	const module = await (adapters.load ?? releaseModule)(file, versionPath);
+	if (!module || RELEASE_EXPORTS.some((name) => typeof module[name] !== "function")) {
+		throw new Error(`Gentle Shell ${id} has no usable scripts/bundled-install.mjs (${RELEASE_EXPORTS.join(", ")}); current stays at ${active}`);
+	}
+	return { module, next: module.prefixLayout({ platform, env, home, root: layout.root }) };
+}
+/** Switches `current` to `id` and writes that version's launcher; when the
+ * launcher cannot be written, `current` goes back to `active` (one rename each).
+ */
+function activateWithLauncher(layout, id, active, { module, next }) {
+	activateVersion(layout, id);
+	try {
+		module.ensureLauncher(next);
+	} catch (error) {
+		if (active) activateVersion(layout, active);
+		else unlinkSync(layout.current);
+		throw new Error(`the launcher for Gentle Shell ${id} could not be written (${error.message}); current stays at ${active}`);
+	}
+}
+
+/** `gentle-shell upgrade` in a bundled install (S5, S6, S8): the latest
+ * release's distribution assets (adapters.latest, adapters.distribution) are
+ * installed beside the active version with our runtime, then the new version's
+ * own module (loaded only from that version folder) installs its pinned runtime
+ * when the pins moved. Its launcher, run in bundled mode for that version, must
+ * print exactly the release's gentle-pi and Pi before `current` switches; the
+ * release's launcher is then written (a failure puts `current` back) and two
+ * versions are kept (a pruning failure is only a warning). An already current
+ * release changes nothing; any failure leaves `current` as it was and removes a
+ * version this call installed. Returns { id, changed, previous?, removed?, warning? }.
+ */
+export async function upgradeBundled({ layout, home, platform = layout.platform, arch = process.arch, env = {}, adapters, out = () => {} }) {
+	const path = pathFor(process.platform);
+	const latest = await adapters.latest();
+	const release = await adapters.distribution(latest);
+	if (release?.status !== "published") throw new Error((UNPUBLISHED[release?.status] ?? UNPUBLISHED.unavailable)(latest));
+	const { manifest, lockfile } = release;
+	const { shell, pi, id } = versionsOf(manifest);
+	const active = activeVersion(layout);
+	if (active === id) {
+		out(`Gentle Shell ${shell} with Pi ${pi} is already current.`);
+		return { id, changed: false };
+	}
+	const go = platform === "win32";
+	const runtime = await (adapters.ensureRuntime ?? ensureRuntime)({ layout, platform, arch, go, env });
+	const version = await installVersion({ layout, manifest, lockfile, platform, env, go: runtime.go, adapters: adapters.install ?? {} });
+	try {
+		const loaded = await loadRelease({ layout, id, home, platform, env, adapters, active });
+		await loaded.module.ensureRuntime({ layout: loaded.next, platform, arch, go, env });
+		// The environment our pnpm ran in, without any Pi or Gentle override that
+		// could point the launcher at another Pi or agent home, plus the one input
+		// that runs this version in bundled mode for its --version.
+		const launchEnv = { ...Object.fromEntries(Object.entries(pnpmEnvironment(loaded.next, { platform, env })).filter(([key]) => !/^(?:gentle_|pi_)/i.test(key))),
+			[VERIFY_ENV]: id };
+		const entry = path.join(version.path, "node_modules", "gentle-pi", "bin", "gentle-shell.mjs");
+		const result = await (adapters.run ?? runCommand)(loaded.next.node, [entry, "--version"], { cwd: layout.root, env: launchEnv, timeout: 120000 });
+		const reported = String(result.stdout ?? "").trim();
+		const [shellLine, piLine] = reported.split(/\r?\n/);
+		if (result.status !== 0 || shellLine !== `gentle-shell ${shell}` || piLine !== `pi ${pi}`) {
+			throw Object.assign(new Error(`Gentle Shell ${id} reported ${JSON.stringify(reported)}, not gentle-shell ${shell} with pi ${pi}; current stays at ${active}`),
+				{ stderr: String(result.stderr ?? "").slice(-4000) });
+		}
+		activateWithLauncher(layout, id, active, loaded);
+	} catch (error) {
+		if (version.installed && activeVersion(layout) !== id) rmSync(version.path, { recursive: true, force: true });
+		throw error;
+	}
+	out(`Upgraded to Gentle Shell ${shell} with Pi ${pi} (from ${active ?? "no active version"}). Run 'gentle-shell upgrade --rollback' to switch back.`);
+	try {
+		return { id, changed: true, previous: active, removed: (adapters.prune ?? pruneVersions)(layout, 2) };
+	} catch (error) {
+		const warning = `older versions were not removed (${error.message})`;
+		out(`warning: ${warning}`);
+		return { id, changed: true, previous: active, removed: [], warning };
+	}
+}
+
+/** `gentle-shell upgrade --rollback`: `current` switches back to the most
+ * recently active other version still installed, with that version's own
+ * launcher and runtime pins (its own scripts/bundled-install.mjs, loaded like
+ * upgradeBundled loads it). Without a usable module nothing changes; when its
+ * launcher cannot be written `current` goes back. Returns { from, to }.
+ */
+export async function rollbackBundled({ layout, home, platform = layout.platform, arch = process.arch, env = {}, adapters = {} }) {
+	const active = activeVersion(layout);
+	const previous = readHistory(layout).find((id) => id !== active && installedVersion(layout, id));
+	if (!previous) throw new Error("No previous Gentle Shell version is kept to roll back to");
+	const loaded = await loadRelease({ layout, id: previous, home, platform, env, adapters, active });
+	await loaded.module.ensureRuntime({ layout: loaded.next, platform, arch, go: platform === "win32", env });
+	activateWithLauncher(layout, previous, active, loaded);
+	return { from: active, to: previous };
 }
 
 /** The launcher text: our Node running the current gentle-pi's
