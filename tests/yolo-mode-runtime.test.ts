@@ -111,12 +111,32 @@ for (const shellFirst of [false, true]) test(`SDK loads both extensions on one b
 	const statuses = new Map<string, string | undefined>();
 	const notices: string[] = [];
 	let renders = 0;
+	const renderWaiters = new Set<() => void>();
+	const text = () => view!.render(140).map(stripAnsi).join("\n");
+	// Footer publication precedes the asynchronous authority snapshot refresh.
+	// Observe the requested menu render, not elapsed time after setStatus.
+	const rendered = (expected: RegExp) => new Promise<void>((resolve, reject) => {
+		const check = () => {
+			if (!view || !expected.test(text())) return;
+			clearTimeout(deadline);
+			renderWaiters.delete(check);
+			resolve();
+		};
+		const deadline = setTimeout(() => {
+			renderWaiters.delete(check);
+			reject(new Error(`Menu did not request a render matching ${expected}:\n${text()}`));
+		}, 1_000);
+		renderWaiters.add(check);
+	});
 	runner.setUIContext({
 		theme, getAllThemes: () => [{ name: "dark" }], getTheme: () => theme,
 		notify: (text: string) => notices.push(text), setStatus: (key: string, text?: string) => statuses.set(key, text), setWidget() {},
 		custom(factory: (tui: unknown, theme: unknown, keys: unknown, done: () => void) => Component) {
 			return new Promise<void>(resolve => {
-				view = factory({ terminal: { rows: 30 }, requestRender: () => { renders++; } }, theme, {}, resolve);
+				view = factory({ terminal: { rows: 30 }, requestRender: () => {
+					renders++;
+					for (const check of [...renderWaiters]) check();
+				} }, theme, {}, resolve);
 				opened();
 			});
 		},
@@ -132,15 +152,14 @@ for (const shellFirst of [false, true]) test(`SDK loads both extensions on one b
 	await ready; assert.ok(view);
 	for (let i = 0; i < 3; i++) view.handleInput?.("j");
 	view.handleInput?.("\x1b[C"); view.handleInput?.("j"); view.handleInput?.("j");
-	const text = () => view!.render(140).map(stripAnsi).join("\n");
 	assert.match(text(), /YOLO: OFF · session only/);
+	const onRendered = rendered(/YOLO: ON/);
 	view.handleInput?.("\r");
-	for (let i = 0; i < 100 && statuses.get(YOLO_STATUS_KEY) !== YOLO_STATUS_TEXT; i++) await new Promise(resolve => setTimeout(resolve, 10));
+	await onRendered;
 	assert.equal(statuses.get(YOLO_STATUS_KEY), YOLO_STATUS_TEXT);
-	await new Promise(resolve => setTimeout(resolve, 30));
 	assert.match(text(), /YOLO: ON/);
-	await command.handler("disable", ctx);
-	await new Promise(resolve => setTimeout(resolve, 30));
+	await Promise.all([rendered(/YOLO: OFF/), command.handler("disable", ctx)]);
+	assert.equal(statuses.get(YOLO_STATUS_KEY), undefined);
 	assert.match(text(), /YOLO: OFF/);
 	for (const width of [1, 20, 45, 60, 140]) assert.ok(view.render(width).every(line => visibleWidth(line) <= width));
 	const adapter = await discoverYoloUiAdapter({

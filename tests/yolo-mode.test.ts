@@ -132,12 +132,12 @@ test("revocation wins over an activation still awaiting Git identity", async () 
 	}
 });
 
-test("child, headless, RPC and unidentified repository cannot activate", async () => {
-	for (const variant of ["child", "headless", "rpc", "no-repository"]) {
+test("child, headless, RPC and nonexistent workspace cannot activate", async () => {
+	for (const variant of ["child", "headless", "rpc", "no-workspace"]) {
 		const h = harness(variant === "child" ? { GENTLE_PI_AGENTS_CHILD: "1" } : {});
 		if (variant === "headless") Object.assign(h.ctx, { hasUI: false });
 		if (variant === "rpc") Object.assign(h.ctx, { mode: "rpc" });
-		if (variant === "no-repository") Object.assign(h.ctx, { cwd: "/" });
+		if (variant === "no-workspace") Object.assign(h.ctx, { cwd: "/nonexistent-gentle-workspace" });
 		await h.command("enable"); assert.notEqual(h.statuses.get("gentle:yolo"), ON_TEXT);
 		h.setSelect(async () => "enable");
 		await h.command(""); assert.notEqual(h.statuses.get("gentle:yolo"), ON_TEXT, `${variant} menu enable fails closed`);
