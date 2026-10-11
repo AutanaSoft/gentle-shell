@@ -376,8 +376,9 @@ async function publishRuntime(layout, name, directory, entry, { platform, arch, 
 	const descriptor = (adapters.artifact ?? artifactFor)(name, platform, arch);
 	if (ownedRuntime(directory, descriptor.url, entry)) return false;
 	if (stat(directory)) throw new Error(`Conflicting runtime destination: ${directory}`);
-	const bytes = await verifiedDownload(name, adapters, platform, arch);
+	// Before downloading: a prefix that is not there fails without a download.
 	ensureDirectory(layout.runtime, layout.platform);
+	const bytes = await verifiedDownload(name, adapters, platform, arch);
 	let stage = mkdtempSync(pathFor(process.platform).join(layout.runtime, ".stage-"));
 	try {
 		await fill(stage, bytes, descriptor);

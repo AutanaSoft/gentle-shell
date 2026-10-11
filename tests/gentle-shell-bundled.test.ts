@@ -124,16 +124,18 @@ test("bundledPi fails with the version, the pinned Pi and the way to repair it",
 	assert.equal(bundledPi(install, { platform: "linux", fs: outside }).ok, false);
 });
 
-const ISOLATION = { prefix: "/g", piConfig: "/g/gentle-pi", engram: "/g/runtime/engram-3.3.2/engram" };
+const ISOLATION = { prefix: "/g", engram: "/g/runtime/engram-3.3.2/engram" };
 
-test("bundledChildEnv keeps the user's environment and adds only the bundled Pi, the prefix, its config folder and Engram, no Pi override and no Pi update check", () => {
+test("bundledChildEnv keeps the user's environment and adds only the bundled Pi, the prefix and Engram, no Pi override and no Pi update check", () => {
 	const user = { PATH: "/home/ana/.nvm/bin:/usr/bin", NODE_OPTIONS: "--max-old-space-size=4096", npm_config_registry: "https://npm.example", npm_config_prefix: "/home/ana/.npm-global",
 		GENTLE_SHELL_PI: "/usr/local/bin/pi", GENTLE_PI_AGENTS_PI: "pi", [BUNDLED_VERIFY_ENV]: ID, GENTLE_PI_CONFIG_HOME: "/home/ana/.pi/gentle-ai" };
 	const env = bundledChildEnv(user, { node: "/g/node", cli: "/g/cli.js", ...ISOLATION });
 	// S9: Gentle AI's own variables never reach Pi (its shell would pass them to
 	// a gentle-ai the user runs); gentle-pi adds them to its own gentle-ai runs.
+	// GENTLE_PI_CONFIG_HOME stays the user's: gentle-pi derives its bundled config
+	// folder from the prefix, and Gentle AI 4.0.0 reads that variable as a parent.
 	assert.deepEqual(env, { PATH: user.PATH, NODE_OPTIONS: user.NODE_OPTIONS, npm_config_registry: user.npm_config_registry, npm_config_prefix: user.npm_config_prefix,
-		GENTLE_PI_AGENTS_PI: "/g/node /g/cli.js", PI_SKIP_VERSION_CHECK: "1", GENTLE_SHELL_PREFIX: "/g", GENTLE_PI_CONFIG_HOME: "/g/gentle-pi",
+		GENTLE_PI_CONFIG_HOME: user.GENTLE_PI_CONFIG_HOME, GENTLE_PI_AGENTS_PI: "/g/node /g/cli.js", PI_SKIP_VERSION_CHECK: "1", GENTLE_SHELL_PREFIX: "/g",
 		ENGRAM_BIN: "/g/runtime/engram-3.3.2/engram" });
 	// The subagent runner splits that variable on whitespace: a spaced path falls
 	// back to its own default, the running node and cli.js.
@@ -298,7 +300,7 @@ test("the bundled launcher runs only its version's Pi, with the user's environme
 	// S9: gentle-pi's config folder inside the prefix, the pinned Engram for
 	// gentle-engram, and none of Gentle AI's own variables.
 	assert.equal(seen.env.GENTLE_SHELL_PREFIX, prefix.root);
-	assert.equal(seen.env.GENTLE_PI_CONFIG_HOME, join(prefix.root, "gentle-pi"));
+	assert.equal(seen.env.GENTLE_PI_CONFIG_HOME, undefined);
 	assert.equal(seen.env.ENGRAM_BIN, prefix.engram);
 	for (const name of ["GENTLE_AI_HOME", "GENTLE_AI_PI_CONFIG_DIR", "GENTLE_AI_ENGRAM_BIN", "GENTLE_AI_NO_SELF_UPDATE"]) assert.equal(seen.env[name], undefined, name);
 	// Pi's own npm is ours, configured only from the prefix, through the isolated home's settings.
@@ -342,6 +344,7 @@ test("bundled setup runs Gentle AI with the prefix's isolation variables and kee
 	assert.equal(seen.GENTLE_AI_ENGRAM_BIN, prefix.engram);
 	assert.equal(seen.GENTLE_AI_NO_SELF_UPDATE, "1");
 	assert.equal(seen.PI_CODING_AGENT_DIR, join(prefix.home, ".gentle-shell", "agent"));
+	assert.equal(seen.GENTLE_PI_CONFIG_HOME, undefined, "Gentle AI 4.0.0 would read it as a parent folder");
 	for (const path of [userPersona, prefixPersona]) assert.equal(readFileSync(path, "utf8"), "{\"mode\":\"chosen\"}\n", path);
 });
 

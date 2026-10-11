@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createNodeExecFileAdapter } from "../lib/native-review-cli.ts";
-import { setGentleAiIsolationPackageRootForTesting } from "../lib/gentle-ai-binary.ts";
+import { setBundledInstallForTesting } from "../lib/gentle-shell-bundled.ts";
 import { INPROCESS_REVIEWER_FAILURE, type InProcessReviewerOutcome, type InProcessReviewerRequest, type InProcessReviewerDeps, runInProcessReviewer } from "../lib/inprocess-reviewer.ts";
 import {
 	REVIEW_HOST_RELAY_FAILURE,
@@ -274,19 +274,17 @@ test("the central native CLI runner declares the relay contract on every gentle-
 	}
 });
 
-// S9: in a bundled install (this package inside the prefix's versions/, the
-// testing overlay standing in for its location) both relay invocations get
-// Gentle AI's isolation variables; otherwise neither does.
+// S9: in a bundled install (the testing overlay stands in for this package
+// running from it) both relay invocations get Gentle AI's isolation
+// variables; otherwise neither does.
 test("both relay gentle-ai invocations carry Gentle AI's isolation variables only in a bundled install", async (t) => {
 	const ordinary = harness(t);
 	await runRelay(ordinary);
 	assert.deepEqual(readLog(ordinary.logPath).map((call) => call.home), [null, null]);
 	const prefix = realpathSync(mkdtempSync(join(tmpdir(), "gentle-ai-isolation-relay-")));
-	const packageRoot = join(prefix, "versions", "4.1.0-1.1.0", "node_modules", "gentle-pi");
-	mkdirSync(packageRoot, { recursive: true });
-	setGentleAiIsolationPackageRootForTesting(packageRoot);
+	setBundledInstallForTesting({ root: prefix });
 	t.after(() => {
-		setGentleAiIsolationPackageRootForTesting(undefined);
+		setBundledInstallForTesting(undefined);
 		rmSync(prefix, { recursive: true, force: true });
 	});
 	const bundled = harness(t, { GENTLE_SHELL_PREFIX: prefix });

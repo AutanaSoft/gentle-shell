@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { __testing, createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import type { ExecFileAdapter, ExecFileResult } from "../lib/native-review-cli.ts";
-import { setGentleAiIsolationPackageRootForTesting } from "../lib/gentle-ai-binary.ts";
+import { setBundledInstallForTesting } from "../lib/gentle-shell-bundled.ts";
 import {
 	decodeTelemetryTriggerDecision,
 	shouldTriggerTelemetry,
@@ -412,15 +412,14 @@ test("/gentle:telemetry rejects an unknown sub-action without calling the binary
 	assert.equal(notifications[0].severity, "warning");
 });
 
-// S9: a gentle-pi inside a bundled prefix's versions/ (the testing overlay
-// stands in for this package's location) and the launcher's GENTLE_SHELL_PREFIX.
+// S9: this package running from a bundled install (the testing overlay stands
+// in for its location; the detection itself is tested with real installs in
+// gentle-ai-binary-isolation.test.ts) and the launcher's GENTLE_SHELL_PREFIX.
 function bundledIsolation(t: { after: (fn: () => void) => void }): { prefix: string; env: NodeJS.ProcessEnv } {
 	const prefix = realpathSync(mkdtempSync(join(tmpdir(), "gentle-ai-isolation-site-")));
-	const packageRoot = join(prefix, "versions", "4.1.0-1.1.0", "node_modules", "gentle-pi");
-	mkdirSync(packageRoot, { recursive: true });
-	setGentleAiIsolationPackageRootForTesting(packageRoot);
+	setBundledInstallForTesting({ root: prefix });
 	t.after(() => {
-		setGentleAiIsolationPackageRootForTesting(undefined);
+		setBundledInstallForTesting(undefined);
 		rmSync(prefix, { recursive: true, force: true });
 	});
 	return { prefix, env: { PATH: "/usr/bin", GENTLE_SHELL_PREFIX: prefix } };

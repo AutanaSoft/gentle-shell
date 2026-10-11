@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, posix, relative, resolve, win32 } from "node:path";
 import {
@@ -14,6 +14,7 @@ import {
 	resolveGentleAiReleaseAsset,
 } from "../scripts/gentle-ai-installer.mjs";
 import { engramPinVersion } from "../scripts/installer-downloads.mjs";
+import { bundledGentlePiConfigHome, bundledPiConfigDir, runningBundledPrefix } from "./gentle-shell-bundled.ts";
 import { fileURLToPath } from "node:url";
 
 export const GENTLE_AI_BINARY_MISSING_CODE = "package-local-binary-missing";
@@ -48,22 +49,20 @@ export function gentleAiBinaryPath(
 
 // ---------------------------------------------------------------------------
 // Bundled isolation (S9). The bundled launcher (bin/gentle-shell.mjs) gives Pi
-// and setup GENTLE_SHELL_PREFIX, its prefix. Every gentle-ai run gentle-pi
-// starts from inside that prefix gets Gentle AI's own variables (gentle-ai
-// #5462): its state, backups and telemetry under <prefix>/gentle-ai, the
-// gentle-pi config folder <prefix>/gentle-pi for its persona and background
-// subagent files, the pinned Engram in runtime/ with no Engram acquisition or
-// dependency probe, and no self-update. They are never put in Pi's own
-// environment: the agent's shell inherits it, and a gentle-ai the user runs
-// there stays the user's. A gentle-ai release without #5462 ignores them.
+// and setup GENTLE_SHELL_PREFIX, its prefix. Every gentle-ai run a bundled
+// gentle-pi starts gets Gentle AI's own variables (gentle-ai #5462): its state,
+// backups and telemetry under <prefix>/gentle-ai, the gentle-pi config folder
+// <prefix>/gentle-pi for its persona and background subagent files, the pinned
+// Engram in runtime/ with no Engram acquisition or dependency probe, and no
+// self-update. They are never put in Pi's own environment: the agent's shell
+// inherits it, and a gentle-ai the user runs there stays the user's. A
+// gentle-ai release without #5462 ignores them.
 // ---------------------------------------------------------------------------
-
-export const GENTLE_SHELL_PREFIX_ENV = "GENTLE_SHELL_PREFIX";
 
 export interface BundledGentleAiPaths {
 	/** GENTLE_AI_HOME. */
 	home: string;
-	/** GENTLE_AI_PI_CONFIG_DIR, and Pi's GENTLE_PI_CONFIG_HOME. */
+	/** GENTLE_AI_PI_CONFIG_DIR: gentle-pi's own bundled config home. */
 	piConfig: string;
 	/** The Engram scripts/bundled-install.mjs publishes (prefixLayout's `engram`). */
 	engram: string;
@@ -73,32 +72,17 @@ export function bundledGentleAiPaths(prefix: string, platform: string = process.
 	const path = platform === "win32" ? win32 : posix;
 	return {
 		home: path.join(prefix, "gentle-ai"),
-		piConfig: path.join(prefix, "gentle-pi"),
+		piConfig: bundledPiConfigDir(prefix, platform),
 		engram: path.join(prefix, "runtime", `engram-${engramPinVersion}`, platform === "win32" ? "engram.exe" : "engram"),
 	};
-}
-
-let isolationPackageRootTestingOverlay: string | undefined;
-
-/** Testing-only package root for gentleAiIsolationEnv; production code never calls this. */
-export function setGentleAiIsolationPackageRootForTesting(packageRoot: string | undefined): void {
-	isolationPackageRootTestingOverlay = packageRoot;
-}
-
-function realPath(path: string): string | undefined {
-	try {
-		return realpathSync(path);
-	} catch {
-		return undefined;
-	}
 }
 
 /**
  * `env` plus GENTLE_AI_HOME, GENTLE_AI_PI_CONFIG_DIR, GENTLE_AI_ENGRAM_BIN
  * (only when the pinned Engram is published) and GENTLE_AI_NO_SELF_UPDATE=1
- * when GENTLE_SHELL_PREFIX is an absolute, existing prefix whose versions/
- * folder holds this package. Otherwise `env` itself, unchanged: a gentle-pi
- * outside the prefix (the user's own, started from the agent's shell, which
+ * when this gentle-pi runs from the valid bundled install GENTLE_SHELL_PREFIX
+ * names (runningBundledPrefix). Otherwise `env` itself, unchanged: a gentle-pi
+ * installed elsewhere (the user's own, started from the agent's shell, which
  * inherits the variable) keeps its own Gentle AI.
  */
 export function gentleAiIsolationEnv(
@@ -106,12 +90,8 @@ export function gentleAiIsolationEnv(
 	options: { packageRoot?: string; platform?: string } = {},
 ): NodeJS.ProcessEnv {
 	const platform = options.platform ?? process.platform;
-	const path = platform === "win32" ? win32 : posix;
-	const prefix = env[GENTLE_SHELL_PREFIX_ENV];
-	if (prefix === undefined || prefix.length === 0 || !path.isAbsolute(prefix)) return env;
-	const root = realPath(prefix);
-	const packageRoot = realPath(options.packageRoot ?? isolationPackageRootTestingOverlay ?? dirname(dirname(fileURLToPath(import.meta.url))));
-	if (root === undefined || packageRoot === undefined || !isConfined(packageRoot, path.join(root, "versions"))) return env;
+	const prefix = runningBundledPrefix(env, { packageRoot: options.packageRoot, platform });
+	if (prefix === undefined) return env;
 	const paths = bundledGentleAiPaths(prefix, platform);
 	let engram = false;
 	try {
@@ -138,7 +118,8 @@ function sha256(value: Buffer): string {
 // Two explicit activation paths, in precedence order:
 //   1. GENTLE_PI_GENTLE_AI_DEV_BINARY (session override, absolute path), then
 //   2. the persistent registration file at
-//      <GENTLE_PI_CONFIG_HOME|~/.pi/gentle-ai>/dev-binary.json with the strict
+//      <config home>/dev-binary.json (a bundled prefix's gentle-pi, else
+//      GENTLE_PI_CONFIG_HOME, else ~/.pi/gentle-ai) with the strict
 //      shape {"schema":"gentle-pi.dev-binary/v1","path":"<absolute path>"}.
 //
 // The registration deliberately pins no digest: it is the unpinned field-test
@@ -196,7 +177,7 @@ function ambientDevBinaryEnvironment(): GentleAiDevBinaryEnvironment {
 }
 
 export function gentleAiDevBinaryRegistrationPath(environment: GentleAiDevBinaryEnvironment = ambientDevBinaryEnvironment()): string {
-	const configHome = environment.env.GENTLE_PI_CONFIG_HOME ?? join(environment.home, ".pi", "gentle-ai");
+	const configHome = bundledGentlePiConfigHome(environment.env) ?? environment.env.GENTLE_PI_CONFIG_HOME ?? join(environment.home, ".pi", "gentle-ai");
 	return join(configHome, "dev-binary.json");
 }
 

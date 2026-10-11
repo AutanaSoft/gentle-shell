@@ -1,4 +1,6 @@
-import { posix, win32 } from "node:path";
+import { lstatSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
+import { dirname, posix, win32 } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // The launcher in a bundled install (S5, S8): pure decisions over an injected
 // filesystem. bin/gentle-shell.mjs wires them to the real one. A bundled install
@@ -74,6 +76,90 @@ export function resolveBundledInstall(input: { packageRoot: string; platform: st
 
 export type BundledPi = { ok: true; cli: string; version: string } | { ok: false; message: string };
 
+// The real filesystem behind BundledFs.
+export const nodeBundledFs: BundledFs = {
+	realpath: (path) => {
+		try {
+			return realpathSync(path);
+		} catch {
+			return undefined;
+		}
+	},
+	readText: (path) => {
+		try {
+			return lstatSync(path).isFile() ? readFileSync(path, "utf8") : undefined;
+		} catch {
+			return undefined;
+		}
+	},
+	readLink: (path) => {
+		try {
+			return readlinkSync(path);
+		} catch {
+			return undefined;
+		}
+	},
+};
+
+// The bundled launcher passes its prefix to Pi (bundledChildEnv), and so to
+// every process Pi starts, the agent's shell included.
+export const GENTLE_SHELL_PREFIX_ENV = "GENTLE_SHELL_PREFIX";
+
+// This package's root, from lib/ or the generated runtime/ alike.
+const ownPackageRoot = () => dirname(dirname(fileURLToPath(import.meta.url)));
+
+let installOverlay: { root: string } | null | undefined;
+const runningMemo = new Map<string, string | undefined>();
+
+/** Testing only: the bundled install this package runs from (null: none), or undefined for the real one. */
+export function setBundledInstallForTesting(install: { root: string } | null | undefined): void {
+	installOverlay = install;
+	runningMemo.clear();
+}
+
+/** Testing only: forget the remembered answers. */
+export function resetRunningBundledPrefixForTesting(): void {
+	runningMemo.clear();
+}
+
+// S9: the prefix of the bundled install this gentle-pi runs from, or
+// undefined. Both must hold: GENTLE_SHELL_PREFIX is absolute and names that
+// install's root, and resolveBundledInstall finds a valid install around the
+// package (its version marker, and `current` naming it). A gentle-pi elsewhere
+// (npm, pnpm, nvm), started from the agent's shell that inherits the variable,
+// gets undefined. The answer is remembered per package root and prefix value,
+// so a `gentle-shell upgrade` that moves `current` while Pi runs does not
+// change it mid-session; an injected filesystem is never remembered.
+export function runningBundledPrefix(env: Env, options: { packageRoot?: string; platform?: string; fs?: BundledFs } = {}): string | undefined {
+	const platform = options.platform ?? process.platform;
+	const prefix = env[GENTLE_SHELL_PREFIX_ENV];
+	if (prefix === undefined || prefix.length === 0 || !pathFor(platform).isAbsolute(prefix)) return undefined;
+	const overlay = options.packageRoot === undefined ? installOverlay : undefined;
+	const packageRoot = options.packageRoot ?? ownPackageRoot();
+	const fs = options.fs ?? nodeBundledFs;
+	const key = `${packageRoot}\0${prefix}`;
+	const remember = options.fs === undefined;
+	if (remember && runningMemo.has(key)) return runningMemo.get(key);
+	const install = overlay !== undefined ? overlay ?? undefined : resolveBundledInstall({ packageRoot, platform, fs });
+	const real = fs.realpath(prefix);
+	const root = install !== undefined && real !== undefined && real === (fs.realpath(install.root) ?? install.root) ? install.root : undefined;
+	if (remember) runningMemo.set(key, root);
+	return root;
+}
+
+// gentle-pi's config folder inside a bundled prefix.
+export function bundledPiConfigDir(prefix: string, platform: string = process.platform): string {
+	return pathFor(platform).join(prefix, "gentle-pi");
+}
+
+// The config home of a bundled gentle-pi, or undefined outside one. It is
+// derived, never exported as GENTLE_PI_CONFIG_HOME: Gentle AI 4.0.0 reads that
+// variable as the parent of its own gentle-ai folder.
+export function bundledGentlePiConfigHome(env: Env): string | undefined {
+	const prefix = runningBundledPrefix(env);
+	return prefix === undefined ? undefined : bundledPiConfigDir(prefix);
+}
+
 // The exact Pi of the version (S8): the Pi the version's package.json pins,
 // installed inside the version folder with Pi's own bin entry. Never another Pi.
 export function bundledPi(install: BundledInstall, input: { platform: string; fs: BundledFs }): BundledPi {
@@ -103,13 +189,13 @@ export function bundledPi(install: BundledInstall, input: { platform: string; fs
 // only no Pi override, subagents on the same node and Pi (the subagent runner
 // splits GENTLE_PI_AGENTS_PI on whitespace, so a spaced path is left to its
 // default, the running node and cli.js), and no Pi update check, since Pi only
-// updates with Gentle Shell (S5). S9: the prefix (GENTLE_SHELL_PREFIX, which
-// gentle-pi's own gentle-ai runs turn into Gentle AI's variables, never set
-// here because the agent's shell would pass them to a gentle-ai the user runs),
-// gentle-pi's config folder inside it, and the published Engram as
+// updates with Gentle Shell (S5). S9: the prefix (GENTLE_SHELL_PREFIX, from
+// which gentle-pi derives its config folder and gives its own gentle-ai runs
+// Gentle AI's variables, never set here because the agent's shell would pass
+// them to a gentle-ai the user runs), and the published Engram as
 // gentle-engram's ENGRAM_BIN unless the user chose one.
-export function bundledChildEnv(base: Env, input: { node: string; cli: string; prefix: string; piConfig: string; engram?: string }): Env {
-	const env: Env = { ...base, PI_SKIP_VERSION_CHECK: "1", GENTLE_SHELL_PREFIX: input.prefix, GENTLE_PI_CONFIG_HOME: input.piConfig };
+export function bundledChildEnv(base: Env, input: { node: string; cli: string; prefix: string; engram?: string }): Env {
+	const env: Env = { ...base, PI_SKIP_VERSION_CHECK: "1", [GENTLE_SHELL_PREFIX_ENV]: input.prefix };
 	delete env.GENTLE_SHELL_PI;
 	delete env[BUNDLED_VERIFY_ENV];
 	if (/\s/.test(`${input.node}${input.cli}`)) delete env.GENTLE_PI_AGENTS_PI;

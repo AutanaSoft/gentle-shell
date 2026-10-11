@@ -361,6 +361,16 @@ posixTest("ensureEngram publishes only the verified engram executable after runn
 	}
 });
 
+// A4: a prefix that is not there fails before anything is downloaded.
+posixTest("ensureEngram downloads nothing when the prefix is missing", async () => {
+	const user = home();
+	const layout = prefixLayout({ platform: "darwin", env: { HOME: user }, home: user });
+	const { calls, adapters: fixture } = adapters();
+	await assert.rejects(ensureEngram({ layout, platform: "darwin", arch: "arm64", adapters: fixture }), /ENOENT/);
+	assert.deepEqual(calls.downloads, []);
+	assert.equal(existsSync(layout.root), false);
+});
+
 test("engramExecutable takes only the top-level engram from the tarball and engram.exe from the zip, regular files only", () => {
 	const tarball = { url: "https://github.com/Gentleman-Programming/engram/releases/download/v3.3.2/engram_3.3.2_linux_amd64.tar.gz" };
 	const zipped = { url: "https://github.com/Gentleman-Programming/engram/releases/download/v3.3.2/engram_3.3.2_windows_amd64.zip" };

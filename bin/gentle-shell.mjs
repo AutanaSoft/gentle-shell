@@ -16,7 +16,6 @@ import {
 	openSync,
 	readdirSync,
 	readFileSync,
-	readlinkSync,
 	realpathSync,
 	renameSync,
 	rmSync,
@@ -64,6 +63,7 @@ import {
 	bundledUpdateNext,
 	bundledUpdateNotice,
 	bundledUpdatePlan,
+	nodeBundledFs,
 	parseBundledUpgradeArgs,
 	resolveBundledInstall,
 	withBundledNpmCommand,
@@ -144,29 +144,7 @@ function signalExitCode(signal) {
 
 // A bundled install (S8): this package inside <prefix>/versions/<id> that
 // `current` names (lib/gentle-shell-bundled.ts decides from these reads).
-const bundledFs = {
-	realpath: (path) => {
-		try {
-			return realpathSync(path);
-		} catch {
-			return undefined;
-		}
-	},
-	readText: (path) => {
-		try {
-			return lstatSync(path).isFile() ? readFileSync(path, "utf8") : undefined;
-		} catch {
-			return undefined;
-		}
-	},
-	readLink: (path) => {
-		try {
-			return readlinkSync(path);
-		} catch {
-			return undefined;
-		}
-	},
-};
+const bundledFs = nodeBundledFs;
 
 // Set in a bundled install: the environment every child (Pi, setup, the version
 // probe) starts from instead of process.env (the user's own plus Gentle Shell's
@@ -188,7 +166,7 @@ function bundledProcessEnv() {
 	} catch {
 		engram = undefined;
 	}
-	return bundledChildEnv(process.env, { node: process.execPath, cli: bundledCli, prefix: bundledInstall.root, piConfig: isolation.piConfig, engram });
+	return bundledChildEnv(process.env, { node: process.execPath, cli: bundledCli, prefix: bundledInstall.root, engram });
 }
 
 function ownPackageVersion() {
