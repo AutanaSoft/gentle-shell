@@ -1470,7 +1470,9 @@ test("bundled outcomes: every bundled step has guidance, pnpm's error line is sh
 	}
 });
 
-test("wizardHandlers plans the bundled install only when the gate says so, and routes its plan to the bundled runner", async () => {
+// Simulates Linux against the real filesystem (profile files), so it runs on the POSIX runners only.
+test("wizardHandlers plans the bundled install only when the gate says so, and routes its plan to the bundled runner",
+	{ skip: process.platform === "win32" ? "simulated Linux paths need a POSIX filesystem" : false }, async () => {
 	const home = mkdtempSync(join(tmpdir(), "gentle-wizard-handlers-"));
 	try {
 		const asset = distributionAsset({ shell: requirements.shell, pi: "1.0.2" }, "lock");
