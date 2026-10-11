@@ -68,6 +68,8 @@ export function prefixLayout({ platform, env = {}, home, root }) {
 		nodeDir, node: windows ? path.join(nodeDir, "node.exe") : path.join(nodeDir, "bin", "node"),
 		// The npm bundled in the same Node archive, for Pi's own package installs.
 		npmCli: path.join(nodeDir, ...(windows ? [] : ["lib"]), "node_modules", "npm", "bin", "npm-cli.js"),
+		// The entry Pi's npmCommand runs that npm through (ensureNpmShim).
+		npmShim: path.join(nodeDir, "gentle-shell", "npm"),
 		npmHome, npmPrefix: path.join(npmHome, "prefix"), npmCache: path.join(npmHome, "cache"), npmGlobalConfig: path.join(npmHome, "npmrc"),
 		pnpmDir, pnpm: path.join(pnpmDir, "package", "bin", "pnpm.mjs"),
 		// acquireGo publishes `<goRoot>/<version>/go`.
@@ -367,6 +369,9 @@ export async function ensureRuntime({ layout, platform, arch, go = false, env = 
 		if (npm.status !== 0 || String(npm.stdout).trim() !== files.npm) throw new Error("Bundled npm verification failed");
 	});
 	if (node) acquired.push("node");
+	// Also for a runtime published before the entry existed; one from before npm
+	// was published (T1a) has no npm to run, and the launcher then gives Pi none.
+	if (regular(layout.npmCli)) ensureNpmShim(layout);
 	const pnpm = await publishRuntime(layout, "pnpm", layout.pnpmDir, layout.pnpm, { platform, arch, adapters }, async (stage, bytes, descriptor) => {
 		// The tarball's executable bits are kept (bin/pnpm.mjs, dist/node-gyp-bin), for the owner only.
 		const modes = new Map([...tarMembers(bytes, "pnpm archive rejected")].map((member) => [member.name, member.mode]));
@@ -717,14 +722,53 @@ const RELEASE_EXPORTS = Object.freeze(["prefixLayout", "ensureRuntime", "ensureL
  */
 const VERIFY_ENV = "GENTLE_SHELL_VERIFY_VERSION";
 
+const NPM_SHIM_MARK = "gentle-shell bundled npm entry (generated; do not edit)";
+/** Writes runtime/node-<v>/gentle-shell/npm, a CommonJS file that runs the npm
+ * bundled with that Node, and a package.json beside it that keeps it CommonJS
+ * under any package.json with "type": "module" above the prefix. Pi names the
+ * package manager from the basenames in npmCommand (getPackageManagerName in
+ * Pi's core/package-manager.js), so this entry is named exactly `npm`; on
+ * Windows it also avoids npm.cmd, which prefers an npm in the global prefix.
+ * Each file is replaced with one rename, only when its content differs; a link
+ * or anything but a regular file in its place stops it. Returns { written }.
+ */
+export function ensureNpmShim(layout) {
+	const path = pathFor(layout.platform);
+	if (!regular(layout.npmCli)) throw new Error(`Bundled npm missing: ${layout.npmCli}`);
+	const folder = path.dirname(layout.npmShim);
+	const cli = path.relative(folder, layout.npmCli).split(path.sep).map((part) => JSON.stringify(part)).join(", ");
+	const files = {
+		"package.json": '{ "type": "commonjs" }\n',
+		[path.basename(layout.npmShim)]: [`// ${NPM_SHIM_MARK}`, `require(require("node:path").join(__dirname, ${cli}));`, ""].join("\n"),
+	};
+	const info = stat(folder);
+	if (!info) mkdirSync(folder, { mode: 0o700 });
+	else if (!info.isDirectory()) throw new Error(`Conflicting npm entry: ${folder}`);
+	let written = false;
+	for (const [name, text] of Object.entries(files)) {
+		const target = path.join(folder, name);
+		const existing = stat(target);
+		if (existing && !existing.isFile()) throw new Error(`Conflicting npm entry: ${target}`);
+		if (existing && readFileSync(target, "utf8") === text) continue;
+		replaceAtomically(target, (temp) => writeFileSync(temp, text, { flag: "wx", mode: 0o600 }));
+		written = true;
+	}
+	return { written };
+}
+
 /** The command Pi runs for npm in a bundled install (its `npmCommand` setting):
- * our npm on our Node, reading only the prefix npmrc and global config, with its
- * cache and global prefix inside the prefix. npm ranks command-line flags above
- * npm_config_* variables, so the user's environment cannot redirect these.
+ * our npm on our Node, through the entry named npm (ensureNpmShim), so Pi treats
+ * it as npm; it reads only the prefix npmrc and global config, with its cache
+ * inside the prefix. npm ranks command-line flags above npm_config_* variables,
+ * so the user's environment cannot redirect these. No --prefix: on the command
+ * line it also sets npm's local prefix, and Pi installs a git extension's
+ * dependencies with `npm install` in the clone, without a --prefix of its own
+ * (its npm: installs pass one). No other part's basename is npm, pnpm or bun,
+ * which Pi would reject as ambiguous.
  */
 export function bundledNpmCommand(layout) {
-	return [layout.node, layout.npmCli, `--userconfig=${layout.npmrc}`, `--globalconfig=${layout.npmGlobalConfig}`, `--cache=${layout.npmCache}`,
-		`--prefix=${layout.npmPrefix}`, "--update-notifier=false"];
+	return [layout.node, layout.npmShim, `--userconfig=${layout.npmrc}`, `--globalconfig=${layout.npmGlobalConfig}`, `--cache=${layout.npmCache}`,
+		"--update-notifier=false"];
 }
 
 /** The module an installed version ships (its own pins and launcher), only from

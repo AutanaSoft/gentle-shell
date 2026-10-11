@@ -1358,8 +1358,10 @@ async function ensureBundledNpmCommand(bundled, home, homeHadContentBeforeBootst
 	if (home.mode === "link") return;
 	const previous = provisionedEntry(readRawConfig(resolveConfigPath()), safeRealpath(home.dir));
 	if (homeIsForeign(home, previous, homeHadContentBeforeBootstrap) || !isDirectory(home.dir)) return;
-	const { bundledNpmCommand, prefixLayout } = await import("../scripts/bundled-install.mjs");
+	const { bundledNpmCommand, ensureNpmShim, prefixLayout } = await import("../scripts/bundled-install.mjs");
 	const layout = prefixLayout({ platform: process.platform, env: process.env, home: homedir(), root: bundled.root });
+	// The entry npmCommand names, also for a runtime installed before it existed.
+	ensureNpmShim(layout);
 	const settingsPath = join(home.dir, "settings.json");
 	const edit = withBundledNpmCommand(readJsonIfExists(settingsPath), bundledNpmCommand(layout));
 	if (edit.status === "malformed") {

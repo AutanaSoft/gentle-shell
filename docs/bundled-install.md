@@ -9,7 +9,7 @@ The building blocks live in `scripts/bundled-install.mjs`. The web installer and
 | Path (POSIX) | Contents |
 |---|---|
 | `~/.gentle-shell/agent/` | The isolated agent home. This module never writes it. |
-| `~/.gentle-shell/runtime/node-24.21.0/` | Our Node from the verified archive: `bin/node`, the npm bundled with it under `lib/node_modules/npm`, and our own `bin/npm` and `bin/npx` wrappers. |
+| `~/.gentle-shell/runtime/node-24.21.0/` | Our Node from the verified archive: `bin/node`, the npm bundled with it under `lib/node_modules/npm`, our own `bin/npm` and `bin/npx` wrappers, and `gentle-shell/npm`, the entry Pi's `npmCommand` runs. |
 | `~/.gentle-shell/npm/{prefix,cache}/`, `~/.gentle-shell/npm/npmrc` | npm's global prefix, cache and global config. The global config file is never written. |
 | `~/.gentle-shell/runtime/pnpm-11.1.1/package/` | Our pnpm, from the verified registry tarball. |
 | `~/.gentle-shell/runtime/go/1.25.14/go/` | Our Go, only when asked (`acquireGo` layout). |
@@ -137,6 +137,13 @@ So `nodeRuntimeFiles` takes the npm bundled in the same verified Node archive (n
 
 `ensureRuntime` runs `npm-cli.js --version` with our Node from the staging folder. It must print the version in npm's own `package.json`.
 
+`ensureNpmShim` then writes `runtime/node-<v>/gentle-shell/npm`, a CommonJS file that loads the npm next to it, and a `package.json` beside it with `"type": "commonjs"`. That `package.json` keeps the entry CommonJS even under a user's `package.json` with `"type": "module"` above the prefix. `ensureRuntime` writes the entry for a new runtime and for a reused one. The launcher also writes it before it sets `npmCommand`, for a runtime installed before the entry existed. Each file is replaced with one rename, and only when its content differs. A link or anything but a regular file in its place stops it. A runtime from before npm was published (T1a) gets no entry, and the launcher then gives Pi no `npmCommand` and says so.
+
+Why the entry exists:
+
+- **The name.** Pi 1.1.0 takes the package manager's name from the basenames in `npmCommand` (`getPackageManagerName`), and only strips `.cmd` and `.exe`. With `npm-cli.js` it read `node`, and gave a git extension's dependencies a plain `npm install`. With an entry named exactly `npm`, it reads `npm` and uses `install --omit=dev --legacy-peer-deps`.
+- **No `npm.cmd`.** On Windows, `npm.cmd` prefers an npm in the global prefix, which is the user's under the user's environment. The entry never goes through it.
+
 ## User npm settings
 
 `userNpmrc` reads the user's npm configuration: `NPM_CONFIG_USERCONFIG` (any case) when it is an absolute path, otherwise `~/.npmrc`. It reads at most 1 MiB.
@@ -204,10 +211,11 @@ Dropped: inherited npm and pnpm settings, `NODE_OPTIONS`, `NODE_PATH`, and the w
   - The launcher still sets the agent home variables (`PI_CODING_AGENT_DIR`, `GENTLE_PI_AGENT_HOME`) as always.
 
   Pi itself needs no `PATH` entry, because it is started as our node with the bundled `cli.js`.
-- **Pi's own npm.** Pi runs npm through its `npmCommand` setting (`getNpmCommand` in Pi's `core/package-manager.js`). For a home Gentle Shell owns, the launcher sets that key in its `settings.json` to `bundledNpmCommand(layout)`: our node, our `npm-cli.js`, `--userconfig=<prefix npmrc>`, `--globalconfig`, `--cache` and `--prefix` inside `~/.gentle-shell/npm/`, and `--update-notifier=false`. "Owns" means the isolated home, or a `--home` it created or provisioned. It never sets the key for `--link`, a foreign home, or the user's `~/.pi`.
-  - Only that key is written, and only when it differs. A file that already holds the command keeps its bytes, and one that is not a JSON object is left alone with a warning.
-  - npm ranks command-line flags above `npm_config_*` variables, so the user's environment cannot redirect these four settings. An `npm_config_*` key that has no flag here (for example `npm_config_registry`) still reaches our npm, as the user's own network setting would.
-  - Pi passes its own `--prefix <agent home>/npm` after these flags for package installs, and the later flag wins.
+- **Pi's own npm.** Pi runs npm through its `npmCommand` setting (`getNpmCommand` in Pi's `core/package-manager.js`). For a home Gentle Shell owns, the launcher sets that key in its `settings.json` to `bundledNpmCommand(layout)`: our node, our npm entry `runtime/node-<v>/gentle-shell/npm` ([npm for Pi](#npm-for-pi)), `--userconfig=<prefix npmrc>`, `--globalconfig` and `--cache` inside `~/.gentle-shell/npm/`, and `--update-notifier=false`. No other part's basename is `npm`, `pnpm` or `bun`, which Pi would reject as ambiguous. "Owns" means the isolated home, or a `--home` it created or provisioned. It never sets the key for `--link`, a foreign home, or the user's `~/.pi`.
+  - Only that key is written, and only when it differs. A file that already holds the command keeps its bytes, and one that is not a JSON object is left alone with a warning. An earlier value (`npm-cli.js` directly, or a `--prefix` flag) is replaced the same way.
+  - npm ranks command-line flags above `npm_config_*` variables, so the user's environment cannot redirect these three settings. An `npm_config_*` key that has no flag here (for example `npm_config_registry`) still reaches our npm, as the user's own network setting would.
+  - **No `--prefix`.** A `--prefix` flag on the command line also sets npm's local prefix (`loadLocalPrefix` in `@npmcli/config`). Pi installs a git extension's dependencies with `npm install` in the clone and passes no `--prefix` of its own, so that install would land in the prefix and fail. Pi's `npm:` installs and removals pass `--prefix <agent home>/npm` themselves.
+  - The only global read is `npm root -g` (Pi's lookup of packages an older Pi installed globally). It then resolves to the user's `npm_config_prefix` or our node folder's `lib/node_modules`. It only prints a path and creates nothing.
 - **Setup.** `gentle-shell setup` runs Gentle AI, which finds `pi` on `PATH`. pnpm's `.bin/pi` shim runs the first `node` on `PATH`. So setup alone gets our node's folder, then the version's `node_modules/.bin`, ahead of the user's `PATH` (`bundledSetupEnv`). Everything else in its environment is the same as Pi's.
 - **Pi updates (S5).** Some `gentle-shell update` forms make Pi update itself: no target, `--self`, `self` or `pi` as the target, `--all`, and `self` or `pi` with `--extensions`. Pi reads the last two as "all" (`package-manager-cli.js`). For these forms the launcher says that Pi ships pinned with Gentle Shell. In a terminal it then runs `gentle-shell upgrade`; otherwise it names the command. For an "all" form, Pi still gets `update --extensions`, even when the upgrade could not complete; the launcher reports that and the extensions still update. Package, `--models`, help, and forms Pi refuses (conflicting or unknown options) go to Pi unchanged.
 - **What cannot be intercepted.** A `pi update` that someone runs directly with the bundled `pi` (for example the agent's shell, which finds it through `node_modules/.bin`) is Pi's own command. In Pi 1.1.0, `PI_SKIP_VERSION_CHECK` hides only the startup "Update Available" notice (`utils/version-check.js`). For the update itself, `package-manager-cli.js` detects a pnpm install from the `.pnpm` path, and `config.js` (`getSelfUpdateCommand`) finds no global pnpm root that owns `versions/<id>`. Pi then prints `cannot self-update this installation` and changes nothing.

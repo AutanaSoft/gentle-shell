@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, posix, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -245,6 +245,10 @@ function bundledPrefix(t: TestContext, { pi = "1.1.0" } = {}) {
 	writeFileSync(join(version, "package.json"), JSON.stringify({ dependencies: { "gentle-pi": SHELL, "@earendil-works/pi-coding-agent": "1.1.0" } }));
 	writeFileSync(join(version, ".gentle-shell-version"), `${FIXTURE_ID}\n`);
 	symlinkSync(`versions/${FIXTURE_ID}`, join(root, "current"));
+	// The bundled npm the npmCommand entry loads.
+	const npmCli = join(root, "runtime", "node-24.21.0", "lib", "node_modules", "npm", "bin", "npm-cli.js");
+	mkdirSync(dirname(npmCli), { recursive: true });
+	writeFileSync(npmCli, "console.log('11.19.0');\n");
 	// A Pi on PATH and in GENTLE_SHELL_PI that must never run.
 	const userBin = join(base, "user-bin");
 	mkdirSync(userBin);
@@ -253,7 +257,7 @@ function bundledPrefix(t: TestContext, { pi = "1.1.0" } = {}) {
 		NODE_OPTIONS: "--no-warnings", npm_config_registry: "https://npm.example" };
 	const entry = join(root, "current", "node_modules", "gentle-pi", "bin", "gentle-shell.mjs");
 	const run = (args: string[], extra: Record<string, string> = {}) => spawnSync(process.execPath, [entry, ...args], { env: { ...env, ...extra }, encoding: "utf8", input: "" });
-	return { root, home, userBin, version, piDir, run, env, entry: join(shell, "bin", "gentle-shell.mjs") };
+	return { root, home, userBin, version, piDir, npmCli, run, env, entry: join(shell, "bin", "gentle-shell.mjs") };
 }
 
 test("the bundled launcher runs only its version's Pi, with the user's environment and the bundled npm in its own home", { skip: posixHost }, (t) => {
@@ -276,16 +280,43 @@ test("the bundled launcher runs only its version's Pi, with the user's environme
 	assert.equal(seen.env.npm_config_prefix, undefined);
 	// Pi's own npm is ours, configured only from the prefix, through the isolated home's settings.
 	const settings = JSON.parse(readFileSync(join(prefix.home, ".gentle-shell", "agent", "settings.json"), "utf8"));
-	assert.deepEqual(settings.npmCommand.slice(0, 2), [join(prefix.root, "runtime", "node-24.21.0", "bin", "node"),
-		join(prefix.root, "runtime", "node-24.21.0", "lib", "node_modules", "npm", "bin", "npm-cli.js")]);
+	const shim = join(prefix.root, "runtime", "node-24.21.0", "gentle-shell", "npm");
+	assert.deepEqual(settings.npmCommand.slice(0, 2), [join(prefix.root, "runtime", "node-24.21.0", "bin", "node"), shim]);
+	// The entry named npm exists before Pi is given it, and runs our npm.
+	assert.equal(spawnSync(process.execPath, [shim, "--version"], { encoding: "utf8" }).stdout, "11.19.0\n");
 	assert.ok(settings.npmCommand.includes(`--userconfig=${join(prefix.root, "pnpm", "config", "npmrc")}`));
-	assert.ok(settings.npmCommand.includes(`--prefix=${join(prefix.root, "npm", "prefix")}`));
+	assert.equal(settings.npmCommand.some((part: string) => part.startsWith("--prefix")), false);
 	// --link is the user's own Pi home: never given our npm.
 	const linked = join(prefix.home, ".pi", "agent");
 	mkdirSync(linked, { recursive: true });
 	writeFileSync(join(linked, "settings.json"), "{}\n");
 	assert.equal(prefix.run(["--link", "list"]).status, 0);
 	assert.equal(readFileSync(join(linked, "settings.json"), "utf8"), "{}\n");
+});
+
+test("a home holding the npmCommand written before the npm entry existed gets only that key updated", { skip: posixHost }, (t) => {
+	const prefix = bundledPrefix(t);
+	const node = join(prefix.root, "runtime", "node-24.21.0");
+	const flags = [`--userconfig=${join(prefix.root, "pnpm", "config", "npmrc")}`, `--globalconfig=${join(prefix.root, "npm", "npmrc")}`,
+		`--cache=${join(prefix.root, "npm", "cache")}`, "--update-notifier=false"];
+	// The value written before N1: npm-cli.js directly, and a --prefix flag.
+	const previous = [join(node, "bin", "node"), prefix.npmCli, ...flags.slice(0, 3), `--prefix=${join(prefix.root, "npm", "prefix")}`, flags[3]];
+	const agent = join(prefix.home, ".gentle-shell", "agent");
+	mkdirSync(agent, { recursive: true });
+	writeFileSync(join(agent, "settings.json"), `${JSON.stringify({ theme: "gentle", npmCommand: previous, packages: ["npm:x"] }, null, 2)}\n`);
+	assert.equal(prefix.run(["list"]).status, 0);
+	const settings = JSON.parse(readFileSync(join(agent, "settings.json"), "utf8"));
+	assert.deepEqual(settings, { theme: "gentle", npmCommand: [join(node, "bin", "node"), join(node, "gentle-shell", "npm"), ...flags], packages: ["npm:x"] });
+});
+
+test("a runtime without our npm gives Pi no npmCommand and says so", { skip: posixHost }, (t) => {
+	const prefix = bundledPrefix(t);
+	rmSync(prefix.npmCli);
+	const result = prefix.run(["list"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stderr, /could not give Pi the bundled npm.*Bundled npm missing/);
+	const settings = join(prefix.home, ".gentle-shell", "agent", "settings.json");
+	assert.equal(existsSync(settings) && "npmCommand" in JSON.parse(readFileSync(settings, "utf8")), false);
 });
 
 test("the version check before activation runs that version in bundled mode, never a PATH Pi", { skip: posixHost }, (t) => {
