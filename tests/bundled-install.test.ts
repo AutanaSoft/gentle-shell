@@ -3,11 +3,12 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, rmSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join, posix, win32 } from "node:path";
+import { dirname, join, posix, win32 } from "node:path";
 import test, { after, type TestContext } from "node:test";
 import { crc32, gzipSync } from "node:zlib";
 import { activateVersion, activeVersion, applyPathEntry, claimPrefix, prefixRoot, distributionFiles, engramExecutable, ensureEngram, ensureLauncher, ensureRuntime, filterNpmrc, installVersion, nodeExecutable,
-	nodeRuntimeFiles, pathEntryPlan, pnpmEnvironment, prefixLayout, pruneVersions, removePathEntry, rollbackBundled, setupEnvironment, bundledNpmCommand, ensureNpmShim, upgradeBundled, userNpmrc, writeNpmrcAuth }
+	nodeRuntimeFiles, pathEntryPlan, pnpmEnvironment, prefixLayout, pruneVersions, removePathEntry, rollbackBundled, setupEnvironment, bundledNpmCommand, ensureNpmShim, upgradeBundled, userNpmrc, writeNpmrcAuth,
+	describePathReceipt, readPathReceipt, scheduleWindowsRemoval, writePathReceipt }
 	from "../scripts/bundled-install.mjs";
 
 // Real directories, modes, symlinks and uids need a POSIX host.
@@ -767,6 +768,109 @@ test("pathEntryPlan on Windows plans one HKCU Path entry applied through an inje
 	removePathEntry(plan, { registry: { add: () => {}, remove: (entry: string) => registry.push(`-${entry}`) } });
 	assert.deepEqual(registry, ["+C:\\L\\gentle-shell\\bin", "-C:\\L\\gentle-shell\\bin"]);
 	assert.throws(() => applyPathEntry(plan), /registry adapter/);
+});
+
+// T6 (S7): uninstall reverts exactly what was applied, and nothing when nothing was.
+test("removePathEntry leaves the PATH alone for a receipt that applied nothing, and applyPathEntry applies nothing when the user Path already held the entry", () => {
+	const layout = prefixLayout({ platform: "win32", env: { LOCALAPPDATA: "C:\\L", USERPROFILE: "C:\\U" }, home: "C:\\U" });
+	const plan = pathEntryPlan(layout, { platform: "win32", env: { Path: "C:\\Windows" }, home: "C:\\U" });
+	const calls: string[] = [];
+	const registry = (added: string | undefined) => ({ add: (entry: string) => { calls.push(`+${entry}`); return added; }, remove: (entry: string) => { calls.push(`-${entry}`); } });
+	assert.deepEqual(applyPathEntry(plan, { registry: registry("present") }), { ...plan, applied: false });
+	assert.deepEqual(applyPathEntry(plan, { registry: registry("added") }), { ...plan, applied: true });
+	removePathEntry({ ...plan, applied: false }, { registry: registry(undefined) });
+	assert.deepEqual(calls, ["+C:\\L\\gentle-shell\\bin", "+C:\\L\\gentle-shell\\bin"]);
+});
+
+posixTest("removePathEntry keeps a profile line and a link that a receipt says were already there", () => {
+	const { home: user, layout } = claimed();
+	ensureLauncher(layout);
+	const zshrc = join(user, ".zshrc");
+	const plan = pathEntryPlan(layout, { platform: "darwin", env: { PATH: "/usr/bin", SHELL: "/bin/zsh" }, home: user });
+	writeFileSync(zshrc, `${plan.line}\n`);
+	const receipt = applyPathEntry({ ...plan, create: false });
+	assert.equal(receipt.applied, false);
+	removePathEntry(receipt);
+	assert.equal(readFileSync(zshrc, "utf8"), `${plan.line}\n`);
+	const link = join(user, ".local", "bin", "gentle-shell");
+	mkdirSync(dirname(link), { recursive: true });
+	symlinkSync(layout.launcher, link);
+	removePathEntry({ kind: "symlink", path: link, target: layout.launcher, applied: false });
+	assert.equal(readlinkSync(link), layout.launcher);
+});
+
+posixTest("writePathReceipt keeps only an applied receipt in the prefix, private and replaced whole, and readPathReceipt accepts only this install's entry", () => {
+	const { home: user, layout } = claimed();
+	const line = `export PATH="${layout.bin}:$PATH" # gentle-shell bundled install`;
+	const profile = { kind: "profile", path: join(user, ".zshrc"), line, create: true };
+	assert.equal(layout.pathReceipt, join(layout.root, "path-entry.json"));
+	assert.deepEqual(readPathReceipt(layout), { status: "none" });
+	assert.equal(writePathReceipt(layout, { ...profile, applied: false }), false);
+	assert.equal(existsSync(layout.pathReceipt), false);
+	assert.equal(writePathReceipt(layout, { ...profile, applied: true, separator: false }), true);
+	assert.equal(lstatSync(layout.pathReceipt).mode & 0o777, 0o600);
+	assert.deepEqual(JSON.parse(readFileSync(layout.pathReceipt, "utf8")), { schema: 1, ...profile, separator: false });
+	assert.deepEqual(readPathReceipt(layout), { status: "recorded", receipt: { ...profile, separator: false, applied: true } });
+	assert.match(describePathReceipt({ ...profile, separator: false, applied: true }), new RegExp(`${line.replace(/[$"]/g, "\\$&")}.*\\.zshrc`));
+	const link = { kind: "symlink", path: join(user, ".local", "bin", "gentle-shell"), target: layout.launcher };
+	writePathReceipt(layout, { ...link, applied: true });
+	assert.deepEqual(readPathReceipt(layout), { status: "recorded", receipt: { ...link, applied: true } });
+	assert.deepEqual(readdirSync(layout.root).filter((name) => name.includes("path-entry")), ["path-entry.json"]);
+	// Anything this prefix did not write is never acted on.
+	const foreign = [
+		{ ...link, target: "/usr/local/bin/gentle-shell" },
+		{ ...profile, line: "export PATH=\"/opt/x:$PATH\" # gentle-shell bundled install", separator: false },
+		{ ...profile, path: "relative/.zshrc", separator: false },
+		{ kind: "registry", key: "HKCU\\Environment", name: "Path", entry: "C:\\Windows" },
+		{ kind: "none" },
+	];
+	for (const receipt of foreign) {
+		writeFileSync(layout.pathReceipt, JSON.stringify({ schema: 1, ...receipt }));
+		assert.equal(readPathReceipt(layout).status, "invalid", JSON.stringify(receipt));
+	}
+	for (const text of ["{", JSON.stringify({ schema: 2, ...link }), "[]"]) {
+		writeFileSync(layout.pathReceipt, text);
+		assert.equal(readPathReceipt(layout).status, "invalid", text);
+	}
+	rmSync(layout.pathReceipt);
+	symlinkSync(join(user, ".zshrc"), layout.pathReceipt);
+	assert.equal(readPathReceipt(layout).status, "invalid");
+});
+
+test("readPathReceipt accepts the Windows user Path entry of this prefix only", (t) => {
+	// Path arithmetic only: the receipt file itself lives in a real temporary folder.
+	const folder = home();
+	const layout = { ...prefixLayout({ platform: "win32", env: { LOCALAPPDATA: "C:\\L", USERPROFILE: "C:\\U" }, home: "C:\\U" }), pathReceipt: join(folder, "path-entry.json") };
+	const entry = { kind: "registry", key: "HKCU\\Environment", name: "Path", entry: layout.bin };
+	writeFileSync(layout.pathReceipt, JSON.stringify({ schema: 1, ...entry }));
+	assert.deepEqual(readPathReceipt(layout), { status: "recorded", receipt: { ...entry, applied: true } });
+	assert.match(describePathReceipt({ ...entry, applied: true }), /C:\\L\\gentle-shell\\bin in your user Path/);
+	writeFileSync(layout.pathReceipt, JSON.stringify({ schema: 1, ...entry, key: "HKLM\\Environment" }));
+	assert.equal(readPathReceipt(layout).status, "invalid");
+	t.diagnostic("simulated Windows layout, real receipt file");
+});
+
+// T6: the running node.exe and .cmd launcher cannot delete themselves; a detached
+// Windows PowerShell removes them once this process exits, with every path as data.
+test("scheduleWindowsRemoval starts one detached Windows PowerShell that waits for the process, with the paths only in its environment", () => {
+	const calls: { command: string; args: string[]; options: Record<string, any> }[] = [];
+	let unref = false;
+	const spawn = (command: string, args: string[], options: Record<string, any>) => { calls.push({ command, args, options }); return { unref: () => { unref = true; } }; };
+	const files = ["C:\\L\\gentle shell's $x;\\runtime\\node-24.21.0\\node.exe", "C:\\L\\gentle shell's $x;\\bin\\gentle-shell.cmd"];
+	const directories = ["C:\\L\\gentle shell's $x;\\runtime\\node-24.21.0", "C:\\L\\gentle shell's $x;"];
+	scheduleWindowsRemoval({ pid: 4242, files, directories, env: { SystemRoot: "C:\\Windows", Path: "C:\\Windows" }, spawn });
+	assert.equal(calls.length, 1);
+	const [{ command, args, options }] = calls;
+	assert.equal(command, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+	assert.deepEqual(args.slice(0, 4), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]);
+	for (const path of [...files, ...directories]) assert.equal(args.join(" ").includes(path), false, path);
+	assert.deepEqual([options.detached, options.stdio, options.windowsHide, options.cwd, unref], [true, "ignore", true, "C:\\Windows", true]);
+	assert.deepEqual([options.env.GENTLE_SHELL_REMOVE_AFTER_PID, options.env.GENTLE_SHELL_REMOVE_FILES, options.env.GENTLE_SHELL_REMOVE_DIRECTORIES, options.env.Path],
+		["4242", files.join("\n"), directories.join("\n"), "C:\\Windows"]);
+	for (const bad of [{ pid: 0 }, { files: ["relative\\node.exe"] }, { directories: ["\\\\server\\share"] }, { env: {} }]) {
+		assert.throws(() => scheduleWindowsRemoval({ pid: 4242, files, directories, env: { SystemRoot: "C:\\Windows" }, spawn, ...bad }), /deferred removal/, JSON.stringify(bad));
+	}
+	assert.equal(calls.length, 1);
 });
 
 // Rule 6 (T1c): Pi installs its packages with npm, so our npm comes from the same verified Node archive.

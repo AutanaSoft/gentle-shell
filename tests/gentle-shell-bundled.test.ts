@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, posix, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -446,4 +446,32 @@ test("gentle-shell upgrade in a bundled install refuses the main channel and rol
 	assert.equal(none.status, 1);
 	assert.match(none.stderr, /No previous Gentle Shell version/);
 	assert.equal(readlinkSync(join(prefix.root, "current")), `versions/${FIXTURE_ID}`);
+});
+
+// T6 (S6, S7): the bundled launcher's self-uninstall, end to end through the real bin.
+test("gentle-shell self-uninstall in a bundled install removes the recorded PATH line and the prefix's own folders, and keeps the Gentle Shell home", { skip: posixHost }, (t) => {
+	const prefix = bundledPrefix(t);
+	const zshrc = join(prefix.home, ".zshrc");
+	const line = `export PATH="${join(prefix.root, "bin")}:$PATH" # gentle-shell bundled install`;
+	writeFileSync(zshrc, `alias ll='ls -l'\n${line}\n`);
+	writeFileSync(join(prefix.root, "path-entry.json"), JSON.stringify({ schema: 1, kind: "profile", path: zshrc, line, create: false, separator: false }));
+	mkdirSync(join(prefix.root, "bin"));
+	writeFileSync(join(prefix.root, "bin", "gentle-shell"), "#!/bin/sh\n");
+	const agent = join(prefix.home, ".gentle-shell", "agent");
+	mkdirSync(agent, { recursive: true });
+	writeFileSync(join(agent, "auth.json"), "{}");
+	const dry = prefix.run(["self-uninstall", "--dry-run"]);
+	assert.equal(dry.status, 0, dry.stderr);
+	assert.match(dry.stdout, /bundled install in /);
+	assert.ok(dry.stdout.includes(`the line ${line} in ${zshrc}`));
+	assert.equal(readFileSync(zshrc, "utf8"), `alias ll='ls -l'\n${line}\n`);
+	const result = prefix.run(["self-uninstall", "--yes"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stdout, /Gentle Shell was removed\./);
+	assert.equal(readFileSync(zshrc, "utf8"), "alias ll='ls -l'\n");
+	assert.deepEqual(readdirSync(prefix.root), ["agent"]);
+	assert.equal(readFileSync(join(agent, "auth.json"), "utf8"), "{}");
+	// The fixture links this checkout's runtime/ and scripts/ into the version: links go, never their targets.
+	assert.equal(existsSync(join(repository, "scripts", "bundled-install.mjs")), true);
+	assert.equal(existsSync(join(repository, "runtime", "gentle-shell-uninstall.mjs")), true);
 });

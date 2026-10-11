@@ -1416,6 +1416,36 @@ async function ensureBundledNpmCommand(bundled, home, homeHadContentBeforeBootst
 	}
 }
 
+// `gentle-shell self-uninstall` in a bundled install (S6, S7): the prefix's own
+// folders and exactly the PATH entry its receipt records; on Windows the running
+// node.exe and launcher are removed by a detached process after this one exits.
+async function handleBundledSelfUninstall(bundled, commandArgs) {
+	const { askLine, runBundledSelfUninstall } = await import("../runtime/gentle-shell-uninstall.mjs");
+	const { describePathReceipt, prefixLayout, readPathReceipt, removePathEntry, scheduleWindowsRemoval } = await import("../scripts/bundled-install.mjs");
+	const windows = process.platform === "win32";
+	const layout = prefixLayout({ platform: process.platform, env: process.env, home: homedir(), root: bundled.root });
+	const receipt = readPathReceipt(layout);
+	let pathEntry = receipt;
+	if (receipt.status === "recorded") {
+		const registry = windows ? (await import("../scripts/bundled-wizard.mjs")).windowsPathRegistry(process.env) : undefined;
+		pathEntry = { status: "recorded", description: describePathReceipt(receipt.receipt), remove: () => removePathEntry(receipt.receipt, { registry }) };
+	}
+	return runBundledSelfUninstall({
+		args: commandArgs,
+		env: process.env,
+		homedir: homedir(),
+		platform: process.platform,
+		interactive: process.stdin.isTTY === true,
+		root: bundled.root,
+		pathEntry,
+		process: { pid: process.pid, execPath: process.execPath },
+		...(windows ? { deferRemoval: (request) => scheduleWindowsRemoval({ ...request, env: process.env }) } : {}),
+		ask: (question) => askLine(question, { input: process.stdin, output: process.stdout }),
+		out: (line) => process.stdout.write(`${line}\n`),
+		err: (line) => process.stderr.write(`${line}\n`),
+	});
+}
+
 // `gentle-shell self-uninstall`: like upgrade, runs before any Pi runtime check,
 // so it also works when pi is missing.
 async function handleSelfUninstallCommand(commandArgs) {
@@ -1457,7 +1487,8 @@ async function main() {
 		return;
 	}
 	if (args.command === "self-uninstall") {
-		await handleSelfUninstallCommand(args.commandArgs);
+		if (bundled) process.exitCode = await handleBundledSelfUninstall(bundled, args.commandArgs);
+		else await handleSelfUninstallCommand(args.commandArgs);
 		return;
 	}
 

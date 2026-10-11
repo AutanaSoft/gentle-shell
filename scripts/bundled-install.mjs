@@ -80,6 +80,8 @@ export function prefixLayout({ platform, env = {}, home, root }) {
 		pnpmHome, store: path.join(pnpmHome, "store"), cache: path.join(pnpmHome, "cache"), state: path.join(pnpmHome, "state"),
 		config: path.join(pnpmHome, "config"), npmrc: path.join(pnpmHome, "config", "npmrc"), tmp: path.join(base, "tmp"),
 		versions: path.join(base, "versions"), history: path.join(base, "versions.history"),
+		// The applied PATH entry (writePathReceipt), which self-uninstall reverts exactly.
+		pathReceipt: path.join(base, "path-entry.json"),
 		current: path.join(base, "current"), currentKind: windows ? "pointer" : "symlink",
 		bin, launcher: path.join(bin, windows ? "gentle-shell.cmd" : "gentle-shell"),
 	});
@@ -1052,6 +1054,10 @@ function profileState(path, home) {
 	if (!realFolder(folder)) return "symlink";
 	return writable(folder) ? "absent" : "not-writable";
 }
+/** The marked line that puts `bin` first on PATH, for fish and for sh-like shells. */
+function profileLines(bin) {
+	return { fish: `set -gx PATH '${bin}' $PATH ${PROFILE_MARK}`, sh: `export PATH="${bin}:$PATH" ${PROFILE_MARK}` };
+}
 /** Whether `path`, followed through links, already holds `line`. */
 function holdsLine(path, line) {
 	try { return readFileSync(path, "utf8").split("\n").includes(line); }
@@ -1087,7 +1093,7 @@ export function pathEntryPlan(layout, { platform = layout.platform, env = {}, ho
 	const profile = profileFor(platform, env, home);
 	const fish = profile.endsWith(".fish");
 	if (fish ? /['\\\n]/.test(layout.bin) : /["\\$`\n]/.test(layout.bin)) throw new Error(`Unsafe bundled bin path for a shell profile: ${layout.bin}`);
-	const line = fish ? `set -gx PATH '${layout.bin}' $PATH ${PROFILE_MARK}` : `export PATH="${layout.bin}:$PATH" ${PROFILE_MARK}`;
+	const line = profileLines(layout.bin)[fish ? "fish" : "sh"];
 	if (holdsLine(profile, line)) return { kind: "none" };
 	const state = profileState(profile, home);
 	if (state === "file" || state === "absent") return { kind: "profile", path: profile, line, create: state === "absent" };
@@ -1099,7 +1105,8 @@ export function pathEntryPlan(layout, { platform = layout.platform, env = {}, ho
  * exactly. Nothing existing is replaced and nothing is written for "none" or
  * "manual". A profile that changed since the plan (now a link, or created
  * meanwhile) throws. Windows needs an injected `registry` adapter
- * ({ add(entry), remove(entry) }).
+ * ({ add(entry), remove(entry) }); an add that reports "present" (the user Path
+ * already held the entry) applied nothing.
  */
 export function applyPathEntry(plan, { registry } = {}) {
 	if (plan.kind === "symlink") symlinkSync(plan.target, plan.path);
@@ -1126,7 +1133,7 @@ export function applyPathEntry(plan, { registry } = {}) {
 		return { ...plan, applied: true, separator };
 	} else if (plan.kind === "registry") {
 		if (typeof registry?.add !== "function") throw new Error("The Windows PATH change needs a registry adapter");
-		registry.add(plan.entry);
+		if (registry.add(plan.entry) === "present") return { ...plan, applied: false };
 	} else return { ...plan, applied: false };
 	return { ...plan, applied: true };
 }
@@ -1134,9 +1141,11 @@ export function applyPathEntry(plan, { registry } = {}) {
  * (with the newline added before it, so the file reads as before), or only our
  * registry entry is removed. A profile applyPathEntry created is deleted when
  * nothing else is left in it. A profile that is no longer a regular file is
- * left alone.
+ * left alone, and so is everything a receipt with `applied: false` names: it
+ * was there before.
  */
 export function removePathEntry(plan, { registry } = {}) {
+	if (plan.applied === false) return;
 	if (plan.kind === "symlink") {
 		if (stat(plan.path)?.isSymbolicLink() && readlinkSync(plan.path) === plan.target) unlinkSync(plan.path);
 	} else if (plan.kind === "profile") {
@@ -1161,4 +1170,93 @@ export function removePathEntry(plan, { registry } = {}) {
 		if (typeof registry?.remove !== "function") throw new Error("The Windows PATH change needs a registry adapter");
 		registry.remove(plan.entry);
 	}
+}
+
+// The PATH receipt (S7): the one PATH change applyPathEntry made, kept in the
+// prefix so `gentle-shell self-uninstall` reverts exactly that change.
+const RECEIPT_SCHEMA = 1;
+const RECEIPT_FIELDS = Object.freeze({ symlink: ["path", "target"], profile: ["path", "line", "create", "separator"], registry: ["key", "name", "entry"] });
+/** Writes an applied receipt to layout.pathReceipt (mode 0600, replaced with
+ * one rename) and returns true; a receipt that applied nothing writes nothing
+ * and returns false, so an earlier receipt stays.
+ */
+export function writePathReceipt(layout, receipt) {
+	if (receipt?.applied !== true) return false;
+	const fields = RECEIPT_FIELDS[receipt.kind];
+	if (!fields) throw new Error(`Unknown PATH entry kind: ${receipt.kind}`);
+	const text = `${JSON.stringify({ schema: RECEIPT_SCHEMA, kind: receipt.kind, ...Object.fromEntries(fields.map((field) => [field, receipt[field]])) }, null, "\t")}\n`;
+	replaceAtomically(layout.pathReceipt, (temp) => {
+		writeFileSync(temp, text, { flag: "wx", mode: 0o600 });
+		if (layout.platform !== "win32") chmodSync(temp, 0o600);
+	});
+	return true;
+}
+/** Whether a receipt names only what this prefix writes: our launcher linked as
+ * gentle-shell, our exact marked line for bin/, or bin/ in the HKCU user Path.
+ */
+function ownPathEntry(layout, receipt) {
+	const absolute = (path) => typeof path === "string" && posix.isAbsolute(path);
+	if (layout.platform === "win32") return receipt.kind === "registry" && receipt.key === "HKCU\\Environment" && receipt.name === "Path" && receipt.entry === layout.bin;
+	if (receipt.kind === "symlink") return absolute(receipt.path) && posix.basename(receipt.path) === "gentle-shell" && receipt.target === layout.launcher;
+	return receipt.kind === "profile" && absolute(receipt.path) && Object.values(profileLines(layout.bin)).includes(receipt.line)
+		&& typeof receipt.create === "boolean" && typeof receipt.separator === "boolean";
+}
+/** The persisted receipt: { status: "recorded", receipt } (applied: true, as
+ * removePathEntry takes it), { status: "none" } without one, or
+ * { status: "invalid", reason } for anything that is not a regular file this
+ * prefix wrote (never acted on).
+ */
+export function readPathReceipt(layout) {
+	const info = stat(layout.pathReceipt);
+	if (!info) return { status: "none" };
+	const invalid = (reason) => ({ status: "invalid", reason: `${layout.pathReceipt} ${reason}` });
+	if (!info.isFile()) return invalid("is not a regular file");
+	if (info.size > 64 * 1024) return invalid("is too large");
+	let data;
+	try { data = JSON.parse(readFileSync(layout.pathReceipt, "utf8")); }
+	catch { return invalid("is not valid JSON"); }
+	if (data === null || typeof data !== "object" || Array.isArray(data) || data.schema !== RECEIPT_SCHEMA || !Object.hasOwn(RECEIPT_FIELDS, data.kind)) {
+		return invalid("has an unknown format");
+	}
+	const receipt = { kind: data.kind, ...Object.fromEntries(RECEIPT_FIELDS[data.kind].map((field) => [field, data[field]])), applied: true };
+	return ownPathEntry(layout, receipt) ? { status: "recorded", receipt } : invalid("does not describe this install's PATH entry");
+}
+/** What a recorded receipt changed, for the uninstall plan. */
+export function describePathReceipt(receipt) {
+	if (receipt.kind === "symlink") return `the link ${receipt.path} to ${receipt.target}`;
+	if (receipt.kind === "profile") return `the line ${receipt.line} in ${receipt.path}${receipt.create ? " (and that file, when nothing else is left in it)" : ""}`;
+	return `${receipt.entry} in your user Path (${receipt.key})`;
+}
+
+// Windows: once process GENTLE_SHELL_REMOVE_AFTER_PID exits, deletes each file
+// in GENTLE_SHELL_REMOVE_FILES (retrying while it is still in use), then each
+// folder in GENTLE_SHELL_REMOVE_DIRECTORIES only when it is empty (never
+// recursively, so no link is followed). Every path is data, never script text.
+const deferredRemovalScript = `$ErrorActionPreference = 'SilentlyContinue'
+$waitFor = [int]$env:GENTLE_SHELL_REMOVE_AFTER_PID
+try { Wait-Process -Id $waitFor -Timeout 600 -ErrorAction Stop } catch {}
+Start-Sleep -Seconds 2
+foreach ($file in @($env:GENTLE_SHELL_REMOVE_FILES -split "\`n" | Where-Object { $_ -ne '' })) {
+  for ($try = 0; $try -lt 60; $try++) {
+    try { if ([IO.File]::Exists($file)) { [IO.File]::Delete($file) }; break } catch { Start-Sleep -Milliseconds 500 }
+  }
+}
+foreach ($folder in @($env:GENTLE_SHELL_REMOVE_DIRECTORIES -split "\`n" | Where-Object { $_ -ne '' })) {
+  try { [IO.Directory]::Delete($folder, $false) } catch {}
+}
+exit 0`;
+/** Windows self-uninstall: the running node.exe and the .cmd launcher cannot
+ * delete themselves, so one detached, hidden Windows PowerShell removes `files`,
+ * then the empty `directories` (deepest first), after process `pid` exits.
+ * Absolute local paths only; `spawn` is injectable for tests.
+ */
+export function scheduleWindowsRemoval({ pid, files, directories, env = {}, spawn: start = spawn }) {
+	const systemRoot = envValue(env, "SYSTEMROOT", "win32");
+	const safe = (path) => typeof path === "string" && win32.isAbsolute(path) && !path.startsWith("\\\\") && !/[\r\n]/.test(path);
+	if (!Number.isInteger(pid) || pid <= 0 || !safe(systemRoot) || ![...files, ...directories].every(safe)) throw new Error("Unsafe deferred removal request");
+	const child = start(win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", deferredRemovalScript], {
+		cwd: systemRoot, detached: true, stdio: "ignore", windowsHide: true,
+		env: { ...env, GENTLE_SHELL_REMOVE_AFTER_PID: String(pid), GENTLE_SHELL_REMOVE_FILES: files.join("\n"), GENTLE_SHELL_REMOVE_DIRECTORIES: directories.join("\n") },
+	});
+	child.unref();
 }

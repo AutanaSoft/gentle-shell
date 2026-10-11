@@ -505,6 +505,10 @@ when empty. Like `upgrade`, it runs before any Pi runtime check.
   tools the web installer added; the plan lists the latter with how to remove them.
 - An installation neither pnpm nor npm owns (an `npm link`, for example) is
   refused before anything is removed.
+- From the bundled launcher it removes the bundled install instead: the PATH
+  entry its receipt records, then the prefix's own folders; your Gentle Shell
+  home stays unless you accept or pass `--include-shared`. Details:
+  [Bundled install](bundled-install.md#self-uninstall).
 
 `gentle-shell uninstall <source>` stays Pi's own alias for `remove`. Details,
 refusals and exit codes: [Removing Gentle Shell](gentle-shell-uninstall.md).
