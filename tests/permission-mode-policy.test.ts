@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtempSync, readFileSync, statSync, writeFileSync, rmSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerYoloSessionPolicy, discoverYoloUiAdapter } from "../lib/yolo-session-policy.ts";
@@ -28,6 +30,33 @@ function host(home: string, env: NodeJS.ProcessEnv = {}, onChange?: () => void) 
  const controller = registerYoloSessionPolicy(pi, { ...env, GENTLE_PI_CONFIG_HOME: home }, { onChange });
  return { controller, context, pi, commands, notices, statuses, next: () => { sessionId = "next"; } };
 }
+
+test("superseded YOLO enables stay silent while genuine activation failure warns", async t => {
+ const options = fixture(t), h = host(options.gentlePiConfigHome);
+ const original = fsPromises.realpath;
+ const captures: Array<{ release(): void }> = [];
+ let captured!: () => void;
+ const firstCaptured = new Promise<void>(resolve => { captured = resolve; });
+ t.mock.method(fsPromises, "realpath", async (path: string) => {
+  await new Promise<void>(resolve => { captures.push({ release: resolve }); captured(); });
+  return original(path);
+ });
+ syncBuiltinESMExports();
+ t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+ const older = h.controller.humanAction("on", h.context);
+ await firstCaptured;
+ const newer = h.controller.humanAction("on", h.context);
+ assert.equal(captures.length, 2);
+ captures[1].release(); await newer;
+ captures[0].release(); await older;
+ assert.deepEqual(h.notices, ["🚀 YOLO ON 🔥 — destructive confirmations remain"]);
+ t.mock.restoreAll(); syncBuiltinESMExports();
+ assert.equal(await h.controller.mode(h.context), "yolo");
+ Object.assign(h.context, { hasUI: false, mode: "json" });
+ await h.controller.humanAction("on", h.context);
+ assert.deepEqual(h.notices, ["🚀 YOLO ON 🔥 — destructive confirmations remain",
+  "YOLO OFF — activation requires an interactive primary TUI session and an identifiable workspace."]);
+});
 
 test("strict global policy defaults Normal; round trips all modes atomically and privately", t => {
  const options = fixture(t);

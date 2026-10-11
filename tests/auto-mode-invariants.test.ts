@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
@@ -105,6 +107,41 @@ function assertUsage(receipt: any, late: boolean) {
  assert.equal(Object.hasOwn(receipt.data, "reason"), false, "no model rationale is persisted");
  assert.equal(Object.hasOwn(receipt.data, "input"), false, "no action input is persisted");
 }
+
+test("public shell hook blocks a stale mode lookup after Auto is reselected", async t => {
+ const f = fixture(t); await f.enable(); await f.input("Inspect only. Do not run commands.");
+ const original = fsPromises.realpath;
+ let lookups = 0, release!: () => void, captured!: () => void;
+ const blockedLookup = new Promise<void>(resolve => { captured = resolve; });
+ t.mock.method(fsPromises, "realpath", async (path: string) => {
+  if (++lookups === 2) {
+   captured();
+   await new Promise<void>(resolve => { release = resolve; });
+  }
+  return original(path);
+ });
+ syncBuiltinESMExports();
+ t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+ const pending = f.call("bash", { command: "pwd" });
+ await deadline(blockedLookup, "second tool admission identity lookup");
+ await f.enable();
+ release();
+ const result = await pending;
+ let executions = 0; if (!result?.block) executions++;
+ assert.equal(executions, 0, "invalidated mode lookup must not bypass Auto");
+ assert.equal(result.block, true); assert.match(result.reason, /changed|expired/i);
+ assert.equal(f.providerCalls.length, 0);
+ assert.match(f.statuses.filter(([key]) => key === "gentle:mode").at(-1)[1], /AUTO/);
+});
+
+test("stable Normal and YOLO shell admission retains the non-classifier path", async t => {
+ const f = fixture(t);
+ for (const mode of ["normal", "yolo"]) {
+  await f.commands.get("gentle:mode").handler(mode, f.ctx);
+  assert.equal(await f.call("bash", { command: "pwd" }), undefined);
+ }
+ assert.equal(f.providerCalls.length, 0);
+});
 
 test("public hook read-only request classifies authorized reads and denies mutation before execution", async t => {
  const f = fixture(t); await f.enable(); await f.input("Investigate only. Do not edit any files.");

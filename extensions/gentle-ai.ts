@@ -10144,7 +10144,13 @@ function createGentleAiExtensionForTesting(
 			const childDenied = blockChildDestructiveCommand(command);
 			if (childDenied) return childDenied;
 		}
-		const autoGate = primaryToolCall && await yolo.mode(ctx) === "auto" ? gate : undefined;
+		const modeEpoch = yolo.epoch();
+		const permissionMode = primaryToolCall ? await yolo.mode(ctx) : "normal";
+		// A superseded lookup returns Normal for display, not permission to skip Auto.
+		if (primaryToolCall && modeEpoch !== yolo.epoch()) {
+			return { block: true, reason: "Permission mode changed during tool admission. This action was not run; retry under the current mode." };
+		}
+		const autoGate = permissionMode === "auto" ? gate : undefined;
 		return await confirmCommand(command, ctx, pi.events, herdrLifecycle, yoloActive, autoGate);
 	});
 

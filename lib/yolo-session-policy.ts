@@ -229,8 +229,12 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 	const humanAction = async (action: HumanAction, ctx: ExtensionContext, current = () => true): Promise<boolean> => {
 		if (!current()) return false;
 		const enable = action === HUMAN_ACTION.on || (action === HUMAN_ACTION.toggle && liveMode !== "yolo");
-		const result = await setMode(enable ? "yolo" : "normal", ctx, current);
+		const pending = setMode(enable ? "yolo" : "normal", ctx, current);
+		const epoch = generation; // setMode revokes synchronously, then publishes once on success.
+		const result = await pending;
 		if (!current()) return false;
+		// Supersession is not activation failure: the winning action owns notification.
+		if (generation !== epoch + (result ? 1 : 0)) return true;
 		notify(ctx, result ? enable ? YOLO_STATUS_TEXT : "YOLO OFF" :
 			"YOLO OFF — activation requires an interactive primary TUI session and an identifiable workspace.", !result);
 		return true;
