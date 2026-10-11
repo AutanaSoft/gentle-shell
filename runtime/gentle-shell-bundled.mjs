@@ -104,13 +104,18 @@ export function bundledPi(install                , input                        
 // only no Pi override, subagents on the same node and Pi (the subagent runner
 // splits GENTLE_PI_AGENTS_PI on whitespace, so a spaced path is left to its
 // default, the running node and cli.js), and no Pi update check, since Pi only
-// updates with Gentle Shell (S5).
-export function bundledChildEnv(base     , input                               )      {
-	const env      = { ...base, PI_SKIP_VERSION_CHECK: "1" };
+// updates with Gentle Shell (S5). S9: the prefix (GENTLE_SHELL_PREFIX, which
+// gentle-pi's own gentle-ai runs turn into Gentle AI's variables, never set
+// here because the agent's shell would pass them to a gentle-ai the user runs),
+// gentle-pi's config folder inside it, and the published Engram as
+// gentle-engram's ENGRAM_BIN unless the user chose one.
+export function bundledChildEnv(base     , input                                                                                  )      {
+	const env      = { ...base, PI_SKIP_VERSION_CHECK: "1", GENTLE_SHELL_PREFIX: input.prefix, GENTLE_PI_CONFIG_HOME: input.piConfig };
 	delete env.GENTLE_SHELL_PI;
 	delete env[BUNDLED_VERIFY_ENV];
 	if (/\s/.test(`${input.node}${input.cli}`)) delete env.GENTLE_PI_AGENTS_PI;
 	else env.GENTLE_PI_AGENTS_PI = `${input.node} ${input.cli}`;
+	if (input.engram !== undefined && !base.ENGRAM_BIN?.trim()) env.ENGRAM_BIN = input.engram;
 	return env;
 }
 

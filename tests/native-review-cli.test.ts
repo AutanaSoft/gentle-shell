@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -14,10 +14,12 @@ import {
 	NativeReviewCliV216,
 	NativeReviewIntegrationError,
 	createNodeExecFileAdapter,
+	gentleAiProcessEnvironment,
 	isNativeReviewUnachievableVerbRefused,
 	type ExecFileAdapter,
 	type NativeTargetStatusRequest,
 } from "../lib/native-review-cli.ts";
+import { setGentleAiIsolationPackageRootForTesting } from "../lib/gentle-ai-binary.ts";
 
 const fixture = (name: string): Record<string, unknown> => JSON.parse(
 	readFileSync(join(process.cwd(), "tests", "fixtures", "devbinary", name), "utf8"),
@@ -1044,4 +1046,29 @@ test("acknowledge-approved keeps its fail-closed stderr and typed refusal discip
 		() => client(queuedAdapter([{ stdout: "", stderr: "Error: approved acknowledgement names no live compact authority\n", exitCode: 1 }]).adapter).acknowledgeApproved({ argumentTokens: ACKNOWLEDGEMENT_TOKENS, cwd: "/repo", binding: ACKNOWLEDGED_BINDING }),
 		(error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.EMPTY_OUTPUT,
 	);
+});
+
+// S9: a gentle-pi inside a bundled prefix's versions/ (the testing overlay
+// stands in for this package's location) and the launcher's GENTLE_SHELL_PREFIX.
+function bundledIsolation(t: { after: (fn: () => void) => void }): { prefix: string; env: NodeJS.ProcessEnv } {
+	const prefix = realpathSync(mkdtempSync(join(tmpdir(), "gentle-ai-isolation-site-")));
+	const packageRoot = join(prefix, "versions", "4.1.0-1.1.0", "node_modules", "gentle-pi");
+	mkdirSync(packageRoot, { recursive: true });
+	setGentleAiIsolationPackageRootForTesting(packageRoot);
+	t.after(() => {
+		setGentleAiIsolationPackageRootForTesting(undefined);
+		rmSync(prefix, { recursive: true, force: true });
+	});
+	return { prefix, env: { PATH: "/usr/bin", GENTLE_SHELL_PREFIX: prefix } };
+}
+
+test("the central gentle-ai environment carries Gentle AI's isolation variables only in a bundled install", (t) => {
+	const { prefix, env } = bundledIsolation(t);
+	const bundled = gentleAiProcessEnvironment(env);
+	assert.equal(bundled.GENTLE_AI_HOME, join(prefix, "gentle-ai"));
+	assert.equal(bundled.GENTLE_AI_PI_CONFIG_DIR, join(prefix, "gentle-pi"));
+	assert.equal(bundled.GENTLE_AI_NO_SELF_UPDATE, "1");
+	assert.equal(bundled.GENTLE_PI_REVIEW_RELAY_CONTRACT, "gentle-pi.review-relay/v1");
+	const ordinary = gentleAiProcessEnvironment({ PATH: "/usr/bin" });
+	assert.deepEqual(ordinary, { PATH: "/usr/bin", GENTLE_PI_REVIEW_RELAY_CONTRACT: "gentle-pi.review-relay/v1" });
 });

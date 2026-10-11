@@ -75,7 +75,7 @@ import {
 	RESUME_HANDOFF_ENV,
 	RESUME_HANDOFF_FILE,
 } from "../runtime/gentle-shell-resume-hint.mjs";
-import { GENTLE_AI_VERSION, gentleAiBinaryPath, PackageLocalGentleAiBinaryMissingError } from "../runtime/gentle-ai-binary.mjs";
+import { bundledGentleAiPaths, GENTLE_AI_VERSION, gentleAiBinaryPath, gentleAiIsolationEnv, PackageLocalGentleAiBinaryMissingError } from "../runtime/gentle-ai-binary.mjs";
 import { DEFAULT_THEME_NAME, installIsolatedTuiModeSetting } from "../scripts/install-tui-mode-setting.mjs";
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -173,6 +173,23 @@ const bundledFs = {
 // variables), and the folders setup puts ahead of the user's PATH.
 let bundledEnv;
 let bundledSetupDirs;
+// The bundled install and its Pi cli, for bundledProcessEnv and setup's Engram.
+let bundledInstall;
+let bundledCli;
+
+// The bundled children's environment (bundledChildEnv), with the pinned Engram
+// only once it is published: computed again right before Pi starts, so an
+// Engram the automatic setup just published is used in the same launch.
+function bundledProcessEnv() {
+	const isolation = bundledGentleAiPaths(bundledInstall.root, process.platform);
+	let engram;
+	try {
+		if (lstatSync(isolation.engram).isFile()) engram = isolation.engram;
+	} catch {
+		engram = undefined;
+	}
+	return bundledChildEnv(process.env, { node: process.execPath, cli: bundledCli, prefix: bundledInstall.root, piConfig: isolation.piConfig, engram });
+}
 
 function ownPackageVersion() {
 	const packageJson = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
@@ -597,9 +614,11 @@ function ensurePackageLocalGentleAi(binaryPath, pinnedVersion, stdio) {
 // gentle-ai's (or pi's own) preflight finds `pi` even when it is bundled or
 // given through GENTLE_SHELL_PI.
 function buildSetupEnv(home, runtime) {
-	// Bundled: our node, then the version's `pi`, ahead of the user's PATH.
+	// Bundled: our node, then the version's `pi`, ahead of the user's PATH, and
+	// Gentle AI's state, persona and Engram inside the prefix (S9).
 	if (bundledEnv) {
-		return bundledSetupEnv({ ...bundledEnv, PI_CODING_AGENT_DIR: home.dir, GENTLE_PI_AGENT_HOME: home.dir }, { dirs: bundledSetupDirs, platform: process.platform });
+		const env = bundledSetupEnv({ ...bundledEnv, PI_CODING_AGENT_DIR: home.dir, GENTLE_PI_AGENT_HOME: home.dir }, { dirs: bundledSetupDirs, platform: process.platform });
+		return gentleAiIsolationEnv(env, { packageRoot });
 	}
 	return {
 		...process.env,
@@ -618,6 +637,29 @@ function buildSetupEnv(home, runtime) {
 // docs/readme-reference.md's setup "Known limitation".
 function sharedPersonaPath() {
 	return join(homedir(), ".pi", "gentle-ai", "persona.json");
+}
+
+// The persona files a setup run may rewrite. Bundled (S9): the prefix's own,
+// which a Gentle AI with GENTLE_AI_PI_CONFIG_DIR (gentle-ai #5462) writes, and
+// still the user's, which a pinned Gentle AI without it writes; restoring an
+// unchanged file does nothing.
+function setupPersonaPaths() {
+	if (!bundledInstall) return [sharedPersonaPath()];
+	return [join(bundledGentleAiPaths(bundledInstall.root, process.platform).piConfig, "persona.json"), sharedPersonaPath()];
+}
+
+// Bundled setup (S9): the pinned Engram GENTLE_AI_ENGRAM_BIN names, published
+// once in runtime/ (verified, never brew or the user's PATH). A failure stops
+// setup rather than let Gentle AI acquire another Engram.
+async function ensureBundledEngram() {
+	const { ensureEngram, prefixLayout } = await import("../scripts/bundled-install.mjs");
+	const layout = prefixLayout({ platform: process.platform, env: process.env, home: homedir(), root: bundledInstall.root });
+	try {
+		await ensureEngram({ layout, platform: process.platform, arch: process.arch, env: process.env });
+		return { ok: true };
+	} catch (error) {
+		return { ok: false, exitCode: 1, message: `gentle-shell: could not install the pinned Engram in ${layout.engramDir} (${error.message})` };
+	}
 }
 
 // Records `path`'s current state before a child process that might rewrite
@@ -868,10 +910,14 @@ async function runSetupFlow(home, runtime, { dryRun, stdio, timeoutMs }) {
 
 	process.stderr.write(`gentle-shell: provisioning ${home.dir} with the gentle-ai companion packages\n`);
 
+	if (bundledInstall && !dryRun) {
+		const engram = await ensureBundledEngram();
+		if (!engram.ok) return engram;
+	}
+
 	const setupArgs = ["install", "--agent", "pi", "--scope", "global", ...(dryRun ? ["--dry-run"] : [])];
 	const env = buildSetupEnv(home, runtime);
-	const personaPath = sharedPersonaPath();
-	const personaSnapshot = safely("snapshot your Pi persona file", personaPath, undefined, () => snapshotFile(personaPath));
+	const personaSnapshots = setupPersonaPaths().map((path) => [path, safely("snapshot your Pi persona file", path, undefined, () => snapshotFile(path))]);
 	const statePath = sharedGentleAiStatePath();
 	const originalStateText = safely("read your Gentle AI state file", statePath, undefined, () => readParsableJsonText(statePath));
 	// Theme restore (never for --link — that home is the user's own
@@ -888,8 +934,10 @@ async function runSetupFlow(home, runtime, { dryRun, stdio, timeoutMs }) {
 	try {
 		installResult = await spawnAndWait(binaryPath, setupArgs, env, stdio, timeoutMs);
 	} finally {
-		if (personaSnapshot !== undefined && safely("restore your Pi persona file", personaPath, false, () => restoreFile(personaSnapshot))) {
-			process.stderr.write(`gentle-shell: kept your Pi persona unchanged (gentle-ai rewrote ${personaPath}; tracked upstream)\n`);
+		for (const [personaPath, personaSnapshot] of personaSnapshots) {
+			if (personaSnapshot !== undefined && safely("restore your Pi persona file", personaPath, false, () => restoreFile(personaSnapshot))) {
+				process.stderr.write(`gentle-shell: kept your Pi persona unchanged (gentle-ai rewrote ${personaPath}; tracked upstream)\n`);
+			}
 		}
 		if (safely("restore your Gentle AI managed-asset record", statePath, false, () => restoreManagedAssetDigestField(statePath, originalStateText))) {
 			process.stderr.write(
@@ -1445,7 +1493,9 @@ async function main() {
 		const pi = bundledPi(bundled, { platform: process.platform, fs: bundledFs });
 		if (!pi.ok) fail(pi.message, 1);
 		runtime = { kind: "bundled", command: process.execPath, args: [pi.cli] };
-		bundledEnv = bundledChildEnv(process.env, { node: process.execPath, cli: pi.cli });
+		bundledInstall = bundled;
+		bundledCli = pi.cli;
+		bundledEnv = bundledProcessEnv();
 		bundledSetupDirs = [dirname(process.execPath), join(bundled.versionDir, "node_modules", ".bin")];
 	} else {
 		runtime = resolvePiRuntime({
@@ -1651,6 +1701,7 @@ async function main() {
 		}
 	}
 
+	if (bundled) bundledEnv = bundledProcessEnv();
 	const invocation = buildPiInvocation({
 		runtime,
 		home,

@@ -68,3 +68,22 @@ test("delegated children never load upstream pi-pretty", async () => {
 	assert.equal(loaded, false);
 	assert.equal(result, undefined);
 });
+
+// S9: pi-pretty keeps its FFF database under deps.sdk.getAgentDir(), and
+// otherwise under $HOME/.pi/agent whatever agent home Pi runs with. Its
+// deps.sdk replaces the host's tool factories, so all five come along.
+test("pi-pretty gets the agent home and Pi's tool factories through deps.sdk", async () => {
+	const factories = ["createReadToolDefinition", "createBashToolDefinition", "createLsToolDefinition", "createFindToolDefinition", "createGrepToolDefinition"];
+	for (const env of [{ PI_CODING_AGENT_DIR: "/agent-home" }, { PI_CODING_AGENT_DIR: "/agent-home", GENTLE_PI_SHELL: "0" }]) {
+		let received: any;
+		await pretty({ on() {} }, { TextComponent: "text" }, async (_api: unknown, deps: unknown) => { received = deps; }, env);
+		assert.equal(received.TextComponent, "text", "the host's other deps are kept");
+		assert.equal(received.sdk.getAgentDir(), "/agent-home");
+		for (const name of factories) assert.equal(typeof received.sdk[name], "function", name);
+	}
+	// A host that already passes its own sdk keeps it.
+	const sdk = { getAgentDir: () => "/host" };
+	let kept: any;
+	await pretty({ on() {} }, { sdk }, async (_api: unknown, deps: unknown) => { kept = deps; }, {});
+	assert.equal(kept.sdk, sdk);
+});

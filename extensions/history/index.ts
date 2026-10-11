@@ -18,7 +18,6 @@
 // (docs/prompt-history.md).
 
 import { randomUUID } from "node:crypto";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   DynamicBorder,
@@ -37,7 +36,7 @@ import {
   type TuiMouseEvent,
   truncateToWidth,
 } from "@earendil-works/pi-tui";
-import { gentlePiConfigHome } from "../../lib/agent-home.ts";
+import { gentlePiConfigHome, resolveGentlePiAgentHome } from "../../lib/agent-home.ts";
 import {
   historyCaptureEnabled,
   historyCaptureEnvOverride,
@@ -122,15 +121,6 @@ const SELECTOR_FOOTER_HELP =
 /** Width of the "→ " / "  " prefix on each entry line. */
 const ENTRY_PREFIX_WIDTH = 2;
 
-// Legacy agent dir: pre-v1 editor-history files live directly here and are
-// migrated into the store root by migrateLegacyStores().
-const AGENT_DIR = join(homedir(), ".pi", "agent");
-// v2 multi-concurrency store root (design: tmp/multi-concurrency-design.md).
-// It is also the tombstone state dir: <root>/hidden.json.
-const PI_HISTORY_ROOT = join(AGENT_DIR, "history");
-// Sessions root for the one-level transcript scan (spec C1, design §D5).
-// Read-only by invariant — transcripts are never written by this extension.
-const SESSIONS_ROOT = join(AGENT_DIR, "sessions");
 
 export interface HistoryDeps {
   env?: NodeJS.ProcessEnv;
@@ -1320,12 +1310,19 @@ export default function promptHistoryExtension(
   // child never captures: its prompt is a delegation brief, not user history,
   // and the parent owns the store's init and GC (gentle-shell#1690).
   const capturing = () => env.GENTLE_PI_AGENTS_CHILD !== "1" && captureEnabled(env, configHome);
-  const root = deps.root ?? PI_HISTORY_ROOT;
+  // The agent home Pi runs with (S9: PI_CODING_AGENT_DIR, else ~/.pi/agent).
+  // Legacy agent dir: pre-v1 editor-history files live directly here and are
+  // migrated into the store root by migrateLegacyStores().
+  const agentDir = deps.agentDir ?? resolveGentlePiAgentHome(env);
+  // v2 multi-concurrency store root (design: tmp/multi-concurrency-design.md).
+  // It is also the tombstone state dir: <root>/hidden.json.
+  const root = deps.root ?? join(agentDir, "history");
   const cwd = deps.cwd ?? process.cwd();
   const instanceId = deps.instanceId ?? randomUUID();
   const now = deps.now ?? Date.now;
-  const agentDir = deps.agentDir ?? AGENT_DIR;
-  const sessionsRoot = deps.sessionsRoot ?? SESSIONS_ROOT;
+  // Sessions root for the one-level transcript scan (spec C1, design §D5).
+  // Read-only by invariant — transcripts are never written by this extension.
+  const sessionsRoot = deps.sessionsRoot ?? join(agentDir, "sessions");
   let writerState: SessionWriterState | null = null;
 
   /**

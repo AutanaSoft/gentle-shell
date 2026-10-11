@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { test } from "node:test";
-import { readFileSync, realpathSync } from "node:fs";
-import { setGentleAiDevBinaryEnvironmentForTesting } from "../lib/gentle-ai-binary.ts";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { setGentleAiDevBinaryEnvironmentForTesting, setGentleAiIsolationPackageRootForTesting } from "../lib/gentle-ai-binary.ts";
 import * as native from "../lib/runtime-metrics-native.ts";
 import { parseAgentClass, type RuntimeMetricBucket } from "../lib/runtime-metrics.ts";
 import { createHash } from "node:crypto";
@@ -272,4 +274,32 @@ test("spawn failure silently discards", async () => {
 	assert.equal(await native.sendNativeRuntimeEvent([], "/fixture", { ...f.deps,
 		spawn: () => { calls++; throw new Error("private error"); } }), "discarded");
 	assert.equal(calls, 1);
+});
+
+// S9: a gentle-pi inside a bundled prefix's versions/ (the testing overlay
+// stands in for this package's location) and the launcher's GENTLE_SHELL_PREFIX.
+function bundledIsolation(t: { after: (fn: () => void) => void }): { prefix: string; env: NodeJS.ProcessEnv } {
+	const prefix = realpathSync(mkdtempSync(join(tmpdir(), "gentle-ai-isolation-site-")));
+	const packageRoot = join(prefix, "versions", "4.1.0-1.1.0", "node_modules", "gentle-pi");
+	mkdirSync(packageRoot, { recursive: true });
+	setGentleAiIsolationPackageRootForTesting(packageRoot);
+	t.after(() => {
+		setGentleAiIsolationPackageRootForTesting(undefined);
+		rmSync(prefix, { recursive: true, force: true });
+	});
+	return { prefix, env: { PATH: "/usr/bin", GENTLE_SHELL_PREFIX: prefix } };
+}
+
+test("the one-shot send runs gentle-ai with Gentle AI's isolation variables only in a bundled install", async (t) => {
+	const { prefix, env } = bundledIsolation(t);
+	for (const [given, home] of [[env, join(prefix, "gentle-ai")], [{ PATH: "/usr/bin" }, undefined]] as const) {
+		const f = fixture();
+		const pending = native.sendNativeRuntimeEvent([], "/fixture", { ...f.deps, env: given });
+		const options = f.calls[0][2] as { env: NodeJS.ProcessEnv };
+		assert.equal(options.env.GENTLE_AI_HOME, home);
+		if (home === undefined) assert.equal(options.env, given, "the environment is passed unchanged");
+		else assert.equal(options.env.GENTLE_AI_NO_SELF_UPDATE, "1");
+		f.close();
+		assert.equal(await pending, "stored");
+	}
 });
