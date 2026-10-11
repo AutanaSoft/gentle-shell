@@ -675,7 +675,7 @@ type BundledOptions = {
 	interactive?: boolean;
 	answers?: string[];
 	ask?: (question: string) => Promise<string>;
-	pathEntry?: "recorded" | "none" | "invalid" | "fails";
+	pathEntry?: "recorded" | "none" | "invalid" | "fails" | "edited";
 	execPath?: string;
 	root?: string;
 };
@@ -716,7 +716,7 @@ function bundledWorld({ platform = "darwin" } = {}) {
 	const err: string[] = [];
 	const questions: string[] = [];
 	const pathCalls: { ownLeft: number }[] = [];
-	const deferred: { pid: number; files: string[]; directories: string[] }[] = [];
+	const deferred: { pid: number; files: string[]; last?: string; directories: string[] }[] = [];
 	const ownLeft = () => own.filter((path) => { try { lstatSync(path); return true; } catch { return false; } });
 	const uninstall = (args: string[], options: BundledOptions = {}) => {
 		const answers = [...(options.answers ?? [])];
@@ -736,10 +736,12 @@ function bundledWorld({ platform = "darwin" } = {}) {
 					remove: () => {
 						pathCalls.push({ ownLeft: ownLeft().length });
 						if (state === "fails") throw new Error("EACCES: permission denied");
+						return state === "edited" ? { removed: false, note: `${join(home, ".zshrc")} still holds export PATH="$PATH:${join(prefix, "bin")}" # gentle-shell bundled install (edited, so it was kept)` }
+							: { removed: true };
 					},
 				},
 			process: { pid: 4242, execPath: options.execPath ?? node },
-			deferRemoval: (request: { pid: number; files: string[]; directories: string[] }) => { deferred.push(request); },
+			deferRemoval: (request: { pid: number; files: string[]; last?: string; directories: string[] }) => { deferred.push(request); },
 			ask: options.ask ?? (async (question: string) => {
 				questions.push(question);
 				return answers.shift() ?? "";
@@ -833,9 +835,23 @@ test("bundled: without a valid receipt the PATH entry is named for the user to r
 			assert.match(plan, /# gentle-shell bundled install/);
 			assert.ok(plan.includes(join(w.prefix, "bin")), pathEntry);
 			if (pathEntry === "invalid") assert.match(plan, /does not describe this install's PATH entry/);
+			// A5: said once, in the plan.
+			assert.equal(w.out.filter((line) => line.includes("If a new terminal still finds gentle-shell")).length, 1, pathEntry);
 			assert.deepEqual(w.ownLeft(), []);
 		} finally { w.cleanup(); }
 	}
+});
+
+// A2: a PATH line the user edited is kept and named, not silently reported as removed.
+test("bundled: a PATH entry the user changed is kept, and the final message names the file and the line it still holds", posixOnly, async () => {
+	const w = bundledWorld();
+	try {
+		assert.equal(await w.uninstall(["--yes"], { pathEntry: "edited" }), 0, w.err.join("\n"));
+		const tail = w.out.slice(-2);
+		assert.match(tail[0], /The PATH entry was kept: .*\.zshrc still holds export PATH="\$PATH:.*# gentle-shell bundled install/);
+		assert.match(tail[1], /Gentle Shell was removed\./);
+		assert.deepEqual(w.ownLeft(), []);
+	} finally { w.cleanup(); }
 });
 
 test("bundled: a prefix that is not the real ~/.gentle-shell, or a Windows prefix without its marker, is refused before anything is removed", async () => {
@@ -947,7 +963,8 @@ test("bundled on Windows: the user Path entry goes first, the running node.exe, 
 		assert.equal(w.pathCalls.length, 1);
 		const marker = join(w.prefix, ".gentle-shell-bundle");
 		const nodeDir = dirname(w.node);
-		assert.deepEqual(w.deferred, [{ pid: 4242, files: [w.node, w.launcher, marker],
+		// A4: the marker goes last, only once the others are gone, so a failed removal can be retried.
+		assert.deepEqual(w.deferred, [{ pid: 4242, files: [w.node, w.launcher], last: marker,
 			directories: [nodeDir, join(w.prefix, "runtime"), join(w.prefix, "bin"), w.prefix] }]);
 		// Everything else is already gone; those three wait for the detached removal.
 		assert.deepEqual(readdirSync(w.prefix).sort(), [".gentle-shell-bundle", "bin", "runtime"]);

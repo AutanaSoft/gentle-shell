@@ -571,7 +571,7 @@ export async function runSelfUninstall(input: SelfUninstallInput): Promise<numbe
  * (scripts/bundled-install.mjs readPathReceipt). Only "recorded" is removed;
  * without a valid receipt the entry is named for the user, never guessed. */
 export type BundledPathEntry =
-	| { status: "recorded"; description: string; remove: () => void }
+	| { status: "recorded"; description: string; remove: () => { removed: boolean; note?: string } }
 	| { status: "none" }
 	| { status: "invalid"; reason: string };
 
@@ -581,8 +581,9 @@ export interface BundledSelfUninstallInput extends Pick<SelfUninstallInput, "arg
 	pathEntry: BundledPathEntry;
 	/** This process: on Windows its node.exe and the .cmd launcher cannot be removed while it runs. */
 	process: { pid: number; execPath: string };
-	/** Windows: removes `files`, then each of `directories` that is empty, once process `pid` exited. */
-	deferRemoval?: (request: { pid: number; files: string[]; directories: string[] }) => void;
+	/** Windows: removes `files`, then `last` (the prefix marker) once nothing is left at those paths,
+	 * then each of `directories` that is empty, once process `pid` exited. */
+	deferRemoval?: (request: { pid: number; files: string[]; last?: string; directories: string[] }) => void;
 }
 
 // What scripts/bundled-install.mjs writes in the prefix, by name.
@@ -789,9 +790,12 @@ export async function runBundledSelfUninstall(input: BundledSelfUninstallInput):
 		"Also remove your Gentle Shell home (sign-ins, chats, settings and extensions) listed above? [y/N] ");
 	if ("code" in confirmation) return confirmation.code;
 
+	// A PATH entry the user changed since the install is kept, and said so at the end.
+	let pathKept: string | undefined;
 	if (input.pathEntry.status === "recorded") {
 		try {
-			input.pathEntry.remove();
+			const result = input.pathEntry.remove();
+			if (result.removed === false) pathKept = result.note ?? input.pathEntry.description;
 		} catch (error) {
 			err(`gentle-shell self-uninstall: could not remove ${input.pathEntry.description}: ${error instanceof Error ? error.message : String(error)}`);
 			err("Nothing else was removed; fix the cause and run gentle-shell self-uninstall again.");
@@ -819,14 +823,18 @@ export async function runBundledSelfUninstall(input: BundledSelfUninstallInput):
 	if (plan.held.length > 0) {
 		try {
 			if (!input.deferRemoval) throw new Error("no deferred removal on this system");
-			input.deferRemoval({ pid: input.process.pid, files: plan.held, directories: heldDirectories(plan, root, platform) });
+			// The marker goes last: while it stays, a failed removal can be retried with self-uninstall.
+			const marker = join(root, BUNDLED_WINDOWS_MARKER.name);
+			const isMarker = (file: string) => comparable(file, platform) === comparable(marker, platform);
+			input.deferRemoval({ pid: input.process.pid, files: plan.held.filter((file) => !isMarker(file)), last: plan.held.find(isMarker),
+				directories: heldDirectories(plan, root, platform) });
 		} catch (error) {
 			err(`gentle-shell self-uninstall: ${error instanceof Error ? error.message : String(error)}; once this command exits, delete ${root} yourself.`);
 			return 1;
 		}
 		out(`Windows cannot remove the running Gentle Shell: ${plan.held.join(", ")} ${plan.held.length === 1 ? "is" : "are"} removed in the background after this command exits.`);
 	}
-	if (input.pathEntry.status !== "recorded") out(manualPathEntry(root, platform));
+	if (pathKept !== undefined) out(`The PATH entry was kept: ${pathKept}. Remove it yourself if nothing else uses it.`);
 	out("Gentle Shell was removed.");
 	return 0;
 }

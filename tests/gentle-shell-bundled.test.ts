@@ -501,3 +501,18 @@ test("gentle-shell self-uninstall in a bundled install removes the recorded PATH
 	assert.equal(existsSync(join(repository, "scripts", "bundled-install.mjs")), true);
 	assert.equal(existsSync(join(repository, "runtime", "gentle-shell-uninstall.mjs")), true);
 });
+
+// A1 (T6 verifier): a receipt naming a file the PATH plan never edits is not acted on.
+test("gentle-shell self-uninstall in a bundled install never edits or deletes a file a forged PATH receipt names, and says to remove the entry by hand", { skip: posixHost }, (t) => {
+	const prefix = bundledPrefix(t);
+	const line = `export PATH="${join(prefix.root, "bin")}:$PATH" # gentle-shell bundled install`;
+	const dotfile = join(prefix.home, "dotfiles", "path.sh");
+	mkdirSync(dirname(dotfile), { recursive: true });
+	writeFileSync(dotfile, `${line}\n`);
+	writeFileSync(join(prefix.root, "path-entry.json"), JSON.stringify({ schema: 1, kind: "profile", path: dotfile, line, create: true, separator: false }));
+	const result = prefix.run(["self-uninstall", "--yes"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(readFileSync(dotfile, "utf8"), `${line}\n`);
+	assert.match(result.stdout, /does not describe this install's PATH entry/);
+	assert.match(result.stdout, /\(none recorded; see below\)/);
+});

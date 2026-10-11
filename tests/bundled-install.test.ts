@@ -801,20 +801,21 @@ posixTest("removePathEntry keeps a profile line and a link that a receipt says w
 
 posixTest("writePathReceipt keeps only an applied receipt in the prefix, private and replaced whole, and readPathReceipt accepts only this install's entry", () => {
 	const { home: user, layout } = claimed();
+	const env = { SHELL: "/bin/zsh" };
 	const line = `export PATH="${layout.bin}:$PATH" # gentle-shell bundled install`;
 	const profile = { kind: "profile", path: join(user, ".zshrc"), line, create: true };
 	assert.equal(layout.pathReceipt, join(layout.root, "path-entry.json"));
-	assert.deepEqual(readPathReceipt(layout), { status: "none" });
+	assert.deepEqual(readPathReceipt(layout, { env, home: user }), { status: "none" });
 	assert.equal(writePathReceipt(layout, { ...profile, applied: false }), false);
 	assert.equal(existsSync(layout.pathReceipt), false);
 	assert.equal(writePathReceipt(layout, { ...profile, applied: true, separator: false }), true);
 	assert.equal(lstatSync(layout.pathReceipt).mode & 0o777, 0o600);
 	assert.deepEqual(JSON.parse(readFileSync(layout.pathReceipt, "utf8")), { schema: 1, ...profile, separator: false });
-	assert.deepEqual(readPathReceipt(layout), { status: "recorded", receipt: { ...profile, separator: false, applied: true } });
+	assert.deepEqual(readPathReceipt(layout, { env, home: user }), { status: "recorded", receipt: { ...profile, separator: false, applied: true } });
 	assert.match(describePathReceipt({ ...profile, separator: false, applied: true }), new RegExp(`${line.replace(/[$"]/g, "\\$&")}.*\\.zshrc`));
 	const link = { kind: "symlink", path: join(user, ".local", "bin", "gentle-shell"), target: layout.launcher };
 	writePathReceipt(layout, { ...link, applied: true });
-	assert.deepEqual(readPathReceipt(layout), { status: "recorded", receipt: { ...link, applied: true } });
+	assert.deepEqual(readPathReceipt(layout, { env, home: user }), { status: "recorded", receipt: { ...link, applied: true } });
 	assert.deepEqual(readdirSync(layout.root).filter((name) => name.includes("path-entry")), ["path-entry.json"]);
 	// Anything this prefix did not write is never acted on.
 	const foreign = [
@@ -826,15 +827,79 @@ posixTest("writePathReceipt keeps only an applied receipt in the prefix, private
 	];
 	for (const receipt of foreign) {
 		writeFileSync(layout.pathReceipt, JSON.stringify({ schema: 1, ...receipt }));
-		assert.equal(readPathReceipt(layout).status, "invalid", JSON.stringify(receipt));
+		assert.equal(readPathReceipt(layout, { env, home: user }).status, "invalid", JSON.stringify(receipt));
 	}
 	for (const text of ["{", JSON.stringify({ schema: 2, ...link }), "[]"]) {
 		writeFileSync(layout.pathReceipt, text);
-		assert.equal(readPathReceipt(layout).status, "invalid", text);
+		assert.equal(readPathReceipt(layout, { env, home: user }).status, "invalid", text);
 	}
 	rmSync(layout.pathReceipt);
 	symlinkSync(join(user, ".zshrc"), layout.pathReceipt);
-	assert.equal(readPathReceipt(layout).status, "invalid");
+	assert.equal(readPathReceipt(layout, { env, home: user }).status, "invalid");
+});
+
+// A1 (T6 verifier): a receipt is trusted only for a file or link the PATH plan
+// itself can choose for this user; a forged one is named, never acted on.
+posixTest("readPathReceipt accepts a profile line only in a startup file the PATH plan can choose, and a link only at ~/.local/bin/gentle-shell", () => {
+	const { home: user, layout } = claimed();
+	const { sh, fish } = { sh: `export PATH="${layout.bin}:$PATH" # gentle-shell bundled install`, fish: `set -gx PATH '${layout.bin}' $PATH # gentle-shell bundled install` };
+	const read = (receipt: Record<string, unknown>, env: Record<string, string> = {}, platform = "darwin") => {
+		writeFileSync(layout.pathReceipt, JSON.stringify({ schema: 1, create: false, separator: false, ...receipt }));
+		return readPathReceipt({ ...layout, platform }, { env, home: user }).status;
+	};
+	// Every file pathEntryPlan picks, per shell, on macOS and Linux.
+	for (const name of [".zshrc", ".bash_profile", ".bash_login", ".profile"]) assert.equal(read({ kind: "profile", path: join(user, name), line: sh }), "recorded", name);
+	assert.equal(read({ kind: "profile", path: join(user, ".bashrc"), line: sh }, {}, "linux"), "recorded");
+	assert.equal(read({ kind: "profile", path: join(user, ".config", "fish", "conf.d", "gentle-shell.fish"), line: fish }), "recorded");
+	// ZDOTDIR and XDG_CONFIG_HOME move the zsh and fish files exactly as the plan moves them.
+	const zdot = join(user, "zdot");
+	const xdg = join(user, "xdg");
+	assert.equal(read({ kind: "profile", path: join(zdot, ".zshrc"), line: sh }, { ZDOTDIR: zdot }), "recorded");
+	assert.equal(read({ kind: "profile", path: join(user, ".zshrc"), line: sh }, { ZDOTDIR: zdot }), "invalid");
+	assert.equal(read({ kind: "profile", path: join(xdg, "fish", "conf.d", "gentle-shell.fish"), line: fish }, { XDG_CONFIG_HOME: xdg }), "recorded");
+	// E1: our exact line, but in a file the plan never edits on this system; E2: a created file elsewhere.
+	assert.equal(read({ kind: "profile", path: join(user, ".bashrc"), line: sh }), "invalid");
+	assert.equal(read({ kind: "profile", path: join(user, "dotfiles", "path.sh"), line: sh, create: true }), "invalid");
+	assert.equal(read({ kind: "profile", path: join(user, ".zshenv"), line: sh }), "invalid");
+	// The fish line belongs only in the fish file, the sh line only in sh files.
+	assert.equal(read({ kind: "profile", path: join(user, ".zshrc"), line: fish }), "invalid");
+	assert.equal(read({ kind: "profile", path: join(user, ".config", "fish", "conf.d", "gentle-shell.fish"), line: sh }), "invalid");
+	// The link: only ~/.local/bin/gentle-shell to our launcher.
+	assert.equal(read({ kind: "symlink", path: join(user, ".local", "bin", "gentle-shell"), target: layout.launcher }), "recorded");
+	assert.equal(read({ kind: "symlink", path: join(user, "bin", "gentle-shell"), target: layout.launcher }), "invalid");
+	// The bundled self-uninstall, given the forged receipts, leaves both files as they are.
+	const bashrc = join(user, ".bashrc");
+	const dotfile = join(user, "dotfiles", "path.sh");
+	mkdirSync(dirname(dotfile), { recursive: true });
+	writeFileSync(bashrc, `alias l=ls\n${sh}\n`);
+	writeFileSync(dotfile, `${sh}\n`);
+	const forged = readPathReceipt(layout, { env: { SHELL: "/bin/zsh" }, home: user });
+	assert.equal(forged.status, "invalid");
+	assert.match(forged.status === "invalid" ? forged.reason : "", /does not describe this install's PATH entry/);
+	assert.deepEqual([readFileSync(bashrc, "utf8"), readFileSync(dotfile, "utf8")], [`alias l=ls\n${sh}\n`, `${sh}\n`]);
+});
+
+// A2: a line the user edited is kept, and the caller learns which file still holds what.
+posixTest("removePathEntry reports a profile line it could not find and a link that no longer points at our launcher", () => {
+	const { home: user, layout } = claimed();
+	const zshrc = join(user, ".zshrc");
+	writeFileSync(zshrc, "alias x=y\n");
+	const receipt = applyPathEntry(pathEntryPlan(layout, { platform: "darwin", env: { PATH: "/usr/bin", SHELL: "/bin/zsh" }, home: user }));
+	const edited = `export PATH="$PATH:${layout.bin}" # gentle-shell bundled install`;
+	writeFileSync(zshrc, `alias x=y\n${edited}\n`);
+	const kept = removePathEntry(receipt);
+	assert.equal(readFileSync(zshrc, "utf8"), `alias x=y\n${edited}\n`);
+	assert.equal(kept.removed, false);
+	assert.ok(kept.note.includes(zshrc) && kept.note.includes(edited), kept.note);
+	writeFileSync(zshrc, `alias x=y\n${receipt.line}\n`);
+	assert.deepEqual(removePathEntry(receipt), { removed: true });
+	const link = join(user, ".local", "bin", "gentle-shell");
+	mkdirSync(dirname(link), { recursive: true });
+	symlinkSync("/usr/local/bin/other", link);
+	const other = removePathEntry({ kind: "symlink", path: link, target: layout.launcher, applied: true });
+	assert.equal(other.removed, false);
+	assert.ok(other.note.includes(link), other.note);
+	assert.equal(readlinkSync(link), "/usr/local/bin/other");
 });
 
 test("readPathReceipt accepts the Windows user Path entry of this prefix only", (t) => {
@@ -843,10 +908,10 @@ test("readPathReceipt accepts the Windows user Path entry of this prefix only", 
 	const layout = { ...prefixLayout({ platform: "win32", env: { LOCALAPPDATA: "C:\\L", USERPROFILE: "C:\\U" }, home: "C:\\U" }), pathReceipt: join(folder, "path-entry.json") };
 	const entry = { kind: "registry", key: "HKCU\\Environment", name: "Path", entry: layout.bin };
 	writeFileSync(layout.pathReceipt, JSON.stringify({ schema: 1, ...entry }));
-	assert.deepEqual(readPathReceipt(layout), { status: "recorded", receipt: { ...entry, applied: true } });
+	assert.deepEqual(readPathReceipt(layout, { env: {}, home: "C:\\U" }), { status: "recorded", receipt: { ...entry, applied: true } });
 	assert.match(describePathReceipt({ ...entry, applied: true }), /C:\\L\\gentle-shell\\bin in your user Path/);
 	writeFileSync(layout.pathReceipt, JSON.stringify({ schema: 1, ...entry, key: "HKLM\\Environment" }));
-	assert.equal(readPathReceipt(layout).status, "invalid");
+	assert.equal(readPathReceipt(layout, { env: {}, home: "C:\\U" }).status, "invalid");
 	t.diagnostic("simulated Windows layout, real receipt file");
 });
 
@@ -858,7 +923,8 @@ test("scheduleWindowsRemoval starts one detached Windows PowerShell that waits f
 	const spawn = (command: string, args: string[], options: Record<string, any>) => { calls.push({ command, args, options }); return { unref: () => { unref = true; } }; };
 	const files = ["C:\\L\\gentle shell's $x;\\runtime\\node-24.21.0\\node.exe", "C:\\L\\gentle shell's $x;\\bin\\gentle-shell.cmd"];
 	const directories = ["C:\\L\\gentle shell's $x;\\runtime\\node-24.21.0", "C:\\L\\gentle shell's $x;"];
-	scheduleWindowsRemoval({ pid: 4242, files, directories, env: { SystemRoot: "C:\\Windows", Path: "C:\\Windows" }, spawn });
+	const last = "C:\\L\\gentle shell's $x;\\.gentle-shell-bundle";
+	scheduleWindowsRemoval({ pid: 4242, files, last, directories, env: { SystemRoot: "C:\\Windows", Path: "C:\\Windows" }, spawn });
 	assert.equal(calls.length, 1);
 	const [{ command, args, options }] = calls;
 	assert.equal(command, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
@@ -869,11 +935,14 @@ test("scheduleWindowsRemoval starts one detached Windows PowerShell that waits f
 	const script = Buffer.from(args[4], "base64").toString("utf16le");
 	assert.match(script, /Wait-Process -Id \$waitFor/);
 	assert.match(script, /GENTLE_SHELL_REMOVE_FILES/);
+	// A4: the marker goes only once every listed file is gone, so a retry still finds the install.
+	assert.match(script, /GENTLE_SHELL_REMOVE_LAST/);
+	assert.equal(options.env.GENTLE_SHELL_REMOVE_LAST, last);
 	for (const path of [...files, ...directories]) assert.equal(args.join(" ").includes(path), false, path);
 	assert.deepEqual([options.detached, options.stdio, options.windowsHide, options.cwd, unref], [true, "ignore", true, "C:\\Windows", true]);
 	assert.deepEqual([options.env.GENTLE_SHELL_REMOVE_AFTER_PID, options.env.GENTLE_SHELL_REMOVE_FILES, options.env.GENTLE_SHELL_REMOVE_DIRECTORIES, options.env.Path],
 		["4242", files.join("\n"), directories.join("\n"), "C:\\Windows"]);
-	for (const bad of [{ pid: 0 }, { files: ["relative\\node.exe"] }, { directories: ["\\\\server\\share"] }, { env: {} }]) {
+	for (const bad of [{ pid: 0 }, { files: ["relative\\node.exe"] }, { directories: ["\\\\server\\share"] }, { env: {} }, { last: "relative\\marker" }]) {
 		assert.throws(() => scheduleWindowsRemoval({ pid: 4242, files, directories, env: { SystemRoot: "C:\\Windows" }, spawn, ...bad }), /deferred removal/, JSON.stringify(bad));
 	}
 	assert.equal(calls.length, 1);

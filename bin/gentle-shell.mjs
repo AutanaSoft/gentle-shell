@@ -1424,7 +1424,8 @@ async function handleBundledSelfUninstall(bundled, commandArgs) {
 	const { describePathReceipt, prefixLayout, readPathReceipt, removePathEntry, scheduleWindowsRemoval } = await import("../scripts/bundled-install.mjs");
 	const windows = process.platform === "win32";
 	const layout = prefixLayout({ platform: process.platform, env: process.env, home: homedir(), root: bundled.root });
-	const receipt = readPathReceipt(layout);
+	// Trusted only for the link or startup file the PATH plan can choose for this user.
+	const receipt = readPathReceipt(layout, { env: process.env, home: homedir() });
 	let pathEntry = receipt;
 	if (receipt.status === "recorded") {
 		const registry = windows ? (await import("../scripts/bundled-wizard.mjs")).windowsPathRegistry(process.env) : undefined;
