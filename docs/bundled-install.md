@@ -216,8 +216,33 @@ Any failure before step 6 leaves `current` untouched and removes a version folde
 
 Known limits: a release whose lockfile needs a newer pnpm than ours cannot be installed by this upgrade, because the release's own runtime is installed only after its version folder exists. Older runtimes under `runtime/` are never removed.
 
+## Migration from a global install
+
+An existing Gentle Shell that a global pnpm or npm owns moves to the bundled install (S4). `migrationGate` in `scripts/bundled-wizard.mjs` decides, as a pure function. All of these must hold:
+
+- The channel is `release`, and the target is supported.
+- `installOwner` names the owner: `pnpm` or `npm`. An `npm link` or an unknown owner is never moved. `gentle-shell upgrade` names it and keeps its current path.
+- The release publishes both distribution assets, and that release is not older than the installed Gentle Shell.
+
+Otherwise both entries keep their current path, unchanged.
+
+**`gentle-shell upgrade` (`migrateGlobalShell`).** `runUpgrade` offers the migration on the release channel only, through its `migrate` adapter, before its own update.
+
+1. A few lines explain the move: the prefix, the exact Pi, the user's Node, npm, pnpm and Pi untouched, and `~/.gentle-shell/agent` staying where it is.
+2. `runBundledInstall` runs the bundled steps with a plan whose removal is `ask`: claim, npm settings, runtime, version, activate, launcher, then `verify-launcher` (the launcher's own `--version`, `checkLauncher`), then the PATH entry, so a launcher that fails its check is never put on PATH. There is no setup step: the launcher's automatic setup runs on first use.
+3. Then one question: `Remove the old global gentle-pi with <manager> (<command>)? [y/N]`. End of input or Ctrl+C answers No. Without a terminal, nothing is removed and the exact command is printed.
+4. A yes runs `pnpm remove -g gentle-pi` or `npm uninstall -g gentle-pi`, through `ownerManager`'s verified invocation (`removeGlobalShell`).
+
+A failed install or launcher check stops with exit 1, and the old package stays. A failed removal keeps the bundled install, names the manual command and exits 1. After a successful install, the release channel is recorded and a main override this module made is removed.
+
+When the old package stays, `shadowingCommand` predicts which `gentle-shell` a new terminal runs. It takes this PATH with the planned change applied: a profile line goes first, the Windows user Path entry last, and a `~/.local/bin` link stays where it is. If the old one still wins, the command names it and says how to change that.
+
+**The web installer.** An existing Gentle Shell that pnpm or npm owns gets the bundled plan with removal `plan`. In that plan, `verify-launcher` runs before `bundled-path`, and a final `remove-global-shell` action follows. Consenting to the plan is the one confirmation. The removal runs only after every step passed. It finds the installed Gentle Shell again, and runs only when the same manager still owns it. A failed removal keeps the outcome and adds `removeGlobal { status: "failed", command }`; the outcome screen shows that command.
+
+Only the PATH entry and the old global gentle-pi change outside the prefix. The user's Pi and `~/.gentle-shell/agent` are never touched.
+
 ## Never touched
 
 - The user's Node, npm, pnpm, Go, `PNPM_HOME`, `~/.npmrc` and npm or pnpm global configuration.
-- Anything outside the prefix, except the single PATH change.
+- Anything outside the prefix, except the single PATH change and, after a migration the user confirmed, the old global gentle-pi removed by its own manager.
 - Folders, files, launchers or `current` entries without our marker.

@@ -1288,9 +1288,28 @@ async function packageManagerAdapters() {
 }
 
 // `gentle-shell upgrade`: runs before any Pi runtime check, since it may replace this package.
+// On release, a global pnpm or npm install moves to the bundled one when the
+// latest release publishes its assets (S4), with one question about the old package.
 async function handleUpgradeCommand(commandArgs) {
 	const { MainChannelError, runUpgrade } = await import("../scripts/main-channel.mjs");
+	const { fetchDistribution, migrateGlobalShell, windowsPathRegistry } = await import("../scripts/bundled-wizard.mjs");
+	const { askLine } = await import("../runtime/gentle-shell-uninstall.mjs");
 	const managers = await packageManagerAdapters();
+	const out = (line) => process.stdout.write(`${line}\n`);
+	const migrate = ({ latest, owner }) => migrateGlobalShell({
+		latest,
+		currentVersion: ownPackageVersion(),
+		platform: process.platform,
+		arch: process.arch,
+		env: process.env,
+		home: homedir(),
+		interactive: process.stdin.isTTY === true && process.stdout.isTTY === true,
+		// End of input or Ctrl+C answers No.
+		ask: (question) => askLine(question, { input: process.stdin, output: process.stdout }).catch(() => ""),
+		out,
+		adapters: { owner, distribution: (version) => fetchDistribution({ version }), run: managers.run,
+			...(process.platform === "win32" ? { registry: windowsPathRegistry(process.env) } : {}) },
+	});
 	try {
 		process.exitCode = await runUpgrade({
 			args: commandArgs,
@@ -1298,8 +1317,8 @@ async function handleUpgradeCommand(commandArgs) {
 			platform: process.platform,
 			packageRoot,
 			currentVersion: ownPackageVersion(),
-			adapters: { fetch: globalThis.fetch, ...managers },
-			out: (line) => process.stdout.write(`${line}\n`),
+			adapters: { fetch: globalThis.fetch, ...managers, migrate },
+			out,
 		});
 	} catch (error) {
 		if (error instanceof MainChannelError) fail(`gentle-shell upgrade: ${error.message}`, error.code === "upgrade-usage" ? 2 : 1);

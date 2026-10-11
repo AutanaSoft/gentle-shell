@@ -755,16 +755,10 @@ export async function upgradeBundled({ layout, home, platform = layout.platform,
 		}
 		const next = module.prefixLayout({ platform, env, home, root: layout.root });
 		await module.ensureRuntime({ layout: next, platform, arch, go, env });
-		// The environment our pnpm ran in, without any Pi or Gentle override that
-		// could point the launcher at another Pi or agent home.
-		const launchEnv = Object.fromEntries(Object.entries(pnpmEnvironment(next, { platform, env })).filter(([key]) => !/^(?:gentle_|pi_)/i.test(key)));
-		const entry = path.join(version.path, "node_modules", "gentle-pi", "bin", "gentle-shell.mjs");
-		const result = await (adapters.run ?? runCommand)(next.node, [entry, "--version"], { cwd: layout.root, env: launchEnv, timeout: 120000 });
-		const reported = String(result.stdout ?? "").trim();
-		const [shellLine, piLine] = reported.split(/\r?\n/);
-		if (result.status !== 0 || shellLine !== `gentle-shell ${shell}` || piLine !== `pi ${pi}`) {
-			throw Object.assign(new Error(`Gentle Shell ${id} reported ${JSON.stringify(reported)}, not gentle-shell ${shell} with pi ${pi}; current stays at ${active}`),
-				{ stderr: String(result.stderr ?? "").slice(-4000) });
+		const check = await checkLauncher(next, { id, shell, pi, platform, env, run: adapters.run });
+		if (!check.ok) {
+			throw Object.assign(new Error(`Gentle Shell ${id} reported ${JSON.stringify(check.reported)}, not gentle-shell ${shell} with pi ${pi}; current stays at ${active}`),
+				{ stderr: check.stderr });
 		}
 		verified = { module, next };
 	} catch (error) {
@@ -776,6 +770,23 @@ export async function upgradeBundled({ layout, home, platform = layout.platform,
 	const removed = pruneVersions(layout, 2);
 	out(`Upgraded to Gentle Shell ${shell} with Pi ${pi} (from ${active ?? "no active version"}). Run 'gentle-shell upgrade --rollback' to switch back.`);
 	return { id, changed: true, previous: active, removed };
+}
+
+/** Whether version `id` reports exactly `gentle-shell <shell>` and `pi <pi>` to
+ * `--version`: its entry run by our Node, or with `launcher` on POSIX the
+ * bin/gentle-shell launcher itself (it runs the version `current` names).
+ * The environment is the one our pnpm ran in, without any Pi or Gentle override
+ * that could point the launcher at another Pi or agent home.
+ * Returns { ok, reported, stderr }.
+ */
+export async function checkLauncher(layout, { id, shell, pi, platform = layout.platform, env = {}, run = runCommand, launcher = false }) {
+	const launchEnv = Object.fromEntries(Object.entries(pnpmEnvironment(layout, { platform, env })).filter(([key]) => !/^(?:gentle_|pi_)/i.test(key)));
+	const entry = pathFor(platform).join(layout.versions, id, "node_modules", "gentle-pi", "bin", "gentle-shell.mjs");
+	const [command, args] = launcher && platform !== "win32" ? [layout.launcher, ["--version"]] : [layout.node, [entry, "--version"]];
+	const result = await (run ?? runCommand)(command, args, { cwd: layout.root, env: launchEnv, timeout: 120000 });
+	const reported = String(result.stdout ?? "").trim();
+	const [shellLine, piLine] = reported.split(/\r?\n/);
+	return { ok: result.status === 0 && shellLine === `gentle-shell ${shell}` && piLine === `pi ${pi}`, reported, stderr: String(result.stderr ?? "").slice(-4000) };
 }
 
 /** `gentle-shell upgrade --rollback`: `current` switches back to the most
