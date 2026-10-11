@@ -11,7 +11,7 @@ import { posix, win32 } from "node:path";
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { crc32, gunzipSync, inflateRawSync } from "node:zlib";
-import { acquireGo, artifactFor, verifiedDownload } from "./installer-downloads.mjs";
+import { acquireGo, artifactFor, engramPinVersion, verifiedDownload } from "./installer-downloads.mjs";
 import { ensureWindowsPrivateFolder, readWindowsPnpmArchive, verifyWindowsStorage } from "./installer-windows.mjs";
 
 // The acquisition pins already verified for the installer; never a second copy.
@@ -74,6 +74,9 @@ export function prefixLayout({ platform, env = {}, home, root }) {
 		pnpmDir, pnpm: path.join(pnpmDir, "package", "bin", "pnpm.mjs"),
 		// acquireGo publishes `<goRoot>/<version>/go`.
 		goRoot: path.join(runtime, "go"),
+		// The pinned Engram (ensureEngram), given to Gentle AI and gentle-engram (S9).
+		engramDir: path.join(runtime, `engram-${engramPinVersion}`),
+		engram: path.join(runtime, `engram-${engramPinVersion}`, windows ? "engram.exe" : "engram"),
 		pnpmHome, store: path.join(pnpmHome, "store"), cache: path.join(pnpmHome, "cache"), state: path.join(pnpmHome, "state"),
 		config: path.join(pnpmHome, "config"), npmrc: path.join(pnpmHome, "config", "npmrc"), tmp: path.join(base, "tmp"),
 		versions: path.join(base, "versions"), history: path.join(base, "versions.history"),
@@ -228,14 +231,14 @@ export function nodeRuntimeFiles(bytes, descriptor) {
 	if (metadata?.name !== "npm" || !SEMVER.test(metadata.version ?? "") || !files.some((entry) => entry.name === `${npm}bin/npm-cli.js`)) fail();
 	return Object.assign(files, { npm: metadata.version });
 }
-function tarMember(bytes, wanted) {
+function tarMember(bytes, wanted, message = "Node archive rejected") {
 	let found = null;
-	for (const member of tarMembers(bytes, "Node archive rejected")) {
+	for (const member of tarMembers(bytes, message)) {
 		if (member.name !== wanted) continue;
-		if ((member.type !== "0" && member.type !== "\0") || found) throw new Error("Node archive rejected");
+		if ((member.type !== "0" && member.type !== "\0") || found) throw new Error(message);
 		found = Buffer.from(member.data);
 	}
-	if (!found?.length) throw new Error("Node archive rejected");
+	if (!found?.length) throw new Error(message);
 	return found;
 }
 /** Every member of a `.tar.gz`: { name, type, mode, data }. Headers are
@@ -275,8 +278,8 @@ function* tarMembers(bytes, message) {
 		yield { name, type, mode: number(block, 100, 8), data };
 	}
 }
-function zipMember(bytes, wanted) {
-	const fail = () => { throw new Error("Node archive rejected"); };
+function zipMember(bytes, wanted, message = "Node archive rejected") {
+	const fail = () => { throw new Error(message); };
 	let found = null;
 	for (const entry of zipEntries(bytes, fail)) {
 		if (entry.name !== wanted) continue;
@@ -323,6 +326,16 @@ function* zipEntries(bytes, fail) {
 	}
 }
 
+/** The one executable a verified Engram release archive must contain: the
+ * top-level `engram` of the POSIX `.tar.gz` or `engram.exe` of the Windows
+ * `.zip`, a regular file found exactly once. Its tools/ scripts and anything
+ * else are never written.
+ */
+export function engramExecutable(bytes, descriptor) {
+	const message = "Engram archive rejected";
+	return String(descriptor?.url ?? "").endsWith(".zip") ? zipMember(bytes, "engram.exe", message) : tarMember(bytes, "engram", message);
+}
+
 /** Runs a command without a shell; resolves { status, stdout, stderr }. */
 export function runCommand(command, args, { cwd, env, timeout = 15000 }) {
 	return new Promise((resolve) => {
@@ -363,8 +376,9 @@ async function publishRuntime(layout, name, directory, entry, { platform, arch, 
 	const descriptor = (adapters.artifact ?? artifactFor)(name, platform, arch);
 	if (ownedRuntime(directory, descriptor.url, entry)) return false;
 	if (stat(directory)) throw new Error(`Conflicting runtime destination: ${directory}`);
-	const bytes = await verifiedDownload(name, adapters, platform, arch);
+	// Before downloading: a prefix that is not there fails without a download.
 	ensureDirectory(layout.runtime, layout.platform);
+	const bytes = await verifiedDownload(name, adapters, platform, arch);
 	let stage = mkdtempSync(pathFor(process.platform).join(layout.runtime, ".stage-"));
 	try {
 		await fill(stage, bytes, descriptor);
@@ -378,12 +392,30 @@ async function publishRuntime(layout, name, directory, entry, { platform, arch, 
 	}
 }
 
-/** Our pinned Node with its bundled npm, and pnpm, in runtime/ (and the pinned
- * Go only when `go`), each downloaded through verifiedDownload, checked by
- * running it from its staging folder, marked, then published. Returns the
- * paths and what was acquired.
+/** The pinned Engram in runtime/engram-<v>/ (S9): downloaded through
+ * verifiedDownload, only its executable written, `engram version` run from the
+ * staging folder, marked, then published. Gentle AI's setup uses it through
+ * GENTLE_AI_ENGRAM_BIN and gentle-engram through ENGRAM_BIN, so neither
+ * installs or finds another Engram. Returns whether it was acquired.
  */
-export async function ensureRuntime({ layout, platform, arch, go = false, env = {}, adapters = {} }) {
+export async function ensureEngram({ layout, platform, arch, env = {}, adapters = {} }) {
+	const run = adapters.run ?? runCommand;
+	const path = pathFor(process.platform);
+	const childEnv = pnpmEnvironment(layout, { platform: layout.platform, env });
+	return publishRuntime(layout, "engram", layout.engramDir, layout.engram, { platform, arch, adapters }, async (stage, bytes, descriptor) => {
+		const binary = path.join(stage, path.relative(layout.engramDir, layout.engram));
+		writeFileSync(binary, engramExecutable(bytes, descriptor), { flag: "wx", mode: 0o700 });
+		const result = await run(binary, ["version"], { cwd: layout.runtime, env: childEnv });
+		if (result.status !== 0 || String(result.stdout).trim() !== `engram ${descriptor.version}`) throw new Error("Bundled Engram verification failed");
+	});
+}
+
+/** Our pinned Node with its bundled npm, and pnpm, in runtime/ (and the pinned
+ * Go only when `go`, the pinned Engram only when `engram`), each downloaded
+ * through verifiedDownload, checked by running it from its staging folder,
+ * marked, then published. Returns the paths and what was acquired.
+ */
+export async function ensureRuntime({ layout, platform, arch, go = false, engram = false, env = {}, adapters = {} }) {
 	const run = adapters.run ?? runCommand;
 	const path = pathFor(process.platform);
 	const childEnv = pnpmEnvironment(layout, { platform: layout.platform, env });
@@ -425,6 +457,7 @@ export async function ensureRuntime({ layout, platform, arch, go = false, env = 
 		if (result.status !== 0 || String(result.stdout).trim() !== descriptor.version) throw new Error("Bundled pnpm verification failed");
 	});
 	if (pnpm) acquired.push("pnpm");
+	if (engram && await ensureEngram({ layout, platform, arch, env, adapters })) acquired.push("engram");
 	let goPath = null;
 	if (go) {
 		const result = await (adapters.acquireGo ?? acquireGo)({ root: layout.goRoot, platform, arch, adapters });
@@ -867,7 +900,8 @@ export async function upgradeBundled({ layout, home, platform = layout.platform,
 	const version = await installVersion({ layout, manifest, lockfile, platform, env, go: runtime.go, adapters: adapters.install ?? {} });
 	try {
 		const loaded = await loadRelease({ layout, id, home, platform, env, adapters, active });
-		await loaded.module.ensureRuntime({ layout: loaded.next, platform, arch, go, env });
+		// The release's own pins, its Engram included (an older module ignores `engram`).
+		await loaded.module.ensureRuntime({ layout: loaded.next, platform, arch, go, engram: true, env });
 		const check = await checkLauncher(loaded.next, { id, shell, pi, platform, env, run: adapters.run });
 		if (!check.ok) {
 			throw Object.assign(new Error(`Gentle Shell ${id} reported ${JSON.stringify(check.reported)}, not gentle-shell ${shell} with pi ${pi}; current stays at ${active}`),
@@ -920,7 +954,7 @@ export async function rollbackBundled({ layout, home, platform = layout.platform
 	const previous = readHistory(layout).find((id) => id !== active && installedVersion(layout, id));
 	if (!previous) throw new Error("No previous Gentle Shell version is kept to roll back to");
 	const loaded = await loadRelease({ layout, id: previous, home, platform, env, adapters, active });
-	await loaded.module.ensureRuntime({ layout: loaded.next, platform, arch, go: platform === "win32", env });
+	await loaded.module.ensureRuntime({ layout: loaded.next, platform, arch, go: platform === "win32", engram: true, env });
 	activateWithLauncher(layout, previous, active, loaded);
 	return { from: active, to: previous };
 }

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import test, { after, type TestContext } from "node:test";
 import { crc32, gzipSync } from "node:zlib";
-import { activateVersion, activeVersion, applyPathEntry, claimPrefix, prefixRoot, distributionFiles, ensureLauncher, ensureRuntime, filterNpmrc, installVersion, nodeExecutable,
+import { activateVersion, activeVersion, applyPathEntry, claimPrefix, prefixRoot, distributionFiles, engramExecutable, ensureEngram, ensureLauncher, ensureRuntime, filterNpmrc, installVersion, nodeExecutable,
 	nodeRuntimeFiles, pathEntryPlan, pnpmEnvironment, prefixLayout, pruneVersions, removePathEntry, rollbackBundled, setupEnvironment, bundledNpmCommand, ensureNpmShim, upgradeBundled, userNpmrc, writeNpmrcAuth }
 	from "../scripts/bundled-install.mjs";
 
@@ -16,6 +16,7 @@ const posixTest = (name: string, fn: (t: TestContext) => void | Promise<void>) =
 const NODE = "24.21.0";
 const PNPM = "11.1.1";
 const NPM = "11.19.0";
+const ENGRAM = "3.3.2";
 
 // Every temporary home this file creates is removed when the file's tests end.
 const roots: string[] = [];
@@ -103,19 +104,27 @@ const pnpmArchive = tarGz([
 	// pnpm runs node-gyp from this folder: it must stay executable.
 	tarEntry("package/dist/node-gyp-bin/node-gyp", { data: Buffer.from("#!/bin/sh\n"), mode: "0000755" }),
 ]);
-const archives: Record<string, Buffer> = { node: nodeArchive, pnpm: pnpmArchive };
+// The Engram release archive's shape: the executable at the top, beside tools/.
+const engramBytes = Buffer.from("#!/bin/sh\necho fixture engram\n");
+const engramArchive = tarGz([
+	tarEntry("tools/cloud-sync-projects.sh", { data: Buffer.from("#!/bin/sh\n"), mode: "0000755" }),
+	tarEntry("engram", { data: engramBytes, mode: "0000755" }),
+]);
+const engramUrl = `https://github.com/Gentleman-Programming/engram/releases/download/v${ENGRAM}/engram_${ENGRAM}_darwin_arm64.tar.gz`;
+const archives: Record<string, Buffer> = { node: nodeArchive, pnpm: pnpmArchive, engram: engramArchive };
 const sha256 = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 function adapters(overrides: Record<string, unknown> = {}) {
 	const calls: { downloads: string[]; runs: { command: string; args: string[]; cwd: string; env: Record<string, string> }[] } = { downloads: [], runs: [] };
 	return {
 		calls,
 		adapters: {
-			artifact: (name: string) => ({ name, version: name === "node" ? NODE : PNPM, maxBytes: 1 << 20, integrity: `sha256-${sha256(archives[name])}`,
-				url: name === "node" ? `https://nodejs.org/dist/v${NODE}/${nodeStem}.tar.gz` : `https://registry.npmjs.org/pnpm/-/pnpm-${PNPM}.tgz` }),
+			artifact: (name: string) => ({ name, version: name === "node" ? NODE : name === "engram" ? ENGRAM : PNPM, maxBytes: 1 << 20, integrity: `sha256-${sha256(archives[name])}`,
+				url: name === "node" ? `https://nodejs.org/dist/v${NODE}/${nodeStem}.tar.gz` : name === "engram" ? engramUrl : `https://registry.npmjs.org/pnpm/-/pnpm-${PNPM}.tgz` }),
 			download: async (descriptor: { name: string }) => { calls.downloads.push(descriptor.name); return archives[descriptor.name]; },
 			run: (command: string, args: string[], options: { cwd: string; env: Record<string, string> }) => {
 				calls.runs.push({ command, args, ...options });
 				if (args.length === 1 && args[0] === "--version") return { status: 0, stdout: `v${NODE}\n`, stderr: "" };
+				if (args.length === 1 && args[0] === "version") return { status: 0, stdout: `engram ${ENGRAM}\n`, stderr: "" };
 				if (args[1] === "--version") return { status: 0, stdout: `${args[0].endsWith("npm-cli.js") ? NPM : PNPM}\n`, stderr: "" };
 				return { status: 1, stdout: "", stderr: "unexpected" };
 			},
@@ -133,6 +142,7 @@ test("prefixLayout puts every bundled folder under ~/.gentle-shell on POSIX", ()
 	assert.equal(layout.node, `${root}/runtime/node-${NODE}/bin/node`);
 	assert.equal(layout.pnpm, `${root}/runtime/pnpm-${PNPM}/package/bin/pnpm.mjs`);
 	assert.equal(layout.goRoot, `${root}/runtime/go`);
+	assert.equal(layout.engram, `${root}/runtime/engram-${ENGRAM}/engram`);
 	assert.deepEqual([layout.pnpmHome, layout.store, layout.cache, layout.state, layout.config],
 		["pnpm", "pnpm/store", "pnpm/cache", "pnpm/state", "pnpm/config"].map((folder) => `${root}/${folder}`));
 	assert.equal(layout.versions, `${root}/versions`);
@@ -149,6 +159,7 @@ test("prefixLayout uses the Windows private folder and a pointer file for curren
 	assert.equal(layout.root, root);
 	assert.equal(layout.agent, "C:\\Users\\me\\.gentle-shell\\agent");
 	assert.equal(layout.node, `${root}\\runtime\\node-${NODE}\\node.exe`);
+	assert.equal(layout.engram, `${root}\\runtime\\engram-${ENGRAM}\\engram.exe`);
 	assert.equal(layout.currentKind, "pointer");
 	assert.equal(layout.launcher, `${root}\\bin\\gentle-shell.cmd`);
 	assert.equal(layout.tmp, `${root}\\tmp`);
@@ -323,6 +334,52 @@ posixTest("ensureRuntime acquires the pinned Go only when asked", async () => {
 	const result = await ensureRuntime({ layout, platform: "darwin", arch: "arm64", go: true, adapters: fixture });
 	assert.equal(result.go, "/go/bin/go");
 	assert.equal((asked[0] as { root: string }).root, layout.goRoot);
+});
+
+// S9: the pinned Engram, verified, published once and reused; only when asked.
+posixTest("ensureEngram publishes only the verified engram executable after running it, and ensureRuntime asks for it only when told", async () => {
+	const { layout } = claimed();
+	const { calls, adapters: fixture } = adapters();
+	assert.deepEqual((await ensureRuntime({ layout, platform: "darwin", arch: "arm64", adapters: fixture })).acquired, ["node", "pnpm"]);
+	assert.equal(existsSync(layout.engramDir), false);
+	assert.deepEqual((await ensureRuntime({ layout, platform: "darwin", arch: "arm64", engram: true, adapters: fixture })).acquired, ["engram"]);
+	assert.deepEqual(readdirSync(layout.engramDir).sort(), [".gentle-shell-runtime", "engram"]);
+	assert.deepEqual(readFileSync(layout.engram), engramBytes);
+	assert.equal(lstatSync(layout.engram).mode & 0o777, 0o700);
+	assert.equal(readFileSync(join(layout.engramDir, ".gentle-shell-runtime"), "utf8"), `${engramUrl}\n`);
+	// `engram version` ran from the staging folder, before publication.
+	const check = calls.runs.at(-1)!;
+	assert.deepEqual(check.args, ["version"]);
+	assert.match(check.command, /\/runtime\/\.stage-[^/]+\/engram$/);
+	assert.equal(await ensureEngram({ layout, platform: "darwin", arch: "arm64", adapters: fixture }), false, "reused");
+	assert.deepEqual(calls.downloads, ["node", "pnpm", "engram"]);
+	// Another version's answer, or a tampered archive, publishes nothing.
+	for (const broken of [adapters({ run: () => ({ status: 0, stdout: "engram 3.0.0\n", stderr: "" }) }).adapters, adapters({ download: async () => Buffer.from("x") }).adapters]) {
+		const other = claimed().layout;
+		await assert.rejects(ensureEngram({ layout: other, platform: "darwin", arch: "arm64", adapters: broken }), /Engram|integrity|size/);
+		assert.deepEqual(readdirSync(other.runtime), []);
+	}
+});
+
+// A4: a prefix that is not there fails before anything is downloaded.
+posixTest("ensureEngram downloads nothing when the prefix is missing", async () => {
+	const user = home();
+	const layout = prefixLayout({ platform: "darwin", env: { HOME: user }, home: user });
+	const { calls, adapters: fixture } = adapters();
+	await assert.rejects(ensureEngram({ layout, platform: "darwin", arch: "arm64", adapters: fixture }), /ENOENT/);
+	assert.deepEqual(calls.downloads, []);
+	assert.equal(existsSync(layout.root), false);
+});
+
+test("engramExecutable takes only the top-level engram from the tarball and engram.exe from the zip, regular files only", () => {
+	const tarball = { url: "https://github.com/Gentleman-Programming/engram/releases/download/v3.3.2/engram_3.3.2_linux_amd64.tar.gz" };
+	const zipped = { url: "https://github.com/Gentleman-Programming/engram/releases/download/v3.3.2/engram_3.3.2_windows_amd64.zip" };
+	assert.deepEqual(engramExecutable(engramArchive, tarball), engramBytes);
+	const exe = Buffer.from("MZ engram");
+	assert.deepEqual(engramExecutable(zip([["tools/cloud-sync-projects.ps1", Buffer.from("x")], ["engram.exe", exe]]), zipped), exe);
+	assert.throws(() => engramExecutable(tarGz([tarEntry("engram", { type: "2", link: "/bin/sh" })]), tarball), /Engram archive rejected/);
+	assert.throws(() => engramExecutable(tarGz([tarEntry("bin/engram", { data: engramBytes })]), tarball), /Engram archive rejected/);
+	assert.throws(() => engramExecutable(zip([["engram", exe]]), zipped), /Engram archive rejected/);
 });
 
 test("nodeExecutable takes only node.exe from the Windows zip and only bin/node from the tarball", () => {
@@ -905,6 +962,8 @@ posixTest("upgradeBundled installs a new release's own pinned runtime and launch
 	// Ours first (the install runs on it), then the release's own, before verification runs on its Node.
 	assert.equal(calls.ensureRuntime.length, 2);
 	assert.equal((calls.ensureRuntime[1] as { layout: unknown }).layout, next);
+	// The release's own runtime includes its pinned Engram (S9); an older release module ignores the flag.
+	assert.deepEqual(calls.ensureRuntime.map((options) => (options as { engram?: boolean }).engram), [undefined, true]);
 	assert.equal(calls.verify[0].command, next.node);
 	assert.deepEqual(calls.launchers, [next]);
 	assert.equal(activeVersion(layout), "4.2.0-1.0.2");
@@ -930,8 +989,9 @@ posixTest("upgradeBundled reports success with a warning when only pruning fails
 });
 
 function rollbackAdapters(module: Record<string, unknown> = {}) {
-	const calls: { loaded: string[]; runtimes: unknown[]; launchers: unknown[] } = { loaded: [], runtimes: [], launchers: [] };
-	const releaseModule = { prefixLayout, ensureRuntime: async (options: { layout: unknown }) => { calls.runtimes.push(options.layout); return { go: null }; },
+	const calls: { loaded: string[]; runtimes: unknown[]; engram: unknown[]; launchers: unknown[] } = { loaded: [], runtimes: [], engram: [], launchers: [] };
+	const releaseModule = { prefixLayout, ensureRuntime: async (options: { layout: unknown; engram?: boolean }) => {
+		calls.runtimes.push(options.layout); calls.engram.push(options.engram); return { go: null }; },
 		ensureLauncher: (next: unknown) => { calls.launchers.push(next); return { written: true }; }, ...module };
 	return { calls, adapters: { load: async (file: string) => { calls.loaded.push(file); return releaseModule; } } };
 }
@@ -944,6 +1004,7 @@ posixTest("rollbackBundled switches current to the kept previous version with it
 	assert.equal(activeVersion(layout), "4.0.0-1.0.0");
 	assert.deepEqual(calls.loaded, [releaseModuleFile(layout, "4.0.0-1.0.0")]);
 	assert.equal(calls.runtimes.length, 1);
+	assert.equal(calls.engram[0], true, "the target's runtime includes its pinned Engram");
 	assert.equal(calls.launchers.length, 1);
 	assert.deepEqual(await rollbackBundled(options), { from: "4.0.0-1.0.0", to: "4.1.0-1.0.1" });
 	assert.equal(calls.loaded[1], releaseModuleFile(layout, "4.1.0-1.0.1"));

@@ -13,6 +13,9 @@ The building blocks live in `scripts/bundled-install.mjs`. The web installer and
 | `~/.gentle-shell/npm/{prefix,cache}/`, `~/.gentle-shell/npm/npmrc` | npm's global prefix, cache and global config. The global config file is never written. |
 | `~/.gentle-shell/runtime/pnpm-11.1.1/package/` | Our pnpm, from the verified registry tarball. |
 | `~/.gentle-shell/runtime/go/1.25.14/go/` | Our Go, only when asked (`acquireGo` layout). |
+| `~/.gentle-shell/runtime/engram-3.3.2/engram` | Our Engram, from the verified GitHub release archive ([Isolation from the user's Gentle AI](#isolation-from-the-users-gentle-ai)). |
+| `~/.gentle-shell/gentle-ai/` | Gentle AI's state, managed assets, backups and telemetry state (`GENTLE_AI_HOME`). |
+| `~/.gentle-shell/config/gentle-ai/` | gentle-pi's config home in a bundled install (derived, never exported to Pi): profiles, preferences, persona, background subagents. |
 | `~/.gentle-shell/pnpm/{store,cache,state,config}/` | Every folder pnpm writes. |
 | `~/.gentle-shell/versions/<shell>-<pi>/` | One frozen install per release. |
 | `~/.gentle-shell/current` | Symlink to `versions/<id>`, switched with one rename. |
@@ -208,6 +211,7 @@ Dropped: inherited npm and pnpm settings, `NODE_OPTIONS`, `NODE_PATH`, and the w
   - `GENTLE_SHELL_PI` is removed.
   - `GENTLE_PI_AGENTS_PI` is set to our node and the bundled `cli.js`, so subagents never run a `pi` from `PATH`. The subagent runner splits that variable on whitespace, so a path with a space leaves it unset. The runner then falls back to the running node and `cli.js`, which are the same pair.
   - `PI_SKIP_VERSION_CHECK=1`.
+  - `GENTLE_SHELL_PREFIX` and `ENGRAM_BIN` ([Isolation from the user's Gentle AI](#isolation-from-the-users-gentle-ai)).
   - The launcher still sets the agent home variables (`PI_CODING_AGENT_DIR`, `GENTLE_PI_AGENT_HOME`) as always.
 
   Pi itself needs no `PATH` entry, because it is started as our node with the bundled `cli.js`.
@@ -216,9 +220,41 @@ Dropped: inherited npm and pnpm settings, `NODE_OPTIONS`, `NODE_PATH`, and the w
   - npm ranks command-line flags above `npm_config_*` variables, so the user's environment cannot redirect these three settings. An `npm_config_*` key that has no flag here (for example `npm_config_registry`) still reaches our npm, as the user's own network setting would.
   - **No `--prefix`.** A `--prefix` flag on the command line also sets npm's local prefix (`loadLocalPrefix` in `@npmcli/config`). Pi installs a git extension's dependencies with `npm install` in the clone and passes no `--prefix` of its own, so that install would land in the prefix and fail. Pi's `npm:` installs and removals pass `--prefix <agent home>/npm` themselves.
   - The only global read is `npm root -g` (Pi's lookup of packages an older Pi installed globally). It then resolves to the user's `npm_config_prefix` or our node folder's `lib/node_modules`. It only prints a path and creates nothing.
-- **Setup.** `gentle-shell setup` runs Gentle AI, which finds `pi` on `PATH`. pnpm's `.bin/pi` shim runs the first `node` on `PATH`. So setup alone gets our node's folder, then the version's `node_modules/.bin`, ahead of the user's `PATH` (`bundledSetupEnv`). Everything else in its environment is the same as Pi's.
+- **Setup.** `gentle-shell setup` runs Gentle AI, which finds `pi` on `PATH`. pnpm's `.bin/pi` shim runs the first `node` on `PATH`. So setup alone gets our node's folder, then the version's `node_modules/.bin`, ahead of the user's `PATH` (`bundledSetupEnv`). It also gets Gentle AI's isolation variables. Everything else in its environment is the same as Pi's.
 - **Pi updates (S5).** Some `gentle-shell update` forms make Pi update itself: no target, `--self`, `self` or `pi` as the target, `--all`, and `self` or `pi` with `--extensions`. Pi reads the last two as "all" (`package-manager-cli.js`). For these forms the launcher says that Pi ships pinned with Gentle Shell. In a terminal it then runs `gentle-shell upgrade`; otherwise it names the command. For an "all" form, Pi still gets `update --extensions`, even when the upgrade could not complete; the launcher reports that and the extensions still update. Package, `--models`, help, and forms Pi refuses (conflicting or unknown options) go to Pi unchanged.
 - **What cannot be intercepted.** A `pi update` that someone runs directly with the bundled `pi` (for example the agent's shell, which finds it through `node_modules/.bin`) is Pi's own command. In Pi 1.1.0, `PI_SKIP_VERSION_CHECK` hides only the startup "Update Available" notice (`utils/version-check.js`). For the update itself, `package-manager-cli.js` detects a pnpm install from the `.pnpm` path, and `config.js` (`getSelfUpdateCommand`) finds no global pnpm root that owns `versions/<id>`. Pi then prints `cannot self-update this installation` and changes nothing.
+
+### Isolation from the user's Gentle AI
+
+S9. Everything Gentle AI and gentle-pi keep lives in the prefix, except Engram's memory data.
+
+| Process | Gets |
+|---|---|
+| `gentle-shell setup` (the pinned `gentle-ai install --agent pi`) | `GENTLE_AI_HOME=<prefix>/gentle-ai`, `GENTLE_AI_PI_CONFIG_DIR=<prefix>/config/gentle-ai`, `GENTLE_AI_ENGRAM_BIN=<prefix>/runtime/engram-<v>/engram`, `GENTLE_AI_NO_SELF_UPDATE=1` and `GENTLE_PI_CONFIG_HOME=<prefix>/config`. |
+| Pi and its subagents | `GENTLE_SHELL_PREFIX=<prefix>`, and `ENGRAM_BIN=<prefix>/runtime/engram-<v>/engram` unless the user set `ENGRAM_BIN`. No `GENTLE_AI_*` variable, and `GENTLE_PI_CONFIG_HOME` is left as the user has it. |
+| gentle-pi's own `gentle-ai` runs (review, telemetry trigger, runtime metrics) | The same five variables as setup. |
+| The agent's shell | Pi's environment: the user's own plus the Pi row above. |
+
+- **Running bundled.** `runningBundledPrefix` (`lib/gentle-shell-bundled.ts`) decides it for every rule below. `GENTLE_SHELL_PREFIX` must be absolute and name the root of the bundled install that this gentle-pi runs from. `resolveBundledInstall` must find a finished version of that prefix around the package (its version marker). `current` need not name it: a subagent started after `gentle-shell upgrade` moved `current` runs from the previous, kept version and stays bundled. The launcher's own choice of version still requires `current`. A gentle-pi the user installed elsewhere (npm, pnpm, nvm) and started from the agent's shell, which inherits the variable, is not bundled. Outside bundled mode every rule here is off, and everything behaves as in a pnpm or npm install. The answer is remembered per package root and prefix value. So a `gentle-shell upgrade` that moves `current` while Pi runs does not change the running Pi's config home mid-session.
+- **gentle-pi's config home.** In bundled mode, `gentlePiConfigHome` (`lib/agent-home.ts`) is `<prefix>/config/gentle-ai`. Three other readers use the same rule: the profile reader and pin resolution in `extensions/gentle-shell.ts`, the banner settings in `extensions/startup-banner.ts`, and the dev-binary registration in `lib/gentle-ai-binary.ts`. It is derived, never exported to Pi: an exported value would redirect a `gentle-ai` the user runs in the agent's shell. Outside bundled mode it stays `GENTLE_PI_CONFIG_HOME`, else `~/.pi/gentle-ai`. The bundled config home starts empty: profiles and preferences in `~/.pi/gentle-ai` are not copied.
+  - **In bundled mode a `GENTLE_PI_CONFIG_HOME` the user set is ignored by gentle-pi**: the bundled config home wins. The variable still reaches the agent's shell unchanged, so the user's own `gentle-ai` or gentle-pi runs there are unaffected.
+  - **Aligned with Gentle AI 4.0.0.** Gentle AI 4.0.0 reads `GENTLE_PI_CONFIG_HOME` as the parent of its own `gentle-ai` folder: `piBackgroundPolicyPath` in `internal/cli/pi_background.go` writes `<GENTLE_PI_CONFIG_HOME>/gentle-ai/background-subagents.json`, else `~/.pi/gentle-ai/...`. So the config home is `<prefix>/config/gentle-ai`, and only the Gentle AI processes Gentle Shell starts also get `GENTLE_PI_CONFIG_HOME=<prefix>/config`. The policy 4.0.0 writes during setup then lands in the bundled config home, and a release with gentle-ai#5462 writes the same folder through `GENTLE_AI_PI_CONFIG_DIR`. In 4.0.0 only `install`, `sync` and their dry runs read it (the background-policy projection); review and telemetry runs do not, and get it only so every Gentle AI process Gentle Shell starts agrees.
+- **Gentle AI's variables never reach Pi.** Pi's bash tool would pass them to a `gentle-ai` the user runs in the agent's shell, and that run would then use the prefix. Instead, `gentleAiIsolationEnv` (`lib/gentle-ai-binary.ts`) adds them to each `gentle-ai` that a bundled gentle-pi starts itself (the central `gentleAiProcessEnvironment`, the review relay, the runtime metrics send and the telemetry trigger), and the launcher adds them to setup. `GENTLE_AI_ENGRAM_BIN` is set only when our Engram is published.
+- **Engram.** `ensureEngram` (`scripts/bundled-install.mjs`) publishes the pinned Engram release under `runtime/engram-<v>/`. The archive is checked against its pinned size and sha256 from the release's `checksums.txt`. Only the `engram` (or `engram.exe`) regular file is written. `engram version` must print `engram <v>` from the staging folder before the folder is published. `ensureRuntime({ engram: true })` includes it. `gentle-shell setup` in a bundled install ensures it before it runs Gentle AI, and stops if it cannot. `gentle-shell upgrade` and `--rollback` pass `engram: true` to the release's own `ensureRuntime`. With `GENTLE_AI_ENGRAM_BIN`, Gentle AI uses that binary as is: no brew, download, `go install`, `PATH` or registry change, and no `go` or `brew` dependency probes.
+- **gentle-engram.** The gentle-engram Pi extension finds Engram only through `ENGRAM_BIN`, read once when it loads, and otherwise runs `engram` from `PATH`. So Pi gets `ENGRAM_BIN`, and no `PATH` entry is added. An `ENGRAM_BIN` the user set is kept. The agent's shell inherits `ENGRAM_BIN` too, so an Engram MCP launcher started there also uses our Engram.
+- **Personas.** Setup snapshots and restores the persona Gentle AI may rewrite: the prefix's `config/gentle-ai/persona.json`, and also the user's `~/.pi/gentle-ai/persona.json`. A Gentle AI release without the variables still writes the user's file, and restoring an unchanged file does nothing. The managed-asset record is restored only in the user's `~/.gentle-ai/state.json`; the prefix's record belongs to the pinned Gentle AI.
+- **pi-pretty and prompt history.** In bundled mode only, the pi-pretty wrapper passes `deps.sdk` with Pi's five tool factories and `getAgentDir`, so its FFF database lands in `<agent home>/pi-pretty/fff`, and prompt history keeps its store under `<agent home>/history` ([Prompt history](prompt-history.md)). Elsewhere both keep their existing locations: Pi's deps reach pi-pretty unchanged (`$HOME/.pi/agent/pi-pretty/fff`, or no store without `HOME`), and history stays under `~/.pi/agent/history`, also in the isolated home of a pnpm or npm install, so existing histories are not left behind.
+- **Effective with a later Gentle AI.** gentle-pi pins Gentle AI 4.0.0 today (`INSTALLER_VERSION`), and that release ignores the four `GENTLE_AI_*` variables. Until gentle-pi pins a Gentle AI release that contains gentle-ai#5462:
+  - Setup still writes `~/.gentle-ai` and `~/.pi/gentle-ai`, with the restores above, and still acquires Engram its own way.
+  - The persona goes to the user's `~/.pi/gentle-ai/persona.json` (Gentle AI 4.0.0 resolves it from the OS home) and is restored there. The prefix's `config/gentle-ai/persona.json` is not created by setup.
+  - The background-subagents policy already lands in `<prefix>/config/gentle-ai/` through `GENTLE_PI_CONFIG_HOME=<prefix>/config` (see above).
+
+What stays the user's:
+
+- `git`, `gh` and `codegraph`, which the agent runs for the user's work, from the user's `PATH`.
+- Engram's memory data in `~/.engram`, shared with the user's other agents.
+- pi-pretty's reads of `$HOME/.pi/agent/settings.json` (its `index.js` and `render.js` look for its settings there whatever the agent home is). This needs an upstream pi-pretty change; `node_modules` is not patched.
+- `GENTLE_SHELL_PREFIX` and `ENGRAM_BIN` reach the agent's shell, like the agent home variables. A gentle-pi the user runs there is not bundled and ignores the prefix (see above).
 
 ### `gentle-shell upgrade` in a bundled install
 
@@ -277,5 +313,6 @@ Only the PATH entry and the old global gentle-pi change outside the prefix. The 
 ## Never touched
 
 - The user's Node, npm, pnpm, Go, `PNPM_HOME`, `~/.npmrc` and npm or pnpm global configuration.
+- The user's Engram binary and Homebrew. Gentle AI's `~/.gentle-ai` and `~/.pi/gentle-ai` once gentle-pi pins a Gentle AI release with gentle-ai#5462 ([Isolation from the user's Gentle AI](#isolation-from-the-users-gentle-ai)).
 - Anything outside the prefix, except the single PATH change and, after a migration the user confirmed, the old global gentle-pi removed by its own manager.
 - Folders, files, launchers or `current` entries without our marker.
