@@ -1287,7 +1287,9 @@ exit 0`;
 export function scheduleWindowsRemoval({ pid, files, last, directories, env = {}, spawn: start = spawn }) {
 	const systemRoot = envValue(env, "SYSTEMROOT", "win32");
 	const safe = (path) => typeof path === "string" && win32.isAbsolute(path) && !path.startsWith("\\\\") && !/[\r\n]/.test(path);
-	if (!Number.isInteger(pid) || pid <= 0 || !safe(systemRoot) || ![...files, ...directories, ...(last === undefined ? [] : [last])].every(safe)) {
+	// SystemRoot is part of cmd's command line (the PowerShell path): no cmd metacharacter.
+	const cmdSafe = (path) => safe(path) && !/[&|<>^%!"]/.test(path);
+	if (!Number.isInteger(pid) || pid <= 0 || !cmdSafe(systemRoot) || ![...files, ...directories, ...(last === undefined ? [] : [last])].every(safe)) {
 		throw new Error("Unsafe deferred removal request");
 	}
 	// A detached PowerShell never ran on the Windows runner, and a non-detached one

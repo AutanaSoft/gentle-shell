@@ -948,7 +948,9 @@ test("scheduleWindowsRemoval starts one detached Windows PowerShell that waits f
 	assert.deepEqual([options.detached, options.stdio, options.windowsHide, options.cwd, unref], [true, "ignore", true, "C:\\Windows", true]);
 	assert.deepEqual([options.env.GENTLE_SHELL_REMOVE_AFTER_PID, options.env.GENTLE_SHELL_REMOVE_FILES, options.env.GENTLE_SHELL_REMOVE_DIRECTORIES, options.env.Path],
 		["4242", files.join("\n"), directories.join("\n"), "C:\\Windows"]);
-	for (const bad of [{ pid: 0 }, { files: ["relative\\node.exe"] }, { directories: ["\\\\server\\share"] }, { env: {} }, { last: "relative\\marker" }]) {
+	for (const bad of [{ pid: 0 }, { files: ["relative\\node.exe"] }, { directories: ["\\\\server\\share"] }, { env: {} }, { last: "relative\\marker" },
+		// SystemRoot reaches cmd's command line (the PowerShell path): a cmd metacharacter refuses.
+		{ env: { SystemRoot: "C:\\Win&calc" } }, { env: { SystemRoot: "C:\\Win%PATH%" } }, { env: { SystemRoot: "C:\\Win^x" } }, { env: { SystemRoot: "C:\\Win\"x" } }]) {
 		assert.throws(() => scheduleWindowsRemoval({ pid: 4242, files, directories, env: { SystemRoot: "C:\\Windows" }, spawn, ...bad }), /deferred removal/, JSON.stringify(bad));
 	}
 	assert.equal(calls.length, 1);
