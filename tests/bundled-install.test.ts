@@ -1034,3 +1034,28 @@ posixTest("ensureNpmShim writes one regular npm entry that runs our npm-cli.js, 
 	assert.throws(() => ensureNpmShim(layout), /Conflicting npm entry/);
 	assert.equal(readlinkSync(layout.npmShim), layout.npmCli);
 });
+
+test("publishing a runtime retries only Windows lock errors on rename, then gives up with the original error", async () => {
+	const { renameWithWindowsRetry } = await import("../scripts/bundled-install.mjs");
+	const lock = (code: string) => Object.assign(new Error(code), { code });
+	const flaky = (failures: string[]) => {
+		const calls: string[] = [];
+		return { calls, rename: (from: string, to: string) => { calls.push(`${from}>${to}`); const code = failures.shift(); if (code) throw lock(code); } };
+	};
+	const noWait = { delays: [0, 0, 0, 0] };
+	// A scanner or the just-run node.exe holding the staging folder clears after a moment.
+	const recovers = flaky(["EPERM", "EBUSY", "EACCES"]);
+	await renameWithWindowsRetry("s", "d", { platform: "win32", rename: recovers.rename, ...noWait });
+	assert.equal(recovers.calls.length, 4);
+	// A lock that never clears surfaces the original error after the last delay.
+	const stuck = flaky(["EPERM", "EPERM", "EPERM", "EPERM", "EPERM"]);
+	await assert.rejects(renameWithWindowsRetry("s", "d", { platform: "win32", rename: stuck.rename, ...noWait }), (error: { code?: string }) => error.code === "EPERM");
+	assert.equal(stuck.calls.length, 5);
+	// Any other error, or any other platform, fails at once.
+	const other = flaky(["EEXIST"]);
+	await assert.rejects(renameWithWindowsRetry("s", "d", { platform: "win32", rename: other.rename, ...noWait }), (error: { code?: string }) => error.code === "EEXIST");
+	assert.equal(other.calls.length, 1);
+	const posixLock = flaky(["EPERM"]);
+	await assert.rejects(renameWithWindowsRetry("s", "d", { platform: "linux", rename: posixLock.rename, ...noWait }), (error: { code?: string }) => error.code === "EPERM");
+	assert.equal(posixLock.calls.length, 1);
+});

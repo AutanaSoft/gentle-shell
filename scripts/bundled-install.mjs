@@ -319,6 +319,22 @@ export function runCommand(command, args, { cwd, env, timeout = 15000 }) {
 }
 const ownedRuntime = (directory, url, entry) => read(pathFor(process.platform).join(directory, RUNTIME_MARKER)) === `${url}\n` && regular(entry);
 
+// Windows publication can lose a race with the node.exe just run from the
+// staging folder or a real-time scanner still holding it (EPERM, EBUSY,
+// EACCES). Only those codes, and only on Windows, are retried after each
+// delay; a lock that never clears surfaces the original error.
+const WINDOWS_RENAME_RETRY_DELAYS_MS = [200, 400, 800, 1600];
+export async function renameWithWindowsRetry(from, to, { platform = process.platform, rename = renameSync, delays = WINDOWS_RENAME_RETRY_DELAYS_MS } = {}) {
+	if (platform !== "win32") return rename(from, to);
+	for (let attempt = 0; ; attempt += 1) {
+		try { return rename(from, to); }
+		catch (error) {
+			if (attempt >= delays.length || !["EPERM", "EBUSY", "EACCES"].includes(error?.code)) throw error;
+			await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+		}
+	}
+}
+
 /** Publishes one verified runtime as `directory`: an existing one marked with the
  * same pinned URL is reused, an unmarked one is never replaced. `fill` writes and
  * checks the staging folder; one rename publishes it. Renaming is safe here,
@@ -337,7 +353,7 @@ async function publishRuntime(layout, name, directory, entry, { platform, arch, 
 		await fill(stage, bytes, descriptor);
 		writeFileSync(pathFor(process.platform).join(stage, RUNTIME_MARKER), `${descriptor.url}\n`, { flag: "wx", mode: 0o600 });
 		if (stat(directory)) throw new Error(`Conflicting runtime destination: ${directory}`);
-		renameSync(stage, directory);
+		await renameWithWindowsRetry(stage, directory);
 		stage = null;
 		return true;
 	} finally {
